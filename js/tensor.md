@@ -467,6 +467,29 @@ are meaningless, not merely large — and the scale halves. After a run of clean
 doubles again, so the constant tracks what the model's gradients actually need as
 training changes them.
 
+## Capture and replay
+
+A backend that reports `captureReplay` can record a run of work and submit it again
+without the host re-issuing any of it. On Vulkan that is one command buffer holding the
+whole recording, so replaying a step costs a single queue submission rather than one per
+kernel.
+
+What a recording holds is buffer *addresses*, not values. Replaying therefore repeats the
+same arithmetic over whatever those buffers contain at the time, which is exactly what a
+training step needs — parameters are updated in place, so the same recorded work applied
+again advances another step — and is also the whole of the contract. A loop that
+allocates fresh tensors each iteration has nothing stable to replay against.
+
+Capture refuses rather than guesses. A launch that still needs its kernel compiled is
+deferred to a microtask and would land outside the recording, producing a step missing
+some of its work that replays as silently wrong numbers; capturing such a launch throws
+instead, and running the step once beforehand is what makes it recordable.
+
+The plane is `captureBegin` / `captureEnd` / `replay` on `fino:tensor/backend`. It is not
+yet wired to a training-loop helper: the piece that would let `optimizer.step()` replay a
+captured step needs every intermediate the step touches to be pinned for the executable's
+lifetime, which the pool does not yet promise.
+
 ## Diagnostics
 
 - `poolStats(device)` reports held, in-use, and leaked buffer counts.

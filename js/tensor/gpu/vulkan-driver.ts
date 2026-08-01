@@ -6,7 +6,7 @@
  * This module is re-exported through `internal:tensor/gpu`; import from there.
  */
 import { VulkanCompute, vulkanAvailable, vulkanUnavailableReason } from 'internal:vulkan';
-import type { VkBuffer, VkPipeline } from 'internal:vulkan';
+import type { VkBuffer, VkExecutable, VkPipeline } from 'internal:vulkan';
 import type { KernelIR } from '../ir/index.ts';
 import { lowerToSPIRV } from '../ir/index.ts';
 import type { DriverBuffer, DriverCaps, DriverKernel, GpuDriver } from './driver.ts';
@@ -214,6 +214,18 @@ export function createVulkanDriver(): GpuDriver {
       return context.completed();
     },
 
+    captureBegin(): void {
+      context.captureBegin();
+    },
+    captureEnd(): unknown {
+      return context.captureEnd();
+    },
+    replay(executable: unknown): bigint {
+      return context.replay(executable as VkExecutable);
+    },
+    destroyExecutable(executable: unknown): void {
+      context.destroyExecutable(executable as VkExecutable);
+    },
     dispose(): void {
       if (readStaging) context.destroyBuffer(readStaging);
       context.dispose();

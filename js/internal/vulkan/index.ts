@@ -25,7 +25,7 @@ export {
 } from './loader.ts';
 export type { VulkanLibrary } from './loader.ts';
 export { VulkanCompute, vulkanComputeAvailable } from './device.ts';
-export type { VkBuffer, VkDeviceInfo, VkPipeline } from './device.ts';
+export type { VkBuffer, VkDeviceInfo, VkExecutable, VkPipeline } from './device.ts';
 export {
   StructChain,
   VkStruct,

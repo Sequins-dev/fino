@@ -129,6 +129,24 @@ export interface GpuDriver {
   /** The token the device has completed. */
   completed(): bigint;
 
+  // -- capture plane, when the driver has one ----------------------------
+  //
+  // A captured run is fixed work over fixed memory: the recording holds buffer
+  // addresses, not values, so replaying repeats the same arithmetic over whatever
+  // those buffers now hold. Absent on a driver that cannot record.
+
+  /** Record subsequent launches instead of submitting them. */
+  captureBegin?(): void;
+  /** Finish recording, returning an opaque handle to what was recorded. */
+  captureEnd?(): DriverExecutable;
+  /** Submit a recording again, returning the token for its completion. */
+  replay?(executable: DriverExecutable): bigint;
+  /** Release a recording. */
+  destroyExecutable?(executable: DriverExecutable): void;
+
   /** Release the device and everything on it. */
   dispose(): void;
 }
+
+/** A recorded run, opaque above the driver. */
+export type DriverExecutable = unknown;

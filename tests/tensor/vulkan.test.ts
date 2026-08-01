@@ -401,3 +401,105 @@ describe('Vulkan ordering', () => {
     context.dispose();
   });
 });
+
+describe('Vulkan capture and replay', () => {
+  /**
+   * A captured run is fixed work over fixed memory.
+   *
+   * The command buffer records buffer addresses rather than values, so replaying does
+   * the same arithmetic again over whatever those buffers now hold. That is what makes
+   * it useful for a training step — the parameters are updated in place, so the same
+   * recorded work applied twice advances two steps — and it is also the whole of the
+   * contract: a caller who allocates fresh tensors per iteration cannot replay.
+   */
+  it('runs recorded work again over the same buffers', async (t) => {
+    if (!available) {
+      t.ok(true, `SKIP: ${reason()}`);
+      return;
+    }
+    const context = VulkanCompute.create();
+    // In-place doubling: x + x written back over x, so each run advances the values
+    // rather than recomputing them. That is what proves a replay ran, where an
+    // idempotent kernel would look identical either way.
+    const { ir } = binaryKernel(
+      'add',
+      [
+        { dtype: 'f32', layout: 'cont' },
+        { dtype: 'f32', layout: 'cont' },
+      ],
+      'f32',
+    );
+    const pipeline = context.createPipeline(lowerToSPIRV(ir), ir.name);
+    const count = 64;
+    const buffer = context.createBuffer(count * 4);
+    new Float32Array(buffer.mapped!).fill(1);
+
+    context.captureBegin();
+    t.ok(context.capturing, 'the device reports it is capturing');
+    const value = context.dispatch({
+      pipeline,
+      buffers: [buffer, buffer, buffer],
+      params: packParams(ir.params, { n: count }),
+      groups: [Math.ceil(count / ir.wg[0]), 1, 1],
+    });
+    t.equal(value, 0n, 'a captured dispatch signals nothing, because it queued nothing');
+    const executable = context.captureEnd();
+    t.ok(!context.capturing, 'and the capture is closed');
+
+    t.equal(new Float32Array(buffer.mapped!)[0], 1, 'capturing alone runs nothing');
+
+    await context.waitFor(context.replay(executable));
+    t.equal(new Float32Array(buffer.mapped!)[0], 2, 'the first replay ran the work');
+
+    await context.waitFor(context.replay(executable));
+    t.equal(new Float32Array(buffer.mapped!)[0], 4, 'and it can be replayed again');
+
+    context.destroyExecutable(executable);
+    context.destroyBuffer(buffer);
+    context.destroyPipeline(pipeline);
+    context.dispose();
+  });
+
+  it('keeps replayed work ordered against ordinary dispatches', async (t) => {
+    if (!available) {
+      t.ok(true, `SKIP: ${reason()}`);
+      return;
+    }
+    const context = VulkanCompute.create();
+    const { ir } = binaryKernel(
+      'add',
+      [
+        { dtype: 'f32', layout: 'cont' },
+        { dtype: 'f32', layout: 'cont' },
+      ],
+      'f32',
+    );
+    const pipeline = context.createPipeline(lowerToSPIRV(ir), ir.name);
+    const count = 64;
+    const buffer = context.createBuffer(count * 4);
+    new Float32Array(buffer.mapped!).fill(1);
+    const launch = () =>
+      context.dispatch({
+        pipeline,
+        buffers: [buffer, buffer, buffer],
+        params: packParams(ir.params, { n: count }),
+        groups: [Math.ceil(count / ir.wg[0]), 1, 1],
+      });
+
+    context.captureBegin();
+    launch();
+    const executable = context.captureEnd();
+
+    // An ordinary dispatch is batched rather than submitted, so a replay that did not
+    // flush first would reach the queue ahead of work that was issued before it.
+    launch();
+    const after = context.replay(executable);
+    await context.waitFor(after);
+    t.equal(new Float32Array(buffer.mapped!)[0], 4, 'both the batched dispatch and the replay ran');
+
+    context.destroyExecutable(executable);
+    context.destroyBuffer(buffer);
+    context.destroyPipeline(pipeline);
+    context.dispose();
+  });
+});

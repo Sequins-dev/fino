@@ -113,6 +113,28 @@ export interface VkPipeline {
   module: bigint;
 }
 
+/**
+ * A recorded run of dispatches that can be submitted again.
+ *
+ * Replaying re-executes the recorded commands against the *same* buffers and the same
+ * push constants, because that is what a command buffer holds — the work is fixed at
+ * capture time and only the contents of the memory it reads can differ. A caller
+ * therefore replays a step by writing new inputs into the buffers the capture already
+ * refers to, rather than by allocating new ones.
+ */
+export interface VkExecutable {
+  /** The recorded command buffer. */
+  commandBuffer: unknown;
+  /**
+   * Structures the recorded commands point at.
+   *
+   * A command buffer records addresses, not copies, so everything the dispatches were
+   * built from has to outlive the recording rather than the submission.
+   */
+  chains: StructChain[];
+  disposed: boolean;
+}
+
 /** What the chosen device reports. */
 export interface VkDeviceInfo {
   name: string;
@@ -870,6 +892,23 @@ export class VulkanCompute {
   #awaited = new Set<StructChain>();
 
   /**
+   * Pools reserved for captures, created on first use.
+   *
+   * Captured work cannot share the ordinary pools: those are reset in bulk whenever the
+   * device catches up, which would free a command buffer meant to be submitted again
+   * and the descriptor sets it refers to.
+   *
+   * @internal
+   */
+  #capturePool: bigint | null = null;
+
+  /** @internal */
+  #captureSets: bigint | null = null;
+
+  /** The capture currently being recorded, if any. @internal */
+  #capture: VkExecutable | null = null;
+
+  /**
    * Open a command buffer to record into, or return the one already open.
    *
    * @internal
@@ -919,7 +958,8 @@ export class VulkanCompute {
     params: ArrayBuffer | null;
     groups: readonly [number, number, number];
   }): bigint {
-    if (!this.reclaim()) {
+    const capture = this.#capture;
+    if (!capture && !this.reclaim()) {
       throw new Error(
         `all ${DESCRIPTOR_SETS} descriptor sets are in use by work the device has not ` +
           'finished; wait for submitted work before dispatching more',
@@ -932,7 +972,7 @@ export class VulkanCompute {
     const setInfo = chain.hold(
       VkDescriptorSetAllocateInfo.make({
         sType: StructureType.DescriptorSetAllocateInfo,
-        descriptorPool: this.#descriptorPool,
+        descriptorPool: capture ? this.#captureSets! : this.#descriptorPool,
         descriptorSetCount: 1,
         pSetLayouts: chain.handleArray([this.#setLayout]),
       }),
@@ -943,7 +983,7 @@ export class VulkanCompute {
       this.#lib.symbols.vkAllocateDescriptorSets(this.#device, setInfo, setSlot) as number,
     );
     const descriptorSet = readHandle(setSlot);
-    this.#setsUsed++;
+    if (!capture) this.#setsUsed++;
 
     // Only the bindings the shader uses. The layout declares all eight, but a
     // descriptor that is not statically accessed does not have to be bound, and
@@ -973,7 +1013,7 @@ export class VulkanCompute {
     }
     this.#lib.symbols.vkUpdateDescriptorSets(this.#device, used, writes, 0, null);
 
-    const commandBuffer = this.#beginCommands();
+    const commandBuffer = capture ? capture.commandBuffer : this.#beginCommands();
     this.#lib.symbols.vkCmdBindPipeline(
       commandBuffer,
       PipelineBindPoint.Compute,
@@ -1029,6 +1069,13 @@ export class VulkanCompute {
       null,
     );
 
+    if (capture) {
+      // Nothing is submitted while capturing, so there is no timeline value to hand
+      // back: the work happens when the executable is replayed, and that submission is
+      // what signals.
+      capture.chains.push(chain);
+      return 0n;
+    }
     this.#encoded++;
     // The driver reads the recorded structures asynchronously, so they must outlive
     // the submission, which has not happened yet.
@@ -1036,6 +1083,160 @@ export class VulkanCompute {
     const signalValue = ++this.#counter;
     if (this.#encoded >= MAX_BATCH) this.flush();
     return signalValue;
+  }
+
+  /** Whether dispatches are currently being recorded rather than submitted. */
+  get capturing(): boolean {
+    return this.#capture !== null;
+  }
+
+  /**
+   * Start recording dispatches instead of submitting them.
+   *
+   * Every dispatch between here and {@link captureEnd} goes into one command buffer
+   * that is never submitted, and `dispatch` returns no timeline value because nothing
+   * has been queued.
+   */
+  captureBegin(): void {
+    if (this.#capture) throw new Error('a capture is already open');
+    // Recording is shared state: anything batched but not yet submitted would otherwise
+    // be swept into the capture and replayed along with it.
+    this.flush();
+    if (this.#capturePool === null) {
+      this.#capturePool = this.#createCapturePool();
+      this.#captureSets = this.#createCaptureDescriptorPool();
+    }
+    const chain = new StructChain();
+    const allocateInfo = chain.hold(
+      VkCommandBufferAllocateInfo.make({
+        sType: StructureType.CommandBufferAllocateInfo,
+        commandPool: this.#capturePool,
+        level: CommandBufferLevel.Primary,
+        commandBufferCount: 1,
+      }),
+    );
+    const commandSlot = slot();
+    check(
+      'vkAllocateCommandBuffers',
+      this.#lib.symbols.vkAllocateCommandBuffers(this.#device, allocateInfo, commandSlot) as number,
+    );
+    const commandBuffer = readPointer(commandSlot);
+    // Deliberately not OneTimeSubmit: that flag promises the buffer is submitted once,
+    // and submitting it again is the entire purpose here.
+    const beginInfo = chain.hold(
+      VkCommandBufferBeginInfo.make({
+        sType: StructureType.CommandBufferBeginInfo,
+        flags: 0,
+      }),
+    );
+    check(
+      'vkBeginCommandBuffer',
+      this.#lib.symbols.vkBeginCommandBuffer(commandBuffer, beginInfo) as number,
+    );
+    this.#capture = { commandBuffer, chains: [chain], disposed: false };
+  }
+
+  /** Finish recording and return what was recorded. */
+  captureEnd(): VkExecutable {
+    const capture = this.#capture;
+    if (!capture) throw new Error('no capture is open');
+    this.#capture = null;
+    check(
+      'vkEndCommandBuffer',
+      this.#lib.symbols.vkEndCommandBuffer(capture.commandBuffer) as number,
+    );
+    return capture;
+  }
+
+  /**
+   * Submit a captured run again, returning the timeline value it signals.
+   */
+  replay(executable: VkExecutable): bigint {
+    if (executable.disposed) throw new Error('the executable has been destroyed');
+    if (this.#capture) throw new Error('cannot replay while a capture is open');
+    // Anything recorded but not submitted was issued before this replay and has to stay
+    // that way, since the queue orders submissions rather than recordings.
+    this.flush();
+    const signalValue = ++this.#counter;
+    const chain = new StructChain();
+    const timelineInfo = chain.hold(
+      VkTimelineSemaphoreSubmitInfo.make({
+        sType: StructureType.TimelineSemaphoreSubmitInfo,
+        signalSemaphoreValueCount: 1,
+        pSignalSemaphoreValues: chain.addressOf(BigUint64Array.from([signalValue])),
+      }),
+    );
+    const submitInfo = chain.hold(
+      VkSubmitInfo.make({
+        sType: StructureType.SubmitInfo,
+        pNext: timelineInfo,
+        commandBufferCount: 1,
+        pCommandBuffers: chain.addressOf(
+          BigUint64Array.from([handleValue(executable.commandBuffer as ArrayBuffer)]),
+        ),
+        signalSemaphoreCount: 1,
+        pSignalSemaphores: chain.handleArray([this.#timeline]),
+      }),
+    );
+    check(
+      'vkQueueSubmit',
+      this.#lib.symbols.vkQueueSubmit(this.#queue, 1, submitInfo, 0n) as number,
+    );
+    this.#pending.push(chain);
+    return signalValue;
+  }
+
+  /**
+   * Release a captured run.
+   *
+   * The command buffer is left to the capture pool, which is freed with the device;
+   * dropping the recorded structures is what actually matters, since those are what
+   * hold memory.
+   */
+  destroyExecutable(executable: VkExecutable): void {
+    executable.chains.length = 0;
+    executable.disposed = true;
+  }
+
+  /** @internal */
+  #createCapturePool(): bigint {
+    const info = VkCommandPoolCreateInfo.make({
+      sType: StructureType.CommandPoolCreateInfo,
+      // No reset flag: buffers from this pool outlive individual submissions.
+      flags: 0,
+      queueFamilyIndex: this.#queueFamily,
+    });
+    const out = slot();
+    check(
+      'vkCreateCommandPool',
+      this.#lib.symbols.vkCreateCommandPool(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
+  }
+
+  /** @internal */
+  #createCaptureDescriptorPool(): bigint {
+    const chain = new StructChain();
+    const size = chain.hold(
+      VkDescriptorPoolSize.make({
+        type: DescriptorType.StorageBuffer,
+        descriptorCount: MAX_BINDINGS * DESCRIPTOR_SETS,
+      }),
+    );
+    const info = chain.hold(
+      VkDescriptorPoolCreateInfo.make({
+        sType: StructureType.DescriptorPoolCreateInfo,
+        maxSets: DESCRIPTOR_SETS,
+        poolSizeCount: 1,
+        pPoolSizes: size,
+      }),
+    );
+    const out = slot();
+    check(
+      'vkCreateDescriptorPool',
+      this.#lib.symbols.vkCreateDescriptorPool(this.#device, info, null, out) as number,
+    );
+    return readHandle(out);
   }
 
   /**
@@ -1198,6 +1399,12 @@ export class VulkanCompute {
     this.#lib.symbols.vkDestroyDescriptorSetLayout(this.#device, this.#setLayout, null);
     this.#lib.symbols.vkDestroyDescriptorPool(this.#device, this.#descriptorPool, null);
     this.#lib.symbols.vkDestroyCommandPool(this.#device, this.#commandPool, null);
+    if (this.#captureSets !== null) {
+      this.#lib.symbols.vkDestroyDescriptorPool(this.#device, this.#captureSets, null);
+    }
+    if (this.#capturePool !== null) {
+      this.#lib.symbols.vkDestroyCommandPool(this.#device, this.#capturePool, null);
+    }
     this.#lib.symbols.vkDestroyDevice(this.#device, null);
     this.#lib.symbols.vkDestroyInstance(this.#instance, null);
   }

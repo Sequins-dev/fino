@@ -24,6 +24,7 @@ import type { ChainStep } from '../backend.ts';
 import type {
   BackendCaps,
   DeviceBackend,
+  Executable,
   DeviceBuffer,
   DeviceEvent,
   Device,
@@ -74,7 +75,7 @@ import {
 import { chainKey, chainScalars } from '../fusion.ts';
 import { contiguousStrides } from '../shape.ts';
 import { KernelCache } from '../kernel-cache.ts';
-import type { DriverBuffer, DriverKernel, GpuDriver } from './driver.ts';
+import type { DriverBuffer, DriverExecutable, DriverKernel, GpuDriver } from './driver.ts';
 
 /** Element types a GPU handles. `f64` and `i64` are CPU-only by design. */
 const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool'];
@@ -169,7 +170,7 @@ export class GpuBackend implements DeviceBackend {
       class: 'kernel',
       kernelCompile: driver.caps.type === 'metal' ? 'msl' : 'spirv',
       dispatch: 'per-op',
-      captureReplay: false,
+      captureReplay: typeof driver.captureBegin === 'function',
       dtypes: driver.caps.f16 ? GPU_DTYPES : GPU_DTYPES.filter((d) => d !== 'f16'),
       subgroups: driver.caps.subgroups,
       cooperativeMatrix: false,
@@ -472,6 +473,17 @@ export class GpuBackend implements DeviceBackend {
     }
 
     const packed = packParams(built.ir.params, params);
+    if (this.#capturing) {
+      // A capture records what is launched between its two ends, and a launch deferred
+      // to a microtask would land outside that window — producing a recording missing
+      // some of its work, which replays as silently wrong numbers rather than an error.
+      // Running the step once before capturing it compiles its kernels and leaves the
+      // fast path available, which is what makes capture possible at all.
+      throw new Error(
+        'cannot capture a launch that has to wait for a kernel compile or for the ' +
+          'device; run the step once before capturing it',
+      );
+    }
     this.#enqueue(async () => {
       const kernel = await this.#cache.get({
         spec: built.key,
@@ -486,6 +498,54 @@ export class GpuBackend implements DeviceBackend {
       }
       this.#driver.launch(kernel, driverBuffers, packed, groups);
     });
+  }
+
+  /** Whether launches are being recorded rather than submitted. @internal */
+  #capturing = false;
+
+  /** Recordings by handle id, so an `Executable` stays an opaque number. @internal */
+  #executables = new Map<number, DriverExecutable>();
+
+  /** @internal */
+  #nextExecutable = 1;
+
+  // -- capture plane (caps.captureReplay) -------------------------------
+
+  captureBegin(): void {
+    if (!this.#driver.captureBegin) {
+      throw new Error(`${this.device.type} cannot capture`);
+    }
+    if (this.#capturing) throw new Error('a capture is already open');
+    if (this.#pending !== 0) {
+      throw new Error(
+        'cannot capture while launches are still queued; await the previous step first',
+      );
+    }
+    this.#capturing = true;
+    this.#driver.captureBegin();
+  }
+
+  captureEnd(): Executable {
+    if (!this.#capturing) throw new Error('no capture is open');
+    this.#capturing = false;
+    const id = this.#nextExecutable++;
+    this.#executables.set(id, this.#driver.captureEnd!());
+    return { id };
+  }
+
+  replay(executable: Executable): void {
+    if (this.#capturing) throw new Error('cannot replay while a capture is open');
+    const recorded = this.#executables.get(executable.id);
+    if (recorded === undefined) throw new Error('unknown executable');
+    this.#driver.replay!(recorded);
+  }
+
+  /** Release a recording. */
+  destroyExecutable(executable: Executable): void {
+    const recorded = this.#executables.get(executable.id);
+    if (recorded === undefined) return;
+    this.#executables.delete(executable.id);
+    this.#driver.destroyExecutable?.(recorded);
   }
 
   /**
