@@ -279,7 +279,7 @@ export class ClusterClient {
    * @internal
    */
   deployRemote(name: string, caskHash: string, parentPortId: string): Promise<string> {
-    const spawnReqId = `${this.nodeId}/${this.#localHandle++}`;
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
     return new Promise((resolve, reject) => {
       this.#pendingSpawns.set(spawnReqId, { resolve, reject });
       this.#transport.send('__seed__', {
@@ -373,7 +373,7 @@ export class ClusterClient {
     shedHandle: number,
     workloadId: number,
   ): Promise<{ accepted: boolean; reason?: string }> {
-    const spawnReqId = `${this.nodeId}/o-${this.#localHandle++}`;
+    const spawnReqId = `${this.nodeId}-o-${this.#localHandle++}`;
     const parentPortId = `${this.nodeId}/p-shed-${workloadId}`;
     const config = shedWorkloadConfig(shedHandle);
     const offer: ClusterMessage = {

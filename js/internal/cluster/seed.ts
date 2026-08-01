@@ -337,9 +337,14 @@ export class SeedServer {
       fail(`deployment record failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    const target = this.#selectTarget(new Set());
+    // The deployer is excluded: deploy CLIs are ephemeral joiners, and a
+    // deployment must not land on a process that leaves after the ack.
+    const target = this.#selectTarget(new Set([from]));
     if (target === null) {
-      fail('no available node to run the deployment');
+      const peers = [...this.#peers.entries()]
+        .map(([id, p]) => `${id}(draining=${p.load.draining === true})`)
+        .join(', ');
+      fail(`no available node to run the deployment (from=${from}; peers: ${peers || 'none'})`);
       return;
     }
     const spawn: Extract<ClusterMessage, { t: 'SPAWN' }> = {
@@ -354,10 +359,13 @@ export class SeedServer {
       parentPortId: msg.parentPortId,
       targetNodeId: target,
       spawn,
-      attempted: new Set([target]),
+      attempted: new Set([from, target]),
     });
-    this.#portNodes.set(msg.parentPortId, from);
-    this.#registry.register(msg.parentPortId, null, from);
+    // The SEED owns a deployment's parent port, not the deployer: when an
+    // ephemeral deploy CLI disconnects, its node-down must not cascade a
+    // TERMINATE into the application it just deployed.
+    this.#portNodes.set(msg.parentPortId, this.#transport.nodeId);
+    this.#registry.register(msg.parentPortId, null, this.#transport.nodeId);
     this.#ledgerOp(async (ledger) => {
       await ledger.commit(msg.spawnReqId, JSON.stringify({ deploy: msg.name, cask: msg.hash }));
       await ledger.claim(

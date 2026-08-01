@@ -31,6 +31,8 @@ import {
   startCluster,
 } from '../cluster.ts';
 import { parseJoinString } from '../internal/cluster/join-string.ts';
+import { packCask } from '../internal/cluster/cask.ts';
+import { ClusterPort } from '../internal/cluster/client.ts';
 import { WebTransportWorkerTransport } from '../internal/cluster/webtransport-transport.ts';
 import { ClusterClient } from '../internal/cluster/client.ts';
 import { sampleNodeLoad } from '../internal/runtime/stats.ts';
@@ -207,8 +209,55 @@ async function runClusterStatus(input: unknown): Promise<void> {
     }
 }
 
+const deployCommand = new Task({
+  name: 'deploy',
+  description: 'Pack an application, upload it, and run it on the cluster',
+  outputMode: 'text',
+  cli: {
+    options: [
+      { flags: '--name', type: 'string', description: 'Deployment name (default: directory basename)' },
+      { flags: '--entry', type: 'string', description: 'Entry module relative to the app directory (default: main.ts)' },
+      { flags: '--version', type: 'string', description: 'Informational version string' },
+      { flags: '--node-id', type: 'string', description: 'Deployer node identifier (default: minted)' },
+    ],
+    positionals: [
+      { name: 'joinString', type: 'string', description: 'Join string printed by `cluster start`' },
+      { name: 'dir', type: 'string', description: 'Application directory to deploy' },
+    ],
+  },
+  run: async function runClusterDeploy(input) {
+    const opts = input as Record<string, string | undefined> & { joinString?: string; dir?: string };
+    if (opts.joinString === undefined || opts.dir === undefined) {
+      throw new Error('cluster deploy: a join string and an application directory are required');
+    }
+    const dir = opts.dir.replace(/\/+$/, '');
+    const name = opts.name ?? dir.split('/').pop()!;
+    const entry = opts.entry ?? 'main.ts';
+    const caskPath = `${dir}.cask`;
+    const packed = await packCask(dir, caskPath, {
+      name,
+      version: opts.version ?? '0.0.0',
+      entry,
+    });
+    await print(`packed ${name} as sha256-${packed.hash.slice(0, 12)}…\n`);
+
+    await joinCluster({ joinString: opts.joinString, nodeId: opts['node-id'] });
+    try {
+      const client = getCluster()!;
+      await client.uploadCask(caskPath);
+      await print(`uploaded to the cluster store\n`);
+      const port = new ClusterPort(`${client.nodeId}/p-deploy-${Date.now() % 1e6}`, client);
+      const childPortId = await client.deployRemote(name, packed.hash, port.portId);
+      await print(`deployed ${name} -> ${childPortId}\n`);
+    } finally {
+      leaveCluster();
+    }
+  },
+});
+
 const statusCommand = membershipTask('status', 'Show cluster membership and load without joining');
 const nodesCommand = membershipTask('nodes', 'List cluster nodes and their load without joining');
+
 
 /**
  * The `fino cluster` command: `start`, `join`, `status`, and `nodes`
@@ -223,7 +272,7 @@ const command = new Task({
   run: async function runClusterCommand() {
     return 'usage: fino cluster <start|join|status|nodes>';
   },
-  children: [startCommand, joinCommand, statusCommand, nodesCommand],
+  children: [startCommand, joinCommand, deployCommand, statusCommand, nodesCommand],
 });
 
 export { command as default };
