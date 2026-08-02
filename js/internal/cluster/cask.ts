@@ -33,6 +33,18 @@ export interface CaskManifest {
    * membership allows.
    */
   replicas?: number;
+  /**
+   * Milliseconds a replica must run without exiting before it counts as
+   * ready. Readiness gates rolling replacement: an old replica is only
+   * terminated once its successor has been up this long. Defaults to 2000.
+   */
+  readyAfterMs?: number;
+  /**
+   * Minimum ready replicas (old and new generations combined) that must
+   * survive every rollout step. Defaults to the replica count minus one,
+   * never below one.
+   */
+  minHealthy?: number;
   /** Millisecond timestamp of packing. */
   createdAt: number;
 }
@@ -105,6 +117,18 @@ function parseManifest(bytes: Uint8Array): CaskManifest {
   if (manifest.replicas !== undefined && (!Number.isInteger(manifest.replicas) || manifest.replicas < 1)) {
     throw new Error('cask: manifest replicas must be a positive integer');
   }
+  if (
+    manifest.readyAfterMs !== undefined &&
+    (!Number.isInteger(manifest.readyAfterMs) || manifest.readyAfterMs < 0)
+  ) {
+    throw new Error('cask: manifest readyAfterMs must be a non-negative integer');
+  }
+  if (
+    manifest.minHealthy !== undefined &&
+    (!Number.isInteger(manifest.minHealthy) || manifest.minHealthy < 0)
+  ) {
+    throw new Error('cask: manifest minHealthy must be a non-negative integer');
+  }
   return manifest as CaskManifest;
 }
 
@@ -126,7 +150,14 @@ async function exists(path: string): Promise<boolean> {
 export async function packCask(
   sourceDir: string,
   outputPath: string,
-  options: { name: string; version: string; entry: string; replicas?: number },
+  options: {
+    name: string;
+    version: string;
+    entry: string;
+    replicas?: number;
+    readyAfterMs?: number;
+    minHealthy?: number;
+  },
 ): Promise<PackedCask> {
   const entryFile = `${sourceDir}/${options.entry}`;
   if (options.entry.startsWith('/') || options.entry.split('/').includes('..')) {
@@ -138,12 +169,26 @@ export async function packCask(
   if (options.replicas !== undefined && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
     throw new Error('cask: replicas must be a positive integer');
   }
+  if (
+    options.readyAfterMs !== undefined &&
+    (!Number.isInteger(options.readyAfterMs) || options.readyAfterMs < 0)
+  ) {
+    throw new Error('cask: readyAfterMs must be a non-negative integer');
+  }
+  if (
+    options.minHealthy !== undefined &&
+    (!Number.isInteger(options.minHealthy) || options.minHealthy < 0)
+  ) {
+    throw new Error('cask: minHealthy must be a non-negative integer');
+  }
   const manifest: CaskManifest = {
     format: 1,
     name: options.name,
     version: options.version,
     entry: options.entry,
     ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
+    ...(options.readyAfterMs === undefined ? {} : { readyAfterMs: options.readyAfterMs }),
+    ...(options.minHealthy === undefined ? {} : { minHealthy: options.minHealthy }),
     createdAt: Date.now(),
   };
   const archive = await createArchive(outputPath, { format: 'tar.gz' });

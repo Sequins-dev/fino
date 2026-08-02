@@ -325,10 +325,14 @@ export class SeedServer {
     }
     let entry: string;
     let replicas = 1;
+    let readyAfterMs = 2000;
+    let minHealthy: number;
     try {
       const inspected = await inspectCask(`${this.#caskDir}/${msg.hash}.cask`);
       entry = inspected.manifest.entry;
       replicas = inspected.manifest.replicas ?? 1;
+      readyAfterMs = inspected.manifest.readyAfterMs ?? 2000;
+      minHealthy = inspected.manifest.minHealthy ?? Math.max(1, replicas - 1);
     } catch {
       fail(`unknown cask ${msg.hash}; upload it first`);
       return;
@@ -345,22 +349,40 @@ export class SeedServer {
     // Old-generation replicas keep running until their realms exit — rolling
     // replacement with health gates is later scope; reconciliation maintains
     // only the ACTIVE generation's count.
+    // A generation replacing live replicas rolls: old replicas keep serving,
+    // and reconciliation advances one fenced step per pass. A fresh
+    // deployment bursts all replicas at once — there is nothing to protect.
+    const existing = this.#deployments.get(msg.name);
+    const previous =
+      existing !== undefined && existing.running.size > 0
+        ? new Map(
+            [...existing.running.values(), ...(existing.previous?.values() ?? [])].map(
+              (replica) => [replica.childPortId, replica],
+            ),
+          )
+        : null;
     const state = {
       generation,
       caskHash: msg.hash,
       entry,
       want: replicas,
-      running: new Map<number, { childPortId: string; nodeId: string }>(),
+      readyAfterMs,
+      minHealthy,
+      running: new Map<number, { childPortId: string; nodeId: string; ackAt: number }>(),
       placing: new Map<number, string>(),
+      previous,
     };
     this.#deployments.set(msg.name, state);
-    // Replica 0 answers the deployer's DEPLOY (the --wait semantic); the
-    // rest place immediately after and are maintained by reconciliation.
+    // Replica 0 answers the deployer's DEPLOY (the --wait semantic). A fresh
+    // deployment places the rest immediately; a rollout leaves them to
+    // reconciliation so replacement stays one step at a time.
     this.#replicaSpawns.set(msg.spawnReqId, { name: msg.name, replica: 0 });
     state.placing.set(0, msg.spawnReqId);
     this.#placeDeployment(from, msg.spawnReqId, msg.parentPortId, msg.name, msg.hash, entry, fail);
-    for (let replica = 1; replica < replicas; replica++) {
-      this.#placeReplica(msg.name, replica);
+    if (previous === null) {
+      for (let replica = 1; replica < replicas; replica++) {
+        this.#placeReplica(msg.name, replica);
+      }
     }
   }
 
@@ -396,11 +418,22 @@ export class SeedServer {
           this.#replicasByChildPort.delete(info.childPortId);
         }
       }
+      if (state.previous !== null) {
+        for (const [portId, info] of state.previous) {
+          if (info.nodeId === nodeId) state.previous.delete(portId);
+        }
+        if (state.previous.size === 0) state.previous = null;
+      }
     }
   }
 
   /** Drop a live replica record when its realm exits or its node dies. */
   #forgetReplica(childPortId: string): void {
+    for (const state of this.#deployments.values()) {
+      if (state.previous?.delete(childPortId) === true && state.previous.size === 0) {
+        state.previous = null;
+      }
+    }
     const info = this.#replicasByChildPort.get(childPortId);
     if (info === undefined) return;
     this.#replicasByChildPort.delete(childPortId);
@@ -412,8 +445,25 @@ export class SeedServer {
    * heartbeat sweep; missing replicas are re-placed one at a time per pass —
    * the one-fenced-action-at-a-time rule from the design.
    */
-  #reconcileDeployments(): void {
+  #reconcileDeployments(now = Date.now()): void {
     for (const [name, state] of this.#deployments) {
+      const ready = [...state.running.values()].filter(
+        (replica) => now - replica.ackAt >= state.readyAfterMs,
+      ).length;
+      if (state.previous !== null) {
+        // Rolling replacement: retire ONE old replica per pass, and only
+        // while the combined ready count stays at or above minHealthy.
+        if (ready + state.previous.size - 1 >= state.minHealthy && ready > 0) {
+          const [portId, victim] = state.previous.entries().next().value as [
+            string,
+            { childPortId: string; nodeId: string },
+          ];
+          state.previous.delete(portId);
+          if (state.previous.size === 0) state.previous = null;
+          this.#transport.send(victim.nodeId, { t: 'TERMINATE', realmId: victim.childPortId });
+          continue;
+        }
+      }
       const live = state.running.size + state.placing.size;
       if (live >= state.want) continue;
       for (let replica = 0; replica < state.want; replica++) {
@@ -643,8 +693,16 @@ export class SeedServer {
       caskHash: string;
       entry: string;
       want: number;
-      running: Map<number, { childPortId: string; nodeId: string }>;
+      readyAfterMs: number;
+      minHealthy: number;
+      running: Map<number, { childPortId: string; nodeId: string; ackAt: number }>;
       placing: Map<number, string>;
+      /**
+       * The generation being rolled away from, when a rollout is under way.
+       * Its replicas keep serving until each successor is ready; they are
+       * terminated one per pass, never below minHealthy.
+       */
+      previous: Map<string, { childPortId: string; nodeId: string; ackAt: number }> | null;
     }
   >();
   /** spawnReqId -> { name, replica } for deployment placements in flight. */
@@ -914,6 +972,7 @@ export class SeedServer {
               deployment.running.set(replicaInfo.replica, {
                 childPortId: msg.childPortId,
                 nodeId: from,
+                ackAt: Date.now(),
               });
               this.#replicasByChildPort.set(msg.childPortId, replicaInfo);
             }

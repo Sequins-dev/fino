@@ -1676,3 +1676,139 @@ describe('SeedServer — replica-set controller', () => {
     await ledger.close();
   });
 });
+
+describe('SeedServer — rolling generation replacement', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+  async function rolloutSetup(options: { readyAfterMs: number; minHealthy?: number }) {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-roll-${stamp}.db`);
+    const caskDir = `/tmp/fino-roll-store-${stamp}`;
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    const fs = new DiskFileSystem();
+    const upload = async (marker: string): Promise<string> => {
+      const app = `/tmp/fino-roll-app-${stamp}-${marker}`;
+      await fs.mkdir(app);
+      await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('${marker}');\n`));
+      const packed = await packCask(app, `${app}.cask`, {
+        name: 'svc',
+        version: marker,
+        entry: 'main.ts',
+        replicas: 2,
+        readyAfterMs: options.readyAfterMs,
+        ...(options.minHealthy === undefined ? {} : { minHealthy: options.minHealthy }),
+      });
+      made.transport.inject('deployer', {
+        t: 'CASK_PUT',
+        hash: packed.hash,
+        seq: 0,
+        chunk: await fs.readFile(packed.path),
+        last: true,
+      });
+      await settle();
+      return packed.hash;
+    };
+    for (const node of ['w1', 'w2', 'w3', 'deployer']) {
+      made.transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    return { ...made, ledger, upload };
+  }
+
+  async function deployAndAck(
+    made: Awaited<ReturnType<typeof rolloutSetup>>,
+    hash: string,
+    reqId: string,
+  ): Promise<Array<{ to: string; childPortId: string }>> {
+    made.transport.sent.length = 0;
+    made.transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: reqId,
+      parentPortId: `deployer/p-${reqId}`,
+      name: 'web',
+      hash,
+    });
+    await settle();
+    const spawns = made.transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    const acked: Array<{ to: string; childPortId: string }> = [];
+    for (const [index, spawn] of spawns.entries()) {
+      const childPortId = `${spawn.to}/${reqId}-${index}`;
+      made.transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId,
+        ok: true,
+      });
+      acked.push({ to: spawn.to as string, childPortId });
+    }
+    return acked;
+  }
+
+  it('rolls one step per pass and never dips below minHealthy', async (t) => {
+    const made = await rolloutSetup({ readyAfterMs: 0, minHealthy: 2 });
+    const gen1 = await made.upload('v1');
+    const first = await deployAndAck(made, gen1, 'd1');
+    t.equal(first.length, 2, 'generation 1 bursts both replicas');
+
+    const gen2 = await made.upload('v2');
+    const second = await deployAndAck(made, gen2, 'd2');
+    t.equal(second.length, 1, 'a rollout places only replica 0 up front');
+
+    // Pass 1: one new ready + two old = 3; retiring one keeps 2 >= minHealthy.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    const terminates1 = made.transport.sent.filter((s) => s.msg.t === 'TERMINATE');
+    t.equal(terminates1.length, 1, 'exactly one old replica retires per pass');
+
+    // Pass 2: one ready + one old = 2; retiring would leave 1 < minHealthy,
+    // so the pass places the second new replica instead.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      0,
+      'minHealthy blocks the second retirement',
+    );
+    const placed = made.transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(placed.length, 1, 'the pass advances by placing the second new replica');
+    for (const spawn of placed) {
+      made.transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId: `${spawn.to}/r1-new`,
+        ok: true,
+      });
+    }
+
+    // Pass 3: two new ready + one old = 3; the last old replica retires.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      1,
+      'the final old replica retires once both successors are ready',
+    );
+    await made.ledger.close();
+  });
+
+  it('holds every old replica until a successor is ready', async (t) => {
+    const made = await rolloutSetup({ readyAfterMs: 60_000 });
+    const gen1 = await made.upload('v1');
+    await deployAndAck(made, gen1, 'd1');
+    const gen2 = await made.upload('v2');
+    await deployAndAck(made, gen2, 'd2');
+
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      0,
+      'no old replica retires while the successor is inside its readiness window',
+    );
+    await made.ledger.close();
+  });
+});
