@@ -43,7 +43,10 @@ export function takeScheduledRealmStatus(handle: number): {
 };
 export function closeScheduledRealm(handle: number): void;
 
-export function createReactorQueue(install?: boolean): {
+export function createReactorQueue(
+  install?: boolean,
+  watchdog?: { intervalMs?: number; stallMs?: number; sustainedMs?: number },
+): {
   handle: number;
   controlFd: number;
 };
@@ -100,7 +103,7 @@ export function isolateHeapStatistics(): {
 export function closeReactorThread(thread: number): void;
 export function signalReactorOwner(owner: number): void;
 export function takeReactorEvents(queue: number): Array<{
-  kind: 'submitted' | 'activated' | 'settled' | 'error';
+  kind: 'submitted' | 'overrun' | 'stalled' | 'activated' | 'settled' | 'error';
   worker: number;
   owner: number;
   previous?: number;

@@ -514,12 +514,27 @@ enum Slice {
     Settled,
 }
 
+/// Reported when a slice is found terminated. Kept even though the watchdog
+/// does not terminate yet: an embedder or a future enforcement path can, and
+/// the runtime must not abort when it happens.
+const TERMINATED_MESSAGE: &str = "workload terminated while holding its reactor";
+
 fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     let context_global = workload.context.clone();
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
     let context = v8::Local::new(isolate_scope, &context_global);
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
+    // A terminated isolate returns empty from every API that can run JS, and
+    // unwrapping one of those crashes the process. Bail before touching V8
+    // again and let the caller settle the workload as failed; its isolate is
+    // dropped rather than reused, so the termination never has to be undone.
+    if scope.is_execution_terminating() {
+        return Err(TERMINATED_MESSAGE.to_string());
+    }
     crate::realm::child::pump_and_checkpoint(scope);
+    if scope.is_execution_terminating() {
+        return Err(TERMINATED_MESSAGE.to_string());
+    }
     let loop_step_fn = workload.state.borrow().loop_step_fn.clone();
     let Some(loop_step_fn) = loop_step_fn else {
         return Ok((Slice::Quiescent(true), 1));
@@ -533,8 +548,11 @@ fn drive_slice(workload: &mut Workload) -> Result<(Slice, u64), String> {
     // enough to drain deeply chained Promise continuations while still giving
     // another ready realm a frequent opportunity to preempt at quiescence.
     while should_continue && loop_turns < 64 {
-        should_continue = v8::Local::new(tc, &loop_step_fn)
-            .call(tc, receiver, &[])
+        let stepped = v8::Local::new(tc, &loop_step_fn).call(tc, receiver, &[]);
+        if tc.is_execution_terminating() {
+            return Err(TERMINATED_MESSAGE.to_string());
+        }
+        should_continue = stepped
             .ok_or_else(|| {
                 crate::realm::child::catch_message(tc)
                     .unwrap_or_else(|| "scheduled realm loop step threw".to_string())
@@ -638,6 +656,13 @@ enum PoolEventKind {
     Activated,
     Settled,
     Error,
+    /// The watchdog interrupted a slice that has held its reactor while
+    /// system-class work waited. Advisory: execution continues.
+    Overrun,
+    /// The slice did not yield after its warning and the node is still
+    /// deadlocked. Repeats every pass until it resolves; enforcement is not
+    /// yet wired up (see `run_watchdog`), so this is the terminal signal.
+    Stalled,
 }
 
 struct PoolEvent {
@@ -767,11 +792,191 @@ struct PoolShared {
     changed: Condvar,
     events: Mutex<VecDeque<PoolEvent>>,
     next_worker: std::sync::atomic::AtomicUsize,
+    /// Slices currently executing JS, by worker. The watchdog reads this
+    /// from a thread that never claims work, which is the only vantage point
+    /// that survives every reactor being wedged.
+    running: Mutex<HashMap<usize, RunningSlice>>,
+    /// Monotonic micros of the last claim decision by any worker. Workers
+    /// stuck inside a slice never reach `claim`, so this going stale is the
+    /// signal that nobody is coming back for queued work.
+    last_claim_micros: AtomicU64,
     wake_read: i32,
     wake_write: i32,
 }
 
+/// One in-flight slice, as the watchdog sees it.
+struct RunningSlice {
+    owner: u32,
+    started_micros: u64,
+    /// Thread-safe interrupt handle. Calls after the isolate is disposed are
+    /// no-ops, so a slice that finishes mid-escalation is harmless.
+    handle: v8::IsolateHandle,
+    /// Set once the soft interrupt has been delivered for this slice.
+    warned: bool,
+}
+
+/// Monotonic clock shared by the pool and its watchdog.
+fn pool_clock() -> &'static std::time::Instant {
+    static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    CLOCK.get_or_init(std::time::Instant::now)
+}
+
+fn now_micros() -> u64 {
+    pool_clock().elapsed().as_micros() as u64
+}
+
+/// Watchdog tuning. Defaults are deliberately slow: this exists to break
+/// deadlocks, not to police latency.
+fn watchdog_env_ms(name: &str, fallback: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
+
+/// Watchdog thresholds. Environment supplies the defaults; `createReactorQueue`
+/// can override them per queue so tests do not depend on process-wide state.
+#[derive(Clone, Copy)]
+struct WatchdogTuning {
+    interval_ms: u64,
+    stall_ms: u64,
+    sustained_ms: u64,
+}
+
+impl WatchdogTuning {
+    fn from_env() -> Self {
+        Self {
+            interval_ms: watchdog_env_ms("FINO_WATCHDOG_INTERVAL_MS", 250),
+            stall_ms: watchdog_env_ms("FINO_WATCHDOG_STALL_MS", 2_000),
+            sustained_ms: watchdog_env_ms("FINO_WATCHDOG_SUSTAINED_MS", 10_000),
+        }
+    }
+}
+
+fn watchdog_enabled() -> bool {
+    !matches!(std::env::var("FINO_WATCHDOG").as_deref(), Ok("off" | "0"))
+}
+
+/// Guarantee the system realm is schedulable.
+///
+/// Priority in the claim model is claim-time ordering, not preemption: a
+/// reactor running a workload that never yields never asks for work again,
+/// so the highest-priority entry in the queue can wait forever. The system
+/// realm therefore cannot police the one condition that stops it running —
+/// which is why this lives on a thread that never claims a workload.
+///
+/// The mandate is deliberately narrow. It does not decide what "greedy"
+/// means; it restores the invariant everything else depends on: if
+/// system-class work is queued and no reactor has come back for it, the
+/// longest-running slice is interrupted. Policy — thresholds, exemptions,
+/// what to do with a repeat offender — belongs to the system realm, which
+/// this makes schedulable again.
+/// Holds a `Weak`, never an `Arc`: a watchdog must not keep alive the thing
+/// it watches. `closeReactorQueue` unwraps the queue's `Arc` to reclaim it, so
+/// a strong reference here would make every queue close fail.
+fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
+    let interval = std::time::Duration::from_millis(tuning.interval_ms);
+    let stall_micros = tuning.stall_ms * 1_000;
+    let terminate_micros = tuning.sustained_ms * 1_000;
+    loop {
+        std::thread::sleep(interval);
+        // Upgrade per tick and drop before sleeping again, so the queue can
+        // be reclaimed the moment its owner is done with it.
+        let Some(shared) = shared.upgrade() else {
+            return;
+        };
+        let system_waiting = {
+            let queue = shared.queue.read().unwrap();
+            if queue.shutdown {
+                return;
+            }
+            queue.ready.iter().any(|entry| entry.class == CLASS_SYSTEM)
+        };
+        if !system_waiting {
+            continue;
+        }
+        let now = now_micros();
+        // Some reactor came back recently, so queued work is being served
+        // and nothing is wedged — the two conditions only mean deadlock
+        // together.
+        if now.saturating_sub(shared.last_claim_micros.load(Ordering::Relaxed)) < stall_micros {
+            continue;
+        }
+        let mut escalation: Option<(u32, bool)> = None;
+        {
+            let mut running = shared.running.lock().unwrap();
+            let longest = running
+                .values_mut()
+                .filter(|slice| now.saturating_sub(slice.started_micros) >= stall_micros)
+                .max_by_key(|slice| now.saturating_sub(slice.started_micros));
+            if let Some(slice) = longest {
+                let held = now.saturating_sub(slice.started_micros);
+                if !slice.warned {
+                    slice.warned = true;
+                    // The interrupt runs on the workload's own thread at a
+                    // safe point, giving cooperative code a chance to yield
+                    // before anything is taken away from it.
+                    slice
+                        .handle
+                        .request_interrupt(watchdog_interrupt, std::ptr::null_mut());
+                    escalation = Some((slice.owner, false));
+                } else if held >= terminate_micros {
+                    // ENFORCEMENT IS NOT WIRED UP YET. terminate_execution()
+                    // here aborts the process: the termination lands inside
+                    // this runtime's explicit microtask checkpoint, and
+                    // MicrotaskQueue::perform_checkpoint on a terminating
+                    // isolate fails V8's `location_ != nullptr` check.
+                    // Guarding around the checkpoint cannot help — the
+                    // transition happens during the call. Making the
+                    // checkpoint path termination-safe is its own change; the
+                    // watchdog reports the deadlock until then, and the
+                    // repeated event is what a supervisor acts on.
+                    escalation = Some((slice.owner, true));
+                }
+            }
+        }
+        if let Some((owner, sustained)) = escalation {
+            shared.notify(PoolEvent {
+                kind: if sustained {
+                    PoolEventKind::Stalled
+                } else {
+                    PoolEventKind::Overrun
+                },
+                worker: usize::MAX,
+                owner,
+                previous: None,
+                error: None,
+                loop_turns: 0,
+            });
+        }
+    }
+}
+
+/// Delivered on the workload's own thread. Returning resumes execution — a
+/// cooperative workload can notice it through the event the watchdog emits;
+/// an uncooperative one is terminated on the next escalation.
+extern "C" fn watchdog_interrupt(_isolate: &mut v8::Isolate, _data: *mut std::ffi::c_void) {}
+
 impl PoolShared {
+    /// Publish the slice about to run so the watchdog can see it.
+    fn begin_slice(&self, worker: usize, owner: u32, handle: v8::IsolateHandle) {
+        self.running.lock().unwrap().insert(
+            worker,
+            RunningSlice {
+                owner,
+                started_micros: now_micros(),
+                handle,
+                warned: false,
+            },
+        );
+    }
+
+    /// Retire the slice; the worker is about to return to the scheduler.
+    fn end_slice(&self, worker: usize) {
+        self.running.lock().unwrap().remove(&worker);
+    }
+
     fn new() -> Self {
         let mut fds = [-1; 2];
         assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
@@ -791,9 +996,12 @@ impl PoolShared {
             load: HashMap::new(),
             signaled_at: HashMap::new(),
         };
+        pool_clock();
         Self {
             queue: RwLock::new(queue),
             parked: Mutex::new(HashMap::new()),
+            running: Mutex::new(HashMap::new()),
+            last_claim_micros: AtomicU64::new(now_micros()),
             sleep: Mutex::new(()),
             epoch: AtomicU64::new(0),
             changed: Condvar::new(),
@@ -1007,6 +1215,11 @@ impl PoolShared {
         }
     }
 
+    fn note_claim(&self) {
+        self.last_claim_micros
+            .store(now_micros(), Ordering::Relaxed);
+    }
+
     fn claim(
         &self,
         current: Option<u32>,
@@ -1014,6 +1227,7 @@ impl PoolShared {
         current_state: CurrentState,
         force_write: bool,
     ) -> Claim {
+        self.note_claim();
         loop {
             if stop.load(Ordering::Acquire) {
                 return Claim::Shutdown;
@@ -1342,7 +1556,10 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
             .owner;
         let mut resident = current.take().unwrap();
         let slice_started = std::time::Instant::now();
+        let interrupt_handle = resident.item.live_mut().isolate.thread_safe_handle();
+        shared.begin_slice(worker, owner, interrupt_handle);
         let outcome = drive_slice(resident.item.live_mut());
+        shared.end_slice(worker);
         let busy_micros = slice_started.elapsed().as_micros() as u64;
         let slice_turns = match &outcome {
             Ok((_, loop_turns)) => *loop_turns,
@@ -1855,6 +2072,33 @@ fn create_reactor_queue(
     let install = args.get(0).is_undefined() || args.get(0).boolean_value(scope);
     if install {
         *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
+    }
+    if watchdog_enabled() {
+        let mut tuning = WatchdogTuning::from_env();
+        if let Ok(options) = v8::Local::<v8::Object>::try_from(args.get(1)) {
+            for (key, field) in [("intervalMs", 0usize), ("stallMs", 1), ("sustainedMs", 2)] {
+                let Some(name) = v8::String::new(scope, key) else {
+                    continue;
+                };
+                let Some(value) = options.get(scope, name.into()) else {
+                    continue;
+                };
+                let Some(ms) = value.number_value(scope) else {
+                    continue;
+                };
+                if !ms.is_finite() || ms <= 0.0 {
+                    continue;
+                }
+                let ms = ms as u64;
+                match field {
+                    0 => tuning.interval_ms = ms,
+                    1 => tuning.stall_ms = ms,
+                    _ => tuning.sustained_ms = ms,
+                }
+            }
+        }
+        let watched = Arc::downgrade(&shared);
+        std::thread::spawn(move || run_watchdog(watched, tuning));
     }
     let control_fd = shared.wake_read;
     let handle = REACTOR_QUEUES.with(|queues| {
@@ -2390,6 +2634,8 @@ fn take_reactor_events(
         let value = v8::Object::new(scope);
         let kind = match event.kind {
             PoolEventKind::Submitted => "submitted",
+            PoolEventKind::Overrun => "overrun",
+            PoolEventKind::Stalled => "stalled",
             PoolEventKind::Activated => "activated",
             PoolEventKind::Settled => "settled",
             PoolEventKind::Error => "error",

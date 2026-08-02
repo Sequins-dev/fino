@@ -356,8 +356,19 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 // ---------------------------------------------------------------------------
 
 pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
+    // A terminating isolate returns empty from every API that runs JS, and
+    // driving a microtask checkpoint into one aborts the process. Termination
+    // can begin at any point here — the watchdog runs on another thread — so
+    // every step re-checks rather than trusting an entry guard.
+    if scope.is_execution_terminating() {
+        return;
+    }
     let platform = v8::V8::get_current_platform();
-    while v8::Platform::pump_message_loop(&platform, scope, false) {}
+    while v8::Platform::pump_message_loop(&platform, scope, false) {
+        if scope.is_execution_terminating() {
+            return;
+        }
+    }
     let state_rc = get_state(scope);
     loop {
         let mut progress = false;
@@ -365,12 +376,15 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
             progress = true;
         }
         progress |= crate::async_rt::drain_all(scope, &state_rc);
+        if scope.is_execution_terminating() {
+            return;
+        }
         {
             let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
             let isolate: &mut v8::Isolate = scope.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
         }
-        if !progress {
+        if !progress || scope.is_execution_terminating() {
             break;
         }
     }
