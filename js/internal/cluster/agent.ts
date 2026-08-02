@@ -13,6 +13,14 @@ import { Realm } from '../../realm/index.ts';
 import type { NodeLoadSample } from 'internal:runtime/stats';
 
 /** One observation pushed by the system realm. */
+/** A shed offer the system realm asks the cluster client to execute. */
+export interface ShedOfferRequest {
+  id: number;
+  toNodeId: string;
+  shedHandle: number;
+  workloadId: number;
+}
+
 export interface NodeReport {
   /** `Date.now()` on the system realm when the sample was taken. */
   at: number;
@@ -54,6 +62,20 @@ export class SystemRealmAgent {
   }
 
   /** The most recent report, or null before the first one arrives. */
+  /**
+   * Executes a shed offer on behalf of the system realm — the system realm
+   * decides which spec moves where; the cluster client owns the network.
+   * Null until the cluster wires it, in which case offers are refused.
+   */
+  onShedOffer:
+    | ((offer: ShedOfferRequest) => Promise<{ accepted: boolean; reason?: string }>)
+    | null = null;
+
+  /** Push the latest replicated peer-pressure view down to the system realm. */
+  postPeers(peers: Array<{ nodeId: string; pendingSpecs: number }>): void {
+    this.#realm?.port.postMessage({ __peers: peers });
+  }
+
   latest(): NodeReport | null {
     return this.#latest;
   }
@@ -95,9 +117,41 @@ export class SystemRealmAgent {
       realm.port.onmessage = (event) => {
         const data = (event as MessageEvent).data as {
           __system_report?: NodeReport;
+          __shed_offer?: ShedOfferRequest;
         };
-        if (data !== null && typeof data === 'object' && data.__system_report !== undefined) {
+        if (data === null || typeof data !== 'object') return;
+        if (data.__system_report !== undefined) {
           this.#latest = data.__system_report;
+        }
+        if (data.__shed_offer !== undefined) {
+          const offer = data.__shed_offer;
+          const relay = this.onShedOffer;
+          if (relay === null) {
+            realm.port.postMessage({
+              __shed_result: { id: offer.id, accepted: false, reason: 'no offer relay' },
+            });
+            return;
+          }
+          void relay(offer).then(
+            (result) => {
+              realm.port.postMessage({
+                __shed_result: {
+                  id: offer.id,
+                  accepted: result.accepted,
+                  ...(result.reason === undefined ? {} : { reason: result.reason }),
+                },
+              });
+            },
+            (err: unknown) => {
+              realm.port.postMessage({
+                __shed_result: {
+                  id: offer.id,
+                  accepted: false,
+                  reason: err instanceof Error ? err.message : String(err),
+                },
+              });
+            },
+          );
         }
       };
       realm.port.start();

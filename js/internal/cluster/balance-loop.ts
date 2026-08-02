@@ -62,8 +62,10 @@ function envCount(name: string, fallback: number): number {
  * `drop` is deliberately a no-op: after a peer accepts, the shed handle stays
  * alive as the parent-port proxy for the workload's remote lifetime, so
  * releasing it here would sever the port mid-migration.
+ *
+ * @internal
  */
-function poolQueue(): ShedQueue {
+export function poolQueue(): ShedQueue {
   return {
     depth: () => reactorQueueDepth(),
     markLowest: () => markSheddingWorkload(),
@@ -75,8 +77,8 @@ function poolQueue(): ShedQueue {
   };
 }
 
-/** Track owner -> shed handle across take, so the offer can find its handle. */
-function trackHandles(base: ShedQueue, handles: Map<number, number>): ShedQueue {
+/** Track owner -> shed handle across take, so offers can find handles. @internal */
+export function trackHandles(base: ShedQueue, handles: Map<number, number>): ShedQueue {
   return {
     ...base,
     take(owner) {
@@ -178,8 +180,8 @@ export async function drainQueue(
   return { shed, failed, remaining: queue.depth() };
 }
 
-/** Peers this node may offer work to: everyone but itself and the draining. */
-function eligiblePeers(client: BalanceClient): PeerPressure[] {
+/** Peers this node may offer work to: everyone but itself and the draining. @internal */
+export function eligiblePeers(client: BalanceClient): PeerPressure[] {
   return client.peers
     .filter((peer) => peer.nodeId !== client.nodeId && peer.load.draining !== true)
     .map((peer) => ({ nodeId: peer.nodeId, pendingSpecs: peer.load.pendingSpecs ?? 0 }));
@@ -189,6 +191,10 @@ function eligiblePeers(client: BalanceClient): PeerPressure[] {
  * Start balancing this node's queue against the cluster. Returns a stop
  * function. Passes never overlap: a slow offer defers the next pass rather
  * than stacking a second one on top.
+ *
+ * Production hosts this decision loop inside the system realm
+ * (`internal:cluster/system-realm`); this in-realm variant remains for tests
+ * and for embedders running without a system realm.
  */
 export function startBalanceLoop(client: BalanceClient, options: BalanceLoopOptions = {}): () => void {
   const handles = new Map<number, number>();

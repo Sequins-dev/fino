@@ -4,6 +4,7 @@
  */
 import { describe, it } from 'fino:test/test';
 import { SystemRealmAgent } from 'internal:cluster/agent';
+import { Realm } from 'fino:realm';
 import { env } from 'fino:process';
 
 describe('per-node system realm', () => {
@@ -39,5 +40,40 @@ describe('per-node system realm', () => {
       delete env.FINO_SYSTEM_REALM_INTERVAL_MS;
     }
     t.equal(agent.latest(), null, 'stop clears the last report');
+  });
+});
+
+describe('system realm balancer hosting', () => {
+  it('accepts a peer view and answers unknown shed results without crashing', async (t) => {
+    const realm = new Realm({ entry: 'internal:cluster/system-realm', _system: true });
+    const reports: unknown[] = [];
+    const offers: unknown[] = [];
+    realm.port.onmessage = (event) => {
+      const data = (event as MessageEvent).data as Record<string, unknown>;
+      if (data.__system_report !== undefined) reports.push(data.__system_report);
+      if (data.__shed_offer !== undefined) offers.push(data.__shed_offer);
+    };
+    realm.port.start();
+    const done = realm.run().catch(() => {});
+    for (let i = 0; i < 100 && reports.length === 0; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    t.ok(reports.length > 0, 'the realm reports');
+
+    // A peer view with an idle peer and an empty local queue: the balancer
+    // must decide there is nothing to shed and stay quiet.
+    realm.port.postMessage({ __peers: [{ nodeId: 'idle-peer', pendingSpecs: 0 }] });
+    // A stray shed result for an offer that never existed must be ignored.
+    realm.port.postMessage({ __shed_result: { id: 999, accepted: true } });
+    const before = reports.length;
+    for (let i = 0; i < 100 && reports.length < before + 2; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    t.ok(reports.length > before, 'reporting continues after peer and result messages');
+    t.equal(offers.length, 0, 'a balanced (empty) queue sheds nothing');
+
+    realm.port.postMessage({ __system_stop: true });
+    await done;
+    t.ok(true, 'the realm still settles cleanly');
   });
 });

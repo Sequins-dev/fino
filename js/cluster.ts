@@ -68,7 +68,7 @@ import { WorkloadLedger } from 'internal:cluster/ledger';
 import { gcCasks, gcCaskStore } from 'internal:cluster/cask';
 import { env } from 'internal:process';
 import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
-import { startBalanceLoop, drainQueue, type DrainReport } from 'internal:cluster/balance-loop';
+import { drainQueue, eligiblePeers, type DrainReport } from 'internal:cluster/balance-loop';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
@@ -165,6 +165,27 @@ function startCaskGc(client: ClusterClient): () => void {
   };
   const timer = setInterval(() => void pass(), intervalMs);
   return () => clearInterval(timer);
+}
+
+/**
+ * Connect the system realm's balancer to the cluster: peer pressure flows
+ * down on a timer, shed offers flow back up and execute on the client. The
+ * decision loop itself lives in the system realm — this is only its network.
+ */
+function wireSystemRealmBalancer(client: ClusterClient): () => void {
+  const agent = _agent;
+  if (agent === null) return () => {};
+  agent.onShedOffer = (offer) =>
+    _draining
+      ? Promise.resolve({ accepted: false, reason: 'draining' })
+      : client.offerShed(offer.toNodeId, offer.shedHandle, offer.workloadId);
+  const timer = setInterval(() => {
+    agent.postPeers(eligiblePeers(client));
+  }, envMsOr('FINO_CLUSTER_BALANCE_INTERVAL_MS', 5000));
+  return () => {
+    clearInterval(timer);
+    agent.onShedOffer = null;
+  };
 }
 
 /**
@@ -582,7 +603,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     mesh: _mesh,
     admission: defaultAdmission,
   });
-  _stopBalance = startBalanceLoop(_client);
+  _stopBalance = wireSystemRealmBalancer(_client);
   _stopCaskGc = startCaskGc(_client);
   _client.start();
   await _client.ready();
@@ -689,7 +710,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     mesh: _mesh,
     admission: defaultAdmission,
   });
-  _stopBalance = startBalanceLoop(_client);
+  _stopBalance = wireSystemRealmBalancer(_client);
   _stopCaskGc = startCaskGc(_client);
   _client.start();
   try {
