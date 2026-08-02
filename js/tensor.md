@@ -319,9 +319,16 @@ yesterday's run. On an Apple silicon development machine:
 
 | | Metal | Vulkan (MoltenVK) |
 |---|---|---|
-| GEMM 1024³ | ~4800 GFLOP/s | ~4800 GFLOP/s |
-| GEMM 512³ | ~2200 GFLOP/s | ~3600 GFLOP/s |
-| elementwise | ~60 Gelem/s | ~55 Gelem/s |
+| GEMM 1024³ | ~6400 GFLOP/s | ~6000 GFLOP/s |
+| GEMM 512³ | ~3900 GFLOP/s | ~3600 GFLOP/s |
+| GEMM 256³ | ~1250 GFLOP/s | ~930 GFLOP/s |
+| elementwise | ~60 Gelem/s | ~6-16 Gelem/s |
+
+Each figure is the fastest of three timed repetitions. Vulkan's elementwise rate is a
+fraction of Metal's on the same hardware and reproduces across runs, so it is a real
+difference rather than noise — most likely per-dispatch cost through the translation
+layer, since the same backend's matrix multiply is level with Metal's. It has not been
+run down.
 
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.

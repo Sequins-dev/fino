@@ -25,6 +25,9 @@ import { device, listDevices, zeros } from 'fino:tensor';
 import type { Device, Tensor } from 'fino:tensor';
 import { bench } from 'fino:bench';
 
+/** Timed repetitions of each rate; the fastest is reported. */
+const ROUNDS = 3;
+
 /** GPUs to measure, or nothing when the machine has none. */
 const gpus: Device[] = (await listDevices()).filter((d) => d.type !== 'cpu');
 
@@ -46,21 +49,56 @@ async function rate(
   iterations: number,
   work: number,
   unit: 'GFLOP/s' | 'GB/s' | 'Gelem/s',
+  deferred = false,
 ): Promise<string> {
   const warm = make();
   await drain(warm);
   warm.dispose();
 
-  const start = performance.now();
-  let last: Tensor | null = null;
-  for (let i = 0; i < iterations; i++) {
-    last?.dispose();
-    last = make();
+  // Best of several, not one run. The same program measured twice differed sixfold
+  // here: the first call allocates its outputs while the second finds them in the pool,
+  // and a GPU that has been idle starts at a lower clock. The fastest run is the one
+  // least polluted by everything else that was going on.
+  let seconds = Infinity;
+  for (let round = 0; round < ROUNDS; round++) {
+    seconds = Math.min(seconds, await once());
   }
-  await drain(last!);
-  last!.dispose();
-  const seconds = (performance.now() - start) / 1000 / iterations;
   return `${(work / seconds / 1e9).toFixed(0)} ${unit} (${(seconds * 1000).toFixed(2)} ms)`;
+
+  // Each result is forced before it is released. An elementwise expression is deferred
+  // until something needs its values, and disposing one *drops* it — so a loop that
+  // made and released a chain per iteration executed none of them but the last, and
+  // reported a rate for work the device never did.
+  //
+  // Slicing forces its input to materialise, which launches the expression without
+  // waiting for it. Holding every result instead would work too, and would mean four
+  // gigabytes of live tensors here — enough that allocation, not the kernel, is what
+  // gets measured. Only the one-element probes are kept, and only the last is read.
+  async function once(): Promise<number> {
+  const start = performance.now();
+  let seconds: number;
+  if (deferred) {
+    const probes: Tensor[] = [];
+    for (let i = 0; i < iterations; i++) {
+      const out = make();
+      probes.push(out.reshape([out.size]).slice([{ end: 1 }]));
+      out.dispose();
+    }
+    await probes[probes.length - 1]!.data();
+    seconds = (performance.now() - start) / 1000 / iterations;
+    for (const probe of probes) probe.dispose();
+  } else {
+    let last: Tensor | null = null;
+    for (let i = 0; i < iterations; i++) {
+      last?.dispose();
+      last = make();
+    }
+    await drain(last!);
+    seconds = (performance.now() - start) / 1000 / iterations;
+    last!.dispose();
+  }
+  return seconds;
+  }
 }
 
 /**
@@ -107,8 +145,8 @@ for (const dev of gpus) {
     ['binary (2 reads, write)', () => x.add(x), 12],
   ];
   for (const [label, program, bytesPerElement] of cases) {
-    const bytes = await rate(program, 60, count * bytesPerElement, 'GB/s');
-    const elements = await rate(program, 60, count, 'Gelem/s');
+    const bytes = await rate(program, 60, count * bytesPerElement, 'GB/s', true);
+    const elements = await rate(program, 60, count, 'Gelem/s', true);
     lines.push(`  ${label}: ${bytes}, ${elements}`);
   }
   x.dispose();
