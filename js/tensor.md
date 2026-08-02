@@ -326,6 +326,39 @@ yesterday's run. On an Apple silicon development machine:
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.
 
+### Against ggml
+
+Comparing an engine against its own history says whether a change helped and nothing
+about whether the result is any good. `benchmarks/tensor/ggml.bench.ts` runs ggml's
+Metal backend in the same process, on the same GPU, over the same numbers.
+
+Dispatch here is non-blocking and ggml's `graph_compute` is not, so timing one against
+the other directly would compare a queue depth against a round trip and call the
+difference performance. Both are measured twice instead — once synchronised per call,
+once pipelined and waited for at the end — using ggml's own async entry point for the
+second.
+
+f32 matrix multiply, GFLOP/s, on an M5 Max:
+
+| | synchronised | | | pipelined | | |
+|---|---|---|---|---|---|---|
+| size | fino | ggml | ratio | fino | ggml | ratio |
+| 256³ | 74 | 167 | 0.44x | 424 | 716 | 0.59x |
+| 512³ | 538 | 1315 | 0.41x | 2056 | 5641 | 0.36x |
+| 1024³ | 1105 | 6289 | 0.18x | 4823 | 11570 | 0.42x |
+
+One run, and the ratios move between runs — 0.3x and 0.7x have both been seen at 1024³
+pipelined — so read the magnitude rather than the digits: this engine is roughly two to
+four times slower than a mature hand-tuned implementation. That is the number, and
+getting it is the point of measuring.
+
+The benchmark also checks that both engines produced the same value, which is not
+decoration: `ggml_mul_mat(a, b)` contracts both operands along their fastest axis, so it
+computes `a·bᵀ` where this engine computes `a·b`. Same FLOP count, different matrix —
+timing them against each other without checking would have compared two different
+calculations. Symmetric inputs make the two products coincide, which costs nothing and
+makes the comparison verifiable.
+
 ### Undefined is not the same as unspecified
 
 `pow` used to lower straight to each dialect's own. SPIR-V says the result is undefined
