@@ -43,6 +43,14 @@ if (argv[1] === '--sandbox-launcher') {
 }
 const cliArgv = normalizeCliArgv(argv.slice(1));
 const wantsJson = cliArgv.includes('--json');
+/**
+ * Whether the command failed, kept apart from what it failed with.
+ *
+ * `throw undefined` is legal, so a rejection value cannot double as the flag: treating
+ * `undefined` as "no error" makes a command that failed with one look like a command
+ * that succeeded, and the failure never reaches the caller.
+ */
+let commandFailed = false;
 let commandError: unknown;
 try {
   const result = await root.parse(
@@ -62,17 +70,22 @@ try {
   if (typeof result === 'string' && result.length > 0) console.log(result);
 } catch (error) {
   commandError = error;
+  commandFailed = true;
 }
 try {
   await runShutdownHooks();
 } catch (error) {
-  commandError ??= error;
+  if (!commandFailed) commandError = error;
+  commandFailed = true;
 }
 try {
   const summary = await finishCoverage();
   if (summary !== null && !wantsJson) console.log(coverageComments(summary));
 } catch (error) {
-  if (commandError === undefined) commandError = error;
+  if (!commandFailed) {
+    commandError = error;
+    commandFailed = true;
+  }
   else console.error(`[coverage] ${error instanceof Error ? error.message : String(error)}`);
 }
-if (commandError !== undefined) throw commandError;
+if (commandFailed) throw commandError;

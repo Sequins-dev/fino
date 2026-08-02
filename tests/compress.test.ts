@@ -82,8 +82,8 @@ describe('fino:compress layout', () => {
   it('does not resolve the old util specifier', async (t) => {
     await t.rejects(
       () => import('fino:util/compression'),
-      /dynamic import failed|Cannot resolve module|not found|unknown/i,
-      'legacy specifier removed',
+      /Cannot find module 'fino:util\/compression'/,
+      'legacy specifier removed, and the rejection names it',
     );
   });
 });

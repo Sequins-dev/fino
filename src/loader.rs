@@ -2106,7 +2106,20 @@ fn get_or_load_builtin_inner<'s>(
     }
 
     // 3. Fall back to the static BUILTINS registry.
-    let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
+    //
+    // Returning `None` without throwing would leave V8 with no pending exception, and
+    // everything downstream reports the failure as `undefined`: a dynamic import
+    // rejects with `undefined`, and a caller that logs the reason prints nothing worth
+    // reading. An unresolved specifier has to raise something.
+    let Some(entry) = BUILTINS.iter().find(|(s, _)| *s == spec) else {
+        let from = from
+            .map(|f| format!(" imported from '{f}'"))
+            .unwrap_or_default();
+        let msg = v8::String::new(scope, &format!("Cannot find module '{spec}'{from}"))?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    };
     let (spec_key, kind) = entry;
 
     let module = match kind {
