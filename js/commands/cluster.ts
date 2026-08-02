@@ -36,6 +36,10 @@ import { ClusterPort } from '../internal/cluster/client.ts';
 import { WebTransportWorkerTransport } from '../internal/cluster/webtransport-transport.ts';
 import { ClusterClient } from '../internal/cluster/client.ts';
 import { sampleNodeLoad } from '../internal/runtime/stats.ts';
+import * as loop from 'internal:runtime/loop';
+
+const SIGINT = 2;
+const SIGTERM = 15;
 
 const enc = new TextEncoder();
 async function print(text: string): Promise<void> {
@@ -55,10 +59,28 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-/** Resolve when the context signal aborts — the durable node lifecycle. */
+/**
+ * Resolve when the node should shut down: the task context aborts, or the
+ * process receives SIGTERM/SIGINT. Watching the signals suppresses their
+ * default disposition, which is the whole point — the caller drains the
+ * node's workloads before letting the process exit.
+ */
 function untilAborted(signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }));
+  return new Promise((resolve) => {
+    const done = (): void => {
+      loop.removeSignal(SIGTERM);
+      loop.removeSignal(SIGINT);
+      resolve();
+    };
+    signal.addEventListener('abort', done, { once: true });
+    try {
+      loop.signal(SIGTERM, done);
+      loop.signal(SIGINT, done);
+    } catch {
+      // Platforms without signal watching still stop via the task context.
+    }
+  });
 }
 
 const startCommand = new Task({
