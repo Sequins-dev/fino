@@ -26,22 +26,29 @@
  * the informative part: if occupancy or staging were the limit, quadrupling both would
  * have moved the number. It did not, so the limit is the instruction path itself.
  *
- * Half precision changes the picture, and the second case measures it. The same
- * arrangement over 16-bit operands, still accumulating in `float`, reaches 6974 against
- * the engine's f16 kernel at 7547 — 0.92x.
+ * Half precision changes the picture entirely, and the second case measures it. The same
+ * arrangement over 16-bit operands, accumulating in `float`, reaches **9745 GFLOP/s
+ * against the engine's f16 kernel at 7588 — 1.28x**, and computes the same product.
  *
- * So the instructions are emphatically 16-bit: f16 MMA is nearly eight times faster than
- * f32 MMA on identical code. But it still does not beat a tuned scalar kernel, and that
- * is the number to be careful about. This spike has no double buffering, stages one
- * element per thread, walks K eight at a time, and pays a threadgroup round trip to
- * narrow its output. Reaching parity from there suggests headroom rather than a ceiling
- * — which is an argument for measuring a tuned version, not for building one on the
- * strength of this.
+ * Two changes got it there from an initial 6974. Walking K thirty-two at a time rather
+ * than eight was the larger one: staging costs two barriers whatever it stages, so a
+ * wider step amortises them over four times the arithmetic. Staging through `half4`
+ * rather than `half` was the other. Neither is exotic, which is the point — the f32
+ * result did not move under a four-fold change in occupancy, and this one moved 40%
+ * under two ordinary ones, so the two numbers are limited by different things.
  *
- * Worth noting separately: the engine's f16 kernel (7547) and its f32 kernel (7528) run
- * at the same rate, because both accumulate in f32 and neither is bandwidth-bound. Half
- * precision currently buys memory, not speed. Making it buy speed is what MMA would be
- * for.
+ * So the instructions are emphatically 16-bit: f16 MMA is eleven times faster than f32
+ * MMA on otherwise identical code, and beats a tuned scalar kernel where f32 MMA loses
+ * to it by eight and a half times.
+ *
+ * Worth noting separately, and it is what makes this worth building: the engine's f16
+ * kernel (7588) and its f32 kernel (7528) run at the same rate, because both accumulate
+ * in f32 and neither is bandwidth-bound. Half precision currently buys memory and not
+ * speed. This is the thing that would make it buy speed, which is what `autocast` needs
+ * to be worth turning on for time rather than footprint.
+ *
+ * Measured at 1024 only. Whether the win holds across sizes is not established, and the
+ * tiling work in this engine is a standing reminder that it might not.
  */
 import { describe, it } from 'fino:test/test';
 import { createMetalApi, metalAvailable } from 'internal:metal';
@@ -137,9 +144,14 @@ const MMA_HALF_SOURCE = `
 #include <metal_simdgroup_matrix>
 using namespace metal;
 
+// 128 threads = four simdgroups in a 2x2 arrangement over a 64x64 tile of C, walking K
+// thirty-two at a time. The wider K step is the point: staging costs two barriers
+// whatever it stages, so covering four times as much K per pair amortises them across
+// four times the arithmetic. Staging reads half4 rather than half, for the same reason
+// one wide load beats four narrow ones.
 kernel void mma_gemm_half(
-    device const half* A [[buffer(0)]],
-    device const half* B [[buffer(1)]],
+    device const half4* A4 [[buffer(0)]],
+    device const half4* B4 [[buffer(1)]],
     device half* C [[buffer(2)]],
     constant uint* dims [[buffer(3)]],
     uint3 tg [[threadgroup_position_in_grid]],
@@ -149,8 +161,8 @@ kernel void mma_gemm_half(
   const uint N = dims[1];
   const uint K = dims[2];
 
-  threadgroup half As[64 * 8];
-  threadgroup half Bs[8 * 64];
+  threadgroup half As[64 * 32];
+  threadgroup half Bs[32 * 64];
 
   simdgroup_float8x8 acc[4][4];
   for (int i = 0; i < 4; i++)
@@ -162,22 +174,35 @@ kernel void mma_gemm_half(
   const uint sgRow = sg / 2;
   const uint sgCol = sg % 2;
 
-  for (uint k0 = 0; k0 < K; k0 += 8) {
-    for (uint idx = lane; idx < 64 * 8; idx += 128) {
-      As[idx] = A[(row0 + idx / 8) * K + (k0 + idx % 8)];
+  threadgroup half4* As4 = (threadgroup half4*)As;
+  threadgroup half4* Bs4 = (threadgroup half4*)Bs;
+
+  for (uint k0 = 0; k0 < K; k0 += 32) {
+    // 64 rows x 32 columns of A as half4: 8 quads per row, 512 quads over 128 threads.
+    for (uint q = lane; q < 64 * 8; q += 128) {
+      uint r = q / 8;
+      uint c = q % 8;
+      As4[q] = A4[((row0 + r) * K + k0) / 4 + c];
     }
-    for (uint idx = lane; idx < 8 * 64; idx += 128) {
-      Bs[idx] = B[(k0 + idx / 64) * N + (col0 + idx % 64)];
+    // 32 rows x 64 columns of B as half4: 16 quads per row, 512 quads.
+    for (uint q = lane; q < 32 * 16; q += 128) {
+      uint r = q / 16;
+      uint c = q % 16;
+      Bs4[q] = B4[((k0 + r) * N + col0) / 4 + c];
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    simdgroup_half8x8 a[4];
-    simdgroup_half8x8 b[4];
-    for (int i = 0; i < 4; i++) simdgroup_load(a[i], As + (sgRow * 32 + i * 8) * 8, 8);
-    for (int j = 0; j < 4; j++) simdgroup_load(b[j], Bs + sgCol * 32 + j * 8, 64);
-    for (int i = 0; i < 4; i++)
+    for (uint kk = 0; kk < 32; kk += 8) {
+      simdgroup_half8x8 a[4];
+      simdgroup_half8x8 b[4];
+      for (int i = 0; i < 4; i++)
+        simdgroup_load(a[i], As + (sgRow * 32 + i * 8) * 32 + kk, 32);
       for (int j = 0; j < 4; j++)
-        simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        simdgroup_load(b[j], Bs + kk * 64 + sgCol * 32 + j * 8, 64);
+      for (int i = 0; i < 4; i++)
+        for (int j = 0; j < 4; j++)
+          simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+    }
 
     threadgroup_barrier(mem_flags::mem_threadgroup);
   }
