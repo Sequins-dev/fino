@@ -1,15 +1,16 @@
 /**
- * Multi-node cluster soak: real processes, sustained deploys, a mid-run
- * drain, and a scorecard.
+ * Multi-node cluster soak: real processes, a rolling replicated deploy, a
+ * crash, a drain, and a scorecard.
  *
  * This is the empirical harness behind FIN-41's tuning work. It starts a
- * seed and two workers as separate OS processes over real WebTransport,
- * deploys a stream of applications, samples membership and load the whole
- * time, SIGTERMs one worker partway through to exercise the drain path, and
- * reports what actually happened — placements per node, membership
- * stability, drain accounting, failures.
+ * seed and three workers as separate OS processes over real WebTransport,
+ * runs a health-gated rolling deploy of a replicated app while a deploy
+ * stream continues, SIGKILLs one worker to exercise crash recovery,
+ * SIGTERMs another to exercise the drain path, and reports what actually
+ * happened — placements, membership by name, generation history, drain
+ * accounting, failures.
  *
- * Run manually (it takes about a minute and binds UDP ports):
+ * Run manually (it takes about two minutes and binds UDP ports):
  *
  * ```text
  * fino benchmarks/cluster-soak.ts
@@ -26,8 +27,9 @@ const PORT = 3e4 + Math.floor(Math.random() * 1e4);
 const ROOT = `/tmp/fino-soak-${Date.now()}`;
 const CERT = `${cwd()}/tests/net/fixtures/test.crt`;
 const KEY = `${cwd()}/tests/net/fixtures/test.key`;
-const SOAK_SECONDS = 50;
+const SOAK_SECONDS = 75;
 const DEPLOY_EVERY_MS = 1000;
+const SIGKILL = 9;
 
 interface Score {
   deploysAttempted: number;
@@ -35,6 +37,8 @@ interface Score {
   placements: Map<string, number>;
   membershipSamples: string[][];
   drainLine: string | null;
+  rolledGeneration: number | null;
+  deploysAfterCrash: number;
   errors: string[];
 }
 
@@ -67,6 +71,8 @@ async function main(): Promise<void> {
     placements: new Map(),
     membershipSamples: [],
     drainLine: null,
+    rolledGeneration: null,
+    deploysAfterCrash: 0,
     errors: [],
   };
 
@@ -91,7 +97,7 @@ async function main(): Promise<void> {
 
   // --- workers ---------------------------------------------------------
   const workers: { name: string; proc: Process; out: string[] }[] = [];
-  for (const name of ['worker-a', 'worker-b']) {
+  for (const name of ['worker-a', 'worker-b', 'worker-c']) {
     const proc = new Process(execPath, ['cluster', 'join', join, '--node-id', name]);
     const out: string[] = [];
     void collect(proc, out);
@@ -113,9 +119,32 @@ async function main(): Promise<void> {
     ),
   );
 
+  // --- rolling replicated deploy ---------------------------------------
+  // Two generations of a 3-replica app with a short readiness window: the
+  // second deploy exercises the health-gated rolling path while the deploy
+  // stream below keeps the cluster busy.
+  const webApp = `${ROOT}/web`;
+  await fs.mkdir(webApp);
+  const writeWeb = (marker: string) =>
+    fs.writeFile(
+      `${webApp}/main.ts`,
+      new TextEncoder().encode(`console.log('web ${marker}');\nsetInterval(() => {}, 60000);\n`),
+    );
+  await writeWeb('v1');
+  const web1 = await run('web-v1', [
+    'cluster', 'deploy', join, webApp, '--name', 'web', '--replicas', '3',
+  ], 30_000);
+  if (!web1.ok) score.errors.push('web v1 deploy failed');
+  await writeWeb('v2');
+  const web2 = await run('web-v2', [
+    'cluster', 'deploy', join, webApp, '--name', 'web', '--replicas', '3',
+  ], 30_000);
+  if (!web2.ok) score.errors.push('web v2 deploy failed');
+
   // --- soak loop -------------------------------------------------------
   const startedAt = Date.now();
   let drained = false;
+  let crashed = false;
   let deployIndex = 0;
   while (Date.now() - startedAt < SOAK_SECONDS * 1000) {
     score.deploysAttempted++;
@@ -124,6 +153,7 @@ async function main(): Promise<void> {
     const placed = result.out.match(/deployed \S+ -> (\S+)\//);
     if (result.ok && placed !== null) {
       score.deploysSucceeded++;
+      if (crashed) score.deploysAfterCrash++;
       score.placements.set(placed[1]!, (score.placements.get(placed[1]!) ?? 0) + 1);
     } else {
       score.errors.push(`deploy ${label}: ${result.out.split('\n').find((l) => l.includes('rror')) ?? 'failed'}`);
@@ -133,8 +163,15 @@ async function main(): Promise<void> {
     const members = [...status.out.matchAll(/^(\S+)  cpu /gm)].map((m) => m[1]!).sort();
     score.membershipSamples.push(members);
 
-    // Halfway through, drain worker-b: SIGTERM triggers the CLI drain path.
-    if (!drained && Date.now() - startedAt > (SOAK_SECONDS * 1000) / 2) {
+    // A third in: SIGKILL worker-c — a crash, not a goodbye. Leases lapse,
+    // the sweep reclaims, reconciliation replaces its replicas.
+    if (!crashed && Date.now() - startedAt > (SOAK_SECONDS * 1000) / 3) {
+      crashed = true;
+      workers[2]!.proc.kill(SIGKILL);
+      console.log('sent SIGKILL to worker-c (crash)');
+    }
+    // Two thirds in: SIGTERM worker-b — the graceful drain path.
+    if (!drained && Date.now() - startedAt > (2 * SOAK_SECONDS * 1000) / 3) {
       drained = true;
       workers[1]!.proc.kill();
       console.log('sent SIGTERM to worker-b (drain)');
@@ -145,6 +182,12 @@ async function main(): Promise<void> {
     await sleep(DEPLOY_EVERY_MS);
   }
 
+  // The rolling deploy's outcome: generation 2 of web must be active.
+  const history = await run('deployments', ['cluster', 'deployments', join, 'web'], 15_000);
+  const activeLine = history.out.split('\n').find((l) => l.includes('active'));
+  const genMatch = activeLine?.match(/gen (\d+)/);
+  score.rolledGeneration = genMatch !== undefined && genMatch !== null ? Number(genMatch[1]) : null;
+
   // --- scorecard -------------------------------------------------------
   console.log('\n=== soak scorecard ===');
   console.log(`deploys: ${score.deploysSucceeded}/${score.deploysAttempted} succeeded`);
@@ -154,6 +197,8 @@ async function main(): Promise<void> {
     console.log(`membership sample ${index + 1}: ${members.join(', ') || 'none'}`);
   }
   console.log(`drain report: ${score.drainLine ?? 'NOT OBSERVED'}`);
+  console.log(`web active generation after rollout: ${score.rolledGeneration ?? 'UNKNOWN'}`);
+  console.log(`deploys succeeded after the crash: ${score.deploysAfterCrash}`);
   if (score.errors.length > 0) {
     console.log(`errors (${score.errors.length}):`);
     for (const error of score.errors.slice(0, 5)) console.log(`  ${error}`);
@@ -163,17 +208,19 @@ async function main(): Promise<void> {
   // SIGKILL: SIGTERM now triggers the drain path, and the soak has already
   // exercised it deliberately on worker-b. Teardown should be immediate, and
   // the stdout readers keep the loop alive until every child closes.
-  const SIGKILL = 9;
   for (const worker of workers) worker.proc.kill(SIGKILL);
   seed.kill(SIGKILL);
   // Durable members only: deploy/status CLIs churn through membership, so
-  // the health check asks whether the three durable nodes stayed present
-  // until the drain, and worker-b left after it.
-  const durable = ['worker-a', 'worker-b'];
-  const preDrain = score.membershipSamples.slice(0, 1);
+  // the health check asks whether the durable nodes were present before the
+  // failures began, the rollout landed generation 2, deploys kept succeeding
+  // after the crash, and the drain reported.
+  const durable = ['worker-a', 'worker-b', 'worker-c'];
+  const preFailure = score.membershipSamples.slice(0, 1);
   const healthy =
     score.deploysSucceeded === score.deploysAttempted &&
-    preDrain.every((sample) => durable.every((node) => sample.includes(node))) &&
+    preFailure.every((sample) => durable.every((node) => sample.includes(node))) &&
+    score.rolledGeneration === 2 &&
+    score.deploysAfterCrash > 0 &&
     score.drainLine !== null;
   console.log(healthy ? '\nSOAK PASS' : '\nSOAK FAIL');
 }
