@@ -380,9 +380,16 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
             return;
         }
         {
+            // A TryCatch frames the checkpoint so a termination raised inside
+            // it — the watchdog stopping a runaway handler — unwinds into an
+            // observable state instead of escaping.
+            let tc = &mut v8::TryCatch::new(scope);
             let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
-            let isolate: &mut v8::Isolate = scope.as_mut();
+            let isolate: &mut v8::Isolate = tc.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
+            if tc.has_terminated() {
+                return;
+            }
         }
         if !progress || scope.is_execution_terminating() {
             break;

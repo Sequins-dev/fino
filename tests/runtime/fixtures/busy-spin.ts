@@ -1,9 +1,11 @@
 /**
- * Never yields for ten seconds: the workload the watchdog exists for. Finite
- * so the reactor it wedges can eventually be joined — a genuinely infinite
- * one could not be torn down, which is itself the point of the watchdog.
+ * The realistic greedy workload: module evaluation completes normally, then
+ * a timer handler enters a loop that never yields. Handler code runs outside
+ * the microtask checkpoint, which is the window where the watchdog is
+ * allowed to terminate.
  */
-const end = Date.now() + 10_000;
-while (Date.now() < end) {
-  /* deliberately blocking */
-}
+setTimeout(() => {
+  for (;;) {
+    /* deliberately blocking */
+  }
+}, 20);

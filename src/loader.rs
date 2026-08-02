@@ -1325,6 +1325,9 @@ fn tla_fulfill_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if scope.is_execution_terminating() {
+        return;
+    }
     let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
     let state_rc = get_state(scope);
     let entry = {
@@ -1350,6 +1353,9 @@ fn tla_reject_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if scope.is_execution_terminating() {
+        return;
+    }
     let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
     let state_rc = get_state(scope);
     let entry = {
@@ -1451,9 +1457,21 @@ fn settle_dynamic_import<'s, 'tc>(
     module: Option<v8::Local<'s, v8::Module>>,
     resolver: v8::Local<'s, v8::PromiseResolver>,
 ) {
+    // Termination can arrive while the imported module's top level runs —
+    // the watchdog stopping a runaway loop lands exactly here, inside the
+    // microtask checkpoint. Every V8 API below (exception(), reject(),
+    // resolve()) CHECK-fails on a terminating isolate, which aborts the
+    // process. Leave the promise unsettled: the workload is being torn down,
+    // so nobody will await it.
+    if tc.is_execution_terminating() {
+        return;
+    }
     if let Some(m) = module {
         match instantiate_and_evaluate(tc, m) {
             Some(eval_result) if !tc.has_caught() => {
+                if tc.is_execution_terminating() {
+                    return;
+                }
                 let namespace = m.get_module_namespace();
                 if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
                     // TLA: defer resolution until the eval Promise settles.
@@ -1486,6 +1504,9 @@ fn settle_dynamic_import<'s, 'tc>(
                 }
             }
             _ => {
+                if tc.is_execution_terminating() {
+                    return;
+                }
                 let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
                 resolver.reject(tc, exc);
             }
@@ -1808,15 +1829,28 @@ fn instantiate_and_evaluate<'s>(
     module: v8::Local<'s, v8::Module>,
 ) -> Option<v8::Local<'s, v8::Value>> {
     use v8::ModuleStatus;
-    match module.get_status() {
+    // The watchdog must not terminate while a module evaluation is in
+    // flight: V8's async-module resume CHECK-fails on a terminating isolate.
+    // Bracketing here (with a depth counter for nested dynamic imports) is
+    // what makes everything OUTSIDE evaluation safely enforceable.
+    crate::scheduler_native::enter_module_evaluation();
+    let result = match module.get_status() {
         ModuleStatus::Uninstantiated => {
-            module.instantiate_module(scope, resolve_module_callback)?;
-            module.evaluate(scope)
+            let instantiated = module
+                .instantiate_module(scope, resolve_module_callback)
+                .is_some();
+            if instantiated {
+                module.evaluate(scope)
+            } else {
+                None
+            }
         }
         ModuleStatus::Instantiated => module.evaluate(scope),
         ModuleStatus::Evaluated => Some(v8::undefined(scope).into()),
         _ => Some(v8::undefined(scope).into()),
-    }
+    };
+    crate::scheduler_native::exit_module_evaluation();
+    result
 }
 
 // ---------------------------------------------------------------------------

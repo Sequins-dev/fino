@@ -103,7 +103,7 @@ export function isolateHeapStatistics(): {
 export function closeReactorThread(thread: number): void;
 export function signalReactorOwner(owner: number): void;
 export function takeReactorEvents(queue: number): Array<{
-  kind: 'submitted' | 'overrun' | 'stalled' | 'activated' | 'settled' | 'error';
+  kind: 'submitted' | 'overrun' | 'halted' | 'activated' | 'settled' | 'error';
   worker: number;
   owner: number;
   previous?: number;

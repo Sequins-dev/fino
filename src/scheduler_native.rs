@@ -659,10 +659,9 @@ enum PoolEventKind {
     /// The watchdog interrupted a slice that has held its reactor while
     /// system-class work waited. Advisory: execution continues.
     Overrun,
-    /// The slice did not yield after its warning and the node is still
-    /// deadlocked. Repeats every pass until it resolves; enforcement is not
-    /// yet wired up (see `run_watchdog`), so this is the terminal signal.
-    Stalled,
+    /// The slice did not yield after its warning and was terminated, freeing
+    /// its reactor. The workload settles as a failure.
+    Halted,
 }
 
 struct PoolEvent {
@@ -811,8 +810,51 @@ struct RunningSlice {
     /// Thread-safe interrupt handle. Calls after the isolate is disposed are
     /// no-ops, so a slice that finishes mid-escalation is harmless.
     handle: v8::IsolateHandle,
+    /// True while a module evaluation is in flight on the slice. Termination
+    /// is never requested in that window: V8's async-module machinery
+    /// (SourceTextModule::ExecuteAsyncModule) CHECK-fails when resumed on a
+    /// terminating isolate, and it resumes within the same checkpoint.
+    /// Ordinary microtasks — promise reactions, handler and timer dispatch —
+    /// unwind from termination cleanly, so everything outside module
+    /// evaluation is enforceable. Top-level runaways stay advisory; the
+    /// deploy readiness gate is the layer that catches those.
+    module_evaluating: Arc<AtomicBool>,
     /// Set once the soft interrupt has been delivered for this slice.
     warned: bool,
+    /// Set once termination has been requested, so it is asked for exactly
+    /// once per slice however long the unwind takes.
+    terminated: bool,
+}
+
+thread_local! {
+    /// The running slice's module-evaluation flag for THIS reactor thread,
+    /// with a depth counter: dynamic imports nest evaluations, and the outer
+    /// one is still in flight when an inner one finishes.
+    static MODULE_EVALUATING: RefCell<(u32, Option<Arc<AtomicBool>>)> =
+        const { RefCell::new((0, None)) };
+}
+
+/// Bracket a module evaluation on this thread. No-op outside a reactor slice.
+pub(crate) fn enter_module_evaluation() {
+    MODULE_EVALUATING.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        cell.0 += 1;
+        if let Some(flag) = cell.1.as_ref() {
+            flag.store(true, Ordering::Release);
+        }
+    });
+}
+
+pub(crate) fn exit_module_evaluation() {
+    MODULE_EVALUATING.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        cell.0 = cell.0.saturating_sub(1);
+        if cell.0 == 0
+            && let Some(flag) = cell.1.as_ref()
+        {
+            flag.store(false, Ordering::Release);
+        }
+    });
 }
 
 /// Monotonic clock shared by the pool and its watchdog.
@@ -912,6 +954,7 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
                 .max_by_key(|slice| now.saturating_sub(slice.started_micros));
             if let Some(slice) = longest {
                 let held = now.saturating_sub(slice.started_micros);
+
                 if !slice.warned {
                     slice.warned = true;
                     // The interrupt runs on the workload's own thread at a
@@ -921,17 +964,17 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
                         .handle
                         .request_interrupt(watchdog_interrupt, std::ptr::null_mut());
                     escalation = Some((slice.owner, false));
-                } else if held >= terminate_micros {
-                    // ENFORCEMENT IS NOT WIRED UP YET. terminate_execution()
-                    // here aborts the process: the termination lands inside
-                    // this runtime's explicit microtask checkpoint, and
-                    // MicrotaskQueue::perform_checkpoint on a terminating
-                    // isolate fails V8's `location_ != nullptr` check.
-                    // Guarding around the checkpoint cannot help — the
-                    // transition happens during the call. Making the
-                    // checkpoint path termination-safe is its own change; the
-                    // watchdog reports the deadlock until then, and the
-                    // repeated event is what a supervisor acts on.
+                } else if held >= terminate_micros
+                    && !slice.terminated
+                    && !slice.module_evaluating.load(Ordering::Acquire)
+                {
+                    slice.terminated = true;
+                    // Delivered as an interrupt rather than called from this
+                    // thread: the isolate raises termination on itself at a
+                    // safe point, which is where V8 expects it.
+                    slice
+                        .handle
+                        .request_interrupt(watchdog_terminate, std::ptr::null_mut());
                     escalation = Some((slice.owner, true));
                 }
             }
@@ -939,7 +982,7 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
         if let Some((owner, sustained)) = escalation {
             shared.notify(PoolEvent {
                 kind: if sustained {
-                    PoolEventKind::Stalled
+                    PoolEventKind::Halted
                 } else {
                     PoolEventKind::Overrun
                 },
@@ -953,27 +996,45 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
     }
 }
 
-/// Delivered on the workload's own thread. Returning resumes execution — a
-/// cooperative workload can notice it through the event the watchdog emits;
-/// an uncooperative one is terminated on the next escalation.
+/// Advisory interrupt: runs at a V8 safe point on the workload's own thread
+/// and returns, letting execution continue. Its only purpose is to give
+/// cooperative code a scheduling point before enforcement.
 extern "C" fn watchdog_interrupt(_isolate: &mut v8::Isolate, _data: *mut std::ffi::c_void) {}
+
+/// Enforcing interrupt: raises termination from inside the isolate, on its
+/// own thread, at a point V8 chose. Termination may land while the module's
+/// top level is running inside the microtask checkpoint; every embedder
+/// callback on that path bails out when the isolate is terminating rather
+/// than touching V8 APIs that CHECK.
+extern "C" fn watchdog_terminate(isolate: &mut v8::Isolate, _data: *mut std::ffi::c_void) {
+    isolate.terminate_execution();
+}
 
 impl PoolShared {
     /// Publish the slice about to run so the watchdog can see it.
     fn begin_slice(&self, worker: usize, owner: u32, handle: v8::IsolateHandle) {
+        let module_evaluating = Arc::new(AtomicBool::new(false));
+        MODULE_EVALUATING.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            module_evaluating.store(cell.0 > 0, Ordering::Release);
+            cell.1 = Some(Arc::clone(&module_evaluating));
+        });
         self.running.lock().unwrap().insert(
             worker,
             RunningSlice {
                 owner,
                 started_micros: now_micros(),
                 handle,
+                module_evaluating,
                 warned: false,
+                terminated: false,
             },
         );
     }
 
     /// Retire the slice; the worker is about to return to the scheduler.
     fn end_slice(&self, worker: usize) {
+        MODULE_EVALUATING.with(|cell| cell.borrow_mut().1 = None);
         self.running.lock().unwrap().remove(&worker);
     }
 
@@ -2635,7 +2696,7 @@ fn take_reactor_events(
         let kind = match event.kind {
             PoolEventKind::Submitted => "submitted",
             PoolEventKind::Overrun => "overrun",
-            PoolEventKind::Stalled => "stalled",
+            PoolEventKind::Halted => "halted",
             PoolEventKind::Activated => "activated",
             PoolEventKind::Settled => "settled",
             PoolEventKind::Error => "error",
