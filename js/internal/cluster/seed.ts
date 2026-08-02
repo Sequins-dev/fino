@@ -324,20 +324,105 @@ export class SeedServer {
       return;
     }
     let entry: string;
+    let replicas = 1;
     try {
       const inspected = await inspectCask(`${this.#caskDir}/${msg.hash}.cask`);
       entry = inspected.manifest.entry;
+      replicas = inspected.manifest.replicas ?? 1;
     } catch {
       fail(`unknown cask ${msg.hash}; upload it first`);
       return;
     }
+    let generation: number;
     try {
-      await this.#ledger.recordDeployment(msg.name, msg.hash, entry);
+      generation = (await this.#ledger.recordDeployment(msg.name, msg.hash, entry, replicas))
+        .generation;
     } catch (err) {
       fail(`deployment record failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
+    // Desired state: a new generation replaces the old one's replica set.
+    // Old-generation replicas keep running until their realms exit — rolling
+    // replacement with health gates is later scope; reconciliation maintains
+    // only the ACTIVE generation's count.
+    const state = {
+      generation,
+      caskHash: msg.hash,
+      entry,
+      want: replicas,
+      running: new Map<number, { childPortId: string; nodeId: string }>(),
+      placing: new Map<number, string>(),
+    };
+    this.#deployments.set(msg.name, state);
+    // Replica 0 answers the deployer's DEPLOY (the --wait semantic); the
+    // rest place immediately after and are maintained by reconciliation.
+    this.#replicaSpawns.set(msg.spawnReqId, { name: msg.name, replica: 0 });
+    state.placing.set(0, msg.spawnReqId);
     this.#placeDeployment(from, msg.spawnReqId, msg.parentPortId, msg.name, msg.hash, entry, fail);
+    for (let replica = 1; replica < replicas; replica++) {
+      this.#placeReplica(msg.name, replica);
+    }
+  }
+
+  /** Place one replica of a deployment's active generation, seed-owned. */
+  #placeReplica(name: string, replica: number): void {
+    const state = this.#deployments.get(name);
+    if (state === undefined || state.running.has(replica) || state.placing.has(replica)) return;
+    const spawnReqId = `${this.#transport.nodeId}-${name}-g${state.generation}-r${replica}-${Date.now() % 1e6}`;
+    const parentPortId = `${this.#transport.nodeId}/p-${name}-r${replica}`;
+    state.placing.set(replica, spawnReqId);
+    this.#replicaSpawns.set(spawnReqId, { name, replica });
+    this.#placeDeployment(
+      this.#transport.nodeId,
+      spawnReqId,
+      parentPortId,
+      name,
+      state.caskHash,
+      state.entry,
+      (error) => {
+        state.placing.delete(replica);
+        this.#replicaSpawns.delete(spawnReqId);
+        console.error(`fino:cluster replica ${name}#${replica} placement failed: ${error}`);
+      },
+    );
+  }
+
+  /** Forget every replica hosted on a node that left or died. */
+  #forgetReplicasOnNode(nodeId: string): void {
+    for (const state of this.#deployments.values()) {
+      for (const [replica, info] of state.running) {
+        if (info.nodeId === nodeId) {
+          state.running.delete(replica);
+          this.#replicasByChildPort.delete(info.childPortId);
+        }
+      }
+    }
+  }
+
+  /** Drop a live replica record when its realm exits or its node dies. */
+  #forgetReplica(childPortId: string): void {
+    const info = this.#replicasByChildPort.get(childPortId);
+    if (info === undefined) return;
+    this.#replicasByChildPort.delete(childPortId);
+    this.#deployments.get(info.name)?.running.delete(info.replica);
+  }
+
+  /**
+   * Converge every deployment toward its desired replica count. Runs on the
+   * heartbeat sweep; missing replicas are re-placed one at a time per pass —
+   * the one-fenced-action-at-a-time rule from the design.
+   */
+  #reconcileDeployments(): void {
+    for (const [name, state] of this.#deployments) {
+      const live = state.running.size + state.placing.size;
+      if (live >= state.want) continue;
+      for (let replica = 0; replica < state.want; replica++) {
+        if (!state.running.has(replica) && !state.placing.has(replica)) {
+          this.#placeReplica(name, replica);
+          break;
+        }
+      }
+    }
   }
 
   /**
@@ -358,7 +443,24 @@ export class SeedServer {
     entry: string,
     fail: (error: string) => void,
   ): void {
-    const target = this.#selectTarget(new Set([from]));
+    // Anti-affinity: prefer nodes not already hosting a replica of this
+    // deployment; fall back to co-location rather than refusing when the
+    // cluster is smaller than the replica count.
+    const hosting = new Set<string>();
+    const state = this.#deployments.get(name);
+    if (state !== undefined) {
+      for (const replica of state.running.values()) hosting.add(replica.nodeId);
+      // In-flight placements count as hosting: sibling replicas placed in
+      // the same burst have not acked yet, and spreading is the whole point.
+      for (const [, inFlightId] of state.placing) {
+        const inFlight = this.#pendingSpawns.get(inFlightId);
+        if (inFlight !== undefined && inFlightId !== spawnReqId) {
+          hosting.add(inFlight.targetNodeId);
+        }
+      }
+    }
+    const spread = hosting.size > 0 ? this.#selectTarget(new Set([from, ...hosting])) : null;
+    const target = spread ?? this.#selectTarget(new Set([from]));
     if (target === null) {
       const peers = [...this.#peers.entries()]
         .map(([id, p]) => `${id}(draining=${p.load.draining === true})`)
@@ -529,6 +631,26 @@ export class SeedServer {
   }
   /** childPortId -> ledger record id, so realm exits can settle records. */
   #ledgerIdsByChildPort = new Map<string, string>();
+  /**
+   * Desired state per deployment: the active generation's cask, entry, and
+   * replica count, plus which replicas are currently live and where. The
+   * reconcile pass replaces missing replicas one placement at a time.
+   */
+  #deployments = new Map<
+    string,
+    {
+      generation: number;
+      caskHash: string;
+      entry: string;
+      want: number;
+      running: Map<number, { childPortId: string; nodeId: string }>;
+      placing: Map<number, string>;
+    }
+  >();
+  /** spawnReqId -> { name, replica } for deployment placements in flight. */
+  #replicaSpawns = new Map<string, { name: string; replica: number }>();
+  /** childPortId -> { name, replica } for live deployment replicas. */
+  #replicasByChildPort = new Map<string, { name: string; replica: number }>();
   /** Join token every HELLO must present, or null when auth is disabled. */
   #joinToken: string | null;
   /** Cluster identity advertised in WELCOME, or null when unset. */
@@ -782,6 +904,21 @@ export class SeedServer {
           }
         }
         this.#pendingSpawns.delete(msg.spawnReqId);
+        const replicaInfo = this.#replicaSpawns.get(msg.spawnReqId);
+        if (replicaInfo !== undefined) {
+          this.#replicaSpawns.delete(msg.spawnReqId);
+          const deployment = this.#deployments.get(replicaInfo.name);
+          if (deployment !== undefined) {
+            deployment.placing.delete(replicaInfo.replica);
+            if (msg.ok) {
+              deployment.running.set(replicaInfo.replica, {
+                childPortId: msg.childPortId,
+                nodeId: from,
+              });
+              this.#replicasByChildPort.set(msg.childPortId, replicaInfo);
+            }
+          }
+        }
         if (msg.ok) {
           this.#portNodes.set(msg.childPortId, from);
           this.#registry.register(msg.childPortId, spawnInfo.parentPortId, from);
@@ -867,6 +1004,7 @@ export class SeedServer {
   }
   /** Forward an ordered exit and remove the exited realm subtree. */
   #handleRealmExit(msg: RealmExitMessage): void {
+    this.#forgetReplica(msg.realmId);
     const ledgerId = this.#ledgerIdsByChildPort.get(msg.realmId);
     if (ledgerId !== undefined) {
       this.#ledgerIdsByChildPort.delete(msg.realmId);
@@ -908,6 +1046,7 @@ export class SeedServer {
    * @internal
    */
   #handleNodeDown(nodeId: string): void {
+    this.#forgetReplicasOnNode(nodeId);
     for (const [spawnReqId, pending] of [...this.#pendingSpawns]) {
       if (pending.requesterNodeId === nodeId) {
         this.#pendingSpawns.delete(spawnReqId);
@@ -1001,6 +1140,7 @@ export class SeedServer {
    */
   #checkHeartbeats(): void {
     this.#ledgerOp((ledger) => this.#sweepLedger(ledger));
+    this.#reconcileDeployments();
     const now = Date.now();
     for (const [nodeId, ts] of this.#lastSeen) {
       if (now - ts > heartbeatTimeoutMs()) {

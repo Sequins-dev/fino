@@ -240,6 +240,7 @@ const deployCommand = new Task({
       { flags: '--name', type: 'string', description: 'Deployment name (default: directory basename)' },
       { flags: '--entry', type: 'string', description: 'Entry module relative to the app directory (default: main.ts)' },
       { flags: '--version', type: 'string', description: 'Informational version string' },
+      { flags: '--replicas', type: 'string', description: 'Active-active replica count (default: 1)' },
       { flags: '--node-id', type: 'string', description: 'Deployer node identifier (default: minted)' },
     ],
     positionals: [
@@ -256,10 +257,15 @@ const deployCommand = new Task({
     const name = opts.name ?? dir.split('/').pop()!;
     const entry = opts.entry ?? 'main.ts';
     const caskPath = `${dir}.cask`;
+    const replicas = opts.replicas === undefined ? undefined : Number(opts.replicas);
+    if (replicas !== undefined && (!Number.isInteger(replicas) || replicas < 1)) {
+      throw new Error('cluster deploy: --replicas must be a positive integer');
+    }
     const packed = await packCask(dir, caskPath, {
       name,
       version: opts.version ?? '0.0.0',
       entry,
+      ...(replicas === undefined ? {} : { replicas }),
     });
     await print(`packed ${name} as sha256-${packed.hash.slice(0, 12)}…\n`);
 

@@ -27,6 +27,12 @@ export interface CaskManifest {
   version: string;
   /** Entry module path, relative to the cask root. */
   entry: string;
+  /**
+   * Desired active-active replica count; deployments default to one. The
+   * controller keeps this many running, spread across distinct nodes when
+   * membership allows.
+   */
+  replicas?: number;
   /** Millisecond timestamp of packing. */
   createdAt: number;
 }
@@ -96,6 +102,9 @@ function parseManifest(bytes: Uint8Array): CaskManifest {
   if (typeof manifest.createdAt !== 'number') {
     throw new Error('cask: manifest createdAt must be a number');
   }
+  if (manifest.replicas !== undefined && (!Number.isInteger(manifest.replicas) || manifest.replicas < 1)) {
+    throw new Error('cask: manifest replicas must be a positive integer');
+  }
   return manifest as CaskManifest;
 }
 
@@ -117,7 +126,7 @@ async function exists(path: string): Promise<boolean> {
 export async function packCask(
   sourceDir: string,
   outputPath: string,
-  options: { name: string; version: string; entry: string },
+  options: { name: string; version: string; entry: string; replicas?: number },
 ): Promise<PackedCask> {
   const entryFile = `${sourceDir}/${options.entry}`;
   if (options.entry.startsWith('/') || options.entry.split('/').includes('..')) {
@@ -126,11 +135,15 @@ export async function packCask(
   if (!(await exists(entryFile))) {
     throw new Error(`cask: entry ${options.entry} does not exist under ${sourceDir}`);
   }
+  if (options.replicas !== undefined && (!Number.isInteger(options.replicas) || options.replicas < 1)) {
+    throw new Error('cask: replicas must be a positive integer');
+  }
   const manifest: CaskManifest = {
     format: 1,
     name: options.name,
     version: options.version,
     entry: options.entry,
+    ...(options.replicas === undefined ? {} : { replicas: options.replicas }),
     createdAt: Date.now(),
   };
   const archive = await createArchive(outputPath, { format: 'tar.gz' });

@@ -1557,3 +1557,122 @@ describe('SeedServer — deployment history and rollback', () => {
     await ledger.close();
   });
 });
+
+describe('SeedServer — replica-set controller', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+
+  async function replicatedSetup(replicas: number) {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rs-${stamp}.db`);
+    const caskDir = `/tmp/fino-rs-store-${stamp}`;
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    const fs = new DiskFileSystem();
+    const app = `/tmp/fino-rs-app-${stamp}`;
+    await fs.mkdir(app);
+    await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('replica');\n`));
+    const packed = await packCask(app, `${app}.cask`, {
+      name: 'svc',
+      version: '1',
+      entry: 'main.ts',
+      replicas,
+    });
+    made.transport.inject('deployer', {
+      t: 'CASK_PUT',
+      hash: packed.hash,
+      seq: 0,
+      chunk: await fs.readFile(packed.path),
+      last: true,
+    });
+    await settle();
+    return { ...made, ledger, hash: packed.hash };
+  }
+
+  it('places every replica on a distinct node when membership allows', async (t) => {
+    const { seed, transport, ledger, hash } = await replicatedSetup(3);
+    for (const node of ['w1', 'w2', 'w3', 'deployer']) {
+      transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer-d-1',
+      parentPortId: 'deployer/p-1',
+      name: 'web',
+      hash,
+    });
+    await settle();
+    await seed._ledgerSettled();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 3, 'all three replicas placed');
+    const targets = new Set(spawns.map((s) => s.to));
+    t.equal(targets.size, 3, 'anti-affinity spread them across distinct nodes');
+    t.equal((await ledger.activeDeployment('web'))?.replicas, 3, 'the count is durable');
+
+    for (const [index, spawn] of spawns.entries()) {
+      const req = (spawn.msg as { spawnReqId: string }).spawnReqId;
+      transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: req,
+        childPortId: `${spawn.to}/${index}`,
+        ok: true,
+      });
+    }
+    transport.sent.length = 0;
+    seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      transport.sent.filter((s) => s.msg.t === 'SPAWN').length,
+      0,
+      'a converged deployment places nothing',
+    );
+
+    // One replica's realm exits: reconciliation replaces exactly one.
+    transport.inject(spawns[1]!.to as string, {
+      t: 'REALM_EXIT',
+      realmId: `${spawns[1]!.to}/1`,
+      lastPortSeq: 0,
+    });
+    transport.sent.length = 0;
+    seed._checkHeartbeatsForTest();
+    await settle();
+    const replaced = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(replaced.length, 1, 'exactly one replacement per pass');
+    await ledger.close();
+  });
+
+  it('replaces replicas lost with their node', async (t) => {
+    const { seed, transport, ledger, hash } = await replicatedSetup(2);
+    for (const node of ['w1', 'w2', 'deployer']) {
+      transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer-d-2',
+      parentPortId: 'deployer/p-2',
+      name: 'ha',
+      hash,
+    });
+    await settle();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 2, 'both replicas placed');
+    for (const [index, spawn] of spawns.entries()) {
+      transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId: `${spawn.to}/${index}`,
+        ok: true,
+      });
+    }
+    const victim = spawns[0]!.to as string;
+    transport.sent.length = 0;
+    transport.inject(victim, { t: 'PEER_DOWN', nodeId: victim });
+    seed._checkHeartbeatsForTest();
+    await settle();
+    const replaced = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(replaced.length, 1, 'the lost replica is re-placed');
+    t.ok(replaced[0]!.to !== victim, 'onto a surviving node');
+    await ledger.close();
+  });
+});

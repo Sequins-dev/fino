@@ -102,9 +102,12 @@ export class WorkloadLedger {
         cask_hash  TEXT NOT NULL,
         entry      TEXT NOT NULL,
         state      TEXT NOT NULL,
+        replicas   INTEGER NOT NULL DEFAULT 1,
         created_at BIGINT NOT NULL,
         PRIMARY KEY (name, generation)
       )`);
+    // Migration for ledgers created before replica counts existed.
+    await db.exec('ALTER TABLE deployments ADD COLUMN replicas INTEGER NOT NULL DEFAULT 1').catch(() => {});
     return new WorkloadLedger(db);
   }
 
@@ -358,6 +361,7 @@ export class WorkloadLedger {
     name: string,
     caskHash: string,
     entry: string,
+    replicas = 1,
     now = Date.now(),
   ): Promise<DeploymentRecord> {
     const current = await this.activeDeployment(name);
@@ -371,15 +375,15 @@ export class WorkloadLedger {
       supersede.finalize();
     }
     const insert = this.#db.prepare(
-      `INSERT INTO deployments (name, generation, cask_hash, entry, state, created_at)
-       VALUES (:name, :generation, :caskHash, :entry, 'active', :now)`,
+      `INSERT INTO deployments (name, generation, cask_hash, entry, state, replicas, created_at)
+       VALUES (:name, :generation, :caskHash, :entry, 'active', :replicas, :now)`,
     );
     try {
-      await insert.run({ name, generation, caskHash, entry, now });
+      await insert.run({ name, generation, caskHash, entry, replicas, now });
     } finally {
       insert.finalize();
     }
-    return { name, generation, caskHash, entry, state: 'active', createdAt: now };
+    return { name, generation, caskHash, entry, state: 'active', replicas, createdAt: now };
   }
 
   /** The active generation of a named deployment, or null. */
@@ -420,7 +424,7 @@ export class WorkloadLedger {
     const history = await this.deployments(name);
     if (history.length < 2) return null;
     const previous = history[1]!;
-    return this.recordDeployment(name, previous.caskHash, previous.entry, now);
+    return this.recordDeployment(name, previous.caskHash, previous.entry, previous.replicas, now);
   }
 
   /** Cask hashes any generation still references — the GC keep-set. */
@@ -447,6 +451,8 @@ export interface DeploymentRecord {
   generation: number;
   caskHash: string;
   entry: string;
+  /** Desired active-active replica count. */
+  replicas: number;
   /** 'active' for the newest generation; earlier ones become 'superseded'. */
   state: 'active' | 'superseded';
   createdAt: number;
@@ -459,6 +465,7 @@ function rowToDeployment(row: Record<string, DbValue>): DeploymentRecord {
     caskHash: String(row.cask_hash),
     entry: String(row.entry),
     state: String(row.state) as DeploymentRecord['state'],
+    replicas: Number(row.replicas ?? 1),
     createdAt: Number(row.created_at),
   };
 }
