@@ -220,7 +220,20 @@ export type Stmt =
   | { k: 'if'; cond: Expr; then: Stmt[]; else?: Stmt[] }
   | { k: 'barrier' }
   | { k: 'atomicAdd'; buf: string; index: Expr; value: Expr }
-  | { k: 'comment'; text: string };
+  | { k: 'comment'; text: string }
+  // -- cooperative matrix, gated by `KernelCaps.matrix` ---------------------
+  //
+  // An 8x8 tile held collectively by a subgroup, one fragment per lane. The
+  // fragments' arrangement is the hardware's business and is deliberately not
+  // describable here: a matrix can be filled, loaded from shared memory,
+  // multiplied into an accumulator, and stored back, and nothing else. That is
+  // the whole of what both Metal's simdgroup matrices and Vulkan's cooperative
+  // matrices agree on, so it is all the IR is willing to say.
+  | { k: 'matDecl'; name: string; type: ScalarDType }
+  | { k: 'matFill'; name: string; type: ScalarDType; value: number }
+  | { k: 'matLoad'; name: string; sh: string; index: Expr; stride: Expr }
+  | { k: 'matMulAdd'; acc: string; a: string; b: string }
+  | { k: 'matStore'; name: string; sh: string; index: Expr; stride: Expr };
 
 /** Capabilities a kernel body requires of its target. */
 export interface KernelCaps {
@@ -230,6 +243,15 @@ export interface KernelCaps {
   atomicFloat?: boolean;
   /** Reads or writes 16-bit floats in a buffer. */
   f16?: boolean;
+  /**
+   * Uses cooperative matrix statements.
+   *
+   * There is no lowering of these that MoltenVK and lavapipe both accept, so a kernel
+   * that sets this compiles on Metal and nowhere else yet. It is a capability rather
+   * than a dialect switch because the fallback is a different kernel, not different
+   * code for the same one.
+   */
+  matrix?: boolean;
 }
 
 /** A complete kernel. */

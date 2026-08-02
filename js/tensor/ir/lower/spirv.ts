@@ -108,6 +108,16 @@ const BUILTIN_IDS: Record<string, { builtin: number; vector: boolean }> = {
  */
 export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Array {
   validateKernel(ir);
+  // Checked before anything else, because it is a fact about the kernel rather than
+  // about one statement: a kernel needing matrices cannot exist on this dialect at all,
+  // and reporting that is more useful than a complaint about the first f16 buffer it
+  // happens to touch on the way to the same conclusion.
+  if (ir.caps?.matrix) {
+    throw new Error(
+      `kernel '${ir.name}' needs cooperative matrices, which have no SPIR-V lowering ` +
+        'here; select a kernel that does not require the matrix capability',
+    );
+  }
   const caps = options.caps ?? {};
   const m = new SpirvModule({ names: options.names });
   const env = new TypeEnv(ir);
@@ -672,6 +682,22 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
           }
           break;
         }
+        case 'matDecl':
+        case 'matFill':
+        case 'matLoad':
+        case 'matMulAdd':
+        case 'matStore':
+          // Refused rather than approximated. SPIR-V has cooperative matrices, but no
+          // form of them that both MoltenVK and lavapipe accept — the two targets this
+          // engine actually validates against — so emitting anything here would produce
+          // a module that works on one driver and is undefined on the next. A kernel
+          // that needs matrices needs a different kernel on this dialect, which is what
+          // the capability is for, and saying so loudly is better than a shader that
+          // compiles and computes something else.
+          throw new Error(
+            `cooperative matrix statement '${s.k}' has no SPIR-V lowering; ` +
+              'select a kernel that does not require the matrix capability',
+          );
         case 'barrier':
           fn.emitVoid(Op.ControlBarrier, [
             m.constU32(Scope.Workgroup),

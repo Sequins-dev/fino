@@ -137,6 +137,26 @@ const BUILTIN_ARGS: Record<string, { name: string; attr: string; type: string }>
 const DIM_SUFFIX = ['x', 'y', 'z'] as const;
 
 /**
+ * The MSL scalar name for a matrix's elements.
+ *
+ * @internal
+ */
+function matrixElem(type: ScalarDType): string {
+  if (type === 'f32') return 'float';
+  if (type === 'f16') return 'half';
+  throw new Error(`cooperative matrices are only lowered for f32 and f16, not '${type}'`);
+}
+
+/**
+ * The MSL type of an 8x8 matrix.
+ *
+ * @internal
+ */
+function matrixType(type: ScalarDType): string {
+  return `simdgroup_${matrixElem(type)}8x8`;
+}
+
+/**
  * Lower a kernel to MSL source text.
  */
 export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
@@ -288,6 +308,29 @@ export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
         case 'barrier':
           lines.push(`${pad}threadgroup_barrier(mem_flags::mem_threadgroup);`);
           break;
+        case 'matDecl':
+          lines.push(`${pad}${matrixType(s.type)} ${s.name};`);
+          break;
+        case 'matFill':
+          lines.push(
+            `${pad}${s.name} = make_filled_simdgroup_matrix<${matrixElem(s.type)}, 8, 8>(${s.value.toFixed(1)});`,
+          );
+          break;
+        case 'matLoad':
+          lines.push(
+            `${pad}simdgroup_load(${s.name}, ${s.sh} + ${expr(s.index, env)}, ${expr(s.stride, env)});`,
+          );
+          break;
+        case 'matMulAdd':
+          lines.push(
+            `${pad}simdgroup_multiply_accumulate(${s.acc}, ${s.a}, ${s.b}, ${s.acc});`,
+          );
+          break;
+        case 'matStore':
+          lines.push(
+            `${pad}simdgroup_store(${s.name}, ${s.sh} + ${expr(s.index, env)}, ${expr(s.stride, env)});`,
+          );
+          break;
         case 'for': {
           // The induction variable is a uint register visible to the body.
           env.bind(s.v, { scalar: 'u32', lanes: 1 });
@@ -320,7 +363,11 @@ export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
   stmts(ir.body, 1);
   const body = lines.join('\n');
 
-  const out: string[] = ['#include <metal_stdlib>', 'using namespace metal;', ''];
+  const out: string[] = ['#include <metal_stdlib>'];
+  // Only when the kernel needs them: the header is cheap but its presence in every
+  // kernel would say the engine uses matrices everywhere, which it does not.
+  if (ir.caps?.matrix) out.push('#include <metal_simdgroup_matrix>');
+  out.push('using namespace metal;', '');
 
   if (ir.params.length > 0) {
     out.push('struct Params {');

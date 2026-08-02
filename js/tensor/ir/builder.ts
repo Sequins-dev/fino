@@ -105,6 +105,9 @@ export class KernelBuilder {
   #params: ScalarParam[] = [];
   #shared: SharedDecl[] = [];
   #caps: KernelCaps = {};
+
+  /** Element type of each declared matrix. @internal */
+  #matrices = new Map<string, ScalarDType>();
   /**
    * Block stack; the last entry is where statements land.
    *
@@ -198,6 +201,52 @@ export class KernelBuilder {
   /** Emit a workgroup barrier. */
   barrier(): void {
     this.#here().push({ k: 'barrier' });
+  }
+
+  // -- cooperative matrix --------------------------------------------------
+  //
+  // Declaring one marks the kernel as needing the capability, so a template cannot use
+  // these and forget to say so — the backend reads the requirement off the kernel rather
+  // than being told separately.
+
+  /** Declare an 8x8 matrix held collectively by the subgroup. */
+  matDecl(name: string, type: ScalarDType): void {
+    this.#caps.matrix = true;
+    this.#matrices.set(name, type);
+    this.#here().push({ k: 'matDecl', name, type });
+  }
+
+  /**
+   * Set every element of a matrix to a constant.
+   *
+   * The element type comes from the declaration rather than the caller, so the two
+   * cannot disagree — and filling a matrix that was never declared is caught here
+   * instead of becoming a compiler error in a generated shader.
+   */
+  matFill(name: string, value: number): void {
+    const type = this.#matrices.get(name);
+    if (!type) throw new Error(`matrix '${name}' was not declared`);
+    this.#here().push({ k: 'matFill', name, type, value });
+  }
+
+  /**
+   * Read a matrix from shared memory.
+   *
+   * `stride` is the row length of the region being read, in elements, so an 8x8 tile can
+   * be taken out of a wider staged tile.
+   */
+  matLoad(name: string, sh: string, index: Expr, stride: Expr): void {
+    this.#here().push({ k: 'matLoad', name, sh, index, stride });
+  }
+
+  /** `acc += a * b`, as one instruction. */
+  matMulAdd(acc: string, a: string, b: string): void {
+    this.#here().push({ k: 'matMulAdd', acc, a, b });
+  }
+
+  /** Write a matrix back to shared memory, `stride` as in {@link matLoad}. */
+  matStore(name: string, sh: string, index: Expr, stride: Expr): void {
+    this.#here().push({ k: 'matStore', name, sh, index, stride });
   }
 
   /** Attach a comment; MSL renders it, SPIR-V drops it. */
