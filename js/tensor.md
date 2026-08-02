@@ -324,11 +324,22 @@ yesterday's run. On an Apple silicon development machine:
 | GEMM 256³ | ~1000 GFLOP/s | ~1000 GFLOP/s |
 | elementwise | ~60 Gelem/s | ~6-16 Gelem/s |
 
-Each figure is the fastest of three timed repetitions. Vulkan's elementwise rate is a
-fraction of Metal's on the same hardware and reproduces across runs, so it is a real
-difference rather than noise — most likely per-dispatch cost through the translation
-layer, since the same backend's matrix multiply is level with Metal's. It has not been
-run down.
+Each figure is the fastest of three timed repetitions.
+
+Vulkan's elementwise figure here is **not** a property of the backend, and the earlier
+claim in this guide that it was has not held up. Measured directly — alternating the two
+devices pass by pass, best of six — Vulkan runs the same elementwise kernels at 60
+Gelem/s against Metal's 63. The generated SPIR-V for a fused chain is word-for-word the
+same size as for the equivalent single operation, the dispatch counts match, and the
+launches take the same path.
+
+What is real is that the same code measures either ~60 or ~15 Gelem/s on Vulkan
+depending on how the process reached that point, with no such split on Metal. Ruled out:
+the kernel, dispatch count, launch routing, descriptor-set exhaustion, accumulated
+command state, prior matrix-multiply work, fusion, and buffer churn. The remaining
+suspicion is device clock state — Vulkan measures fast whenever Metal work is
+interleaved with it, and slow when it runs alone — but that is a hypothesis, not a
+finding, and the number above is the pessimistic mode rather than the kernel's capability.
 
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.
