@@ -319,9 +319,9 @@ yesterday's run. On an Apple silicon development machine:
 
 | | Metal | Vulkan (MoltenVK) |
 |---|---|---|
-| GEMM 1024³ | ~6400 GFLOP/s | ~6000 GFLOP/s |
-| GEMM 512³ | ~3900 GFLOP/s | ~3600 GFLOP/s |
-| GEMM 256³ | ~1250 GFLOP/s | ~930 GFLOP/s |
+| GEMM 1024³ | ~7100 GFLOP/s | ~6900 GFLOP/s |
+| GEMM 512³ | ~4750 GFLOP/s | ~4550 GFLOP/s |
+| GEMM 256³ | ~1000 GFLOP/s | ~1000 GFLOP/s |
 | elementwise | ~60 Gelem/s | ~6-16 Gelem/s |
 
 Each figure is the fastest of three timed repetitions. Vulkan's elementwise rate is a
@@ -345,12 +345,15 @@ Measured on an M5 Max, best of five, GFLOP/s:
 
 | n | 32x32 tiles | 64x64 tiles |
 |---|---|---|
-| 256 | 1178 | 789 |
-| 512 | 3631 | 3606 |
-| 1024 | 5005 | 6430 |
-| 2048 | 5535 | 8017 |
+| 256 | 2084 | 1607 |
+| 384 | 3945 | 3006 |
+| 448 | 4004 | 4144 |
+| 512 | 4690 | 5513 |
 
-They cross at 512, which is where the engine switches. Both extents have to clear the
+They cross between 384 and 448, and the engine switches at 512 — near enough, and on
+the conservative side. Measured by alternating the two tilings pass by pass rather than
+running one after the other: a sweep that measures six configurations in sequence drifts
+with the GPU's clock enough to reverse this result, which it did once here. Both extents have to clear the
 threshold rather than the element count: a tall, narrow multiply has plenty of elements
 and still covers only a few tiles across, so it wants the smaller tile.
 
@@ -371,11 +374,11 @@ f32 matrix multiply, GFLOP/s, on an M5 Max:
 | | synchronised | | | pipelined | | |
 |---|---|---|---|---|---|---|
 | size | fino | ggml | ratio | fino | ggml | ratio |
-| 256³ | 124 | 195 | 0.64x | 744 | 1727 | 0.43x |
-| 512³ | 886 | 1517 | 0.58x | 2882 | 7146 | 0.40x |
-| 1024³ | 3937 | 6828 | 0.58x | 6355 | 11738 | 0.54x |
+| 256³ | 134 | 202 | 0.66x | 680 | 1132 | 0.60x |
+| 512³ | 982 | 1486 | 0.66x | 3789 | 7233 | 0.52x |
+| 1024³ | 4441 | 6845 | 0.65x | 7308 | 11747 | 0.62x |
 
-Roughly half of ggml's rate, or about two times slower. Each figure is the fastest of
+Around two thirds of ggml's rate per call, and a little over half at depth. Each figure is the fastest of
 five timed repetitions: a single run of any of them varies by a third between
 invocations, which is more than the difference being reported, so a ratio drawn from one
 run would say as much about the GPU's clock at that moment as about either engine.
