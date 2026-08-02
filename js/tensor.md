@@ -326,6 +326,27 @@ yesterday's run. On an Apple silicon development machine:
 None of this is claimed to be fast. It is claimed to be true, which is what makes it
 possible to tell whether a change helped.
 
+### Tile size follows the multiply
+
+A matrix multiply kernel stages tiles of both operands into threadgroup memory and each
+thread computes a small block of the result. Both tilings this engine ships launch 256
+threads; the larger one gives each thread sixteen outputs to the smaller one's four, so
+it reads a quarter as much staged memory per multiply — but only pays off once there is
+enough work to keep the device busy.
+
+Measured on an M5 Max, best of five, GFLOP/s:
+
+| n | 32x32 tiles | 64x64 tiles |
+|---|---|---|
+| 256 | 1178 | 789 |
+| 512 | 3631 | 3606 |
+| 1024 | 5005 | 6430 |
+| 2048 | 5535 | 8017 |
+
+They cross at 512, which is where the engine switches. Both extents have to clear the
+threshold rather than the element count: a tall, narrow multiply has plenty of elements
+and still covers only a few tiles across, so it wants the smaller tile.
+
 ### Against ggml
 
 Comparing an engine against its own history says whether a change helped and nothing
@@ -343,14 +364,14 @@ f32 matrix multiply, GFLOP/s, on an M5 Max:
 | | synchronised | | | pipelined | | |
 |---|---|---|---|---|---|---|
 | size | fino | ggml | ratio | fino | ggml | ratio |
-| 256³ | 74 | 167 | 0.44x | 424 | 716 | 0.59x |
-| 512³ | 538 | 1315 | 0.41x | 2056 | 5641 | 0.36x |
-| 1024³ | 1105 | 6289 | 0.18x | 4823 | 11570 | 0.42x |
+| 256³ | 124 | 195 | 0.64x | 744 | 1727 | 0.43x |
+| 512³ | 886 | 1517 | 0.58x | 2882 | 7146 | 0.40x |
+| 1024³ | 3937 | 6828 | 0.58x | 6355 | 11738 | 0.54x |
 
-One run, and the ratios move between runs — 0.3x and 0.7x have both been seen at 1024³
-pipelined — so read the magnitude rather than the digits: this engine is roughly two to
-four times slower than a mature hand-tuned implementation. That is the number, and
-getting it is the point of measuring.
+Roughly half of ggml's rate, or about two times slower. Each figure is the fastest of
+five timed repetitions: a single run of any of them varies by a third between
+invocations, which is more than the difference being reported, so a ratio drawn from one
+run would say as much about the GPU's clock at that moment as about either engine.
 
 The benchmark also checks that both engines produced the same value, which is not
 decoration: `ggml_mul_mat(a, b)` contracts both operands along their fastest axis, so it

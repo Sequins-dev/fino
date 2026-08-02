@@ -39,7 +39,7 @@ export interface GemmTiling {
   tn: number;
 }
 
-/** The default tiling: 64x64 tiles, 8x8 threads, 4x4 register blocks. */
+/** The default tiling: 64x64 tiles, 16x16 threads, 4x4 register blocks. */
 export const DEFAULT_TILING: GemmTiling = { bm: 64, bn: 64, bk: 16, tm: 4, tn: 4 };
 
 /** A conservative tiling for small problems and software rasterizers. */

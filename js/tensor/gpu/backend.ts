@@ -40,6 +40,7 @@ import type {
   TensorDesc,
 } from '../backend.ts';
 import {
+  DEFAULT_TILING,
   SMALL_TILING,
   arangeKernel,
   argReduceKernel,
@@ -78,6 +79,31 @@ import { KernelCache } from '../kernel-cache.ts';
 import type { DriverBuffer, DriverExecutable, DriverKernel, GpuDriver } from './driver.ts';
 
 /** Element types a GPU handles. `f64` and `i64` are CPU-only by design. */
+/**
+ * Smallest output side that pays for the larger tile.
+ *
+ * Both tilings launch 256 threads, but the 64x64 one gives each thread sixteen outputs
+ * to the 32x32 one's four, so it reads far less shared memory per multiply. That only
+ * helps once there is enough work to go round: a big tile over a small matrix leaves
+ * most of the device idle, and measured on an M5 Max the 32x32 tiling is half again as
+ * fast at 256 while the 64x64 one is nearly half again as fast at 2048. They are level
+ * at 512, which is where this sits.
+ */
+const LARGE_TILE_SIDE = 512;
+
+/**
+ * The tiling to use for an output of this size.
+ *
+ * Both operands' extents matter rather than the total work: a tall, narrow multiply has
+ * plenty of elements and still only covers a few tiles across, so it wants the smaller
+ * tile even though its element count is large.
+ *
+ * @internal
+ */
+function gemmTiling(m: number, n: number) {
+  return m >= LARGE_TILE_SIDE && n >= LARGE_TILE_SIDE ? DEFAULT_TILING : SMALL_TILING;
+}
+
 const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool'];
 
 /**
@@ -895,18 +921,19 @@ export class GpuBackend implements DeviceBackend {
       params.strideB = numel(b.shape) === opts.k * opts.n ? 0 : opts.k * opts.n;
       params.strideC = opts.m * opts.n;
     }
+    const tiling = gemmTiling(opts.m, opts.n);
     this.#run(
       () =>
         gemmKernel({
           dtype: this.#scalar(a),
           transA: opts.transA,
           transB: opts.transB,
-          tiling: SMALL_TILING,
+          tiling,
           batched,
         }),
       [a.buffer, b.buffer, out.buffer],
       params,
-      gemmGrid(opts.m, opts.n, SMALL_TILING, opts.batch),
+      gemmGrid(opts.m, opts.n, tiling, opts.batch),
     );
   }
 
