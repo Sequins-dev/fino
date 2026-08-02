@@ -59,6 +59,38 @@ const InitParams = structType([
 /** `GGML_TYPE_F32`. */
 const TYPE_F32 = 0;
 
+/**
+ * Timed repetitions of each measurement.
+ *
+ * A single run of any of these varies by a third between invocations, which is more
+ * than the difference the benchmark exists to report — a published ratio drawn from one
+ * run says as much about the GPU's clock at that moment as about either engine. The
+ * fastest run is the one least polluted by everything else the machine was doing.
+ */
+const ROUNDS = 5;
+
+/** Seconds per iteration for the fastest of `rounds` timed repetitions. */
+function fastest(rounds: number, run: () => number): number {
+  let best = Infinity;
+  for (let round = 0; round < rounds; round++) {
+    const start = performance.now();
+    const iterations = run();
+    best = Math.min(best, (performance.now() - start) / 1000 / iterations);
+  }
+  return best;
+}
+
+/** {@link fastest}, for a measurement that has to await the device. */
+async function fastestAsync(rounds: number, run: () => Promise<number>): Promise<number> {
+  let best = Infinity;
+  for (let round = 0; round < rounds; round++) {
+    const start = performance.now();
+    const iterations = await run();
+    best = Math.min(best, (performance.now() - start) / 1000 / iterations);
+  }
+  return best;
+}
+
 /** What a usable ggml build provides. */
 interface Ggml {
   base: ReturnType<typeof dlopen>;
@@ -184,16 +216,17 @@ function ggmlGemm(
 
   symbols.ggml_backend_graph_compute(backend, graph);
 
-  let start = performance.now();
-  for (let i = 0; i < iterations; i++) symbols.ggml_backend_graph_compute(backend, graph);
-  const synchronised = (performance.now() - start) / 1000 / iterations;
-
-  start = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    symbols.ggml_backend_graph_compute_async(backend, graph);
-  }
-  symbols.ggml_backend_synchronize(backend);
-  const pipelined = (performance.now() - start) / 1000 / iterations;
+  const synchronised = fastest(ROUNDS, () => {
+    for (let i = 0; i < iterations; i++) symbols.ggml_backend_graph_compute(backend, graph);
+    return iterations;
+  });
+  const pipelined = fastest(ROUNDS, () => {
+    for (let i = 0; i < iterations; i++) {
+      symbols.ggml_backend_graph_compute_async(backend, graph);
+    }
+    symbols.ggml_backend_synchronize(backend);
+    return iterations;
+  });
 
   // One element of the result, so the two engines can be checked against each other
   // rather than only timed.
@@ -216,36 +249,44 @@ async function finoGemm(
   const a = await tensor(data, { shape: [n, n], device: dev });
   const b = await tensor(data, { shape: [n, n], device: dev });
 
-  // Reading the whole result would fold a megabytes-wide transfer into the timing;
-  // one element forces the same queue to drain and moves four bytes.
-  const drain = async (out: Tensor): Promise<number> => {
-    const probe = out.reshape([out.size]).slice([{ end: 1 }]);
-    const value = Number((await probe.data())[0]);
-    probe.dispose();
-    return value;
+  // Syncing without adding work. Reading any tensor waits on everything submitted, so
+  // a four-byte scalar allocated once drains the queue for the matmul that preceded it.
+  // Slicing the result instead would have dispatched a copy kernel per iteration and
+  // charged this engine for work the other side never does — which is measuring the
+  // benchmark rather than the engine.
+  const probe = await tensor([0], { device: dev });
+  const sync = async (): Promise<void> => {
+    await probe.data();
   };
 
   const warm = a.matmul(b);
-  const first = await drain(warm);
+  await sync();
+  const firstRow = warm.reshape([warm.size]).slice([{ end: 1 }]);
+  const first = Number((await firstRow.data())[0]);
+  firstRow.dispose();
   warm.dispose();
 
-  let start = performance.now();
-  for (let i = 0; i < iterations; i++) {
-    const out = a.matmul(b);
-    await drain(out);
-    out.dispose();
-  }
-  const synchronised = (performance.now() - start) / 1000 / iterations;
+  const synchronised = await fastestAsync(ROUNDS, async () => {
+    for (let i = 0; i < iterations; i++) {
+      const out = a.matmul(b);
+      await sync();
+      out.dispose();
+    }
+    return iterations;
+  });
 
-  start = performance.now();
   let last: Tensor | null = null;
-  for (let i = 0; i < iterations; i++) {
+  const pipelined = await fastestAsync(ROUNDS, async () => {
+    for (let i = 0; i < iterations; i++) {
+      last?.dispose();
+      last = a.matmul(b);
+    }
+    await sync();
     last?.dispose();
-    last = a.matmul(b);
-  }
-  await drain(last!);
-  const pipelined = (performance.now() - start) / 1000 / iterations;
-  last!.dispose();
+    last = null;
+    return iterations;
+  });
+  probe.dispose();
 
   a.dispose();
   b.dispose();
