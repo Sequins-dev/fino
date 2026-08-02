@@ -193,6 +193,18 @@ export function conformanceCases(): ConformanceCase[] {
       reduction: 3,
     },
     {
+      name: 'matmul large enough to change tiling',
+      group: 'forward',
+      covers: ['gemm'],
+      // Backends may pick a different kernel once a multiply is big enough to be worth
+      // a larger tile, and that choice is invisible from here — which is exactly why it
+      // needs a case. Both sides are past the threshold this engine uses, with a short
+      // reduction so the case stays cheap.
+      inputs: [{ shape: [520, 24] }, { shape: [24, 520], seed: 2 }],
+      run: (a, b) => a.matmul(b),
+      reduction: 24,
+    },
+    {
       name: 'movement',
       group: 'forward',
       covers: ['transpose', 'permute', 'reshape', 'expand'],
@@ -486,27 +498,41 @@ export function conformanceCases(): ConformanceCase[] {
     {
       name: 'the event loop keeps turning while the device works',
       group: 'runtime',
-      covers: ['mul'],
+      covers: ['gemm'],
       check: async (device) => {
-        // Only meaningful where work happens somewhere else. A backend that compiles no
-        // kernels executes inline, so there is no wait to overlap with and a timer
-        // losing the race says nothing about responsiveness.
-        if (backendFor(device).caps.kernelCompile === false) return;
-        // Enough work that a blocking implementation would not finish first. A timer
-        // that never fires means the host waited on the device rather than parking.
-        const big = await tensor(new Array(1 << 20).fill(1), { device });
-        const busy = big.mul(2).mul(3).mul(4);
+        // A backend that compiles no kernels computes inline, so it has no wait for
+        // anything to overlap with. What can be checked there is that the answer came
+        // out right, which is worth doing rather than skipping the case entirely.
+        const inline = backendFor(device).caps.kernelCompile === false;
+        const side = inline ? 8 : 256;
+        const ones = await tensor(new Array(side * side).fill(1), {
+          shape: [side, side],
+          device,
+        });
+
         let fired = false;
-        const timer = new Promise((resolve) =>
-          setTimeout(() => {
-            fired = true;
-            resolve(null);
-          }, 0),
-        );
-        await Promise.race([timer, busy.data()]);
-        busy.dispose();
-        big.dispose();
-        if (!fired) throw new Error('a zero-delay timer did not run while the device worked');
+        setTimeout(() => {
+          fired = true;
+        }, 0);
+
+        // Deliberately not a race between the timer and the work. A race asserts that
+        // the device is slower than a timer, which is a fact about the hardware rather
+        // than about this engine, and it flaps the moment the machine is busy or a
+        // kernel gets faster. Issuing many independent multiplies and waiting for the
+        // last makes the wait long enough that the loop must turn during it, so a
+        // zero-delay timer scheduled beforehand will have run by the time it returns.
+        const issued: Tensor[] = [];
+        for (let i = 0; i < (inline ? 1 : 100); i++) issued.push(ones.matmul(ones));
+        const last = issued[issued.length - 1]!;
+        const got = Number((await last.data())[0]);
+
+        for (const value of issued) value.dispose();
+        ones.dispose();
+
+        if (got !== side) throw new Error(`the multiply gave ${got}, expected ${side}`);
+        if (!inline && !fired) {
+          throw new Error('a zero-delay timer did not run while the device worked');
+        }
       },
     },
   ];
