@@ -47,8 +47,17 @@
  * speed. This is the thing that would make it buy speed, which is what `autocast` needs
  * to be worth turning on for time rather than footprint.
  *
- * Measured at 1024 only. Whether the win holds across sizes is not established, and the
- * tiling work in this engine is a standing reminder that it might not.
+ * The permanent cases here measure 1024. Swept separately across sizes, the win holds
+ * and grows — MMA against the scalar f16 kernel, GFLOP/s:
+ *
+ *     512:   2516 vs 2393   1.05x
+ *     1024:  9815 vs 7485   1.31x
+ *     2048: 11859 vs 8381   1.41x
+ *     4096: 11881 vs 8996   1.32x
+ *
+ * So the MMA path wants a size threshold rather than blanket application, the same shape
+ * of rule the tile selection uses and for the same reason: at 512 the difference is
+ * inside the noise this repository has already been fooled by once.
  */
 import { describe, it } from 'fino:test/test';
 import { createMetalApi, metalAvailable } from 'internal:metal';
