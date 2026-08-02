@@ -50,6 +50,9 @@ import {
   gemmGrid,
   gemmIsExact,
   gemmKernel,
+  gemmMmaFits,
+  gemmMmaGrid,
+  gemmMmaKernel,
   indexSelectKernel,
   layerNormKernel,
   linearGrid,
@@ -104,6 +107,17 @@ const LARGE_TILE_SIDE = 512;
 function gemmTiling(m: number, n: number) {
   return m >= LARGE_TILE_SIDE && n >= LARGE_TILE_SIDE ? DEFAULT_TILING : SMALL_TILING;
 }
+
+/**
+ * Smallest output side that takes the cooperative-matrix kernel.
+ *
+ * Swept against the scalar kernel on an M5 Max: 1.05x at 512, 1.31x at 1024, 1.41x at
+ * 2048, 1.32x at 4096. The threshold sits above the 512 measurement rather than at it,
+ * because five percent is inside the run-to-run variance that has reversed a conclusion
+ * in this engine twice, and the scalar kernel is the one with edge handling and every
+ * dtype — so where the two are level, it is the better default.
+ */
+const MATRIX_TILE_SIDE = 1024;
 
 const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool'];
 
@@ -200,7 +214,7 @@ export class GpuBackend implements DeviceBackend {
       captureReplay: typeof driver.captureBegin === 'function',
       dtypes: driver.caps.f16 ? GPU_DTYPES : GPU_DTYPES.filter((d) => d !== 'f16'),
       subgroups: driver.caps.subgroups,
-      cooperativeMatrix: false,
+      cooperativeMatrix: driver.caps.matrix,
       // Staging exists whenever the device does not share memory.
       pinnedHost: !driver.hostVisible,
       unifiedMemory: driver.hostVisible,
@@ -921,6 +935,28 @@ export class GpuBackend implements DeviceBackend {
       params.strideA = numel(a.shape) === opts.m * opts.k ? 0 : opts.m * opts.k;
       params.strideB = numel(b.shape) === opts.k * opts.n ? 0 : opts.k * opts.n;
       params.strideC = opts.m * opts.n;
+    }
+    // The matrix path when everything it needs holds: the device can compile it, the
+    // operands are the half precision it is faster for, the shapes divide its tile since
+    // it has no edge handling, and the multiply is large enough for the margin to be
+    // real. Anything else is the scalar kernel, which covers every case.
+    const useMatrix =
+      this.#driver.caps.matrix &&
+      this.#scalar(a) === 'f16' &&
+      !batched &&
+      !opts.transA &&
+      !opts.transB &&
+      opts.m >= MATRIX_TILE_SIDE &&
+      opts.n >= MATRIX_TILE_SIDE &&
+      gemmMmaFits(opts.m, opts.n, opts.k);
+    if (useMatrix) {
+      this.#run(
+        () => gemmMmaKernel({ dtype: 'f16' }),
+        [a.buffer, b.buffer, out.buffer],
+        params,
+        gemmMmaGrid(opts.m, opts.n),
+      );
+      return;
     }
     const tiling = gemmTiling(opts.m, opts.n);
     // Every tile lands wholly inside the matrix when each extent divides its tile, so

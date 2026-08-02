@@ -93,6 +93,13 @@ export {
   gemmIsExact,
   gemmKernel,
 } from './templates/gemm.ts';
+export {
+  GEMM_MMA_THREADS,
+  gemmMmaFits,
+  gemmMmaGrid,
+  gemmMmaKernel,
+} from './templates/gemm-mma.ts';
+export type { GemmMmaSpec } from './templates/gemm-mma.ts';
 
 export type { LayerNormSpec, ReduceOp, ReduceSpec, SoftmaxSpec } from './templates/reduce.ts';
 export {

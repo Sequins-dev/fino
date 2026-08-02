@@ -56,6 +56,16 @@ export interface ConformanceCase {
    * than one that does not; the runner scales by the reduction length it is told.
    */
   reduction?: number;
+  /**
+   * Precision the case's result was rounded through, when it is not `f32`.
+   *
+   * A program that stores an intermediate in half precision produces half-precision
+   * values however wide the tensor holding them is, and two backends that visit a
+   * reduction in different orders will land on different sides of the same half-precision
+   * boundary. Comparing those at `f32` tolerance asks for agreement finer than the values
+   * can carry.
+   */
+  precision?: 'f32' | 'f16';
 }
 
 /** How one case turned out. */
@@ -214,6 +224,24 @@ export function conformanceCases(): ConformanceCase[] {
       inputs: [{ shape: [512, 32] }, { shape: [32, 512], seed: 2 }],
       run: (a, b) => a.matmul(b),
       reduction: 32,
+    },
+    {
+      name: 'matmul large enough for a matrix-unit kernel',
+      group: 'forward',
+      covers: ['gemm', 'cast'],
+      // A backend with cooperative matrix instructions may use an entirely different
+      // kernel once a half-precision multiply is big enough to be worth them, and that
+      // kernel typically has no edge handling — so it is reached only by shapes that fit
+      // it exactly, and nothing smaller in this suite would ever run it. K is kept short
+      // so the reference backend, which walks this in scalar TypeScript, stays quick.
+      inputs: [{ shape: [1024, 32] }, { shape: [32, 1024], seed: 2 }],
+      run: (a, b) => a.cast('f16').matmul(b.cast('f16')).cast('f32'),
+      reduction: 32,
+      // The result passed through f16 on its way here. A matrix-unit kernel accumulates
+      // in a different order from a scalar loop, so the two land either side of the same
+      // half-precision boundary on a small fraction of elements — one ulp apart, which is
+      // agreement, not disagreement.
+      precision: 'f16',
     },
     {
       name: 'movement',
@@ -628,7 +656,7 @@ export async function runConformance(
         continue;
       }
       const want = await evaluate(reference);
-      const comparison = compareValues(got, want, 'f32', item.reduction ?? 1);
+      const comparison = compareValues(got, want, item.precision ?? 'f32', item.reduction ?? 1);
       results.push({
         name: item.name,
         group: item.group,

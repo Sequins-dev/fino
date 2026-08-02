@@ -52,6 +52,10 @@ export function createVulkanDriver(): GpuDriver {
     // SPIR-V lowering emits its compare-and-swap fallback instead.
     atomicFloat: false,
     subgroups: false,
+    // Not because the hardware lacks them — on this machine it is the same GPU Metal
+    // reports true for — but because there is no cooperative-matrix lowering that
+    // MoltenVK and lavapipe both accept, so no kernel using them can be compiled here.
+    matrix: false,
     maxWorkgroup: info.maxWorkgroupInvocations,
   };
 

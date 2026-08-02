@@ -48,6 +48,15 @@ export interface DriverCaps {
   atomicFloat: boolean;
   /** Whether subgroup reductions are available. */
   subgroups: boolean;
+  /**
+   * Whether the device has cooperative matrix instructions this engine can reach.
+   *
+   * Reachability is the operative word: SPIR-V has cooperative matrices and no form of
+   * them that both drivers this engine validates against accept, so a Vulkan device
+   * reports false even where the hardware underneath is the same one Metal reports true
+   * for. The flag describes what can be compiled, not what the silicon can do.
+   */
+  matrix: boolean;
   /** Largest workgroup the device accepts. */
   maxWorkgroup: number;
 }

@@ -984,6 +984,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "tensor/ir/templates/gemm"
     ),
     source_builtin!(
+        "internal:tensor/ir/templates/gemm-mma",
+        "tensor/ir/templates/gemm-mma"
+    ),
+    source_builtin!(
         "internal:tensor/ir/templates/reduce",
         "tensor/ir/templates/reduce"
     ),

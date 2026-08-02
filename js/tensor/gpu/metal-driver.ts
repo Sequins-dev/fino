@@ -81,6 +81,9 @@ export function createMetalDriver(): GpuDriver {
     f16: true,
     atomicFloat: true,
     subgroups: info.simdgroups,
+    // Simdgroup matrices come with the simdgroup support this already probes for;
+    // Apple silicon has had them since the family this engine requires anyway.
+    matrix: info.simdgroups,
     maxWorkgroup: info.maxThreadsPerThreadgroup,
   };
 

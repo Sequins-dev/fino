@@ -368,6 +368,32 @@ with the GPU's clock enough to reverse this result, which it did once here. Both
 threshold rather than the element count: a tall, narrow multiply has plenty of elements
 and still covers only a few tiles across, so it wants the smaller tile.
 
+### Half precision uses the matrix units
+
+A device with cooperative matrix instructions runs large half-precision matrix multiplies
+on a different kernel, built from 8x8 tiles handed to the hardware's matrix units rather
+than from scalar multiply-adds. On an M5 Max through Metal:
+
+| | f16 | f32 |
+|---|---|---|
+| 1024³ | 8069 GFLOP/s | 6365 GFLOP/s |
+| 2048³ | 12444 GFLOP/s | 8810 GFLOP/s |
+
+Before this, the two ran at the same rate — both accumulate in `f32` and neither is
+bandwidth-bound, so half precision bought memory and not time. It now buys both, which is
+what makes `autocast` worth turning on for speed.
+
+The matrix kernel is used only where all of it holds: the device can compile it, the
+operands are `f16`, the multiply is not batched or transposed, every extent divides its
+tile since it has no edge handling, and both sides are at least 1024. Everything else
+takes the scalar kernel, including all of Vulkan — SPIR-V has cooperative matrices, but
+no form of them that MoltenVK and lavapipe both accept, so the lowering refuses rather
+than emitting something that works on one driver and is undefined on the next.
+
+`f32` deliberately does not use them. Measured, the matrix instructions run at an eighth
+of the scalar kernel's rate at single precision on this hardware; they are 16-bit units
+and behave like it.
+
 ### Against ggml
 
 Comparing an engine against its own history says whether a change helped and nothing
@@ -515,7 +541,8 @@ for (const [input, target] of batches) {
 ```
 
 `autocast(dtype, fn)` narrows the operands of the operations on its list, and today that
-list holds exactly one entry: `gemm`. Being on it is a claim about numerical behaviour
+list holds exactly one entry: `gemm`. On a device with matrix units that is also where
+the time is won — see [Half precision uses the matrix units](#half-precision-uses-the-matrix-units). Being on it is a claim about numerical behaviour
 that has to hold for that operation specifically — a matrix multiply averages its
 rounding error over the reduction, whereas an elementwise chain compounds it — so
 operations are added one at a time with evidence, not by category. Everything not on the
