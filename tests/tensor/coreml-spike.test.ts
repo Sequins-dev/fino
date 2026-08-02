@@ -43,8 +43,15 @@ import { DiskFileSystem } from 'fino:file';
 /** `MLMultiArrayDataType.float32`. */
 const FLOAT32 = 65568n;
 
-/** `MLComputeUnits.cpuAndNeuralEngine`. */
-const CPU_AND_NEURAL_ENGINE = 2n;
+/**
+ * `MLComputeUnitsCPUAndNeuralEngine`.
+ *
+ * Three, not two. The enum runs cpuOnly, cpuAndGPU, all, cpuAndNeuralEngine, so the
+ * obvious guess selects the GPU — which this spike did until the header was read, under
+ * a constant named for what it was not doing. That is precisely the reason the placement
+ * question below is not settled by the configuration having been accepted.
+ */
+const CPU_AND_NEURAL_ENGINE = 3n;
 
 const SIDE = 256;
 const FIXTURE = 'tests/fixtures/coreml/matmul.mlpackage';
