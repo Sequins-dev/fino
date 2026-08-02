@@ -121,6 +121,24 @@ describe('client cask transfer', () => {
     }
   });
 
+  it('keeps recently fetched casks in the GC keep-set until the grace expires', async (t) => {
+    const transport = fakeSeedTransport();
+    const client = new ClusterClient(transport as never, 'worker-1');
+    client.start();
+    try {
+      const cask = await makeCask();
+      const cache = `${scratch}/cache-keep`;
+      const fetching = client.fetchCask(cask.hash, cache);
+      await waitFor(() => transport.sent.some((s) => s.msg.t === 'CASK_GET'), 'fetch request');
+      transport.inject({ t: 'CASK_DATA', hash: cask.hash, seq: 0, chunk: cask.bytes, last: true });
+      await fetching;
+      t.ok(client.caskKeepSet(60_000).has(cask.hash), 'a fresh fetch is protected');
+      t.ok(!client.caskKeepSet(0).has(cask.hash), 'an expired grace lets it go');
+    } finally {
+      client.stop();
+    }
+  });
+
   it('refuses corrupted fetch bytes before they reach the cache', async (t) => {
     const transport = fakeSeedTransport();
     const client = new ClusterClient(transport as never, 'worker-1');

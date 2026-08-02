@@ -101,6 +101,8 @@ function heartbeatIntervalMs(): number {
 interface RealmRelay {
   childPortId: string;
   parentPortId: string;
+  /** Cask backing this realm, when it was spawned from one. */
+  caskHash?: string;
   realmHandle: number;
   wakeReadFd: number;
   completionFd: number;
@@ -293,6 +295,29 @@ export class ClusterClient {
     });
   }
 
+  /** `Date.now()` of the last fetch per cask hash — the GC grace input. @internal */
+  #caskFetchedAt = new Map<string, number>();
+
+  /**
+   * Cask hashes this node must not garbage-collect: everything backing a
+   * realm currently relayed here, plus anything fetched within `graceMs`.
+   * Everything else is re-fetchable from the control plane by content hash,
+   * which is what makes cache GC a purely local decision.
+   *
+   * @internal
+   */
+  caskKeepSet(graceMs: number, now = Date.now()): Set<string> {
+    const keep = new Set<string>();
+    for (const relay of this.#relays.values()) {
+      if (relay.caskHash !== undefined) keep.add(relay.caskHash);
+    }
+    for (const [hash, at] of this.#caskFetchedAt) {
+      if (now - at < graceMs) keep.add(hash);
+      else this.#caskFetchedAt.delete(hash);
+    }
+    return keep;
+  }
+
   /** Deployment-history queries in flight, keyed by request id. @internal */
   #pendingDeploymentsGets = new Map<string, (records: DeploymentInfo[]) => void>();
 
@@ -380,7 +405,9 @@ export class ClusterClient {
     }
     await fs.writeFile(tmp, bytes);
     try {
-      return await unpackCask(tmp, cacheDir, { expectedHash: hash });
+      const slot = await unpackCask(tmp, cacheDir, { expectedHash: hash });
+      this.#caskFetchedAt.set(hash, Date.now());
+      return slot;
     } finally {
       await fs.unlink(tmp).catch(() => {});
     }
@@ -1035,7 +1062,9 @@ export class ClusterClient {
       return;
     }
     let config = msg.config;
+    let caskHash: string | undefined;
     if (msg.caskHash !== undefined) {
+      caskHash = msg.caskHash;
       // Deployment spawn: materialize the artifact before the realm exists.
       // fetchCask is a cache no-op when this node already holds the hash.
       const cacheDir = env.FINO_CASK_CACHE_DIR ?? `/tmp/fino-cask-cache-${this.nodeId}`;
@@ -1063,6 +1092,7 @@ export class ClusterClient {
       finalized: false,
       pendingSends: [],
       lastPortSeq: 0,
+      ...(caskHash === undefined ? {} : { caskHash }),
     };
     this.#relays.set(childPortId, relay);
     // Acknowledge so the requester learns the childPortId. A routed spawn

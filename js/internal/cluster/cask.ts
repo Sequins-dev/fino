@@ -230,6 +230,33 @@ export async function gcCasks(cacheDir: string, keep: ReadonlySet<string>): Prom
   return removed;
 }
 
+/**
+ * Delete stored cask artifacts (`<hash>.cask` files) whose hash is not in
+ * `keep` and whose file is older than `graceMs`. The grace window protects
+ * artifacts uploaded moments ago whose deployment record has not landed yet.
+ * Returns removed hashes.
+ */
+export async function gcCaskStore(
+  storeDir: string,
+  keep: ReadonlySet<string>,
+  graceMs: number,
+  now = Date.now(),
+): Promise<string[]> {
+  if (!(await exists(storeDir))) return [];
+  const removed: string[] = [];
+  for await (const entry of await fs.dir(storeDir)) {
+    const name = entry.name;
+    if (!name.endsWith('.cask')) continue;
+    const hash = name.slice(0, -'.cask'.length);
+    if (!/^[0-9a-f]{64}$/.test(hash) || keep.has(hash)) continue;
+    const stat = await fs.stat(`${storeDir}/${name}`).catch(() => null);
+    if (stat === null || now - stat.mtimeMs < graceMs) continue;
+    await fs.unlink(`${storeDir}/${name}`);
+    removed.push(hash);
+  }
+  return removed;
+}
+
 async function removeTree(path: string): Promise<void> {
   const stat = await fs.lstat(path).catch(() => null);
   if (stat === null) return;

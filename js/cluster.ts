@@ -65,6 +65,7 @@ import { ClusterClient, ClusterPort } from 'internal:cluster/client';
 import { sampleNodeLoad } from 'internal:runtime/stats';
 import { availableParallelism, reactorQueueDepth } from 'internal:scheduler-native';
 import { WorkloadLedger } from 'internal:cluster/ledger';
+import { gcCasks, gcCaskStore } from 'internal:cluster/cask';
 import { env } from 'internal:process';
 import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
 import { startBalanceLoop, drainQueue, type DrainReport } from 'internal:cluster/balance-loop';
@@ -99,7 +100,9 @@ let _joinString: string | null = null;
 let _agent: SystemRealmAgent | null = null;
 let _mesh: PeerMesh | null = null;
 let _ledger: WorkloadLedger | null = null;
+let _seedCaskDir: string | null = null;
 let _stopBalance: (() => void) | null = null;
+let _stopCaskGc: (() => void) | null = null;
 let _draining = false;
 
 /** Spawn the node's system realm and return the heartbeat load sampler. */
@@ -122,6 +125,46 @@ function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
       ...(_draining ? { draining: true } : {}),
     };
   };
+}
+
+function envMsOr(name: string, fallback: number): number {
+  const configured = Number(env[name]);
+  return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+}
+
+/**
+ * Periodically garbage-collect cask storage.
+ *
+ * The node cache is a purely local decision: keep what backs a running realm
+ * plus anything fetched inside the grace window — everything else is
+ * re-fetchable from the control plane by content hash. The seed's artifact
+ * store additionally keeps every hash any deployment generation references,
+ * so rollback targets survive for as long as their history does.
+ */
+function startCaskGc(client: ClusterClient): () => void {
+  const intervalMs = envMsOr('FINO_CASK_GC_INTERVAL_MS', 600_000);
+  const graceMs = envMsOr('FINO_CASK_GC_GRACE_MS', 3_600_000);
+  const cacheDir = env.FINO_CASK_CACHE_DIR ?? `/tmp/fino-cask-cache-${client.nodeId}`;
+  let running = false;
+  const pass = async (): Promise<void> => {
+    if (running) return;
+    running = true;
+    try {
+      const keep = client.caskKeepSet(graceMs);
+      await gcCasks(cacheDir, keep);
+      if (_ledger !== null && _seedCaskDir !== null) {
+        const referenced = await _ledger.referencedCaskHashes();
+        for (const hash of keep) referenced.add(hash);
+        await gcCaskStore(_seedCaskDir, referenced, graceMs);
+      }
+    } catch (err) {
+      console.error(`fino:cluster cask GC failed: ${err}`);
+    } finally {
+      running = false;
+    }
+  };
+  const timer = setInterval(() => void pass(), intervalMs);
+  return () => clearInterval(timer);
 }
 
 /**
@@ -512,6 +555,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     ...(_ledger !== null ? { ledger: _ledger } : {}),
     ...(opts.stateDir !== undefined ? { caskDir: `${opts.stateDir}/casks` } : {}),
   });
+  _seedCaskDir = opts.stateDir !== undefined ? `${opts.stateDir}/casks` : null;
   await _seed.start();
   // Also join as a worker (connect to self) - seeds participate as workers.
   // The self-join pins the seed's own certificate hash rather than disabling
@@ -539,6 +583,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     admission: defaultAdmission,
   });
   _stopBalance = startBalanceLoop(_client);
+  _stopCaskGc = startCaskGc(_client);
   _client.start();
   await _client.ready();
   _joinString = mintJoinString({
@@ -645,6 +690,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
     admission: defaultAdmission,
   });
   _stopBalance = startBalanceLoop(_client);
+  _stopCaskGc = startCaskGc(_client);
   _client.start();
   try {
     await _client.ready();
@@ -736,6 +782,9 @@ export function leaveCluster(): void {
   _mesh = null;
   _stopBalance?.();
   _stopBalance = null;
+  _stopCaskGc?.();
+  _stopCaskGc = null;
+  _seedCaskDir = null;
   _draining = false;
   void _ledger?.close().catch(() => {});
   _ledger = null;

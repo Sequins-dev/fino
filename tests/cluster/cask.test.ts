@@ -86,3 +86,31 @@ describe('cask format', () => {
     t.ok(!debris, 'crashed-unpack staging debris is swept');
   });
 });
+
+describe('cask store GC', () => {
+  it('keeps referenced and fresh artifacts, removes stale unreferenced ones', async (t) => {
+    const { gcCaskStore } = await import('internal:cluster/cask');
+    const store = `${scratch}/store-gc`;
+    await fs.mkdir(store);
+    const keepHash = '1'.repeat(64);
+    const staleHash = '2'.repeat(64);
+    const freshHash = '3'.repeat(64);
+    for (const hash of [keepHash, staleHash, freshHash]) {
+      await fs.writeFile(`${store}/${hash}.cask`, new Uint8Array([1]));
+    }
+    await fs.writeFile(`${store}/not-a-cask.txt`, new Uint8Array([2]));
+    // Age two of them past the grace window.
+    const old = new Date(Date.now() - 60_000);
+    await fs.utimes(`${store}/${keepHash}.cask`, old, old);
+    await fs.utimes(`${store}/${staleHash}.cask`, old, old);
+
+    const removed = await gcCaskStore(store, new Set([keepHash]), 30_000);
+    t.deepEqual(removed, [staleHash], 'only the stale unreferenced artifact was removed');
+    const kept = await fs.stat(`${store}/${keepHash}.cask`).then(() => true, () => false);
+    t.ok(kept, 'referenced artifacts survive regardless of age');
+    const fresh = await fs.stat(`${store}/${freshHash}.cask`).then(() => true, () => false);
+    t.ok(fresh, 'unreferenced-but-fresh artifacts survive the grace window');
+    const stranger = await fs.stat(`${store}/not-a-cask.txt`).then(() => true, () => false);
+    t.ok(stranger, 'non-cask files are never touched');
+  });
+});
