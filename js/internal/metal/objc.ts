@@ -185,6 +185,16 @@ export const send = {
   sizeRet: msgSend([], MTLSize),
   /** `- (BOOL)waitUntilSignaledValue:(uint64_t) timeoutMS:(uint64_t)`, on the pool. */
   boolU64U64Async: msgSend(['u64', 'u64'], 'bool', { async: true }),
+  /** `+ (id)numberWithLongLong:(long long)` */
+  ptrI64: msgSend(['i64'], 'pointer'),
+  /** `- (void)selector:(long long)` */
+  voidI64: msgSend(['i64'], 'void'),
+  /** `+ (id)arrayWithObjects:(const id *) count:(NSUInteger)` */
+  ptrBufU64: msgSend(['buffer', 'u64'], 'pointer'),
+  /** `+ (id)dictionaryWithObjects:(const id *) forKeys:(const id *) count:(NSUInteger)` */
+  ptrBufBufU64: msgSend(['buffer', 'buffer', 'u64'], 'pointer'),
+  /** `- (id)initWithShape:(NSArray *) dataType:(NSInteger) error:(NSError **)` */
+  ptrPtrI64Buf: msgSend(['pointer', 'i64', 'buffer'], 'pointer'),
 } as const;
 
 /**
@@ -307,3 +317,58 @@ export function takeError(slot: Uint8Array): string | null {
   return description ? readNSString(description) : 'unknown Objective-C error';
 }
 
+// -- Foundation collections ---------------------------------------------------
+//
+// CoreML takes its shapes as `NSArray<NSNumber *>` and its inputs as an
+// `NSDictionary`, so reaching it needs the collection classes that Metal never
+// did. They are built here rather than in a CoreML module because they are
+// Foundation, not CoreML, and the next framework this engine reaches for will
+// want them too.
+
+/**
+ * An `NSNumber` holding an integer.
+ *
+ * Autoreleased, so it lives until the enclosing pool is popped — which is what
+ * {@link withPool} is for.
+ */
+export function nsNumber(value: number): Id {
+  const cls = objcClass('NSNumber');
+  if (!cls) throw new Error('NSNumber is unavailable');
+  return send.ptrI64(cls, sel('numberWithLongLong:'), BigInt(value));
+}
+
+/** The pointer value an object handle wraps, for packing into a C array. */
+function addressOf(object: Id): bigint {
+  return new DataView(object as ArrayBuffer).getBigUint64(0, true);
+}
+
+/** An `NSArray` over the given objects. */
+export function nsArray(items: readonly Id[]): Id {
+  const cls = objcClass('NSArray');
+  if (!cls) throw new Error('NSArray is unavailable');
+  const packed = new BigUint64Array(items.map(addressOf));
+  return send.ptrBufU64(
+    cls,
+    sel('arrayWithObjects:count:'),
+    new Uint8Array(packed.buffer),
+    BigInt(items.length),
+  );
+}
+
+/** An `NSDictionary` pairing keys with values, positionally. */
+export function nsDictionary(keys: readonly Id[], values: readonly Id[]): Id {
+  if (keys.length !== values.length) {
+    throw new Error(`nsDictionary needs matching keys and values, got ${keys.length} and ${values.length}`);
+  }
+  const cls = objcClass('NSDictionary');
+  if (!cls) throw new Error('NSDictionary is unavailable');
+  const keyWords = new BigUint64Array(keys.map(addressOf));
+  const valueWords = new BigUint64Array(values.map(addressOf));
+  return send.ptrBufBufU64(
+    cls,
+    sel('dictionaryWithObjects:forKeys:count:'),
+    new Uint8Array(valueWords.buffer),
+    new Uint8Array(keyWords.buffer),
+    BigInt(keys.length),
+  );
+}
