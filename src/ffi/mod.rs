@@ -512,8 +512,15 @@ fn ffi_callback_constructor(
     };
     let func_global = v8::Global::new(scope, func_local);
 
+    // `deferred: true` — the native call returns as soon as the handler is queued.
+    let deferred_key = v8::String::new(scope, "deferred").unwrap();
+    let deferred = def_obj
+        .get(scope, deferred_key.into())
+        .map(|v| v.boolean_value(scope))
+        .unwrap_or(false);
+
     let (handle_ptr, code_ptr) =
-        match closure::new_callback(scope, param_types, result_type, func_global) {
+        match closure::new_callback(scope, param_types, result_type, func_global, deferred) {
             Ok(pair) => pair,
             Err(e) => {
                 v8util::throw_error(scope, &format!("FfiCallback: {e}"));

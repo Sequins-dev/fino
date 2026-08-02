@@ -443,7 +443,26 @@ declare module 'fino:ffi' {
    */
   export const FfiCallback: {
     new (
-      spec: Pick<NativeSymbolSpec, 'parameters' | 'result'>,
+      spec: Pick<NativeSymbolSpec, 'parameters' | 'result'> & {
+        /**
+         * Queue the handler and return, instead of waiting for it.
+         *
+         * A callback normally delivers its handler's return value back to C, which
+         * means the calling thread waits for JavaScript to run. For a completion
+         * handler there is nothing to deliver, and the waiting is the problem: the
+         * caller is whichever thread the framework chose — one of libdispatch's
+         * workers, say — and parking it costs a thread this process neither owns nor
+         * budgeted.
+         *
+         * A deferred callback queues the call, wakes the event loop, and returns. The
+         * handler runs on a later turn, on the JavaScript thread, and its value is
+         * discarded. The result type must be `'void'`, since nothing can receive one.
+         *
+         * This also holds on the JavaScript thread itself: a deferred handler is never
+         * re-entered in the middle of the native call that triggered it.
+         */
+        deferred?: boolean;
+      },
       callback: (...args: any[]) => unknown,
     ): FfiCallbackHandle;
   };

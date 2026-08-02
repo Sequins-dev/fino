@@ -78,7 +78,11 @@ pub struct JsCallRequest {
     pub args: Vec<SendArg>,
     pub param_types: Vec<NativeType>,
     /// Filled by the V8 thread; the blocking thread waits on the condvar.
-    pub result_slot: Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
+    ///
+    /// `None` for a deferred callback, which returns to its caller as soon as the
+    /// request is queued. Nobody is waiting, so there is nothing to fill: the handler
+    /// runs on the next turn of the event loop and its value is discarded.
+    pub result_slot: Option<Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>>,
 }
 
 /// Register a JS function and return its isolate-local slot index.
@@ -117,6 +121,19 @@ pub fn unregister_callback(id: usize) {
 // Drain — called from pump_and_checkpoint via drain_all
 // ---------------------------------------------------------------------------
 
+/// Hand a result back to a waiting thread, if there is one.
+///
+/// A deferred callback has no slot: its caller returned long ago and the value has
+/// nowhere to go.
+fn reply(
+    slot: &Option<Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>>,
+    result: Result<CallResult, String>,
+) {
+    if let Some(slot) = slot {
+        fill_slot(slot, result);
+    }
+}
+
 /// Process all pending JS call requests. Returns true if any were handled.
 pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) -> bool {
     if requests.is_empty() {
@@ -132,7 +149,7 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
         });
 
         let Some(func) = func_local else {
-            fill_slot(
+            reply(
                 &req.result_slot,
                 Err("FfiCallback: callback has been closed".into()),
             );
@@ -154,24 +171,26 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
         if tc.has_caught() {
             let msg = caught_exception_message!(tc);
             tc.reset();
-            fill_slot(&req.result_slot, Err(format!("FfiCallback: {msg}")));
+            reply(&req.result_slot, Err(format!("FfiCallback: {msg}")));
             continue;
         }
 
         let val = call_result.unwrap_or_else(|| v8::undefined(tc).into());
 
         if let Ok(promise) = v8::Local::<v8::Promise>::try_from(val) {
-            let slot = Arc::clone(&req.result_slot);
+            // A deferred handler may still return a promise; nothing waits for it, so
+            // it is driven to completion for its effects and its value dropped.
+            let slot = req.result_slot.clone();
             let fut = promise_to_future(tc, promise);
             crate::async_rt::spawn(async move {
                 let result = match fut.await {
                     Ok(repr) => repr_to_call_result(repr),
                     Err(repr) => Err(repr_to_error_string(repr)),
                 };
-                fill_slot(&slot, result);
+                reply(&slot, result);
             });
         } else {
-            fill_slot(&req.result_slot, Ok(local_to_call_result(tc, val)));
+            reply(&req.result_slot, Ok(local_to_call_result(tc, val)));
         }
     }
 

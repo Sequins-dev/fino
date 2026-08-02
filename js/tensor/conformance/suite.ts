@@ -543,7 +543,7 @@ export function conformanceCases(): ConformanceCase[] {
         // anything to overlap with. What can be checked there is that the answer came
         // out right, which is worth doing rather than skipping the case entirely.
         const inline = backendFor(device).caps.kernelCompile === false;
-        const side = inline ? 8 : 256;
+        const side = inline ? 8 : 512;
         const ones = await tensor(new Array(side * side).fill(1), {
           shape: [side, side],
           device,
@@ -560,6 +560,11 @@ export function conformanceCases(): ConformanceCase[] {
         // kernel gets faster. Issuing many independent multiplies and waiting for the
         // last makes the wait long enough that the loop must turn during it, so a
         // zero-delay timer scheduled beforehand will have run by the time it returns.
+        //
+        // The size is set by how long that wait has to be, not by the arithmetic. At
+        // 256 a side this still flapped under a full suite run — enough work to beat a
+        // timer on an idle machine is not enough on a busy one — so it is 512, which is
+        // eight times the work for the same number of launches.
         const issued: Tensor[] = [];
         for (let i = 0; i < (inline ? 1 : 100); i++) issued.push(ones.matmul(ones));
         const last = issued[issued.length - 1]!;

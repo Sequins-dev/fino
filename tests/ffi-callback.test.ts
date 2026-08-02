@@ -2,7 +2,7 @@
  * Tests for FfiCallback — expose JS functions as C-callable function pointers.
  */
 import { describe, it } from 'fino:test/test';
-import { dlopen, FfiCallback, Pointer } from 'fino:ffi';
+import { dlopen, ffiFunction, FfiCallback, Pointer } from 'fino:ffi';
 import { os } from 'fino:process';
 import { Context } from 'fino:context';
 const libcPath = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -202,5 +202,46 @@ describe('FfiCallback async-returning comparator', () => {
     await asyncLibc.symbols.qsort(Pointer.of(arr.buffer), 5n, 4n, cmp.pointer);
     t.deepEqual(Array.from(arr), [1, 2, 5, 7, 8], 'async comparator sorts correctly');
     cmp.close();
+  });
+});
+
+describe('FfiCallback deferred', () => {
+  it('queues the handler and returns without running it', async (t) => {
+    let ran = 0;
+    const cb = new FfiCallback(
+      { parameters: ['pointer'], result: 'void', deferred: true },
+      () => {
+        ran++;
+      },
+    );
+    const invoke = ffiFunction(cb.pointer, { parameters: ['pointer'], result: 'void' });
+    const arg = Pointer.of(new Uint8Array(8));
+
+    invoke(arg);
+    // The whole point: the native call is over and the handler has not run. A
+    // completion handler that parked its caller until JS caught up would block
+    // whichever thread the framework called on, which is not a thread this process
+    // owns or budgeted.
+    t.equal(ran, 0, 'the call returns before the handler runs');
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    t.equal(ran, 1, 'and the handler runs on a later turn of the loop');
+
+    invoke(arg);
+    invoke(arg);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    t.equal(ran, 3, 'every queued call is delivered');
+    cb.close();
+  });
+
+  it('refuses a deferred callback that returns a value', (t) => {
+    // Nothing waits for the value, so there is nowhere for it to go. Saying so beats
+    // silently returning zero to C.
+    t.throws(
+      () =>
+        new FfiCallback({ parameters: ['i32'], result: 'i32', deferred: true }, () => 1),
+      /must return void/,
+      'a deferred callback has to be void',
+    );
   });
 });
