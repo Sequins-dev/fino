@@ -48,6 +48,7 @@ import {
   castKernel,
   fillKernel,
   gemmGrid,
+  gemmIsExact,
   gemmKernel,
   indexSelectKernel,
   layerNormKernel,
@@ -927,8 +928,7 @@ export class GpuBackend implements DeviceBackend {
     // can be left out. The kernel has always been able to do this; nothing but its
     // tests ever asked. It changes the emitted code, so it is part of the cache key and
     // an exact multiply and a ragged one of the same dtype get different kernels.
-    const exact =
-      opts.m % tiling.bm === 0 && opts.n % tiling.bn === 0 && opts.k % tiling.bk === 0;
+    const exact = gemmIsExact(opts.m, opts.n, opts.k, tiling);
     this.#run(
       () =>
         gemmKernel({
