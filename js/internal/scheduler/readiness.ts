@@ -21,6 +21,7 @@ import {
   takeReactorEvents,
 } from 'internal:scheduler-native';
 import { Isolate } from './isolate.ts';
+import { env } from 'internal:process';
 import { currentProcessReadinessController } from './reactor.ts';
 
 /** Completion and transition counters reported by the TypeScript pool. */
@@ -73,7 +74,11 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
   // Threads track demand: one per live workload, capped at hardware
   // parallelism (or the explicit override). A quiet process runs one reactor;
   // growth happens on `submitted` events as realms enter the queue.
-  const threadCap = Math.max(1, Math.floor(options.threads ?? availableParallelism()));
+  // FINO_REACTOR_THREADS caps the pool for capacity experiments — the shed
+  // path only exercises when specs genuinely outnumber reactor capacity.
+  const envCap = Number(env.FINO_REACTOR_THREADS);
+  const defaultCap = Number.isFinite(envCap) && envCap >= 1 ? Math.floor(envCap) : availableParallelism();
+  const threadCap = Math.max(1, Math.floor(options.threads ?? defaultCap));
   const threads: Array<ReturnType<typeof createReactorThread>> = [];
   let liveWorkloads = 0;
   const ensureThreads = (): void => {

@@ -97,6 +97,7 @@ const startCommand = new Task({
       { flags: '--cluster-id', type: 'string', description: 'Stable cluster identity (default: minted)' },
       { flags: '--join-token', type: 'string', description: 'Join token (default: minted)' },
       { flags: '--state', type: 'string', description: 'Directory for durable node state (incarnation)' },
+      { flags: '--no-workloads', type: 'boolean', description: 'Run as a dedicated control plane: never a placement target' },
     ],
   },
   run: async function runClusterStart(input, ctx) {
@@ -115,6 +116,9 @@ const startCommand = new Task({
       clusterId: opts['cluster-id'],
       joinToken: opts['join-token'] ?? mintToken(),
       stateDir: opts.state,
+      ...(opts['no-workloads'] === true || opts['no-workloads'] === 'true'
+        ? { acceptWorkloads: false }
+        : {}),
       tls: { cert: opts.cert, key: opts.key },
     });
     await print(`cluster started on port ${port}\n`);
@@ -256,7 +260,9 @@ const deployCommand = new Task({
     const dir = opts.dir.replace(/\/+$/, '');
     const name = opts.name ?? dir.split('/').pop()!;
     const entry = opts.entry ?? 'main.ts';
-    const caskPath = `${dir}.cask`;
+    // Unique per invocation: concurrent deploys of the same directory must
+    // not collide on the archive path.
+    const caskPath = `${dir}.${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}.cask`;
     const replicas = opts.replicas === undefined ? undefined : Number(opts.replicas);
     if (replicas !== undefined && (!Number.isInteger(replicas) || replicas < 1)) {
       throw new Error('cluster deploy: --replicas must be a positive integer');
@@ -269,7 +275,11 @@ const deployCommand = new Task({
     });
     await print(`packed ${name} as sha256-${packed.hash.slice(0, 12)}…\n`);
 
-    await joinCluster({ joinString: opts.joinString, nodeId: opts['node-id'] });
+    await joinCluster({
+      joinString: opts.joinString,
+      nodeId: opts['node-id'],
+      acceptWorkloads: false,
+    });
     try {
       const client = getCluster()!;
       await client.uploadCask(caskPath);
@@ -298,7 +308,7 @@ const deploymentsCommand = new Task({
     if (opts.joinString === undefined) {
       throw new Error('cluster deployments: a join string is required');
     }
-    await joinCluster({ joinString: opts.joinString });
+    await joinCluster({ joinString: opts.joinString, acceptWorkloads: false });
     try {
       const records = await getCluster()!.listDeployments(opts.name);
       if (records.length === 0) {
@@ -332,7 +342,7 @@ const rollbackCommand = new Task({
     if (opts.joinString === undefined || opts.name === undefined) {
       throw new Error('cluster rollback: a join string and a deployment name are required');
     }
-    await joinCluster({ joinString: opts.joinString });
+    await joinCluster({ joinString: opts.joinString, acceptWorkloads: false });
     try {
       const client = getCluster()!;
       const port = new ClusterPort(`${client.nodeId}/p-rollback-${Date.now() % 1e6}`, client);

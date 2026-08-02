@@ -305,6 +305,14 @@ function hexToBytes(hex: string): Uint8Array {
  */
 export interface StartClusterOptions {
   /**
+   * Whether the seed node also accepts workload placements. Default true —
+   * a small cluster's seed is a useful worker. Set false for a dedicated
+   * control plane: the node advertises `draining` from its first HELLO, so
+   * placement skips it and application load can never starve the event loop
+   * that routes the cluster.
+   */
+  acceptWorkloads?: boolean;
+  /**
    * TCP/UDP port the seed HTTP/3 WebTransport server will listen on.
    *
    * The port must be available on the local host. There is no default because
@@ -413,6 +421,13 @@ export interface StartClusterOptions {
  * ```
  */
 export interface JoinClusterOptions {
+  /**
+   * Whether this node accepts workload placements. Ephemeral control
+   * connections — deploy and rollback CLIs — must join with `false`: they
+   * advertise `draining` from their very first HELLO, so the seed never
+   * places onto a process that exits after its command completes.
+   */
+  acceptWorkloads?: boolean;
   /**
    * Join string minted by the seed (`clusterJoinString()` / `fino cluster
    * start`). Supplies the seed endpoint, cluster identity to verify, join
@@ -564,6 +579,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   const clusterId = opts.clusterId ?? `c-${randomHandle(8)}`;
   const joinToken = opts.joinToken;
   const certHash = await certificateSha256Hex(opts.tls.cert);
+  if (opts.acceptWorkloads === false) _draining = true;
   const incarnation = await nextIncarnation(opts.stateDir);
   const advertisedHost = clusterAdvertisedHost(opts.hostname);
   const advertisedEndpoint = `https://${advertisedHost}:${opts.port}${path}`;
@@ -584,13 +600,17 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   // can be introduced to the seed's listener directly.
   const workerTransport = new WebTransportWorkerTransport(nodeId);
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
-  await workerTransport.connect(`https://${selfJoinHost}:${opts.port}${path}`, sampleNodeLoad(), {
-    serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(certHash) }],
-    ...(joinToken !== undefined ? { token: joinToken } : {}),
-    incarnation,
-    endpoint: advertisedEndpoint,
-    certHash,
-  });
+  await workerTransport.connect(
+    `https://${selfJoinHost}:${opts.port}${path}`,
+    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}) },
+    {
+      serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(certHash) }],
+      ...(joinToken !== undefined ? { token: joinToken } : {}),
+      incarnation,
+      endpoint: advertisedEndpoint,
+      certHash,
+    },
+  );
   _mesh = new PeerMesh({
     nodeId,
     clusterId,
@@ -656,6 +676,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
   if (_client !== null) {
     throw new Error('fino:cluster — already connected to a cluster');
   }
+  if (opts.acceptWorkloads === false) _draining = true;
   const nodeId = opts.nodeId ?? `worker-${Math.random().toString(36).slice(2, 9)}`;
   const joinInfo = opts.joinString !== undefined ? parseJoinString(opts.joinString) : null;
   if (joinInfo === null && opts.seed === undefined) {
@@ -703,7 +724,11 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
       : {}),
   });
   await _mesh.listen();
-  await transport.connect(seed, sampleNodeLoad(), connectOptions);
+  await transport.connect(
+    seed,
+    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}) },
+    connectOptions,
+  );
   _client = new ClusterClient(transport, nodeId, {
     loadSampler: startNodeAgent(),
     incarnation,

@@ -1812,3 +1812,43 @@ describe('SeedServer — rolling generation replacement', () => {
     await made.ledger.close();
   });
 });
+
+describe('SeedServer — control-plane-only and ephemeral members', () => {
+  afterEach(stopActiveSeed);
+
+  it('never places onto a node that advertised draining at HELLO', async (t) => {
+    const { transport } = await makeSeed();
+    // A control-plane seed and ephemeral CLIs both announce draining in
+    // their very first HELLO, closing the window where they would otherwise
+    // be targetable until their first heartbeat.
+    transport.inject('control-plane', {
+      t: 'HELLO',
+      nodeId: 'control-plane',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('deploy-cli', {
+      t: 'HELLO',
+      nodeId: 'deploy-cli',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('worker', {
+      t: 'HELLO',
+      nodeId: 'worker',
+      load: { cpu: 0.95, memory: 1, pendingSpecs: 7 },
+    });
+    transport.sent.length = 0;
+    transport.inject('deploy-cli', {
+      t: 'SPAWN',
+      spawnReqId: 'deploy-cli-s-1',
+      parentPortId: 'deploy-cli/p-1',
+      config: { entry: '/app/main.ts', root: '/app', rules: [] },
+    });
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(
+      routed[0]!.to,
+      'worker',
+      'the loaded worker wins over an idle control plane and an idle CLI',
+    );
+  });
+});
