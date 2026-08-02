@@ -342,3 +342,37 @@ describe('shed handoff messages', () => {
     t.equal(spawn.caskHash, hash, 'the cask identity rides the spawn');
   });
 });
+
+describe('deployment query and rollback messages', () => {
+  it('round-trips DEPLOYMENTS_GET, DEPLOYMENTS, and ROLLBACK', (t) => {
+    const hash = 'cd'.repeat(32);
+    const get = decode(encode({ t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-2-0', name: 'web' }));
+    if (get.t !== 'DEPLOYMENTS_GET') throw new Error('wrong kind');
+    t.equal(get.name, 'web', 'name filter survives');
+
+    const bare = decode(encode({ t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-2-1' }));
+    if (bare.t !== 'DEPLOYMENTS_GET') throw new Error('wrong kind');
+    t.equal(bare.name, undefined, 'name is optional');
+
+    const listed = decode(
+      encode({
+        t: 'DEPLOYMENTS',
+        spawnReqId: 'cli-2-0',
+        deployments: [
+          { name: 'web', generation: 2, caskHash: hash, entry: 'main.ts', state: 'active', createdAt: 1 },
+          { name: 'web', generation: 1, caskHash: hash, entry: 'main.ts', state: 'superseded', createdAt: 0 },
+        ],
+      }),
+    );
+    if (listed.t !== 'DEPLOYMENTS') throw new Error('wrong kind');
+    t.equal(listed.deployments.length, 2, 'history survives');
+    t.equal(listed.deployments[0]!.generation, 2, 'generations survive');
+    t.equal(listed.deployments[1]!.state, 'superseded', 'states survive');
+
+    const rollback = decode(
+      encode({ t: 'ROLLBACK', spawnReqId: 'cli-2-2', parentPortId: 'cli-2/p-r-1', name: 'web' }),
+    );
+    if (rollback.t !== 'ROLLBACK') throw new Error('wrong kind');
+    t.equal(rollback.name, 'web', 'rollback target survives');
+  });
+});

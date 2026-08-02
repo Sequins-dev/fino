@@ -337,8 +337,27 @@ export class SeedServer {
       fail(`deployment record failed: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    // The deployer is excluded: deploy CLIs are ephemeral joiners, and a
-    // deployment must not land on a process that leaves after the ack.
+    this.#placeDeployment(from, msg.spawnReqId, msg.parentPortId, msg.name, msg.hash, entry, fail);
+  }
+
+  /**
+   * Place a recorded deployment generation onto a node.
+   *
+   * The requester is excluded: deploy and rollback CLIs are ephemeral
+   * joiners, and a deployment must not land on a process that leaves after
+   * the ack. The SEED owns the deployment's parent port for the same reason —
+   * the requester's node-down must not cascade a TERMINATE into the
+   * application it just deployed.
+   */
+  #placeDeployment(
+    from: string,
+    spawnReqId: string,
+    parentPortId: string,
+    name: string,
+    hash: string,
+    entry: string,
+    fail: (error: string) => void,
+  ): void {
     const target = this.#selectTarget(new Set([from]));
     if (target === null) {
       const peers = [...this.#peers.entries()]
@@ -349,33 +368,85 @@ export class SeedServer {
     }
     const spawn: Extract<ClusterMessage, { t: 'SPAWN' }> = {
       t: 'SPAWN',
-      spawnReqId: msg.spawnReqId,
-      parentPortId: msg.parentPortId,
+      spawnReqId,
+      parentPortId,
       config: { entry, root: '', rules: [] },
-      caskHash: msg.hash,
+      caskHash: hash,
     };
-    this.#pendingSpawns.set(msg.spawnReqId, {
+    this.#pendingSpawns.set(spawnReqId, {
       requesterNodeId: from,
-      parentPortId: msg.parentPortId,
+      parentPortId,
       targetNodeId: target,
       spawn,
       attempted: new Set([from, target]),
     });
-    // The SEED owns a deployment's parent port, not the deployer: when an
-    // ephemeral deploy CLI disconnects, its node-down must not cascade a
-    // TERMINATE into the application it just deployed.
-    this.#portNodes.set(msg.parentPortId, this.#transport.nodeId);
-    this.#registry.register(msg.parentPortId, null, this.#transport.nodeId);
+    this.#portNodes.set(parentPortId, this.#transport.nodeId);
+    this.#registry.register(parentPortId, null, this.#transport.nodeId);
     this.#ledgerOp(async (ledger) => {
-      await ledger.commit(msg.spawnReqId, JSON.stringify({ deploy: msg.name, cask: msg.hash }));
+      await ledger.commit(spawnReqId, JSON.stringify({ deploy: name, cask: hash }));
       await ledger.claim(
-        msg.spawnReqId,
+        spawnReqId,
         target,
         this.#peers.get(target)?.incarnation ?? 0,
         this.#leaseMs,
       );
     });
     this.#transport.send(target, spawn);
+  }
+
+  /** Answer a deployment-history query from the ledger. */
+  async #handleDeploymentsGet(from: string, spawnReqId: string, name?: string): Promise<void> {
+    const records = this.#ledger === null ? [] : await this.#ledger.deployments(name);
+    this.#transport.send(from, {
+      t: 'DEPLOYMENTS',
+      spawnReqId,
+      deployments: records.map((record) => ({
+        name: record.name,
+        generation: record.generation,
+        caskHash: record.caskHash,
+        entry: record.entry,
+        state: record.state,
+        createdAt: record.createdAt,
+      })),
+    });
+  }
+
+  /**
+   * Record a rollback generation — a new generation pointing at the previous
+   * cask — and place it like any deploy. Instant by construction: the
+   * artifact is content-addressed and already cached wherever it ever ran.
+   */
+  async #handleRollback(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'ROLLBACK' }>,
+  ): Promise<void> {
+    const fail = (error: string): void => {
+      this.#transport.send(from, {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error,
+      });
+    };
+    if (this.#ledger === null || this.#caskDir === null) {
+      fail('rollback requires a seed with durable state (--state)');
+      return;
+    }
+    const record = await this.#ledger.rollbackDeployment(msg.name);
+    if (record === null) {
+      fail(`nothing to roll back: ${msg.name} has fewer than two generations`);
+      return;
+    }
+    this.#placeDeployment(
+      from,
+      msg.spawnReqId,
+      msg.parentPortId,
+      msg.name,
+      record.caskHash,
+      record.entry,
+      fail,
+    );
   }
   /** Stream a stored cask back to a fetching node in order, last flagged. */
   async #handleCaskGet(from: string, hash: string): Promise<void> {
@@ -738,6 +809,14 @@ export class SeedServer {
       }
       case 'DEPLOY': {
         void this.#handleDeploy(from, msg);
+        break;
+      }
+      case 'DEPLOYMENTS_GET': {
+        void this.#handleDeploymentsGet(from, msg.spawnReqId, msg.name);
+        break;
+      }
+      case 'ROLLBACK': {
+        void this.#handleRollback(from, msg);
         break;
       }
       case 'CASK_PUT': {

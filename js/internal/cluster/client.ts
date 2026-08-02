@@ -55,6 +55,7 @@
 import type { ClusterTransport } from './transport.ts';
 import {
   type ClusterMessage,
+  type DeploymentInfo,
   type NodeLoad,
   type SerializedSpawnConfig,
   type PeerInfo,
@@ -289,6 +290,36 @@ export class ClusterClient {
         name,
         hash: caskHash,
       });
+    });
+  }
+
+  /** Deployment-history queries in flight, keyed by request id. @internal */
+  #pendingDeploymentsGets = new Map<string, (records: DeploymentInfo[]) => void>();
+
+  /** Fetch deployment history from the seed; `name` narrows to one app. @internal */
+  listDeployments(name?: string): Promise<DeploymentInfo[]> {
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
+    return new Promise((resolve) => {
+      this.#pendingDeploymentsGets.set(spawnReqId, resolve);
+      this.#transport.send('__seed__', {
+        t: 'DEPLOYMENTS_GET',
+        spawnReqId,
+        ...(name === undefined ? {} : { name }),
+      });
+    });
+  }
+
+  /**
+   * Roll a named deployment back one generation and resolve with the child
+   * port id once the previous cask is running again.
+   *
+   * @internal
+   */
+  rollbackRemote(name: string, parentPortId: string): Promise<string> {
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
+    return new Promise((resolve, reject) => {
+      this.#pendingSpawns.set(spawnReqId, { resolve, reject });
+      this.#transport.send('__seed__', { t: 'ROLLBACK', spawnReqId, parentPortId, name });
     });
   }
 
@@ -730,6 +761,14 @@ export class ClusterClient {
       }
       case 'SHED_OFFER': {
         void this.#handleShedOffer(from, msg);
+        break;
+      }
+      case 'DEPLOYMENTS': {
+        const pending = this.#pendingDeploymentsGets.get(msg.spawnReqId);
+        if (pending !== undefined) {
+          this.#pendingDeploymentsGets.delete(msg.spawnReqId);
+          pending(msg.deployments);
+        }
         break;
       }
       case 'CASK_ACK': {

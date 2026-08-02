@@ -175,6 +175,15 @@ export interface PeerInfo {
   /** Hex sha-256 of the certificate the peer's own listener presents. */
   certHash?: string;
 }
+/** One deployment generation as carried by a `DEPLOYMENTS` reply. @internal */
+export interface DeploymentInfo {
+  name: string;
+  generation: number;
+  caskHash: string;
+  entry: string;
+  state: 'active' | 'superseded';
+  createdAt: number;
+}
 /**
  * Serialized realm spawn configuration carried by a `SPAWN` message.
  *
@@ -355,6 +364,30 @@ export type ClusterMessage =
       hash: string;
     }
   | {
+      /** Ask the seed for deployment history; `name` narrows to one app. */
+      t: 'DEPLOYMENTS_GET';
+      /** Correlates the DEPLOYMENTS reply. */
+      spawnReqId: string;
+      name?: string;
+    }
+  | {
+      /** Deployment history, newest generation first per name. */
+      t: 'DEPLOYMENTS';
+      spawnReqId: string;
+      deployments: DeploymentInfo[];
+    }
+  | {
+      /**
+       * Record a rollback generation for a named deployment — a new
+       * generation pointing at the previous cask — and place it like a
+       * deploy. Answered with SPAWN_ACK.
+       */
+      t: 'ROLLBACK';
+      spawnReqId: string;
+      parentPortId: string;
+      name: string;
+    }
+  | {
       /** Upload or fetch outcome for one cask hash. */
       t: 'CASK_ACK';
       hash: string;
@@ -454,6 +487,9 @@ const enum MessageKind {
   CASK_DATA = 16,
   CASK_ACK = 17,
   DEPLOY = 18,
+  DEPLOYMENTS_GET = 19,
+  DEPLOYMENTS = 20,
+  ROLLBACK = 21,
 }
 
 const enum DirectiveKind {
@@ -529,6 +565,7 @@ interface WireEnvelope {
   caskHash?: string;
   last?: boolean;
   deployName?: string;
+  deployments?: WireDeployment[];
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -590,6 +627,22 @@ const SpawnConfigMessage = defineMessage<WireSpawnConfig>({
   rules: { number: 3, type: RuleMessage, repeated: true },
   bootstrapData: { number: 4, type: BootstrapDataMessage, optional: true },
 });
+interface WireDeployment {
+  name: string;
+  generation: number;
+  caskHash: string;
+  entry: string;
+  state: string;
+  createdAt: number;
+}
+const DeploymentMessage = defineMessage<WireDeployment>({
+  name: { number: 1, type: 'string' },
+  generation: { number: 2, type: 'double' },
+  caskHash: { number: 3, type: 'string' },
+  entry: { number: 4, type: 'string' },
+  state: { number: 5, type: 'string' },
+  createdAt: { number: 6, type: 'double' },
+});
 const EnvelopeMessage = defineMessage<WireEnvelope>({
   kind: { number: 1, type: 'enum' },
   nodeId: { number: 2, type: 'string', optional: true },
@@ -619,6 +672,7 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   caskHash: { number: 26, type: 'string', optional: true },
   last: { number: 27, type: 'bool', optional: true },
   deployName: { number: 28, type: 'string', optional: true },
+  deployments: { number: 29, type: DeploymentMessage, repeated: true },
 });
 
 function parseCaskHash(value: unknown): string {
@@ -626,6 +680,38 @@ function parseCaskHash(value: unknown): string {
     throw protocolError('cask hash must be 64 lowercase hex characters');
   }
   return value;
+}
+
+function encodeDeployment(record: DeploymentInfo): WireDeployment {
+  if (record.state !== 'active' && record.state !== 'superseded') {
+    throw protocolError('deployment state must be active or superseded');
+  }
+  return {
+    name: parseNodeId(record.name),
+    generation: record.generation,
+    caskHash: parseCaskHash(record.caskHash),
+    entry: record.entry,
+    state: record.state,
+    createdAt: record.createdAt,
+  };
+}
+
+function decodeDeployment(value: WireDeployment): DeploymentInfo {
+  if (value.state !== 'active' && value.state !== 'superseded') {
+    throw protocolError('deployment state must be active or superseded');
+  }
+  const generation = value.generation;
+  if (!Number.isFinite(generation) || generation < 1) {
+    throw protocolError('deployment generation must be a positive number');
+  }
+  return {
+    name: parseNodeId(value.name),
+    generation,
+    caskHash: parseCaskHash(value.caskHash),
+    entry: value.entry,
+    state: value.state,
+    createdAt: value.createdAt,
+  };
 }
 
 function stringArray(value: unknown, key: string): string[] {
@@ -817,7 +903,11 @@ function decodePeer(value: WirePeer, key: string): PeerInfo {
 }
 
 function toWire(msg: ClusterMessage): WireEnvelope {
-  const base = { peers: [] as WirePeer[], payload: [] as Uint8Array[] };
+  const base = {
+    peers: [] as WirePeer[],
+    payload: [] as Uint8Array[],
+    deployments: [] as WireDeployment[],
+  };
   switch (msg.t) {
     case 'HELLO':
       return {
@@ -917,6 +1007,28 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         caskHash: parseCaskHash(msg.hash),
         ...base,
       };
+    case 'DEPLOYMENTS_GET':
+      return {
+        kind: MessageKind.DEPLOYMENTS_GET,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        ...(msg.name === undefined ? {} : { deployName: parseNodeId(msg.name) }),
+        ...base,
+      };
+    case 'DEPLOYMENTS':
+      return {
+        kind: MessageKind.DEPLOYMENTS,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        ...base,
+        deployments: msg.deployments.map(encodeDeployment),
+      };
+    case 'ROLLBACK':
+      return {
+        kind: MessageKind.ROLLBACK,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        deployName: parseNodeId(msg.name),
+        ...base,
+      };
     case 'SPAWN_ACK':
       return {
         kind: MessageKind.SPAWN_ACK,
@@ -970,7 +1082,9 @@ function toWire(msg: ClusterMessage): WireEnvelope {
  * @internal
  */
 export function encode(msg: ClusterMessage): Uint8Array {
-  return EnvelopeMessage.encode(toWire(msg));
+  // Repeated fields must always be arrays on the wire object; defaulting them
+  // here keeps every toWire case from having to remember each new one.
+  return EnvelopeMessage.encode({ peers: [], payload: [], deployments: [], ...toWire(msg) });
 }
 
 /**
@@ -1101,6 +1215,28 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         ),
         name: parseNodeId(requiredWireString(value.deployName, 'name')),
         hash: parseCaskHash(value.caskHash),
+      };
+    case MessageKind.DEPLOYMENTS_GET:
+      return {
+        t: 'DEPLOYMENTS_GET',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        ...(value.deployName === undefined ? {} : { name: parseNodeId(value.deployName) }),
+      };
+    case MessageKind.DEPLOYMENTS:
+      return {
+        t: 'DEPLOYMENTS',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        deployments: (value.deployments ?? []).map(decodeDeployment),
+      };
+    case MessageKind.ROLLBACK:
+      return {
+        t: 'ROLLBACK',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        name: parseNodeId(requiredWireString(value.deployName, 'name')),
       };
     case MessageKind.SPAWN_ACK: {
       const childPortId = requiredWireString(value.childPortId, 'childPortId');

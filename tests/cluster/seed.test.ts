@@ -1488,3 +1488,72 @@ describe('SeedServer — deploy flow', () => {
     await ledger.close();
   });
 });
+
+describe('SeedServer — deployment history and rollback', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+  it('lists history and places a rollback of the previous generation', async (t) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rollback-${stamp}.db`);
+    const caskDir = `/tmp/fino-rollback-store-${stamp}`;
+    const { transport } = await makeSeed('seed-node', { caskDir, ledger });
+    const hashA = 'a'.repeat(64);
+    const hashB = 'b'.repeat(64);
+    await ledger.recordDeployment('web', hashA, 'main.ts');
+    await ledger.recordDeployment('web', hashB, 'main.ts');
+
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.inject('cli', { t: 'HELLO', nodeId: 'cli', load: { cpu: 0.9, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('cli', { t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-q-1', name: 'web' });
+    await settle();
+    const listed = transport.sent.filter((s) => s.msg.t === 'DEPLOYMENTS')[0]!.msg;
+    if (listed.t !== 'DEPLOYMENTS') throw new Error('wrong kind');
+    t.equal(listed.deployments.length, 2, 'both generations reported');
+    t.equal(listed.deployments[0]!.caskHash, hashB, 'newest first and active');
+
+    transport.sent.length = 0;
+    transport.inject('cli', {
+      t: 'ROLLBACK',
+      spawnReqId: 'cli-r-1',
+      parentPortId: 'cli/p-r-1',
+      name: 'web',
+    });
+    await settle();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 1, 'the rollback was placed');
+    const spawn = spawns[0]!.msg as { caskHash?: string };
+    t.equal(spawn.caskHash, hashA, 'running the PREVIOUS cask again');
+    t.equal(spawns[0]!.to, 'worker-1', 'excluding the requester');
+    const active = await ledger.activeDeployment('web');
+    t.equal(active?.generation, 3, 'rollback is a new generation');
+    t.equal(active?.caskHash, hashA, 'pointing at the previous cask');
+    await ledger.close();
+  });
+
+  it('refuses a rollback with fewer than two generations', async (t) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rollback1-${stamp}.db`);
+    const { transport } = await makeSeed('seed-node', {
+      caskDir: `/tmp/fino-rollback1-store-${stamp}`,
+      ledger,
+    });
+    await ledger.recordDeployment('solo', 'e'.repeat(64), 'main.ts');
+    transport.inject('cli', { t: 'HELLO', nodeId: 'cli', load: { cpu: 0.1, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('cli', {
+      t: 'ROLLBACK',
+      spawnReqId: 'cli-r-2',
+      parentPortId: 'cli/p-r-2',
+      name: 'solo',
+    });
+    await settle();
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'answered');
+    t.equal(acks[0]!.ok, false, 'refused');
+    t.ok((acks[0]!.error ?? '').includes('fewer than two'), 'with the reason');
+    t.equal((await ledger.activeDeployment('solo'))?.generation, 1, 'history untouched');
+    await ledger.close();
+  });
+});

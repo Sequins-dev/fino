@@ -255,6 +255,70 @@ const deployCommand = new Task({
   },
 });
 
+const deploymentsCommand = new Task({
+  name: 'deployments',
+  description: 'Show deployment generation history',
+  outputMode: 'text',
+  cli: {
+    positionals: [
+      { name: 'joinString', type: 'string', description: 'Join string printed by `cluster start`' },
+      { name: 'name', type: 'string', description: 'Limit to one deployment name' },
+    ],
+  },
+  run: async function runClusterDeployments(input) {
+    const opts = input as { joinString?: string; name?: string };
+    if (opts.joinString === undefined) {
+      throw new Error('cluster deployments: a join string is required');
+    }
+    await joinCluster({ joinString: opts.joinString });
+    try {
+      const records = await getCluster()!.listDeployments(opts.name);
+      if (records.length === 0) {
+        await print('no deployments\n');
+        return;
+      }
+      for (const record of records) {
+        const when = new Date(record.createdAt).toISOString();
+        await print(
+          `${record.name}  gen ${record.generation}  ${record.state.padEnd(10)}  sha256-${record.caskHash.slice(0, 12)}…  ${when}\n`,
+        );
+      }
+    } finally {
+      leaveCluster();
+    }
+  },
+});
+
+const rollbackCommand = new Task({
+  name: 'rollback',
+  description: 'Roll a deployment back one generation and run it',
+  outputMode: 'text',
+  cli: {
+    positionals: [
+      { name: 'joinString', type: 'string', description: 'Join string printed by `cluster start`' },
+      { name: 'name', type: 'string', description: 'Deployment name to roll back' },
+    ],
+  },
+  run: async function runClusterRollback(input) {
+    const opts = input as { joinString?: string; name?: string };
+    if (opts.joinString === undefined || opts.name === undefined) {
+      throw new Error('cluster rollback: a join string and a deployment name are required');
+    }
+    await joinCluster({ joinString: opts.joinString });
+    try {
+      const client = getCluster()!;
+      const port = new ClusterPort(`${client.nodeId}/p-rollback-${Date.now() % 1e6}`, client);
+      const childPortId = await client.rollbackRemote(opts.name, port.portId);
+      const active = (await client.listDeployments(opts.name)).find((r) => r.state === 'active');
+      await print(
+        `rolled back ${opts.name} to sha256-${active?.caskHash.slice(0, 12) ?? '?'}… (gen ${active?.generation ?? '?'}) -> ${childPortId}\n`,
+      );
+    } finally {
+      leaveCluster();
+    }
+  },
+});
+
 const statusCommand = membershipTask('status', 'Show cluster membership and load without joining');
 const nodesCommand = membershipTask('nodes', 'List cluster nodes and their load without joining');
 
@@ -272,7 +336,15 @@ const command = new Task({
   run: async function runClusterCommand() {
     return 'usage: fino cluster <start|join|status|nodes>';
   },
-  children: [startCommand, joinCommand, deployCommand, statusCommand, nodesCommand],
+  children: [
+    startCommand,
+    joinCommand,
+    deployCommand,
+    deploymentsCommand,
+    rollbackCommand,
+    statusCommand,
+    nodesCommand,
+  ],
 });
 
 export { command as default };
