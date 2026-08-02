@@ -205,6 +205,17 @@ export function conformanceCases(): ConformanceCase[] {
       reduction: 24,
     },
     {
+      name: 'matmul whose extents divide its tiles',
+      group: 'forward',
+      covers: ['gemm'],
+      // A backend may drop its bounds checks when every tile lands wholly inside the
+      // matrix, which is a second kernel for the same operation. These extents divide
+      // the tile sizes this engine uses; the case above deliberately does not.
+      inputs: [{ shape: [512, 32] }, { shape: [32, 512], seed: 2 }],
+      run: (a, b) => a.matmul(b),
+      reduction: 32,
+    },
+    {
       name: 'movement',
       group: 'forward',
       covers: ['transpose', 'permute', 'reshape', 'expand'],

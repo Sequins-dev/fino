@@ -922,6 +922,13 @@ export class GpuBackend implements DeviceBackend {
       params.strideC = opts.m * opts.n;
     }
     const tiling = gemmTiling(opts.m, opts.n);
+    // Every tile lands wholly inside the matrix when each extent divides its tile, so
+    // the bounds checks on every staged element and every write are known to pass and
+    // can be left out. The kernel has always been able to do this; nothing but its
+    // tests ever asked. It changes the emitted code, so it is part of the cache key and
+    // an exact multiply and a ragged one of the same dtype get different kernels.
+    const exact =
+      opts.m % tiling.bm === 0 && opts.n % tiling.bn === 0 && opts.k % tiling.bk === 0;
     this.#run(
       () =>
         gemmKernel({
@@ -930,6 +937,7 @@ export class GpuBackend implements DeviceBackend {
           transB: opts.transB,
           tiling,
           batched,
+          noEdgeGuards: exact,
         }),
       [a.buffer, b.buffer, out.buffer],
       params,
