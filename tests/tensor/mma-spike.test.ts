@@ -26,11 +26,22 @@
  * the informative part: if occupancy or staging were the limit, quadrupling both would
  * have moved the number. It did not, so the limit is the instruction path itself.
  *
- * The reading is that `simdgroup_matrix` at `float` is not the lever on this hardware —
- * Apple's matrix units are aimed at 16-bit operands, and an f32 simdgroup multiply
- * appears to cost more than the scalar FMAs it replaces. Whatever ggml gains at f32, it
- * is not this. The next question is whether f16 operands with f32 accumulation change
- * the picture, which is where autocast would meet it; that has not been measured.
+ * Half precision changes the picture, and the second case measures it. The same
+ * arrangement over 16-bit operands, still accumulating in `float`, reaches 6974 against
+ * the engine's f16 kernel at 7547 — 0.92x.
+ *
+ * So the instructions are emphatically 16-bit: f16 MMA is nearly eight times faster than
+ * f32 MMA on identical code. But it still does not beat a tuned scalar kernel, and that
+ * is the number to be careful about. This spike has no double buffering, stages one
+ * element per thread, walks K eight at a time, and pays a threadgroup round trip to
+ * narrow its output. Reaching parity from there suggests headroom rather than a ceiling
+ * — which is an argument for measuring a tuned version, not for building one on the
+ * strength of this.
+ *
+ * Worth noting separately: the engine's f16 kernel (7547) and its f32 kernel (7528) run
+ * at the same rate, because both accumulate in f32 and neither is bandwidth-bound. Half
+ * precision currently buys memory, not speed. Making it buy speed is what MMA would be
+ * for.
  */
 import { describe, it } from 'fino:test/test';
 import { createMetalApi, metalAvailable } from 'internal:metal';
@@ -110,6 +121,78 @@ kernel void mma_gemm(
         acc[i][j],
         C + (row0 + sgRow * 32 + i * 8) * N + col0 + sgCol * 32 + j * 8,
         N);
+}
+`;
+
+
+/**
+ * The same arrangement over 16-bit operands, accumulating in `float`.
+ *
+ * This is the shape Apple's matrix units are built for, and the engine's own f16 GEMM
+ * already accumulates in f32 because the contract requires it — so both sides of this
+ * comparison do the same arithmetic as well as computing the same answer.
+ */
+const MMA_HALF_SOURCE = `
+#include <metal_stdlib>
+#include <metal_simdgroup_matrix>
+using namespace metal;
+
+kernel void mma_gemm_half(
+    device const half* A [[buffer(0)]],
+    device const half* B [[buffer(1)]],
+    device half* C [[buffer(2)]],
+    constant uint* dims [[buffer(3)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_threadgroup]],
+    uint sg [[simdgroup_index_in_threadgroup]])
+{
+  const uint N = dims[1];
+  const uint K = dims[2];
+
+  threadgroup half As[64 * 8];
+  threadgroup half Bs[8 * 64];
+
+  simdgroup_float8x8 acc[4][4];
+  for (int i = 0; i < 4; i++)
+    for (int j = 0; j < 4; j++)
+      acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+
+  const uint row0 = tg.y * 64;
+  const uint col0 = tg.x * 64;
+  const uint sgRow = sg / 2;
+  const uint sgCol = sg % 2;
+
+  for (uint k0 = 0; k0 < K; k0 += 8) {
+    for (uint idx = lane; idx < 64 * 8; idx += 128) {
+      As[idx] = A[(row0 + idx / 8) * K + (k0 + idx % 8)];
+    }
+    for (uint idx = lane; idx < 8 * 64; idx += 128) {
+      Bs[idx] = B[(k0 + idx / 64) * N + (col0 + idx % 64)];
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    simdgroup_half8x8 a[4];
+    simdgroup_half8x8 b[4];
+    for (int i = 0; i < 4; i++) simdgroup_load(a[i], As + (sgRow * 32 + i * 8) * 8, 8);
+    for (int j = 0; j < 4; j++) simdgroup_load(b[j], Bs + sgCol * 32 + j * 8, 64);
+    for (int i = 0; i < 4; i++)
+      for (int j = 0; j < 4; j++)
+        simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+  }
+
+  // A float accumulator cannot be cast to a half simdgroup matrix, so the tile lands in
+  // threadgroup memory and the whole workgroup narrows it on the way out. That is what a
+  // real half-precision kernel has to do too, so the cost belongs in the measurement.
+  threadgroup float Cs[64 * 64];
+  for (int i = 0; i < 4; i++)
+    for (int j = 0; j < 4; j++)
+      simdgroup_store(acc[i][j], Cs + (sgRow * 32 + i * 8) * 64 + sgCol * 32 + j * 8, 64);
+  threadgroup_barrier(mem_flags::mem_threadgroup);
+  for (uint idx = lane; idx < 64 * 64; idx += 128) {
+    C[(row0 + idx / 64) * N + col0 + idx % 64] = (half)Cs[idx];
+  }
 }
 `;
 
@@ -229,6 +312,104 @@ describe('simdgroup matrix spike', () => {
     t.ok(
       true,
       `MMA ${mmaRate.toFixed(0)} GFLOP/s vs scalar ${scalarRate.toFixed(0)} GFLOP/s ` +
+        `(${(mmaRate / scalarRate).toFixed(2)}x)`,
+    );
+
+    for (const buffer of [a, b, outMma, outScalar]) api.destroy(buffer);
+  });
+
+  it('measures MMA against the scalar kernel at 1024, in half precision', async (t) => {
+    if (!metalAvailable()) {
+      t.ok(true, 'SKIP: no Metal device');
+      return;
+    }
+    const api = createMetalApi();
+    const device = api.createDevice();
+    const queue = api.createQueue(device);
+    const event = api.createSharedEvent(device);
+
+    const n = 1024;
+    const bytes = n * n * 2;
+    const a = api.createBuffer(device, bytes);
+    const b = api.createBuffer(device, bytes);
+    const outMma = api.createBuffer(device, bytes);
+    const outScalar = api.createBuffer(device, bytes);
+    const half = (buffer: unknown) => new Float16Array(api.bufferContents(buffer as never, bytes));
+    fill(half(a) as unknown as Float32Array, 3);
+    fill(half(b) as unknown as Float32Array, 7);
+
+    const mmaLibrary = await api.compileLibrary(device, MMA_HALF_SOURCE);
+    const mmaPipeline = api.createPipeline(device, mmaLibrary, 'mma_gemm_half');
+
+    const { ir } = gemmKernel({ dtype: 'f16', tiling: DEFAULT_TILING, noEdgeGuards: true });
+    const scalarLibrary = await api.compileLibrary(device, lowerToMSL(ir, { fastMath: false }));
+    const scalarPipeline = api.createPipeline(device, scalarLibrary, ir.name);
+
+    let signal = 0n;
+    const run = async (
+      pipeline: unknown,
+      out: unknown,
+      params: Uint8Array,
+      grid: readonly [number, number, number],
+      threadgroup: readonly number[],
+      iterations: number,
+    ): Promise<number> => {
+      const start = performance.now();
+      const batch = api.beginBatch(queue);
+      for (let i = 0; i < iterations; i++) {
+        api.encode(batch as never, {
+          pipeline: pipeline as never,
+          buffers: [
+            { buffer: a, offset: 0 },
+            { buffer: b, offset: 0 },
+            { buffer: out as never, offset: 0 },
+          ],
+          params,
+          grid: grid as never,
+          threadgroup: threadgroup as never,
+        });
+      }
+      signal += 1n;
+      api.commitBatch(batch, event, signal);
+      await api.waitForEvent(event, signal, 20000);
+      return (performance.now() - start) / 1000 / iterations;
+    };
+
+    const dims = new Uint8Array(new Uint32Array([n, n, n]).buffer);
+    const scalarParams = packParams(ir.params, { M: n, N: n, K: n });
+    const scalarGrid = gemmGrid(n, n, DEFAULT_TILING, 1);
+    const mma = (iterations: number) =>
+      run(mmaPipeline, outMma, dims, [n / 64, n / 64, 1], [128, 1, 1], iterations);
+    const scalar = (iterations: number) =>
+      run(scalarPipeline, outScalar, scalarParams, scalarGrid, ir.wg, iterations);
+
+    await mma(1);
+    await scalar(1);
+    let bestMma = Infinity;
+    let bestScalar = Infinity;
+    for (let pass = 0; pass < 5; pass++) {
+      bestMma = Math.min(bestMma, await mma(20));
+      bestScalar = Math.min(bestScalar, await scalar(20));
+    }
+
+    const flops = 2 * n ** 3;
+    const mmaRate = flops / bestMma / 1e9;
+    const scalarRate = flops / bestScalar / 1e9;
+
+    const mmaView = half(outMma);
+    const scalarView = half(outScalar);
+    let worst = 0;
+    let scale = 1;
+    for (let i = 0; i < mmaView.length; i++) {
+      worst = Math.max(worst, Math.abs(mmaView[i]! - scalarView[i]!));
+      scale = Math.max(scale, Math.abs(scalarView[i]!));
+    }
+    // Half precision, so a looser bound than the f32 case: both accumulate in f32 but
+    // round to f16 on store, and they visit the reduction in a different order.
+    t.ok(worst / scale < 5e-3, `both half kernels compute the same product (worst ${worst})`);
+    t.ok(
+      true,
+      `f16: MMA ${mmaRate.toFixed(0)} GFLOP/s vs scalar ${scalarRate.toFixed(0)} GFLOP/s ` +
         `(${(mmaRate / scalarRate).toFixed(2)}x)`,
     );
 
