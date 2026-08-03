@@ -1572,7 +1572,42 @@ enum CurrentState {
 /// write path to decay the resident's signal count (see `peek_claim`).
 const MAX_READ_KEEPS: u32 = 8;
 
+/// Yield scheduling priority to the main thread.
+///
+/// The main thread owns the host loop, the cluster session, and heartbeats;
+/// a reactor pool saturated with CPU-bound workloads will otherwise deschedule
+/// it long enough to miss a heartbeat window, and the node is swept from
+/// membership while the scheduler underneath is working perfectly.
+///
+/// Deliberately LOWERS the reactors rather than raising the main thread:
+/// lowering one's own priority never requires privileges, so this works for
+/// an unprivileged process on both platforms. Failures are ignored — a
+/// runtime that cannot renice is merely back to the previous behaviour.
+fn deprioritize_reactor_thread() {
+    #[cfg(target_os = "macos")]
+    {
+        // QoS classes are the per-thread mechanism on Darwin; nice(2) there
+        // applies to the whole process, which would be wrong.
+        const QOS_CLASS_UTILITY: u32 = 0x11;
+        unsafe extern "C" {
+            fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+        }
+        unsafe {
+            pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Linux nice values are per-thread, and `who = 0` means the calling
+        // thread. Positive values lower priority and need no privileges.
+        unsafe {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 5);
+        }
+    }
+}
+
 fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
+    deprioritize_reactor_thread();
     let mut current: Option<Resident> = None;
     let mut current_state = CurrentState::Parked;
     let mut kept = 0u32;

@@ -54,17 +54,50 @@ interface ScenarioResult {
   halted: boolean;
 }
 
+/** Every process this scenario starts, so an abnormal exit still cleans up. */
+const spawned: Process[] = [];
+
+function track(proc: Process): Process {
+  spawned.push(proc);
+  return proc;
+}
+
+/**
+ * Kill everything, unconditionally. Orphaned cluster nodes from an
+ * interrupted run peg a core and quietly corrupt every later measurement on
+ * the machine — including full test-suite runs, which then fail at a
+ * different random test each time.
+ */
+function killAll(): void {
+  for (const proc of spawned) {
+    try {
+      proc.kill(SIGKILL);
+    } catch {}
+  }
+  spawned.length = 0;
+}
+
 async function scenario(label: string, extraEnv: Record<string, string>): Promise<ScenarioResult> {
   const port = 3e4 + Math.floor(Math.random() * 1e4);
   const root = `/tmp/fino-shed-${label}-${Date.now()}`;
   await fs.mkdir(root);
   await fs.mkdir(`${root}/state`);
 
-  const seed = new Process(execPath, [
-    'cluster', 'start', '--port', String(port),
-    '--cert', CERT, '--key', KEY,
-    '--state', `${root}/state`, '--no-workloads',
-  ]);
+  const seed = track(
+    new Process(execPath, [
+      'cluster',
+      'start',
+      '--port',
+      String(port),
+      '--cert',
+      CERT,
+      '--key',
+      KEY,
+      '--state',
+      `${root}/state`,
+      '--no-workloads',
+    ]),
+  );
   const seedOut: string[] = [];
   collect(seed, seedOut);
   let join = '';
@@ -75,12 +108,17 @@ async function scenario(label: string, extraEnv: Record<string, string>): Promis
   }
   if (join === '') throw new Error('seed never printed a join string');
 
-  // No thread cap: saturation is built the honest way, with one greedy
-  // workload per hardware thread. (FINO_REACTOR_THREADS=1 turns out to hang
-  // node startup — the CLI task itself is a pool workload and contends with
-  // the system realm for the only thread; tracked separately.)
+  // Saturate the POOL, not the machine. Flooding every hardware thread with
+  // greedy workloads starves the main thread too, and the node misses
+  // heartbeats and gets swept from membership before any of this matters —
+  // OS-level starvation no watchdog can fix. Capping reactors at two leaves
+  // the rest of the box for the control plane, so what gets tested is the
+  // scheduler rather than the machine. (A cap of one hangs node startup;
+  // tracked separately.)
   const workerEnv = {
     ...processEnv,
+    FINO_REACTOR_THREADS: '2',
+    FINO_WATCHDOG_TRACE: processEnv.SHED_TRACE === '1' ? '1' : '',
     FINO_SYSTEM_REALM_INTERVAL_MS: '250',
     FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000',
     FINO_WATCHDOG_INTERVAL_MS: '200',
@@ -88,9 +126,9 @@ async function scenario(label: string, extraEnv: Record<string, string>): Promis
     FINO_WATCHDOG_SUSTAINED_MS: '3000',
     ...extraEnv,
   };
-  const workerA = new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-a'], {
-    env: workerEnv,
-  });
+  const workerA = track(
+    new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-a'], { env: workerEnv }),
+  );
   const aOut: string[] = [];
   collect(workerA, aOut);
   for (let i = 0; i < 100 && !aOut.join('').includes('joined'); i++) await sleep(100);
@@ -116,25 +154,27 @@ async function scenario(label: string, extraEnv: Record<string, string>): Promis
     ),
   );
 
-  // Enough greedy workloads to bury every reactor thread on any plausible
-  // development machine; extras queue behind them and keep the backlog deep
-  // while the watchdog frees threads one halt at a time.
-  const GREEDY = 24;
+  // Three against a two-thread pool: both reactors wedged with one waiting,
+  // so every halt is immediately followed by another wedge and the backlog
+  // persists while the balancer looks at it.
+  const GREEDY = 3;
   const busyDeploys: Promise<string>[] = [];
   for (let i = 0; i < GREEDY; i++) {
     busyDeploys.push(run(['cluster', 'deploy', join, busy, '--name', `busy${i}`], 120_000));
   }
   await sleep(6000);
   const queued: Promise<string>[] = [];
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 6; i++) {
     queued.push(run(['cluster', 'deploy', join, waiting, '--name', `wait${i}`], 120_000));
   }
   await sleep(5000);
   const backlogBuilt = !aOut.join('').includes('waiting app ran');
 
-  const workerB = new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-b'], {
-    env: { ...processEnv, FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000' },
-  });
+  const workerB = track(
+    new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-b'], {
+      env: { ...processEnv, FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000' },
+    }),
+  );
   const bOut: string[] = [];
   collect(workerB, bOut);
   for (let i = 0; i < 100 && !bOut.join('').includes('joined'); i++) await sleep(100);
@@ -150,7 +190,10 @@ async function scenario(label: string, extraEnv: Record<string, string>): Promis
     }
   }
 
-  const ranOnA = aOut.join('').split('\n').filter((l) => l.includes('waiting app ran')).length;
+  const ranOnA = aOut
+    .join('')
+    .split('\n')
+    .filter((l) => l.includes('waiting app ran')).length;
   const halted = aOut.join('').includes('terminated while holding its reactor');
   // Deploy outcomes are part of the record: silent CLI failures have twice
   // masqueraded as scheduler behavior in this scenario's history.
@@ -182,7 +225,9 @@ const shedding = await scenario('on', {
   FINO_CLUSTER_SHED_MIN_DELTA: '1',
 });
 if (processEnv.SHED_ONLY === '1') {
-  console.log(shedding.shedObserved ? '\nSHED PASS (positive only)' : '\nSHED FAIL (positive only)');
+  console.log(
+    shedding.shedObserved ? '\nSHED PASS (positive only)' : '\nSHED FAIL (positive only)',
+  );
 } else {
   const held = await scenario('off', {
     FINO_CLUSTER_SHED_WATERMARK: '999',
@@ -193,3 +238,7 @@ if (processEnv.SHED_ONLY === '1') {
   const pass = shedding.backlogBuilt && shedding.shedObserved && !held.shedObserved;
   console.log(pass ? '\nSHED PASS' : '\nSHED FAIL');
 }
+
+// Belt and braces: whatever path reached here, nothing this script started
+// is left running.
+killAll();

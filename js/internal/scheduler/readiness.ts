@@ -74,10 +74,17 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
   // Threads track demand: one per live workload, capped at hardware
   // parallelism (or the explicit override). A quiet process runs one reactor;
   // growth happens on `submitted` events as realms enter the queue.
-  // FINO_REACTOR_THREADS caps the pool for capacity experiments — the shed
-  // path only exercises when specs genuinely outnumber reactor capacity.
+  // One fewer reactor than hardware threads, so the main thread — which
+  // owns the host loop, the cluster session, and heartbeats — always has a
+  // core of its own. Saturating every thread with workloads starves it into
+  // missing heartbeats, and the node is swept from membership while the
+  // scheduler underneath is working perfectly. FINO_REACTOR_THREADS caps the
+  // pool explicitly for capacity experiments.
   const envCap = Number(env.FINO_REACTOR_THREADS);
-  const defaultCap = Number.isFinite(envCap) && envCap >= 1 ? Math.floor(envCap) : availableParallelism();
+  const defaultCap =
+    Number.isFinite(envCap) && envCap >= 1
+      ? Math.floor(envCap)
+      : Math.max(1, availableParallelism() - 1);
   const threadCap = Math.max(1, Math.floor(options.threads ?? defaultCap));
   const threads: Array<ReturnType<typeof createReactorThread>> = [];
   let liveWorkloads = 0;
@@ -135,9 +142,13 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
       for (const event of takeReactorEvents(queue.handle)) {
         loopTurns += event.loopTurns;
         if (event.kind === 'overrun' || event.kind === 'halted') {
-          // Watchdog escalations are operational events: a workload held its
-          // reactor while queued work starved. Loud by design.
+          // Watchdog escalations are advisory: a workload held its reactor
+          // while queued work starved. They are NOT lifecycle transitions —
+          // a halted workload still settles through its own error event — so
+          // they must not fall through to the settle path, which treats an
+          // untracked owner as fatal and takes the whole node down with it.
           console.error(`fino:scheduler watchdog ${event.kind}: workload ${event.owner}`);
+          continue;
         }
         if (event.kind === 'submitted') {
           liveWorkloads++;
