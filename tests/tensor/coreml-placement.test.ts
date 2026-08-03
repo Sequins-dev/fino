@@ -23,8 +23,10 @@
  * binding.
  *
  * The operations that landed there are the ones this engine emits — `matmul` and an
- * activation — which is what the graph-backend plan needed to know. The weights were
- * baked in as constants, so what a region with runtime operands does is still open.
+ * activation — which is what the graph-backend plan needed to know. So does the same
+ * stack with every weight arriving as an input rather than baked in at conversion time,
+ * which is the shape a recorded graph actually hands over and decides whether a
+ * compiled region survives a weight update or has to be rebuilt each step.
  *
  * float16 typing was the other suspect, since the documentation says float32-typed
  * programs are barred from the Neural Engine. Converting the convolution with float16
@@ -177,6 +179,23 @@ describe('CoreML operation placement', () => {
     t.ok(
       matmuls.every(([, device]) => device === 'MLNeuralEngineComputeDevice'),
       'and every one of them runs there',
+    );
+  });
+
+  it('does so with weights arriving as inputs rather than constants', async (t) => {
+    if (!objcAvailable() || !(await exists('tests/fixtures/coreml/runtime-weights.mlpackage'))) {
+      t.ok(true, 'SKIP: no Objective-C runtime, or the fixtures are not generated');
+      return;
+    }
+    // What decides whether a compiled region survives a weight update. Baked-in weights
+    // would mean rebuilding the region every step, which at hundreds of milliseconds a
+    // compile would cost more than it saves. Weights as inputs do not.
+    const found = await placement('tests/fixtures/coreml/runtime-weights.mlpackage');
+    const matmuls = [...found].filter(([name]) => name.includes('matmul'));
+    t.ok(matmuls.length > 0, `matrix multiplies are present (${matmuls.length})`);
+    t.ok(
+      matmuls.every(([, device]) => device === 'MLNeuralEngineComputeDevice'),
+      'every one runs on the Neural Engine with runtime operands',
     );
   });
 });

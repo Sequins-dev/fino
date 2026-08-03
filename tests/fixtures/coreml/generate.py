@@ -83,3 +83,34 @@ stack = ct.convert(
 stack_out = os.path.join(HERE, "stack.mlpackage")
 stack.save(stack_out)
 print(f"wrote {stack_out}")
+
+
+# The same arithmetic with every weight arriving as an input rather than baked in at
+# conversion time. That is the shape a recorded tensor graph hands over — activations
+# times weight tensors — and whether it still reaches the Neural Engine decides whether
+# a compiled region survives a weight update or has to be rebuilt every step.
+_runtime_specs = [mb.TensorSpec(shape=(256, 768))] + [
+    mb.TensorSpec(shape=(768, 768)) for _ in range(8)
+]
+
+
+@mb.program(input_specs=_runtime_specs)
+def runtime_program(x, w0, w1, w2, w3, w4, w5, w6, w7):
+    for weight in (w0, w1, w2, w3, w4, w5, w6, w7):
+        x = mb.matmul(x=x, y=weight)
+        x = mb.relu(x=x)
+    return x
+
+
+runtime = ct.convert(
+    runtime_program,
+    minimum_deployment_target=ct.target.iOS16,
+    compute_units=ct.ComputeUnit.CPU_AND_NE,
+    compute_precision=ct.precision.FLOAT16,
+    inputs=[ct.TensorType(name="x", shape=(256, 768), dtype=np.float16)]
+    + [ct.TensorType(name=f"w{i}", shape=(768, 768), dtype=np.float16) for i in range(8)],
+    outputs=[ct.TensorType(dtype=np.float16)],
+)
+runtime_out = os.path.join(HERE, "runtime-weights.mlpackage")
+runtime.save(runtime_out)
+print(f"wrote {runtime_out}")
