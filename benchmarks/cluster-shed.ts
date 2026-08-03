@@ -1,17 +1,19 @@
 /**
- * Shed-pressure scenario: does queued work actually migrate to a node that
- * joins an overloaded cluster?
+ * Shed-pressure scenario: queued work migrating off an overloaded node.
  *
- * The balancer only acts on pre-initialization specs, so a backlog has to
- * exist before anything can move. This builds one deliberately: a
- * control-plane-only seed (never a placement target — application load must
- * not starve the loop that routes the cluster), one worker capped to a
- * single reactor thread, and a busy-spin workload that wedges that thread so
- * everything deployed behind it stays queued as a spec. Then a second worker
- * joins, and the question is whether the backlog drains onto it.
+ * The construction that finally works rests on the watchdog. A greedy timer
+ * workload wedges worker-a's single reactor; the watchdog halts it, which
+ * hands the thread back — and that is what lets the system realm run its
+ * balancer at all. The waiters each burn a couple of seconds of legitimate
+ * CPU, so the backlog persists while reactors interleave, and when worker-b
+ * joins with an empty queue the balancer sheds pre-init specs to it.
+ *
+ * PASS requires both directions: at least one waiter runs on worker-b under
+ * default-ish thresholds, and none migrate when the watermark is prohibitive.
  *
  * ```text
- * fino benchmarks/cluster-shed.ts
+ * fino benchmarks/cluster-shed.ts          # both scenarios
+ * SHED_ONLY=1 fino benchmarks/cluster-shed.ts   # positive only, faster
  * ```
  */
 import { Process, cwd, env as processEnv, execPath } from 'fino:process';
@@ -21,8 +23,6 @@ const fs = new DiskFileSystem();
 const decode = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-const PORT = 3e4 + Math.floor(Math.random() * 1e4);
-const ROOT = `/tmp/fino-shed-${Date.now()}`;
 const CERT = `${cwd()}/tests/net/fixtures/test.crt`;
 const KEY = `${cwd()}/tests/net/fixtures/test.key`;
 const SIGKILL = 9;
@@ -47,19 +47,23 @@ async function run(args: string[], timeoutMs: number): Promise<string> {
   return parts.join('');
 }
 
-async function main(): Promise<void> {
-  await fs.mkdir(ROOT);
-  await fs.mkdir(`${ROOT}/state`);
+interface ScenarioResult {
+  backlogBuilt: boolean;
+  shedObserved: boolean;
+  ranOnA: number;
+  halted: boolean;
+}
 
-  // Control-plane-only seed: never a placement target, so the loop routing
-  // the cluster can never be starved by the load this scenario creates.
+async function scenario(label: string, extraEnv: Record<string, string>): Promise<ScenarioResult> {
+  const port = 3e4 + Math.floor(Math.random() * 1e4);
+  const root = `/tmp/fino-shed-${label}-${Date.now()}`;
+  await fs.mkdir(root);
+  await fs.mkdir(`${root}/state`);
+
   const seed = new Process(execPath, [
-    'cluster', 'start',
-    '--port', String(PORT),
-    '--cert', CERT,
-    '--key', KEY,
-    '--state', `${ROOT}/state`,
-    '--no-workloads',
+    'cluster', 'start', '--port', String(port),
+    '--cert', CERT, '--key', KEY,
+    '--state', `${root}/state`, '--no-workloads',
   ]);
   const seedOut: string[] = [];
   collect(seed, seedOut);
@@ -71,70 +75,121 @@ async function main(): Promise<void> {
   }
   if (join === '') throw new Error('seed never printed a join string');
 
-  // One worker, one reactor thread: a single busy workload wedges it and
-  // everything behind stays a queued spec.
+  // No thread cap: saturation is built the honest way, with one greedy
+  // workload per hardware thread. (FINO_REACTOR_THREADS=1 turns out to hang
+  // node startup — the CLI task itself is a pool workload and contends with
+  // the system realm for the only thread; tracked separately.)
+  const workerEnv = {
+    ...processEnv,
+    FINO_SYSTEM_REALM_INTERVAL_MS: '250',
+    FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000',
+    FINO_WATCHDOG_INTERVAL_MS: '200',
+    FINO_WATCHDOG_STALL_MS: '1000',
+    FINO_WATCHDOG_SUSTAINED_MS: '3000',
+    ...extraEnv,
+  };
   const workerA = new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-a'], {
-    env: { ...processEnv, FINO_REACTOR_THREADS: '1', FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000' },
+    env: workerEnv,
   });
   const aOut: string[] = [];
   collect(workerA, aOut);
   for (let i = 0; i < 100 && !aOut.join('').includes('joined'); i++) await sleep(100);
+  if (!aOut.join('').includes('joined')) throw new Error('worker-a never joined');
 
-  const busy = `${ROOT}/busy`;
+  // Greedy: a timer handler that never yields. Timer-based deliberately —
+  // a top-level runaway sits in module evaluation, where the watchdog
+  // stays advisory by design.
+  const busy = `${root}/busy`;
   await fs.mkdir(busy);
   await fs.writeFile(
     `${busy}/main.ts`,
-    new TextEncoder().encode(`const end = Date.now() + 120_000;\nwhile (Date.now() < end) {}\n`),
+    new TextEncoder().encode(`setTimeout(() => {\n  for (;;) {}\n}, 20);\n`),
   );
-  const waiting = `${ROOT}/waiting`;
+  // Waiters: two seconds of honest CPU each, then a print that reveals
+  // which node they actually ran on.
+  const waiting = `${root}/waiting`;
   await fs.mkdir(waiting);
   await fs.writeFile(
     `${waiting}/main.ts`,
-    new TextEncoder().encode(`console.log('waiting app ran');\nsetInterval(() => {}, 60000);\n`),
+    new TextEncoder().encode(
+      `setTimeout(() => {\n  const end = Date.now() + 2000;\n  while (Date.now() < end) {}\n  console.log('waiting app ran');\n  setInterval(() => {}, 60_000);\n}, 10);\n`,
+    ),
   );
 
-  void run(['cluster', 'deploy', join, busy, '--name', 'busy'], 150_000);
-  await sleep(4000);
-  const queued: Promise<string>[] = [];
-  for (let i = 0; i < 5; i++) {
-    queued.push(run(['cluster', 'deploy', join, waiting, '--name', `wait${i}`], 150_000));
+  // Enough greedy workloads to bury every reactor thread on any plausible
+  // development machine; extras queue behind them and keep the backlog deep
+  // while the watchdog frees threads one halt at a time.
+  const GREEDY = 24;
+  const busyDeploys: Promise<string>[] = [];
+  for (let i = 0; i < GREEDY; i++) {
+    busyDeploys.push(run(['cluster', 'deploy', join, busy, '--name', `busy${i}`], 120_000));
   }
   await sleep(6000);
+  const queued: Promise<string>[] = [];
+  for (let i = 0; i < 8; i++) {
+    queued.push(run(['cluster', 'deploy', join, waiting, '--name', `wait${i}`], 120_000));
+  }
+  await sleep(5000);
+  const backlogBuilt = !aOut.join('').includes('waiting app ran');
 
-  const beforeStatus = await run(['cluster', 'status', join], 15_000);
-  console.log('--- before the second worker joins:');
-  console.log(beforeStatus.split('\n').filter((l) => l.includes('cpu')).join('\n'));
-
-  // The new node: an empty queue next to a wedged one is exactly the
-  // imbalance the balancer exists to correct.
   const workerB = new Process(execPath, ['cluster', 'join', join, '--node-id', 'worker-b'], {
     env: { ...processEnv, FINO_CLUSTER_BALANCE_INTERVAL_MS: '1000' },
   });
   const bOut: string[] = [];
   collect(workerB, bOut);
   for (let i = 0; i < 100 && !bOut.join('').includes('joined'); i++) await sleep(100);
-  console.log('worker-b joined; watching for migration');
+  console.log(`[${label}] worker-b joined; watching for migration`);
 
-  let ranOnB = false;
+  let shedObserved = false;
   for (let i = 0; i < 60; i++) {
     await sleep(1000);
     if (bOut.join('').includes('waiting app ran')) {
-      ranOnB = true;
-      console.log(`queued work ran on worker-b after ${i + 1}s`);
+      shedObserved = true;
+      console.log(`[${label}] queued work ran on worker-b after ${i + 1}s`);
       break;
     }
   }
 
-  const afterStatus = await run(['cluster', 'status', join], 15_000);
-  console.log('--- after:');
-  console.log(afterStatus.split('\n').filter((l) => l.includes('cpu')).join('\n'));
-  console.log(`worker-a output: ${aOut.join('').split('\n').filter((l) => l.includes('waiting app ran')).length} waiting apps ran locally`);
-
-  void queued;
-  workerA.kill(SIGKILL);
-  workerB.kill(SIGKILL);
-  seed.kill(SIGKILL);
-  console.log(ranOnB ? '\nSHED PASS: queued work migrated to the new node' : '\nSHED FAIL: backlog never moved');
+  const ranOnA = aOut.join('').split('\n').filter((l) => l.includes('waiting app ran')).length;
+  const halted = aOut.join('').includes('terminated while holding its reactor');
+  // Deploy outcomes are part of the record: silent CLI failures have twice
+  // masqueraded as scheduler behavior in this scenario's history.
+  const lastLine = (out: string): string => {
+    const lines = out.trim().split('\n');
+    return lines.find((l) => l.includes('rror')) ?? lines.pop() ?? '';
+  };
+  for (const [index, outcome] of (await Promise.all(busyDeploys)).entries()) {
+    const line = lastLine(outcome);
+    if (line.includes('rror')) console.log(`[${label}] busy${index}: ${line}`);
+  }
+  for (const [index, outcome] of (await Promise.all(queued)).entries()) {
+    console.log(`[${label}] wait${index}: ${lastLine(outcome)}`);
+  }
+  console.log(`[${label}] worker-a tail:`);
+  for (const line of aOut.join('').split('\n').slice(-8)) console.log(`  ${line}`);
+  void workerA;
+  void workerB;
+  void seed;
+  killAll();
+  console.log(
+    `[${label}] backlog=${backlogBuilt} shed=${shedObserved} ranOnA=${ranOnA} watchdogHalted=${halted}`,
+  );
+  return { backlogBuilt, shedObserved, ranOnA, halted };
 }
 
-await main();
+const shedding = await scenario('on', {
+  FINO_CLUSTER_SHED_WATERMARK: '1',
+  FINO_CLUSTER_SHED_MIN_DELTA: '1',
+});
+if (processEnv.SHED_ONLY === '1') {
+  console.log(shedding.shedObserved ? '\nSHED PASS (positive only)' : '\nSHED FAIL (positive only)');
+} else {
+  const held = await scenario('off', {
+    FINO_CLUSTER_SHED_WATERMARK: '999',
+    FINO_CLUSTER_SHED_MIN_DELTA: '1',
+  });
+  // The halted marker is informational: a halted realm's error settles
+  // toward its (departed) deploy CLI, so worker-a's log rarely shows it.
+  const pass = shedding.backlogBuilt && shedding.shedObserved && !held.shedObserved;
+  console.log(pass ? '\nSHED PASS' : '\nSHED FAIL');
+}

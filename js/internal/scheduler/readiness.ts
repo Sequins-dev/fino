@@ -134,6 +134,11 @@ export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
       schedulerReadinessTurns++;
       for (const event of takeReactorEvents(queue.handle)) {
         loopTurns += event.loopTurns;
+        if (event.kind === 'overrun' || event.kind === 'halted') {
+          // Watchdog escalations are operational events: a workload held its
+          // reactor while queued work starved. Loud by design.
+          console.error(`fino:scheduler watchdog ${event.kind}: workload ${event.owner}`);
+        }
         if (event.kind === 'submitted') {
           liveWorkloads++;
           ensureThreads();

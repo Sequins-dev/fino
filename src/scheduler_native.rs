@@ -795,10 +795,12 @@ struct PoolShared {
     /// from a thread that never claims work, which is the only vantage point
     /// that survives every reactor being wedged.
     running: Mutex<HashMap<usize, RunningSlice>>,
-    /// Monotonic micros of the last claim decision by any worker. Workers
-    /// stuck inside a slice never reach `claim`, so this going stale is the
-    /// signal that nobody is coming back for queued work.
-    last_claim_micros: AtomicU64,
+    /// Monotonic micros of the last time a queued entry was actually taken
+    /// off the ready heap. Deliberately NOT "the last time a worker called
+    /// claim": a worker that keeps its current workload calls claim on every
+    /// loop turn, so that clock never goes stale even while ready work
+    /// starves. Progress means dequeue, nothing less.
+    last_progress_micros: AtomicU64,
     wake_read: i32,
     wake_write: i32,
 }
@@ -921,6 +923,10 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
     let interval = std::time::Duration::from_millis(tuning.interval_ms);
     let stall_micros = tuning.stall_ms * 1_000;
     let terminate_micros = tuning.sustained_ms * 1_000;
+    // FINO_WATCHDOG_TRACE=1 dumps the gate state every pass. Permanent:
+    // "why is the watchdog silent" is a question that recurs, and the
+    // answer is always one of these numbers.
+    let trace = matches!(std::env::var("FINO_WATCHDOG_TRACE").as_deref(), Ok("1"));
     loop {
         std::thread::sleep(interval);
         // Upgrade per tick and drop before sleeping again, so the queue can
@@ -928,21 +934,40 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
         let Some(shared) = shared.upgrade() else {
             return;
         };
-        let system_waiting = {
+        let work_waiting = {
             let queue = shared.queue.read().unwrap();
             if queue.shutdown {
                 return;
             }
-            queue.ready.iter().any(|entry| entry.class == CLASS_SYSTEM)
+            if trace {
+                let stale_ms = now_micros()
+                    .saturating_sub(shared.last_progress_micros.load(Ordering::Relaxed))
+                    / 1_000;
+                eprintln!(
+                    "fino:watchdog trace ready={} active={} stale_progress={}ms running={}",
+                    queue.ready.len(),
+                    queue.active.len(),
+                    stale_ms,
+                    shared.running.lock().unwrap().len(),
+                );
+            }
+            // Any ready entry counts, not just system-class. The original
+            // system-only gate had a blind spot: the system realm's ready
+            // entry is delivered by the main realm's readiness routing, and
+            // total CPU saturation can starve that delivery — the gate then
+            // depended on the very component being starved. Ready work of
+            // any class going unclaimed while no reactor returns is a
+            // deadlock regardless of who is waiting.
+            !queue.ready.is_empty()
         };
-        if !system_waiting {
+        if !work_waiting {
             continue;
         }
         let now = now_micros();
         // Some reactor came back recently, so queued work is being served
         // and nothing is wedged — the two conditions only mean deadlock
         // together.
-        if now.saturating_sub(shared.last_claim_micros.load(Ordering::Relaxed)) < stall_micros {
+        if now.saturating_sub(shared.last_progress_micros.load(Ordering::Relaxed)) < stall_micros {
             continue;
         }
         let mut escalation: Option<(u32, bool)> = None;
@@ -1062,7 +1087,7 @@ impl PoolShared {
             queue: RwLock::new(queue),
             parked: Mutex::new(HashMap::new()),
             running: Mutex::new(HashMap::new()),
-            last_claim_micros: AtomicU64::new(now_micros()),
+            last_progress_micros: AtomicU64::new(now_micros()),
             sleep: Mutex::new(()),
             epoch: AtomicU64::new(0),
             changed: Condvar::new(),
@@ -1276,8 +1301,9 @@ impl PoolShared {
         }
     }
 
-    fn note_claim(&self) {
-        self.last_claim_micros
+    /// Record that a queued entry was dequeued for execution.
+    fn note_progress(&self) {
+        self.last_progress_micros
             .store(now_micros(), Ordering::Relaxed);
     }
 
@@ -1288,7 +1314,6 @@ impl PoolShared {
         current_state: CurrentState,
         force_write: bool,
     ) -> Claim {
-        self.note_claim();
         loop {
             if stop.load(Ordering::Acquire) {
                 return Claim::Shutdown;
@@ -1559,6 +1584,9 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 kept = if kept >= MAX_READ_KEEPS { 0 } else { kept + 1 };
             }
             Claim::Work(item) => {
+                // A dequeue is the only thing that counts as progress for
+                // the watchdog's staleness clock.
+                shared.note_progress();
                 kept = 0;
                 let previous = current_owner;
                 if let Some(resident) = current.take() {
