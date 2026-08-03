@@ -427,6 +427,41 @@ timing them against each other without checking would have compared two differen
 calculations. Symmetric inputs make the two products coincide, which costs nothing and
 makes the comparison verifiable.
 
+### Against CoreML and the Neural Engine
+
+The Neural Engine is reachable from here — `tests/tensor/coreml-spike.test.ts` compiles,
+loads and runs a model entirely through FFI, and `tests/tensor/coreml-placement.test.ts`
+reads back per-operation placement and confirms the operations this engine emits land
+there at realistic sizes, with weights arriving as runtime inputs rather than baked
+constants. The remaining question was whether that is worth a backend.
+
+`tests/tensor/coreml-perf.test.ts` answers it. Eight matrix multiplies with a ReLU
+between them, half precision, weights as inputs — GFLOP/s on an M5 Max:
+
+| size | CoreML/ANE | fino per call | fino pipelined |
+|---|---|---|---|
+| 256×768 | 3125 | 1600–2650 | 4260 |
+| 1024 | 7900 | 7800–8120 | 9570–10420 |
+
+Per call CoreML wins the smaller size and is level at the larger one, which looks like a
+reason to build until the shape of it is taken seriously: an arithmetic advantage does
+not disappear as the problem grows. Issuing the same iterations without waiting between
+them removes 39% of the per-call time at 256×768 and 23% at 1024. This engine submits
+sixteen dispatches per iteration where CoreML submits one graph, and at these sizes that
+is most of the gap — the spread in the per-call column says the same thing, since CoreML's
+figure barely moves between runs while this one swings by half.
+
+So the Neural Engine offers no arithmetic headroom worth a MIL emitter, an `.mlpackage`
+writer, and a narrow-operation backend. What the comparison found instead is that
+whole-graph submission is worth a quarter to a third at these sizes, and that is
+available here through capture/replay and the graph plane with no CoreML in it. Compile
+and load cost 26–46ms per region on top, which at 1024 never amortises.
+
+One caveat kept deliberately: the pipelined column is not like-for-like, because CoreML's
+`predictionsFromBatch:` would amortise submission on its side too and is not measured.
+The claim that survives it is the narrow one — at 1024, per call, the two are level, so
+there is no advantage to buy.
+
 ### Undefined is not the same as unspecified
 
 `pow` used to lower straight to each dialect's own. SPIR-V says the result is undefined

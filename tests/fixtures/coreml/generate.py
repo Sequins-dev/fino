@@ -114,3 +114,35 @@ runtime = ct.convert(
 runtime_out = os.path.join(HERE, "runtime-weights.mlpackage")
 runtime.save(runtime_out)
 print(f"wrote {runtime_out}")
+
+
+# The same shape again at 1024 a side. Size is what selects this engine's kernels: below
+# 1024 the cooperative-matrix GEMM does not engage and the smaller tiling is chosen, so a
+# comparison held only at 256x768 measures CoreML against the slower of two paths this
+# engine has. Whether the Neural Engine still wins where our best kernel runs is a
+# different question from whether it wins at all, and the backend decision needs both.
+_wide_specs = [mb.TensorSpec(shape=(1024, 1024))] + [
+    mb.TensorSpec(shape=(1024, 1024)) for _ in range(8)
+]
+
+
+@mb.program(input_specs=_wide_specs)
+def wide_program(x, w0, w1, w2, w3, w4, w5, w6, w7):
+    for weight in (w0, w1, w2, w3, w4, w5, w6, w7):
+        x = mb.matmul(x=x, y=weight)
+        x = mb.relu(x=x)
+    return x
+
+
+wide = ct.convert(
+    wide_program,
+    minimum_deployment_target=ct.target.iOS16,
+    compute_units=ct.ComputeUnit.CPU_AND_NE,
+    compute_precision=ct.precision.FLOAT16,
+    inputs=[ct.TensorType(name="x", shape=(1024, 1024), dtype=np.float16)]
+    + [ct.TensorType(name=f"w{i}", shape=(1024, 1024), dtype=np.float16) for i in range(8)],
+    outputs=[ct.TensorType(dtype=np.float16)],
+)
+wide_out = os.path.join(HERE, "runtime-weights-1024.mlpackage")
+wide.save(wide_out)
+print(f"wrote {wide_out}")
