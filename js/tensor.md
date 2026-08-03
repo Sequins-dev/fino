@@ -480,8 +480,35 @@ two, and three words, so the cost tracks elements rather than bytes; a
 bytes-per-second figure alone would suggest a memory limit that is not the one being
 hit. Giving each thread more elements changes nothing either, which rules out
 scheduling. The generated kernels match hand-written Metal doing the same work, so
-what remains is the width of a single operation — each thread handles one scalar, and
-a `float4` version of the same hand-written kernel is about a fifth faster again.
+what remains is the width of a single operation.
+
+That is now what these kernels use. A contiguous elementwise launch takes four lanes per
+thread, which on an M5 Max through Metal is worth about a fifth:
+
+| | fill | unary | binary |
+|---|---|---|---|
+| one lane | 61 | 59 | 61 |
+| four lanes | 71 | 70 | 74 |
+
+Gelem/s, higher is better. Vulkan improved too — unary 6 to 16, binary 5 to 15 — but it
+was in its slow regime for every run of both, so treat those as a direction rather than a
+figure until the bimodality below is understood.
+
+Width is chosen per launch rather than baked into the template, and only contiguous
+operands qualify. A vectorised buffer is indexed in vector units, which coincides with
+element units only when the operand walks the output one element at a time: a scalar
+operand would read four elements where it wants one broadcast, and the broadcast layouts
+divide and modulo by a block size counted in elements. One-byte storage is excluded as
+well, so comparisons keep the scalar kernel.
+
+Getting there needed a fix in both lowerings, and it is the kind that only appears once
+something is vectorised. A select over vectors cannot be a ternary: MSL rejects `?:`
+whenever the condition and the result have different element widths, which `bool4` and
+`float4` always do, and it is `select(onFalse, onTrue, cond)` instead. SPIR-V wants the
+condition to have as many components as the result — a scalar boolean choosing between
+vectors is legal only from 1.4, above what these modules target — so a scalar condition
+is splatted first. `pow` found both, because it selects on a scalar exponent between
+vector results.
 
 ### Measuring this correctly
 

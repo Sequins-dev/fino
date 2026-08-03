@@ -214,8 +214,20 @@ export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
         const fn = MATH_FN[e.fn];
         return `${fn}(${e.args.map(expr).join(', ')})`;
       }
-      case 'select':
-        return `(${expr(e.cond)} ? ${expr(e.a)} : ${expr(e.b)})`;
+      case 'select': {
+        const result = typeOf(e.a, env);
+        if (result.lanes === 1) return `(${expr(e.cond)} ? ${expr(e.a)} : ${expr(e.b)})`;
+        // MSL rejects `?:` whenever the condition and the result have different element
+        // widths, and a vector select always does — `bool4` holds four one-byte values
+        // where `float4` holds four four-byte ones. `select(onFalse, onTrue, cond)` is
+        // the vector form, and it takes the arguments the other way round.
+        const cond = typeOf(e.cond, env);
+        const selector =
+          cond.lanes === result.lanes
+            ? expr(e.cond)
+            : `${mslType({ scalar: 'bool', lanes: result.lanes }, version)}(${expr(e.cond)})`;
+        return `select(${expr(e.b)}, ${expr(e.a)}, ${selector})`;
+      }
       case 'cast':
         return castExpr(e.to, e.a);
       case 'bitcast':

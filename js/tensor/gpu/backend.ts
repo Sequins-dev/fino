@@ -66,7 +66,7 @@ import {
   stridedCopyKernel,
   unaryKernel,
 } from '../ir/index.ts';
-import type { EwContext, EwInput, Expr, KernelIR, ScalarDType } from '../ir/index.ts';
+import type { EwContext, EwInput, Expr, KernelIR, ScalarDType, VecWidth } from '../ir/index.ts';
 import {
   BINARY,
   COMPARE,
@@ -616,12 +616,13 @@ export class GpuBackend implements DeviceBackend {
     if (scalar !== null) {
       // A scalar operand rides in the parameter block, so one buffer is bound.
       const inputScalar = this.#scalar(inputs[0]!);
+      const lanes = ewLanes(count, [{ dtype: inputScalar, layout: 'cont' }], outScalar, [inputs[0]!, out]);
+      const groups = count / lanes;
       this.#run(
-        () =>
-          buildScalarElementwise(op, inputScalar, outScalar, onLeft),
+        () => buildScalarElementwise(op, inputScalar, outScalar, onLeft, lanes),
         [inputs[0]!.buffer, out.buffer],
-        { n: count, operand: scalar },
-        linearGrid(count),
+        { n: groups, operand: scalar },
+        linearGrid(groups),
       );
       return;
     }
@@ -647,7 +648,9 @@ export class GpuBackend implements DeviceBackend {
       dtype: this.#scalar(input),
       layout: layouts[index]!.class,
     }));
-    const params: Record<string, number> = { n: count };
+    const lanes = ewLanes(count, ewInputs, outScalar, [...resolved, out]);
+    const groups = count / lanes;
+    const params: Record<string, number> = { n: groups };
     layouts.forEach((layout, index) => {
       if (layout.class === 'outerBroadcast' || layout.class === 'innerBroadcast') {
         params[`inner${index}`] = layout.inner;
@@ -655,10 +658,10 @@ export class GpuBackend implements DeviceBackend {
     });
 
     this.#run(
-      () => buildElementwise(op, ewInputs, outScalar),
+      () => buildElementwise(op, ewInputs, outScalar, lanes),
       [...resolved.map((input) => input.buffer), out.buffer],
       params,
-      linearGrid(count),
+      linearGrid(groups),
     );
     // Read only by launches already queued ahead of the release, as in `reduce`.
     if (scratch.length > 0) this.#releaseScratch(scratch);
@@ -715,7 +718,9 @@ export class GpuBackend implements DeviceBackend {
     // coefficients change between steps still compiles one kernel.
     const shape = chainKey(steps);
     const constants = chainScalars(steps);
-    const params: Record<string, number> = { n: count };
+    const lanes = ewLanes(count, ewInputs, outScalar, [...inputs, out]);
+    const groups = count / lanes;
+    const params: Record<string, number> = { n: groups };
     constants.forEach((value, index) => {
       params[`k${index}`] = value;
     });
@@ -726,6 +731,7 @@ export class GpuBackend implements DeviceBackend {
           op: `chain_${shape}`,
           inputs: ewInputs,
           out: outScalar,
+          vec: lanes,
           scalars: constants.map((_, index) => ({ name: `k${index}`, type: 'f32' as const })),
           body: (values, ctx) => {
             const results: Expr[] = [];
@@ -745,18 +751,20 @@ export class GpuBackend implements DeviceBackend {
         }),
       [...inputs.map((input) => input.buffer), out.buffer],
       params,
-      linearGrid(count),
+      linearGrid(groups),
     );
   }
 
   cast(x: TensorDesc, out: TensorDesc): void {
     const count = numel(out.shape);
     if (count === 0) return;
+    const lanes = ewLanes(count, [{ dtype: this.#scalar(x), layout: 'cont' }], this.#scalar(out), [x, out]);
+    const groups = count / lanes;
     this.#run(
-      () => castKernel(this.#scalar(x), this.#scalar(out)),
+      () => castKernel(this.#scalar(x), this.#scalar(out), { vec: lanes }),
       [x.buffer, out.buffer],
-      { n: count },
-      linearGrid(count),
+      { n: groups },
+      linearGrid(groups),
     );
   }
 
@@ -1249,9 +1257,10 @@ function buildElementwise(
   op: EwOp,
   inputs: readonly EwInput[],
   out: ScalarDType,
+  vec: VecWidth = 1,
 ): { ir: KernelIR; key: string } {
-  if (inputs.length === 1) return unaryKernel(op, inputs[0]!, out);
-  if (inputs.length === 2) return binaryKernel(op, [inputs[0]!, inputs[1]!], out);
+  if (inputs.length === 1) return unaryKernel(op, inputs[0]!, out, { vec });
+  if (inputs.length === 2) return binaryKernel(op, [inputs[0]!, inputs[1]!], out, { vec });
   if (inputs.length === 3 && op === 'where') {
     // The condition arrives converted into the compute type, so testing it against
     // zero is how a boolean becomes a selector.
@@ -1259,11 +1268,54 @@ function buildElementwise(
       op: 'where',
       inputs,
       out,
+      vec,
       body: ([condition, whenTrue, whenFalse], ctx) =>
         E.select(E.ne(condition!, ctx.lit(0)), whenTrue!, whenFalse!),
     });
   }
   throw new Error(`no GPU kernel for elementwise '${op}' with ${inputs.length} inputs`);
+}
+
+/**
+ * Lanes an elementwise launch should use.
+ *
+ * One scalar per thread is what limits these kernels. They are not bandwidth-bound — a
+ * write-only fill, a read-and-write unary and a two-read binary all cost about the same
+ * per element while moving one, two and three words — and giving each thread more
+ * elements changes nothing, which rules out scheduling. What is left is the width of a
+ * single operation.
+ *
+ * Only contiguous operands qualify, and that is a property of the indexing rather than a
+ * conservatism worth removing later. A vectorised buffer is indexed in vector units,
+ * which coincides with element units only when the operand walks the output one element
+ * at a time: a `scalar` operand would read four elements where it wants one broadcast,
+ * and the broadcast layouts divide and modulo by a block size counted in elements. Both
+ * keep the scalar kernel.
+ *
+ * Every operand must also start at the beginning of its buffer, which the elementwise
+ * path already assumes — views are materialised before they reach here — but which a
+ * four-wide load additionally needs for alignment rather than only for correctness.
+ *
+ * One-byte storage is excluded, which is a limitation of the lowering rather than of the
+ * hardware. A comparison computes in `f32` and stores a `bool`, and MSL will not take a
+ * ternary whose condition and result have different element widths — `bool4 ? int4 : int4`
+ * is rejected where the scalar form is fine. Expressing a vector select as `select()`
+ * would lift this, but comparisons are not what the width was measured to help, so the
+ * narrow rule is the one that carries its weight.
+ *
+ * @internal
+ */
+function ewLanes(
+  count: number,
+  inputs: readonly EwInput[],
+  out: ScalarDType,
+  operands: readonly TensorDesc[],
+): VecWidth {
+  if (count % 4 !== 0) return 1;
+  if (!inputs.every((input) => input.layout === 'cont')) return 1;
+  const narrow = (dtype: ScalarDType) => dtype === 'bool' || dtype === 'u8';
+  if (narrow(out) || inputs.some((input) => narrow(input.dtype))) return 1;
+  return operands.every((operand) => operand.offset === 0) ? 4 : 1;
 }
 
 /**
@@ -1308,6 +1360,7 @@ function buildScalarElementwise(
   input: ScalarDType,
   out: ScalarDType,
   onLeft: boolean,
+  vec: VecWidth = 1,
 ): { ir: KernelIR; key: string } {
   const compare = COMPARE[op];
   const build = compare ?? BINARY[op];
@@ -1316,6 +1369,7 @@ function buildScalarElementwise(
     op: `${op}_scalar${onLeft ? '_lhs' : ''}`,
     inputs: [{ dtype: input, layout: 'cont' }],
     out,
+    vec,
     // A comparison computes in the operand's type and stores a boolean, so the
     // compute type is pinned to the input rather than derived from the output.
     compute: compare ? computeTypeFor(input) : undefined,

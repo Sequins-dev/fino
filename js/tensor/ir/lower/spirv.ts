@@ -549,12 +549,23 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
         const resultType = valType(typeOf(e, env));
         return fn.extInst(resultType, m.glsl(), GLSL_FN[e.fn], e.args.map(expr));
       }
-      case 'select':
-        return fn.emit(Op.Select, valType(typeOf(e.a, env)), [
-          expr(e.cond),
-          expr(e.a),
-          expr(e.b),
-        ]);
+      case 'select': {
+        const result = typeOf(e.a, env);
+        const condition = expr(e.cond);
+        // `OpSelect` wants a condition with as many components as the result. A scalar
+        // boolean choosing between vectors is only allowed from SPIR-V 1.4, and these
+        // modules target lower, so the condition is splatted instead. A comparison
+        // between vectors already yields a vector and passes straight through.
+        const selector =
+          result.lanes > 1 && typeOf(e.cond, env).lanes === 1
+            ? fn.emit(
+                Op.CompositeConstruct,
+                valType({ scalar: 'bool', lanes: result.lanes }),
+                Array.from({ length: result.lanes }, () => condition),
+              )
+            : condition;
+        return fn.emit(Op.Select, valType(result), [selector, expr(e.a), expr(e.b)]);
+      }
       case 'cast':
         return castTo(e.to, e.a);
       case 'bitcast':
