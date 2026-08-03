@@ -185,6 +185,10 @@ export const send = {
   sizeRet: msgSend([], MTLSize),
   /** `- (BOOL)waitUntilSignaledValue:(uint64_t) timeoutMS:(uint64_t)`, on the pool. */
   boolU64U64Async: msgSend(['u64', 'u64'], 'bool', { async: true }),
+  /** `- (id)objectAtIndex:(NSUInteger)` */
+  ptrU64: msgSend(['u64'], 'pointer'),
+  /** `+ (void)selector:(id) configuration:(id) completionHandler:(id)` */
+  voidPtrPtrPtr: msgSend(['pointer', 'pointer', 'pointer'], 'void'),
   /** `+ (id)numberWithLongLong:(long long)` */
   ptrI64: msgSend(['i64'], 'pointer'),
   /** `- (void)selector:(long long)` */
@@ -371,4 +375,55 @@ export function nsDictionary(keys: readonly Id[], values: readonly Id[]): Id {
     new Uint8Array(keyWords.buffer),
     BigInt(keys.length),
   );
+}
+
+// -- blocks -------------------------------------------------------------------
+
+/**
+ * Flag marking a block as global: never copied, never released.
+ *
+ * Which is what makes one buildable from here. A stack block would have to be copied to
+ * the heap by the runtime, and copying reads the `isa` field the way only a real block
+ * class survives; a global block short-circuits that, so the class pointer standing in
+ * for `_NSConcreteGlobalBlock` is never dereferenced.
+ *
+ * @internal
+ */
+const BLOCK_IS_GLOBAL = 1 << 28;
+
+/**
+ * Wrap a callback as an Objective-C block.
+ *
+ * Frameworks hand results to blocks far more often than to bare function pointers, and
+ * a block is just a struct whose fourth field is the function to call — so one can be
+ * assembled here rather than needing a compiler.
+ *
+ * The caller keeps the returned object alive for as long as the framework may call it:
+ * a global block is not copied, so the framework holds this literal directly.
+ *
+ * The handler runs while the framework's call is in progress, which matters for its
+ * arguments — objects arrive autoreleased and are gone once that call returns, so
+ * anything kept must be retained inside the handler.
+ */
+export function blockLiteral(callback: { pointer: ArrayBuffer }): {
+  pointer: unknown;
+  /** The literal and descriptor, which the block points at and must outlive it. */
+  retained: readonly unknown[];
+} {
+  const nsObject = objcClass('NSObject');
+  if (!nsObject) throw new Error('NSObject is unavailable');
+  const descriptor = new Uint8Array(new BigUint64Array([0n, 32n]).buffer);
+  const descriptorPtr = Pointer.of(descriptor);
+  const literal = new Uint8Array(32);
+  const view = new DataView(literal.buffer);
+  view.setBigUint64(0, new DataView(nsObject as ArrayBuffer).getBigUint64(0, true), true);
+  view.setUint32(8, BLOCK_IS_GLOBAL, true);
+  view.setUint32(12, 0, true);
+  // The function address held *inside* the handle. Writing the handle's own address
+  // instead sends the framework branching into the JavaScript heap, which faults as an
+  // execute-protection error a long way from here.
+  view.setBigUint64(16, new DataView(callback.pointer).getBigUint64(0, true), true);
+  view.setBigUint64(24, Pointer.addr(descriptorPtr), true);
+  const pointer = Pointer.of(literal);
+  return { pointer, retained: [descriptor, descriptorPtr, literal, pointer] };
 }

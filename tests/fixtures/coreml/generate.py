@@ -31,3 +31,25 @@ model = ct.convert(
 out = os.path.join(HERE, "matmul.mlpackage")
 model.save(out)
 print(f"wrote {out}")
+
+
+# A convolution, which is the shape the Neural Engine is built for. Generated so the
+# placement test has something that could plausibly land there, rather than only a
+# matmul that never would.
+@mb.program(input_specs=[mb.TensorSpec(shape=(1, 64, 32, 32))])
+def conv_program(x):
+    import numpy as np
+
+    weight = np.random.default_rng(0).standard_normal((64, 64, 3, 3)).astype(np.float32)
+    return mb.conv(x=x, weight=weight, pad_type="same", strides=[1, 1])
+
+
+conv = ct.convert(
+    conv_program,
+    minimum_deployment_target=ct.target.iOS16,
+    compute_units=ct.ComputeUnit.CPU_AND_NE,
+    compute_precision=ct.precision.FLOAT16,
+)
+conv_out = os.path.join(HERE, "conv.mlpackage")
+conv.save(conv_out)
+print(f"wrote {conv_out}")

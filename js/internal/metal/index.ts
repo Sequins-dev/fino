@@ -18,6 +18,7 @@ export {
   MTLSize,
   cstring,
   errorSlot,
+  blockLiteral,
   nsArray,
   nsDictionary,
   nsNumber,
