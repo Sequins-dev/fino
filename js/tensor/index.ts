@@ -320,6 +320,7 @@ export {
   exp,
   expand,
   flatten,
+  gather,
   indexSelect,
   log,
   logSoftmax,

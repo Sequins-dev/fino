@@ -264,6 +264,19 @@ export function conformanceCases(): ConformanceCase[] {
       inputs: [{ shape: [6, 4] }, { shape: [5], dtype: 'i32', seed: 3 }],
       run: (table, ids) => table.indexSelect(ids.abs().cast('i32'), 0).mul(2),
     },
+    {
+      name: 'gathering one element per position',
+      group: 'forward',
+      covers: ['gather'],
+      // The index tensor has the output's shape here, where `indexSelect` above takes a
+      // list — that difference is the whole of what separates the two operations, so the
+      // suite says nothing about either unless it exercises both.
+      inputs: [{ shape: [6, 4] }, { shape: [6, 4], seed: 5 }],
+      // Scaled before truncating: the sample values sit in [-1, 1], so casting them
+      // straight to indices would only ever choose columns zero and one and the case
+      // would pass on a kernel that ignored most of the axis.
+      run: (table, ids) => table.gather(ids.mul(3).abs().cast('i32'), 1).mul(2),
+    },
 
     {
       name: 'seeded sampling',

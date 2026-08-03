@@ -189,6 +189,61 @@ export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
  * Buffers are `idx`, `src`, `out0`, and `status`. Parameters are `n` (source
  * element count), `count`, `inner`, and `axisSize`.
  */
+/**
+ * Take one element per output position along an axis.
+ *
+ * Nearly the index-select kernel, and the one difference is the whole distinction between
+ * them: this reads the index at the output position rather than at the slice, so every
+ * output element chooses independently instead of a whole slice moving together.
+ *
+ * Shapes agree off the gathered axis, so both sides flatten to outer-by-axis-by-inner and
+ * only the axis extent differs between them.
+ */
+export function gatherKernel(spec: { dtype: ScalarDType; wg?: number }): {
+  ir: KernelIR;
+  key: string;
+} {
+  const wg = spec.wg ?? 256;
+  const b = new KernelBuilder(`gather_${spec.dtype}`, [wg, 1, 1]);
+  b.buffer('src', vt(spec.dtype), 'read');
+  b.buffer('idx', vt('i32'), 'read');
+  b.buffer('out0', vt(spec.dtype), 'write');
+  b.buffer('status', vt('u32'), 'readwrite');
+  const n = b.param('n');
+  const inner = b.param('inner');
+  const axisSize = b.param('axisSize');
+  const outAxis = b.param('outAxis');
+
+  b.gridStride(n, (i) => {
+    const span = b.letTemp(vt('u32'), E.mul(outAxis, inner), 'span');
+    const outer = b.letTemp(vt('u32'), E.div(i, span), 'o');
+    const rest = b.letTemp(vt('u32'), E.mod(i, span), 'rest');
+    const offset = b.letTemp(vt('u32'), E.mod(rest, inner), 'off');
+    const raw = b.letTemp(vt('i32'), E.load('idx', i), 'r');
+    const wrapped = b.letTemp(
+      vt('u32'),
+      E.select(
+        E.lt(raw, E.i32(0)),
+        E.cast(vt('u32'), E.add(raw, E.cast(vt('i32'), axisSize))),
+        E.cast(vt('u32'), raw),
+      ),
+      'ix',
+    );
+    b.if(
+      E.lt(wrapped, axisSize),
+      () => {
+        const source = E.add(E.mul(E.add(E.mul(outer, axisSize), wrapped), inner), offset);
+        b.store('out0', i, E.load('src', source));
+      },
+      () => {
+        b.store('status', E.u32(0), E.add(wrapped, E.u32(1)));
+      },
+    );
+  });
+
+  return { ir: b.build(), key: specKey('gather', { dtype: spec.dtype, wg }) };
+}
+
 export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
   ir: KernelIR;
   key: string;

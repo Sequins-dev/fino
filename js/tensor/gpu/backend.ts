@@ -53,6 +53,7 @@ import {
   gemmMmaFits,
   gemmMmaGrid,
   gemmMmaKernel,
+  gatherKernel,
   indexSelectKernel,
   layerNormKernel,
   linearGrid,
@@ -160,7 +161,7 @@ const ROW_PER_THREAD_COLS = 256;
 const ROW_PER_THREAD_OCCUPANCY = 16;
 
 /** Operations that are not implemented on the GPU path. */
-const UNSUPPORTED: ReadonlySet<OpKind> = new Set<OpKind>(['gather']);
+const UNSUPPORTED: ReadonlySet<OpKind> = new Set<OpKind>();
 
 
 /**
@@ -1017,8 +1018,20 @@ export class GpuBackend implements DeviceBackend {
     );
   }
 
-  gather(): void {
-    throw new Error('gather is not implemented on the GPU path; use indexSelect');
+  gather(x: TensorDesc, indices: TensorDesc, out: TensorDesc, axis: number): void {
+    const elements = numel(out.shape);
+    if (elements === 0) return;
+    this.#run(
+      () => gatherKernel({ dtype: this.#scalar(x) }),
+      [x.buffer, indices.buffer, out.buffer, this.#statusBuffer() as unknown as DeviceBuffer],
+      {
+        n: elements,
+        inner: trailingExtent(x.shape, axis),
+        axisSize: x.shape[axis]!,
+        outAxis: out.shape[axis]!,
+      },
+      linearGrid(elements),
+    );
   }
 
   scatterAdd(

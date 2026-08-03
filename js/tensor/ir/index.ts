@@ -118,6 +118,7 @@ export {
   linearGrid,
   optimizerKernel,
   randomKernel,
+  gatherKernel,
   scatterAddKernel,
   stridedCopyKernel,
 } from './templates/structural.ts';

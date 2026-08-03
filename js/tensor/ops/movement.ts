@@ -307,6 +307,73 @@ MOVE.indexSelect = registerOp({
   },
 });
 
+/**
+ * Select one element per output position along an axis.
+ *
+ * The sibling of {@link indexSelect} rather than a variant of it: `indexSelect` takes
+ * whole slices at a list of positions, so its index tensor is a list and its output is
+ * as large as that list makes it. This takes one element per output position, so its
+ * index tensor has the output's shape and every position chooses independently. Picking
+ * the score of the correct class out of a batch of logits needs this one; an embedding
+ * lookup needs the other.
+ *
+ * Not differentiable yet. The adjoint is an accumulate at the same positions, and the
+ * `scatterAdd` here accumulates whole slices at a list of positions — the adjoint of
+ * `indexSelect`, not of this — so the gradient needs a kernel that does not exist rather
+ * than a rule that has not been written.
+ */
+MOVE.gather = registerOp({
+  name: 'gather',
+  group: 'indexing',
+  arity: 2,
+  dtypeRule: (inputs) => inputs[0]!.dtype,
+  shapeRule: (inputs, attrs) => {
+    const x = inputs[0]!;
+    const indices = inputs[1]!;
+    const axis = normalizeAxis(attrs!.axis as number, x.rank);
+    if (indices.rank !== x.rank) {
+      throw new Error(
+        `gather needs an index tensor of the same rank as its input, ` +
+          `got rank ${indices.rank} against rank ${x.rank}`,
+      );
+    }
+    for (let d = 0; d < x.rank; d++) {
+      if (d !== axis && indices.shape[d]! > x.shape[d]!) {
+        throw new Error(
+          `gather's index tensor may not exceed its input off the gathered axis: ` +
+            `axis ${d} is ${indices.shape[d]} against ${x.shape[d]}`,
+        );
+      }
+    }
+    return indices.shape;
+  },
+  enqueue: (backend, inputs, out, attrs, stream) =>
+    backend.gather(inputs[0]!, inputs[1]!, out, attrs!.axis as number, stream),
+  refImpl: (inputs, out, attrs) => {
+    const x = inputs[0]!;
+    const indices = inputs[1]!;
+    const axis = attrs!.axis as number;
+    // The accessor's own shape rather than the recorded `inputShape`: the reference
+    // backend rebuilds the attributes from the method's arguments, so only `axis`
+    // survives the trip through `DeviceBackend.gather`.
+    const inStrides = contiguousStrides(x.shape);
+    const axisSize = x.shape[axis]!;
+    for (let i = 0; i < out.size; i++) {
+      const coords = unravel(i, out.shape);
+      const raw = indices.get(i);
+      const index = raw < 0 ? raw + axisSize : raw;
+      if (index < 0 || index >= axisSize) {
+        throw new Error(`index ${raw} is out of range for axis ${axis} of size ${axisSize}`);
+      }
+      let flat = 0;
+      for (let d = 0; d < coords.length; d++) {
+        flat += (d === axis ? index : coords[d]!) * inStrides[d]!;
+      }
+      out.set(i, x.get(flat));
+    }
+  },
+});
+
 /** Accumulate slices into a destination along an axis. */
 MOVE.scatterAdd = registerOp({
   name: 'scatterAdd',
@@ -447,6 +514,15 @@ export function narrow(t: Tensor, axis: number, start: number, size: number): Te
 export function indexSelect(t: Tensor, indices: Tensor, axis = 0): Tensor {
   const resolved = normalizeAxis(axis, t.rank);
   return dispatch(MOVE.indexSelect!, [t, indices], {
+    axis: resolved,
+    inputShape: t.shape,
+  });
+}
+
+/** Take one element per output position along `axis`, chosen by `indices`. */
+export function gather(t: Tensor, indices: Tensor, axis = 0): Tensor {
+  const resolved = normalizeAxis(axis, t.rank);
+  return dispatch(MOVE.gather!, [t, indices], {
     axis: resolved,
     inputShape: t.shape,
   });

@@ -64,6 +64,7 @@ import {
   expand,
   fillOf,
   flatten,
+  gather,
   indexSelect,
   narrow,
   permute,
@@ -247,6 +248,10 @@ method('narrow', function (this: Tensor, axis: number, start: number, size: numb
 method('indexSelect', function (this: Tensor, indices: Tensor, axis?: number) {
   return indexSelect(this, indices, axis ?? 0);
 });
+
+method('gather', function (this: Tensor, indices: Tensor, axis?: number) {
+  return gather(this, indices, axis ?? 0);
+});
 method('scatterAdd', function (this: Tensor, indices: Tensor, src: Tensor, axis?: number) {
   return scatterAdd(this, indices, src, axis ?? 0);
 });
@@ -284,6 +289,7 @@ export {
   fillOf,
   flatten,
   geOp,
+  gather,
   indexSelect,
   leOp,
   log,

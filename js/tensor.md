@@ -462,6 +462,21 @@ One caveat kept deliberately: the pipelined column is not like-for-like, because
 The claim that survives it is the narrow one — at 1024, per call, the two are level, so
 there is no advantage to buy.
 
+### Two ways to index an axis
+
+`indexSelect` and `gather` look alike and are not interchangeable. `indexSelect` takes
+whole slices at a list of positions, so its index tensor is a list and the selected axis
+takes that list's shape — an embedding lookup. `gather` takes one element per output
+position, so its index tensor has the output's shape and every position chooses
+independently — picking the score of the correct class out of a batch of logits. Both
+accept negative indices, and an out-of-range index on either raises at the next
+synchronisation point rather than reading whatever was there.
+
+`gather` is not differentiable yet. Its adjoint accumulates at the same positions, and
+`scatterAdd` here accumulates whole slices at a list of positions — the adjoint of
+`indexSelect`, not of `gather` — so the gradient is waiting on a kernel rather than on a
+rule.
+
 ### Undefined is not the same as unspecified
 
 `pow` used to lower straight to each dialect's own. SPIR-V says the result is undefined
