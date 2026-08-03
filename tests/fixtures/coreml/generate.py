@@ -11,6 +11,7 @@ when the output is absent so a machine without coremltools still runs the suite.
 """
 
 import os
+import numpy as np
 import coremltools as ct
 from coremltools.converters.mil import Builder as mb
 
@@ -53,3 +54,32 @@ conv = ct.convert(
 conv_out = os.path.join(HERE, "conv.mlpackage")
 conv.save(conv_out)
 print(f"wrote {conv_out}")
+
+
+# A stack at the size a real layer uses, in the shape this engine emits: matrix
+# multiplies with activations, float16 in and out. Size is the variable that decides
+# Neural Engine placement — the single tiny operations above stay on the CPU, and this
+# does not — so the suite needs one of each to say anything about placement at all.
+@mb.program(input_specs=[mb.TensorSpec(shape=(256, 768))])
+def stack_program(x):
+    import numpy as np
+
+    rng = np.random.default_rng(0)
+    for _ in range(8):
+        weight = rng.standard_normal((768, 768)).astype(np.float32) * 0.02
+        x = mb.matmul(x=x, y=weight)
+        x = mb.relu(x=x)
+    return x
+
+
+stack = ct.convert(
+    stack_program,
+    minimum_deployment_target=ct.target.iOS16,
+    compute_units=ct.ComputeUnit.CPU_AND_NE,
+    compute_precision=ct.precision.FLOAT16,
+    inputs=[ct.TensorType(name="x", shape=(256, 768), dtype=np.float16)],
+    outputs=[ct.TensorType(dtype=np.float16)],
+)
+stack_out = os.path.join(HERE, "stack.mlpackage")
+stack.save(stack_out)
+print(f"wrote {stack_out}")

@@ -12,18 +12,25 @@
  *
  * ## What it reports on this machine
  *
- * The CPU, for every operation, in both fixtures — a matrix multiply and a convolution,
- * the latter being the shape the Neural Engine exists for. The engine is present and
- * listed among the available devices; CoreML simply does not choose it for models this
- * small.
+ * Size decides it. The single-operation fixtures — a matrix multiply, a convolution —
+ * run entirely on the CPU, and it is tempting to read that as the Neural Engine being
+ * unreachable. It is not: eight matrix multiplies at the size a real layer uses go
+ * entirely to the Neural Engine, activations included.
  *
- * That is not this binding getting it wrong. Asked the same question about the same
- * compiled model, `coremltools` reports exactly the same placement from Python, which is
- * the control that makes the result mean something.
+ * That both answers are readable here is the point. `coremltools` reports exactly the
+ * same placement for the same compiled models from Python, which is the control that
+ * makes the negative result trustworthy rather than indistinguishable from a broken
+ * binding.
  *
- * So the gate is open — placement is readable and verified against the reference
- * implementation — and the remaining question for FIN-156 is a different one: what a
- * model has to look like before CoreML will hand it to the Neural Engine at all.
+ * The operations that landed there are the ones this engine emits — `matmul` and an
+ * activation — which is what the graph-backend plan needed to know. The weights were
+ * baked in as constants, so what a region with runtime operands does is still open.
+ *
+ * float16 typing was the other suspect, since the documentation says float32-typed
+ * programs are barred from the Neural Engine. Converting the convolution with float16
+ * input and output types changed nothing on its own, so it is not sufficient by itself;
+ * the stack fixture uses it anyway, being both realistic and what the documentation
+ * asks for.
  *
  * Skipped when the fixtures are absent; `tests/fixtures/coreml/generate.py` makes them.
  */
@@ -148,5 +155,28 @@ describe('CoreML operation placement', () => {
     }
     const found = await placement('tests/fixtures/coreml/conv.mlpackage');
     t.ok(found.has('ios16.conv'), 'the convolution is reported');
+  });
+
+  it('puts a realistically sized stack on the Neural Engine', async (t) => {
+    if (!objcAvailable() || !(await exists('tests/fixtures/coreml/stack.mlpackage'))) {
+      t.ok(true, 'SKIP: no Objective-C runtime, or the fixtures are not generated');
+      return;
+    }
+    // The case the whole exercise was for. Eight matrix multiplies of a size a real
+    // layer uses, in the shape this engine emits, float16 in and out. The single tiny
+    // operations above stay on the CPU; this does not, and the difference is size.
+    const found = await placement('tests/fixtures/coreml/stack.mlpackage');
+    const devices = new Set(found.values());
+    t.ok(found.size > 0, `placement is readable (${found.size} operations)`);
+    t.ok(
+      devices.has('MLNeuralEngineComputeDevice'),
+      `the Neural Engine is chosen (${[...devices].join(', ')})`,
+    );
+    const matmuls = [...found].filter(([name]) => name.includes('matmul'));
+    t.ok(matmuls.length > 0, `matrix multiplies are present (${matmuls.length})`);
+    t.ok(
+      matmuls.every(([, device]) => device === 'MLNeuralEngineComputeDevice'),
+      'and every one of them runs there',
+    );
   });
 });
