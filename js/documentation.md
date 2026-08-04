@@ -62,6 +62,8 @@ surface for what you are building:
   HTTP/3.
 - [Protocol Versions and Transport](./net/http/protocols.md) — HTTP/1.1, h2,
   h3, ALPN, and TLS configuration.
+- [Components and Render Programs](./ui.md) — the component model, sinks and
+  lifetimes, rendering in a realm, and the portable tree contract.
 - [Server-Driven Web UI](./ui/web.md) — progressive enhancement, live SSE
   patches, cleanup, deployment, and operational guidance.
 

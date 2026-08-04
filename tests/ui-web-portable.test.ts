@@ -160,6 +160,33 @@ async function expectPortableError(
 }
 
 describe('JSON server-driven UI', () => {
+  it('keeps CSRF tokens and the sealing secret out of the rendered tree', async (t) => {
+    const { app } = makeApp();
+    const { render } = await mountPortable(app);
+    const serialized = JSON.stringify(render.data);
+    t.equal(
+      serialized.includes('portable-ui-secret'),
+      false,
+      'the sealing secret never reaches a rendered tree',
+    );
+    t.equal(serialized.includes('csrf'), false, 'no CSRF material is serialized into props');
+    const action = (render.data as PortableRenderEvent).tree.props
+      .increment as unknown as PortableActionRef;
+    t.deepEqual(
+      Object.keys(action).sort(),
+      ['action', 'request', 'revision', 'url', 'view'],
+      'an action descriptor carries only its public fields',
+    );
+
+    const html = (await app.handle(new Request('http://local/'))) as Response;
+    const body = await html.text();
+    t.equal(
+      body.includes('portable-ui-secret'),
+      false,
+      'the sealing secret never reaches rendered HTML either',
+    );
+  });
+
   it('uses the JSON protocol for an ordinary EventSource request', async (t) => {
     const { app } = makeApp();
     const response = (await app.handle(

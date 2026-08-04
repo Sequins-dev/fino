@@ -4192,4 +4192,131 @@ export const internalSdk = true;
     t.ok(run.stdout.includes('4 passed'), 'doc test runs non-ignored examples');
     t.ok(run.stdout.includes('1 ignored'), 'doc test reports ignored examples');
   });
+
+  it('renders every page through a user-supplied theme component', async (t) => {
+    const themeDir = TEST_DIR + '/theme-app';
+    await ensureDir(fs, themeDir);
+    await fs.writeFile(
+      themeDir + '/widget.ts',
+      `/**
+ * Widget module.
+ */
+/** Spin the widget. */
+export function spin(times: number): number {
+  return times;
+}
+`,
+    );
+    await fs.writeFile(
+      themeDir + '/guide.md',
+      `---
+weight: 1
+---
+# Widget Guide
+
+How to spin a widget.
+`,
+    );
+    await fs.writeFile(
+      themeDir + '/theme.ts',
+      `import { h } from 'fino:ui';
+import { rawHtml } from 'fino:ui/html';
+import type { DocsPageProps } from 'fino:commands/doc/theme';
+
+export default function Page(props: DocsPageProps) {
+  const { site, page, prepared } = props;
+  return h(
+    'html',
+    null,
+    h('head', null, h('title', null, 'CUSTOM ' + page.title)),
+    h(
+      'body',
+      { 'data-theme': 'custom', 'data-page-kind': page.kind },
+      h('p', { class: 'site-title' }, site.title),
+      h('p', { class: 'nav-count' }, String(site.nav.length)),
+      h('p', { class: 'module-count' }, String(site.modules.length)),
+      h(
+        'p',
+        { class: 'symbols' },
+        page.kind === 'module' ? page.module.exports.map((item) => item.name).join(',') : '',
+      ),
+      h('article', null, rawHtml(prepared.contentHtml)),
+    ),
+  );
+}
+`,
+    );
+    const run = await runCli(
+      [
+        'doc',
+        'build',
+        './widget.ts',
+        './guide.md',
+        '--format',
+        'html',
+        '--title',
+        'Widget API',
+        '--theme',
+        './theme.ts',
+      ],
+      themeDir,
+    );
+    t.equal(run.result.code, 0, 'doc build exits successfully with a custom theme');
+    t.equal(run.stderr, '', 'custom theme build writes no stderr');
+
+    const docsDir = themeDir + '/docs';
+    const modulePage = await fs.readFile(docsDir + '/widget.html');
+    t.ok(modulePage.includes('data-theme="custom"'), 'module page comes from the custom theme');
+    t.ok(modulePage.includes('<title>CUSTOM widget</title>'), 'theme controls the page title');
+    t.ok(modulePage.includes('data-page-kind="module"'), 'theme receives the page kind');
+    t.ok(
+      modulePage.includes('<p class="site-title">Widget API</p>'),
+      'theme receives the site title',
+    );
+    t.ok(
+      modulePage.includes('<p class="symbols">spin</p>'),
+      'theme receives structured module data, not only prepared HTML',
+    );
+    t.ok(modulePage.includes('Spin the widget.'), 'prepared content carries rendered doc prose');
+    t.equal(
+      modulePage.includes('docs-layout'),
+      false,
+      'the default layout is fully replaced, not wrapped',
+    );
+
+    const guidePage = await fs.readFile(docsDir + '/guide.html');
+    t.ok(guidePage.includes('data-page-kind="guide"'), 'guide pages use the same theme');
+    t.ok(guidePage.includes('How to spin a widget.'), 'guide prose reaches the theme');
+
+    const indexPage = await fs.readFile(docsDir + '/index.html');
+    t.ok(indexPage.includes('data-page-kind="index"'), 'the index page uses the same theme');
+    t.ok(
+      indexPage.includes('<p class="module-count">1</p>'),
+      'every page receives the whole site',
+    );
+  });
+
+  it('reports a failing theme instead of writing broken pages', async (t) => {
+    const badDir = TEST_DIR + '/bad-theme-app';
+    await ensureDir(fs, badDir);
+    await fs.writeFile(badDir + '/widget.ts', '/** Widget. */\nexport const widget = 1;\n');
+    await fs.writeFile(
+      badDir + '/theme.ts',
+      `export default function Page() {
+  throw new Error('theme exploded');
+}
+`,
+    );
+    const run = await runCli(
+      ['doc', 'build', './widget.ts', '--format', 'html', '--theme', './theme.ts'],
+      badDir,
+    );
+    t.ok(run.result.code !== 0, 'a failing theme fails the build');
+    t.ok(run.stderr.includes('theme exploded'), 'the theme error reaches the operator');
+    t.equal(
+      await exists(fs, badDir + '/docs/widget.html'),
+      false,
+      'no page is written when the theme fails',
+    );
+  });
 });
