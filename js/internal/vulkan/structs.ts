@@ -258,6 +258,7 @@ export const StructureType = {
   CommandBufferAllocateInfo: 40,
   CommandBufferBeginInfo: 42,
   PhysicalDeviceFeatures2: 1000059000,
+  PhysicalDeviceShaderAtomicFloatFeaturesEXT: 1000260000,
   PhysicalDeviceTimelineSemaphoreFeatures: 1000207000,
   SemaphoreTypeCreateInfo: 1000207002,
   TimelineSemaphoreSubmitInfo: 1000207003,
@@ -776,6 +777,36 @@ export const VkPhysicalDeviceTimelineSemaphoreFeatures = new VkStruct(
     ['timelineSemaphore', 'u32'],
   ],
   24,
+);
+
+/**
+ * `VkPhysicalDeviceShaderAtomicFloatFeaturesEXT`.
+ *
+ * Doubles as the query result and the request: it is filled in by
+ * `vkGetPhysicalDeviceFeatures2` through a `VkPhysicalDeviceFeatures2` chain, and the
+ * same shape is chained onto `VkDeviceCreateInfo` to turn the wanted bits on. Enabling
+ * the extension alone is not enough — a feature the device never had switched on is a
+ * validation error at the first atomic.
+ */
+export const VkPhysicalDeviceShaderAtomicFloatFeaturesEXT = new VkStruct(
+  'VkPhysicalDeviceShaderAtomicFloatFeaturesEXT',
+  [
+    ['sType', 'u32'],
+    ['pNext', 'ptr'],
+    ['shaderBufferFloat32Atomics', 'u32'],
+    ['shaderBufferFloat32AtomicAdd', 'u32'],
+    ['shaderBufferFloat64Atomics', 'u32'],
+    ['shaderBufferFloat64AtomicAdd', 'u32'],
+    ['shaderSharedFloat32Atomics', 'u32'],
+    ['shaderSharedFloat32AtomicAdd', 'u32'],
+    ['shaderSharedFloat64Atomics', 'u32'],
+    ['shaderSharedFloat64AtomicAdd', 'u32'],
+    ['shaderImageFloat32Atomics', 'u32'],
+    ['shaderImageFloat32AtomicAdd', 'u32'],
+    ['sparseImageFloat32Atomics', 'u32'],
+    ['sparseImageFloat32AtomicAdd', 'u32'],
+  ],
+  64,
 );
 
 /** Read a memory type's property flags out of the properties blob. */

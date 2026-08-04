@@ -49,6 +49,7 @@ import {
   VkDescriptorSetLayoutBinding,
   VkDescriptorSetLayoutCreateInfo,
   VkDeviceCreateInfo,
+  VkPhysicalDeviceShaderAtomicFloatFeaturesEXT,
   VkDeviceQueueCreateInfo,
   VkInstanceCreateInfo,
   VkMemoryAllocateInfo,
@@ -144,6 +145,10 @@ export interface VkDeviceInfo {
   storage16: boolean;
   /** Whether float16 arithmetic is available. */
   float16: boolean;
+  /** Whether `float` buffer atomics can add without a compare-and-swap loop. */
+  atomicFloat: boolean;
+  /** Whether this is a portability driver translating to another API, as MoltenVK does. */
+  portable: boolean;
   timelineSemaphores: boolean;
   maxWorkgroupInvocations: number;
 }
@@ -381,6 +386,7 @@ export class VulkanCompute {
 
     const deviceExtensions = availableDeviceExtensions(lib, physicalDevice);
     const enabled: string[] = [];
+    const portable = deviceExtensions.includes('VK_KHR_portability_subset');
     // A portability driver requires this extension to be enabled explicitly.
     if (deviceExtensions.includes('VK_KHR_portability_subset')) {
       enabled.push('VK_KHR_portability_subset');
@@ -389,6 +395,34 @@ export class VulkanCompute {
     const float16 = deviceExtensions.includes('VK_KHR_shader_float16_int8');
     if (storage16) enabled.push('VK_KHR_16bit_storage');
     if (float16) enabled.push('VK_KHR_shader_float16_int8');
+
+    // Float atomics let a scatter-add be one instruction instead of a compare-and-swap
+    // loop. The extension being present is not enough to use it: the feature has to be
+    // asked for at device creation, and asking for one the device does not have is
+    // itself an error, so it is queried first.
+    const ATOMIC_ADD = VkPhysicalDeviceShaderAtomicFloatFeaturesEXT.offsetOf(
+      'shaderBufferFloat32AtomicAdd',
+    );
+    let atomicFloat = false;
+    if (deviceExtensions.includes('VK_EXT_shader_atomic_float')) {
+      const probe = new StructChain();
+      const query = VkPhysicalDeviceShaderAtomicFloatFeaturesEXT.alloc();
+      new DataView(query).setUint32(
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT.offsetOf('sType'),
+        StructureType.PhysicalDeviceShaderAtomicFloatFeaturesEXT,
+        true,
+      );
+      // `VkPhysicalDeviceFeatures2` is a header and then fifty-five booleans none of
+      // which are read here, so it is a sized buffer rather than a declared struct — the
+      // driver writes the whole thing whatever this asks for.
+      const features = new ArrayBuffer(240);
+      const header = new DataView(features);
+      header.setUint32(0, StructureType.PhysicalDeviceFeatures2, true);
+      header.setBigUint64(8, probe.addressOf(query), true);
+      lib.symbols.vkGetPhysicalDeviceFeatures2(physicalDevice, new Uint8Array(features));
+      atomicFloat = new DataView(query).getUint32(ATOMIC_ADD, true) !== 0;
+      if (atomicFloat) enabled.push('VK_EXT_shader_atomic_float');
+    }
 
     const deviceChain = new StructChain();
     const priorities = deviceChain.f32Array([1]);
@@ -400,9 +434,24 @@ export class VulkanCompute {
         pQueuePriorities: priorities,
       }),
     );
+    // Asked for rather than merely enabled: the extension makes the instruction legal to
+    // write and the feature makes it legal to run.
+    let atomicRequest: ArrayBuffer | null = null;
+    if (atomicFloat) {
+      atomicRequest = VkPhysicalDeviceShaderAtomicFloatFeaturesEXT.alloc();
+      const request = new DataView(atomicRequest);
+      request.setUint32(
+        VkPhysicalDeviceShaderAtomicFloatFeaturesEXT.offsetOf('sType'),
+        StructureType.PhysicalDeviceShaderAtomicFloatFeaturesEXT,
+        true,
+      );
+      request.setUint32(ATOMIC_ADD, 1, true);
+      deviceChain.hold(atomicRequest);
+    }
     const deviceInfo = deviceChain.hold(
       VkDeviceCreateInfo.make({
         sType: StructureType.DeviceCreateInfo,
+        pNext: atomicRequest,
         queueCreateInfoCount: 1,
         pQueueCreateInfos: queueInfo,
         enabledExtensionCount: enabled.length,
@@ -449,6 +498,8 @@ export class VulkanCompute {
         unifiedMemory: allHostVisible,
         storage16,
         float16,
+        atomicFloat,
+        portable,
         timelineSemaphores: true,
         maxWorkgroupInvocations: described.maxWorkgroupInvocations,
       },

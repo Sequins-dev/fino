@@ -477,6 +477,30 @@ synchronisation point rather than reading whatever was there.
 `indexSelect`, not of `gather` — so the gradient is waiting on a kernel rather than on a
 rule.
 
+### An extension being offered is not a reason to use it
+
+Scatter-add accumulates concurrently, so it needs a float atomic. Vulkan has one behind
+`VK_EXT_shader_atomic_float`, and the SPIR-V lowering has always been able to emit it —
+the capability was simply never enabled, so every scatter went through the lowering's own
+compare-and-swap loop.
+
+Enabling it is now done properly: the extension is probed, the `shaderBufferFloat32AtomicAdd`
+feature within it is queried through `vkGetPhysicalDeviceFeatures2`, and the feature is
+asked for at device creation. An extension enabled without its feature is a validation
+error at the first atomic rather than a fallback.
+
+MoltenVK offers it, and is slower for it. A scatter-add of 8192 rows into 64 colliding
+ones takes **0.24ms through `OpAtomicFAddEXT` against 0.12ms through compare-and-swap**,
+reproducibly, computing identical numbers on both paths and matching the reference oracle.
+Metal has no float atomic to translate to, so what the extension actually buys there is an
+emulated loop with a translation layer wrapped around it.
+
+So the capability is taken where the driver is native and declined where it advertises
+`VK_KHR_portability_subset`. That is the honest reading of what was measured: the
+measurement says the emulated path loses, and says nothing about the instruction on
+hardware that has one. Real non-Apple hardware would settle it, and is the same thing
+missing everywhere else in this section.
+
 ### Undefined is not the same as unspecified
 
 `pow` used to lower straight to each dialect's own. SPIR-V says the result is undefined

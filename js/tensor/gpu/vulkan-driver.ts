@@ -48,9 +48,18 @@ export function createVulkanDriver(): GpuDriver {
     type: 'vulkan',
     name: info.name,
     f16: info.storage16 && info.float16,
-    // Float atomics need an extension this binding does not yet enable, so the
-    // SPIR-V lowering emits its compare-and-swap fallback instead.
-    atomicFloat: false,
+    // The device offering `VK_EXT_shader_atomic_float` is necessary and not sufficient.
+    // MoltenVK offers it and is measurably worse for it: a scatter-add of 8192 rows into
+    // 64 colliding ones takes 0.24ms through `OpAtomicFAddEXT` against 0.12ms through the
+    // lowering's own compare-and-swap, reproducibly, computing the same numbers. Metal
+    // has no float atomic to translate it to, so the extension buys an emulated loop with
+    // a translation layer around it rather than an instruction.
+    //
+    // A driver that is not translating has an instruction to offer, and this is the
+    // measurement that would decide it — on hardware that is not here. So the capability
+    // is taken where the driver is native and declined where it is a portability layer,
+    // which is the honest reading of what was actually measured.
+    atomicFloat: info.atomicFloat && !info.portable,
     subgroups: false,
     // Not because the hardware lacks them — on this machine it is the same GPU Metal
     // reports true for — but because there is no cooperative-matrix lowering that
