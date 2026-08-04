@@ -1120,6 +1120,18 @@ export class PeerMesh {
     return true;
   }
 
+  /**
+   * Resolve once everything already queued for `to` has been written.
+   *
+   * A realm's exit must not overtake its own last messages. When those went
+   * over a direct session and the exit goes through the seed, the only thing
+   * keeping them ordered is that the frames are on the wire first — so the
+   * sender waits for this before announcing the exit.
+   */
+  flush(to: string): Promise<void> {
+    return this.#sessions.get(to)?.queue ?? Promise.resolve();
+  }
+
   /** Close every session and the listener. */
   close(): void {
     this.#closed = true;

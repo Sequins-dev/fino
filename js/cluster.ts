@@ -71,6 +71,9 @@ import { SystemRealmAgent, type NodeReport } from 'internal:cluster/agent';
 import { drainQueue, eligiblePeers, type DrainReport } from 'internal:cluster/balance-loop';
 import { mintJoinString, parseJoinString } from 'internal:cluster/join-string';
 import { DiskFileSystem } from 'fino:file';
+import { generateSelfSignedCertificate, isPemText } from 'internal:openssl';
+import { h3Available } from 'internal:net/http/h3';
+import { quicAvailable } from 'fino:net/quic';
 import type { WebTransportHash } from 'fino:net/http/webtransport';
 /**
  * Transport port that routes realm channel messages through the cluster.
@@ -245,11 +248,15 @@ function randomHandle(bytes: number): string {
   return Array.from(raw, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-/** SHA-256 of the first certificate in a PEM file, as lowercase hex. */
-async function certificateSha256Hex(certPath: string): Promise<string> {
-  const pem = new TextDecoder().decode(await new DiskFileSystem().readFile(certPath));
+/** SHA-256 of the first certificate in a PEM file or PEM string, as lowercase hex. */
+async function certificateSha256Hex(cert: string): Promise<string> {
+  const pem = isPemText(cert)
+    ? cert
+    : new TextDecoder().decode(await new DiskFileSystem().readFile(cert));
   const match = pem.match(/-----BEGIN CERTIFICATE-----([^-]+)-----END CERTIFICATE-----/);
-  if (match === null) throw new Error(`no certificate found in ${certPath}`);
+  if (match === null) {
+    throw new Error(`no certificate found in ${isPemText(cert) ? 'the supplied PEM' : cert}`);
+  }
   const base64 = match[1]!.replace(/\s+/g, '');
   const binary = atob(base64);
   const der = new Uint8Array(binary.length);
@@ -449,20 +456,30 @@ export interface JoinClusterOptions {
    * Listen for direct peer sessions so realm traffic bypasses the seed.
    *
    * The node advertises this endpoint and its certificate hash through the
-   * control plane; peers dial it and send `PORT_MSG` straight here. Without a
-   * listener the node still participates — it dials peers that have one, and
-   * otherwise relays through the seed.
+   * control plane; peers dial it and send `PORT_MSG` straight here. On by
+   * default: without a listener every realm-to-realm message is relayed by the
+   * seed, which makes the seed the data plane for the whole cluster.
+   *
+   * Defaults bind an ephemeral port and mint a per-node certificate whose key
+   * is never written anywhere. That certificate is a channel binding rather
+   * than a credential — peers admit each other by the pinned hash advertised
+   * here, and cluster membership is the seed's to grant — so it is born and
+   * dies with the process, exactly like the incarnation it is fenced by.
+   *
+   * Pass `false` to stay seed-relayed.
    */
-  peerListener?: {
-    /** UDP port for this node's own HTTP/3 listener. */
-    port: number;
-    /** Bind address; also advertised to peers. */
-    hostname?: string;
-    /** TLS material for the peer listener. */
-    tls: { cert: string; key: string };
-    /** URL path for peer sessions. Defaults to the cluster path. */
-    path?: string;
-  };
+  peerListener?:
+    | false
+    | {
+        /** UDP port for this node's own HTTP/3 listener. Defaults to ephemeral. */
+        port?: number;
+        /** Bind address; also advertised to peers. */
+        hostname?: string;
+        /** TLS material for the peer listener. Defaults to a minted identity. */
+        tls?: { cert: string; key: string };
+        /** URL path for peer sessions. Defaults to the cluster path. */
+        path?: string;
+      };
   /**
    * HTTPS WebTransport URL of the seed node.
    *
@@ -688,31 +705,17 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
       ? joinInfo.certHashes.map((hex) => ({ algorithm: 'sha-256', value: hexToBytes(hex) }))
       : undefined;
   const incarnation = await nextIncarnation(opts.stateDir);
-  const listener = opts.peerListener;
-  const peerCertHash = listener !== undefined ? await certificateSha256Hex(listener.tls.cert) : undefined;
+  const listener = resolvePeerListener(nodeId, opts.peerListener);
+  const peerCertHash =
+    listener !== null ? await certificateSha256Hex(listener.tls.cert) : undefined;
   const peerPath = normalizeClusterPath(listener?.path);
-  const peerEndpoint =
-    listener !== undefined
-      ? `https://${clusterAdvertisedHost(listener.hostname)}:${listener.port}${peerPath}`
-      : undefined;
-  const transport = new WebTransportWorkerTransport(nodeId);
-  const connectOptions: WebTransportWorkerConnectOptions = {
-    tls: opts.tls,
-    quic: opts.quic,
-    serverCertificateHashes: opts.serverCertificateHashes ?? pinnedHashes,
-    ...(joinInfo !== null && joinInfo.token !== undefined ? { token: joinInfo.token } : {}),
-    ...(opts.token !== undefined ? { token: opts.token } : {}),
-    incarnation,
-    ...(peerEndpoint !== undefined ? { endpoint: peerEndpoint } : {}),
-    ...(peerCertHash !== undefined ? { certHash: peerCertHash } : {}),
-  };
   const token = opts.token ?? joinInfo?.token;
   _mesh = new PeerMesh({
     nodeId,
     clusterId: joinInfo?.clusterId ?? null,
     ...(token !== undefined ? { token } : {}),
     incarnation,
-    ...(listener !== undefined
+    ...(listener !== null
       ? {
           listen: {
             port: listener.port,
@@ -723,7 +726,48 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
         }
       : {}),
   });
-  await _mesh.listen();
+  // Listen before announcing: an ephemeral port is not knowable until the
+  // listener is up, and advertising an endpoint nobody can dial is worse than
+  // advertising none at all.
+  if (listener !== null) {
+    try {
+      await _mesh.listen();
+    } catch (err) {
+      if (opts.peerListener !== undefined) throw err;
+      // The default listener is a bandwidth optimisation, not a requirement,
+      // so a bound port or a missing QUIC stack must not stop the node from
+      // joining. It is still loud: silently relaying everything through the
+      // seed is the bottleneck this exists to remove.
+      console.error(
+        `fino:cluster — peer listener failed to start, falling back to seed relay: ${err}`,
+      );
+      _mesh.close();
+      _mesh = new PeerMesh({
+        nodeId,
+        clusterId: joinInfo?.clusterId ?? null,
+        ...(token !== undefined ? { token } : {}),
+        incarnation,
+      });
+    }
+  }
+  const boundPort = _mesh.port;
+  const peerEndpoint =
+    boundPort !== null
+      ? `https://${clusterAdvertisedHost(listener!.hostname)}:${boundPort}${peerPath}`
+      : undefined;
+  const transport = new WebTransportWorkerTransport(nodeId);
+  const connectOptions: WebTransportWorkerConnectOptions = {
+    tls: opts.tls,
+    quic: opts.quic,
+    serverCertificateHashes: opts.serverCertificateHashes ?? pinnedHashes,
+    ...(joinInfo !== null && joinInfo.token !== undefined ? { token: joinInfo.token } : {}),
+    ...(opts.token !== undefined ? { token: opts.token } : {}),
+    incarnation,
+    ...(peerEndpoint !== undefined ? { endpoint: peerEndpoint } : {}),
+    ...(peerEndpoint !== undefined && peerCertHash !== undefined
+      ? { certHash: peerCertHash }
+      : {}),
+  };
   await transport.connect(
     seed,
     { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}) },
@@ -773,6 +817,63 @@ function normalizeClusterPath(path: string | undefined): string {
  * running multi-machine clusters should pass an externally reachable
  * `hostname`.
  */
+type ResolvedPeerListener = {
+  port: number;
+  hostname: string | undefined;
+  tls: { cert: string; key: string };
+  path: string | undefined;
+};
+/**
+ * Decide whether this node listens for direct peer sessions, and on what.
+ *
+ * Returns `null` when the node should stay seed-relayed: either it asked to,
+ * or the host has no QUIC/HTTP3 stack to listen with. Otherwise it fills in
+ * the defaults — an ephemeral port and a freshly minted certificate whose key
+ * exists only in this process's memory.
+ */
+function resolvePeerListener(
+  nodeId: string,
+  option: JoinClusterOptions['peerListener'],
+): ResolvedPeerListener | null {
+  if (option === false) return null;
+  const config = option ?? {};
+  if (!quicAvailable || !h3Available) {
+    if (option !== undefined) {
+      throw new Error(
+        'fino:cluster — peerListener requires QUIC and HTTP/3 (libngtcp2 and libnghttp3)',
+      );
+    }
+    return null;
+  }
+  return {
+    port: config.port ?? 0,
+    hostname: config.hostname,
+    tls:
+      config.tls ??
+      mintPeerIdentity(nodeId, clusterAdvertisedHost(config.hostname)),
+    path: config.path,
+  };
+}
+/**
+ * Mint this node's peer-mesh certificate.
+ *
+ * Deliberately not persisted. The certificate authenticates a channel, not a
+ * node: peers accept it because its hash arrived over the seed's authenticated
+ * control plane, and the seed decides membership. Keeping it in memory means a
+ * restart cannot present the identity of the incarnation it replaced, and a
+ * key that is never written cannot be read off a shared volume or baked into
+ * an image.
+ */
+function mintPeerIdentity(nodeId: string, advertisedHost: string): { cert: string; key: string } {
+  const host = advertisedHost.startsWith('[') ? advertisedHost.slice(1, -1) : advertisedHost;
+  const isIp = /^[0-9.]+$/.test(host) || host.includes(':');
+  const identity = generateSelfSignedCertificate({
+    commonName: nodeId,
+    subjectAltNames: `DNS:${nodeId},${isIp ? 'IP' : 'DNS'}:${host}`,
+    days: 1,
+  });
+  return { cert: identity.certPem, key: identity.keyPem };
+}
 function clusterAdvertisedHost(hostname: string | undefined): string {
   return clusterSelfJoinHost(hostname);
 }

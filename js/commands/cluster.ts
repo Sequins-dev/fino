@@ -154,13 +154,29 @@ const joinCommand = new Task({
     options: [
       { flags: '--node-id', type: 'string', description: 'Stable node identifier (default: minted)' },
       { flags: '--state', type: 'string', description: 'Directory for durable node state (incarnation)' },
+      {
+        flags: '--peer-port',
+        type: 'string',
+        description: 'UDP port for direct peer sessions (default: ephemeral)',
+      },
+      {
+        flags: '--seed-relay',
+        type: 'boolean',
+        description: 'Do not listen for direct peer sessions; relay all traffic through the seed',
+      },
     ],
     positionals: [
       { name: 'joinString', type: 'string', description: 'Join string printed by `cluster start`' },
     ],
   },
   run: async function runClusterJoin(input, ctx) {
-    const opts = input as { joinString?: string; 'node-id'?: string };
+    const opts = input as {
+      joinString?: string;
+      'node-id'?: string;
+      state?: string;
+      'peer-port'?: string;
+      'seed-relay'?: boolean;
+    };
     if (opts.joinString === undefined) {
       throw new Error('cluster join: a join string is required');
     }
@@ -168,6 +184,11 @@ const joinCommand = new Task({
       joinString: opts.joinString,
       nodeId: opts['node-id'],
       stateDir: opts.state,
+      peerListener: opts['seed-relay'] === true
+        ? false
+        : opts['peer-port'] !== undefined
+          ? { port: Number(opts['peer-port']) }
+          : undefined,
     });
     const client = getCluster();
     const cluster = client?.clusterId != null ? ` cluster ${client.clusterId}` : '';
@@ -233,8 +254,12 @@ async function runClusterStatus(input: unknown): Promise<void> {
         const pending = peer.load.pendingSpecs ?? 0;
         const active = peer.load.activeWorkloads ?? 0;
         const queue = ` queue ${pending} pending / ${active} active`;
+        // Whether the node is dialable directly. A cluster where everything
+        // says seed-relay is one where the seed carries all realm-to-realm
+        // traffic, which is the first thing to check when it saturates.
+        const path = peer.endpoint !== undefined ? '  mesh' : '  seed-relay';
         const draining = peer.load.draining === true ? '  [draining]' : '';
-        await print(`${peer.nodeId}  cpu ${cpu}  rss ${memory}${idle}${queue}${draining}\n`);
+        await print(`${peer.nodeId}  cpu ${cpu}  rss ${memory}${idle}${queue}${path}${draining}\n`);
       }
     } finally {
       client.stop();

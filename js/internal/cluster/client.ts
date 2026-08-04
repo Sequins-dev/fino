@@ -111,6 +111,15 @@ interface RealmRelay {
   cancel?: () => void;
   pendingSends: Promise<void>[];
   lastPortSeq: number;
+  /**
+   * Highest sequence number sent to the parent *through the seed*.
+   *
+   * The seed holds a realm's exit until it has routed that realm's last port
+   * message, which it can only do for frames it actually saw. Once a direct
+   * session carries some of them, gating on `lastPortSeq` would wait forever
+   * for frames that were never going to arrive.
+   */
+  lastRelayedSeq: number;
   lastCallError?: string;
 }
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
@@ -571,6 +580,21 @@ export class ClusterClient {
     return [...this.#peers.values()];
   }
   /**
+   * Open a direct session to a peer the control plane just introduced.
+   *
+   * Nothing used to call this, which made the peer mesh dead code in a running
+   * cluster: both sides could advertise an endpoint and still send every frame
+   * through the seed, because no one ever dialed. `PeerMesh.dial` decides for
+   * itself whether this node is the one that should dial (the smaller node ID
+   * connects, so a pair opens one session, not two) and returns false rather
+   * than throwing when it should not or cannot — a peer that will not accept
+   * is not an error, it just means the seed keeps relaying for that pair.
+   */
+  #dialPeer(peer: PeerInfo): void {
+    if (this.#mesh === null || peer.endpoint === undefined) return;
+    void this.#mesh.dial(peer);
+  }
+  /**
    * Register a parent-side port for inbound `PORT_MSG` delivery.
    *
    * Later registrations for the same `portId` replace earlier entries. The
@@ -778,7 +802,10 @@ export class ClusterClient {
   #handle(from: string, msg: ClusterMessage): void {
     switch (msg.t) {
       case 'WELCOME': {
-        for (const p of msg.peers) this.#peers.set(p.nodeId, p);
+        for (const p of msg.peers) {
+          this.#peers.set(p.nodeId, p);
+          this.#dialPeer(p);
+        }
         this.clusterId = msg.clusterId ?? null;
         this.#settleAdmission('admitted');
         break;
@@ -847,6 +874,7 @@ export class ClusterClient {
       }
       case 'PEER_UP': {
         this.#peers.set(msg.peer.nodeId, msg.peer);
+        this.#dialPeer(msg.peer);
         break;
       }
       case 'PEER_DOWN': {
@@ -1094,6 +1122,7 @@ export class ClusterClient {
       finalized: false,
       pendingSends: [],
       lastPortSeq: 0,
+      lastRelayedSeq: 0,
       ...(caskHash === undefined ? {} : { caskHash }),
     };
     this.#relays.set(childPortId, relay);
@@ -1142,22 +1171,26 @@ export class ClusterClient {
           ? {
               t: 'REALM_EXIT',
               realmId: relay.childPortId,
-              lastPortSeq: relay.lastPortSeq,
+              lastPortSeq: relay.lastRelayedSeq,
               error: stepError,
             }
           : relay.lastCallError !== undefined
             ? {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
-                lastPortSeq: relay.lastPortSeq,
+                lastPortSeq: relay.lastRelayedSeq,
                 error: relay.lastCallError,
               }
             : {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
-                lastPortSeq: relay.lastPortSeq,
+                lastPortSeq: relay.lastRelayedSeq,
               };
       const pending = relay.pendingSends.splice(0);
+      // Frames that went direct are only ordered ahead of this exit if they
+      // have reached the wire, so wait for the session to drain too.
+      const parentNodeId = nodeIdFromId(relay.parentPortId);
+      if (this.#mesh !== null) pending.push(this.#mesh.flush(parentNodeId));
       if (!notify) return;
       Promise.allSettled(pending)
         .then(() => {
@@ -1230,13 +1263,20 @@ export class ClusterClient {
         }
         // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
         const seq = ++relay.lastPortSeq;
-        const sent = this.#transport.send('__seed__', {
+        const msg: ClusterMessage = {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
           payload: parts,
           seq,
-        });
+        };
+        // The child-to-parent direction is half of every realm conversation.
+        // Sending it unconditionally to the seed left the seed carrying that
+        // half no matter how well the mesh worked.
+        const parentNodeId = nodeIdFromId(relay.parentPortId);
+        if (this.#mesh?.send(parentNodeId, msg) === true) continue;
+        relay.lastRelayedSeq = seq;
+        const sent = this.#transport.send('__seed__', msg);
         if (sent instanceof Promise) relay.pendingSends.push(sent);
       } catch (err: unknown) {
         console.error(`fino:cluster relay drain error: ${err}`);

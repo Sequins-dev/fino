@@ -216,6 +216,14 @@ export class SeedServer {
   #portNodes = new Map<string, string>();
   /** Per-source ordering for PORT_MSG frames received on independent streams. */
   #portSequences = new Map<string, PortSequenceState>();
+  /**
+   * Realm-to-realm frames this seed has forwarded on behalf of two other nodes.
+   *
+   * The number a seed operator cares about: it should stay near zero once
+   * nodes form direct sessions, and every frame counted here is one that made
+   * the control plane carry data-plane load. `FINO_CLUSTER_TRACE=1` reports it.
+   */
+  #relayedPortMessages = 0;
   /** Realm exits held until their declared final port message is routed. */
   #pendingRealmExits = new Map<string, RealmExitMessage>();
   /**
@@ -734,7 +742,21 @@ export class SeedServer {
   async start(): Promise<void> {
     this.#transport.on((from, msg) => this.#handle(from, msg));
     await this.#transport.listen();
-    this.#heartbeatTimer = setInterval(() => this.#checkHeartbeats(), heartbeatIntervalMs());
+    this.#heartbeatTimer = setInterval(() => {
+      this.#checkHeartbeats();
+      if (env.FINO_CLUSTER_TRACE === '1') {
+        console.error(`fino:cluster seed relayed ${this.#relayedPortMessages} port messages`);
+      }
+    }, heartbeatIntervalMs());
+  }
+  /**
+   * Realm-to-realm frames forwarded on behalf of two other nodes.
+   *
+   * Zero means every pair that talked had a direct session. A number that
+   * climbs with load means the seed is the data plane.
+   */
+  get relayedPortMessages(): number {
+    return this.#relayedPortMessages;
   }
   /**
    * Stop heartbeat monitoring and close the underlying transport.
@@ -1037,7 +1059,15 @@ export class SeedServer {
       case 'PORT_MSG': {
         for (const ready of this.#takeOrderedPortMessages(msg)) {
           const targetNodeId = this.#portNodes.get(ready.toPort);
-          if (targetNodeId) this.#transport.send(targetNodeId, ready);
+          if (targetNodeId) {
+            // Traffic between two other nodes: this is the relay that a direct
+            // peer session is meant to replace. Frames the seed hosts an end of
+            // are not counted — those have nowhere else to go.
+            if (targetNodeId !== this.#transport.nodeId && from !== this.#transport.nodeId) {
+              this.#relayedPortMessages++;
+            }
+            this.#transport.send(targetNodeId, ready);
+          }
         }
         const pendingExit = this.#pendingRealmExits.get(msg.fromPort);
         if (
