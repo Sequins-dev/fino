@@ -54,6 +54,7 @@ jobs:
           name: fino-linux-release
           path: target/release/fino
           if-no-files-found: error
+          retention-days: 3
 
   linux-benchmarks:
     name: Linux Benchmarks (benchmarks/${{ matrix.path }})

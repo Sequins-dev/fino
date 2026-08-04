@@ -118,6 +118,9 @@ jobs:
           name: fino-linux-debug
           path: target/debug/fino
           if-no-files-found: error
+          # Only the test jobs in this same run consume it. Re-running a job
+          # rebuilds and re-uploads, so nothing needs it after the run ends.
+          retention-days: 3
 
   macos-build:
     name: macOS Build
@@ -147,6 +150,7 @@ jobs:
           name: fino-macos-debug
           path: target/debug/fino
           if-no-files-found: error
+          retention-days: 3
 
   linux-tests:
     name: Linux Tests
