@@ -27,6 +27,8 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:module` | `benchmarks/module.bench.ts` |
 | `fino:realm/self` | `benchmarks/realm/self.bench.ts` |
 | `fino:realm/messaging` | `benchmarks/realm/messaging.bench.ts` |
+| `fino:sim` | not yet benchmarked |
+| `fino:test/sim` | not yet benchmarked |
 | `fino:database` | not yet benchmarked |
 | `fino:database/sql` | not yet benchmarked |
 | `fino:database/migrate` | not yet benchmarked |

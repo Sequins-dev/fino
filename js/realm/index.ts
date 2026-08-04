@@ -52,6 +52,7 @@ import {
   killProcessContext,
 } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
+import type { SimConfig } from 'internal:sim/config';
 import { os } from 'internal:process';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import {
@@ -248,6 +249,7 @@ interface RealmBootstrapData {
   };
   sandbox?: ProcessSandboxOptions;
   coverage?: CoverageRealmContext;
+  sim?: SimConfig;
 }
 function currentRealmBootstrapData(): RealmBootstrapData | undefined {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -273,6 +275,10 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
     const coverage = createChildCoverageContext(kind, opts.entry ?? null);
     if (coverage !== undefined) data.coverage = coverage;
   }
+  // Deliberately not inherited from the current realm: a child of a simulated
+  // realm is simulated only when it says so itself, so nesting a real workload
+  // inside a simulation stays possible.
+  if (opts.sim !== undefined) data.sim = opts.sim;
   const endpointOption = opts.otlpEndpoint;
   if (endpointOption === false) return Object.keys(data).length === 0 ? undefined : data;
   if (opts.sandbox !== undefined && endpointOption === undefined) return data;
@@ -766,7 +772,12 @@ interface _HandleEntry {
 }
 // WeakMap: port -> (handleId -> HandleEntry). GC'd when the port is collected.
 const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
-let _nextHandleSeq = 0;
+// Handle ids count per registry rather than per process. A shared counter made
+// the id a function of how many handles every other realm happened to allocate
+// first, so the same run could name the same handle differently depending on
+// what else was running — which a simulation journal or cassette would record
+// as a difference in behaviour.
+const _handleSeqByRegistry = new WeakMap<Map<string, _HandleEntry>, { next: number }>();
 function _getOrCreateHandleRegistry(
   port: MessagePort | RealmPort | ProcessPort | ClusterPort,
 ): Map<string, _HandleEntry> {
@@ -864,7 +875,12 @@ function _registerHandle(
   streams?: string[];
   sinks?: string[];
 } {
-  const id = `__h${_nextHandleSeq++}`;
+  let seq = _handleSeqByRegistry.get(reg);
+  if (seq === undefined) {
+    seq = { next: 0 };
+    _handleSeqByRegistry.set(reg, seq);
+  }
+  const id = `__h${seq.next++}`;
   reg.set(id, {
     scalar: h._scalar(),
     streams: h._streams(),
@@ -1286,6 +1302,56 @@ export class Facade {
   ): this {
     if (!this.#sinks.includes(method)) this.#sinks.push(method);
     this.#sinkHandlers.set(method, fn);
+    return this;
+  }
+  /**
+   * Replace every registered handler with `wrap(handler, method, kind)`.
+   *
+   * Used by `fino:sim` to record calls without the recorder needing to know how
+   * a facade was built. Applies to handlers registered so far; register the
+   * handlers first, then wrap.
+   *
+   * ```ts no_run
+   * import { Facade } from 'fino:realm';
+   *
+   * const facade = new Facade('app:api', ['ping']).handle('ping', async () => 'pong');
+   * facade._wrapHandlers((fn) => fn);
+   * ```
+   *
+   * @internal
+   */
+  _wrapHandlers(
+    wrap: (
+      handler: (...args: never[]) => unknown,
+      method: string,
+      kind: 'call' | 'stream' | 'sink',
+    ) => (...args: never[]) => unknown,
+  ): this {
+    for (const [method, fn] of this.#handlers) {
+      this.#handlers.set(
+        method,
+        wrap(fn as (...args: never[]) => unknown, method, 'call') as (
+          ...args: unknown[]
+        ) => Promise<unknown>,
+      );
+    }
+    for (const [method, fn] of this.#streamHandlers) {
+      this.#streamHandlers.set(
+        method,
+        wrap(fn as (...args: never[]) => unknown, method, 'stream') as (
+          ...args: unknown[]
+        ) => AsyncIterable<unknown>,
+      );
+    }
+    for (const [method, fn] of this.#sinkHandlers) {
+      this.#sinkHandlers.set(
+        method,
+        wrap(fn as (...args: never[]) => unknown, method, 'sink') as (
+          args: unknown[],
+          source: AsyncIterable<unknown>,
+        ) => Promise<unknown>,
+      );
+    }
     return this;
   }
   /**
@@ -2050,6 +2116,23 @@ export interface RealmOptions {
    * ```
    */
   otlpEndpoint?: string | false;
+  /**
+   * Run this Realm as a deterministic simulation container.
+   *
+   * Seeds every random source in the child, virtualizes its clocks and timers,
+   * and hides the parent port, so that two runs with the same seed and the same
+   * facade responses execute identically. Prefer `simulate()` from `fino:sim`,
+   * which builds this option along with the facade world and the journal.
+   *
+   * Not supported with `remote: true`.
+   *
+   * ```ts no_run
+   * import type { RealmOptions } from 'fino:realm';
+   *
+   * const options: RealmOptions = { entry: './worker.ts', sim: { seed: 42 } };
+   * ```
+   */
+  sim?: SimConfig;
 }
 /**
  * Options for creating a Realm from in-memory entrypoint source.
@@ -2722,6 +2805,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     validateSandboxRealmOptions(opts);
     if (opts.watch && opts.remote) {
       throw new Error('fino:realm — watch: true is not supported with remote: true');
+    }
+    if (opts.sim !== undefined && opts.remote) {
+      throw new Error('fino:realm — sim is not supported with remote: true');
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;

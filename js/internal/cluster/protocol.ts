@@ -366,6 +366,7 @@ interface WireDirective {
   exports: string[];
   streams: string[];
   sinks: string[];
+  facadeSource?: string;
 }
 
 interface WireRule {
@@ -430,6 +431,7 @@ const DirectiveMessage = defineMessage<WireDirective>({
   exports: { number: 6, type: 'string', repeated: true },
   streams: { number: 7, type: 'string', repeated: true },
   sinks: { number: 8, type: 'string', repeated: true },
+  facadeSource: { number: 9, type: 'string', optional: true },
 });
 const RuleMessage = defineMessage<WireRule>({
   from: { number: 1, type: 'string', optional: true },
@@ -511,6 +513,7 @@ function encodeDirective(value: unknown): WireDirective {
       exports: stringArray(value.exports, 'directive.exports'),
       streams: value.streams === undefined ? [] : stringArray(value.streams, 'directive.streams'),
       sinks: value.sinks === undefined ? [] : stringArray(value.sinks, 'directive.sinks'),
+      ...(value.source === undefined ? {} : { facadeSource: requireString(value, 'source') }),
     };
   }
   throw protocolError(`unknown rule directive '${type}'`);
@@ -536,6 +539,7 @@ function decodeDirective(value: WireDirective): Record<string, unknown> {
       exports: value.exports,
       ...(value.streams.length > 0 ? { streams: value.streams } : {}),
       ...(value.sinks.length > 0 ? { sinks: value.sinks } : {}),
+      ...(value.facadeSource === undefined ? {} : { source: value.facadeSource }),
     };
   }
   throw protocolError(`unknown rule directive ${value.kind}`);

@@ -56,7 +56,17 @@ describe('ClusterMessage encode/decode', () => {
       config: {
         entry: './fn.ts',
         root: '/app',
-        rules: [],
+        rules: [
+          {
+            pattern: 'app:clock',
+            directive: {
+              type: 'facade',
+              specifier: 'app:clock',
+              exports: [],
+              source: 'export class Clock {}',
+            },
+          },
+        ],
         bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
       },
     };
@@ -69,6 +79,11 @@ describe('ClusterMessage encode/decode', () => {
       t.deepEqual(got.config.bootstrapData, {
         cliOtel: { endpoint: 'http://collector.example:4318/remote' },
       });
+      t.equal(
+        (got.config.rules[0]?.directive as { source?: string }).source,
+        'export class Clock {}',
+        'custom facade module source survives the cluster wire',
+      );
     }
   });
   it('SPAWN_ACK round-trips', (t) => {

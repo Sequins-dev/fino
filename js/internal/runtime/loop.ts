@@ -68,6 +68,7 @@
  * @internal
  */
 import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import type { VirtualTimerQueue } from 'internal:sim/timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
   currentWorkloadOwner,
@@ -205,6 +206,10 @@ const _wakeSourceCallbacks: Map<number, () => void> = new Map();
 let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
+// Simulation state. Null in an ordinary realm, so every check below is one
+// null test on a path that already exists.
+let _virtualTimers: VirtualTimerQueue | null = null;
+let _virtualTimeBlocked: (() => boolean) | null = null;
 const TASK_TOKEN_BASE = 4294967296;
 /**
  * Scalars per routed readiness completion, matching the native layout:
@@ -418,6 +423,7 @@ export function loopFd(): number {
  */
 export function alive(): boolean {
   return (
+    (_virtualTimers !== null && _virtualTimers.size() > 0) ||
     _reads.size > 0 ||
     _writes.size > 0 ||
     _timers.size > _unreferencedTimers.size ||
@@ -431,6 +437,37 @@ export function alive(): boolean {
     hasPendingV8Tasks() ||
     _atomicsWaiters > 0
   );
+}
+/**
+ * Route this realm's timers into `queue` instead of the kernel.
+ *
+ * `isBlocked` reports whether an external call is outstanding. Virtual time
+ * must not advance while the realm is waiting on a facade response, or a timer
+ * could be observed firing before or after that response depending on how long
+ * the parent actually took — exactly the nondeterminism a simulation exists to
+ * remove.
+ *
+ * @internal
+ */
+export function _installVirtualTimers(
+  queue: VirtualTimerQueue,
+  isBlocked: () => boolean = () => false,
+): void {
+  _virtualTimers = queue;
+  _virtualTimeBlocked = isBlocked;
+}
+/**
+ * Advance virtual time to the next deadline and fire the timers due there.
+ *
+ * Returns the number fired, which the step loop counts as progress. Returns 0
+ * when time is real, nothing is pending, or the realm is waiting on the parent.
+ *
+ * @internal
+ */
+export function _advanceVirtualTime(): number {
+  if (_virtualTimers === null || _virtualTimers.size() === 0) return 0;
+  if (_virtualTimeBlocked !== null && _virtualTimeBlocked()) return 0;
+  return _virtualTimers.advance();
 }
 /**
  * Report whether a scheduled realm needs occasional foreground-task polling.
@@ -628,6 +665,9 @@ export function writable(fd: number, forToken?: number): Promise<void> {
  * ```
  */
 export function timeout(ms: number): CancelablePromise {
+  // A simulated realm keeps its timers in virtual time, so the kernel is never
+  // asked to wait. This is the single funnel every timer API reaches.
+  if (_virtualTimers !== null) return _virtualTimers.schedule(ms) as CancelablePromise;
   const id = _nextTimerId++;
   const token = taskToken(id);
   const p = new Promise<void>(function onTimeout(resolve) {

@@ -59,6 +59,7 @@ import {
   tick,
   alive,
   registerWakeSource,
+  _advanceVirtualTime,
   _trackAtomicsWaiter,
   _untrackAtomicsWaiter,
   _schedulerPollingRequired,
@@ -414,6 +415,14 @@ export function driveLoop(
     const count = tick(processScheduled || emptyTicks < 3 ? 0 : 25);
     const delivered = _flushPorts();
     drainMicrotasks();
+    // Virtual time moves only once the realm has run out of real work. Waiting
+    // for quiescence is what keeps a timer from being observed ahead of work
+    // that was already runnable, and it is why a simulated day costs one step.
+    let fired = 0;
+    if (count + delivered === 0) {
+      fired = _advanceVirtualTime();
+      if (fired > 0) drainMicrotasks();
+    }
     if (count === 0) emptyTicks++;
     else emptyTicks = 0;
     // Re-check completion before reporting quiescence. `isDone` is not a pure
@@ -424,7 +433,7 @@ export function driveLoop(
     // because nothing would ever step it again to notice.
     const done = isDone();
     if (done && (finishWhenDone() || !alive())) return -1;
-    return count + delivered;
+    return count + delivered + fired;
   }
   runLoop(step, onDone);
 }
@@ -450,6 +459,7 @@ interface RuntimeBootstrapData {
   };
   sandbox?: unknown;
   coverage?: CoverageRealmContext;
+  sim?: unknown;
 }
 const _runtimeBootstrapData = (() => {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -504,6 +514,16 @@ if (_childEntry) {
   }> {
     let sandboxPolicy = _runtimeBootstrapData?.sandbox;
     let cliOtel = _runtimeBootstrapData?.cliOtel;
+    const simConfig = _runtimeBootstrapData?.sim;
+    // Before anything else the entry could observe: the guest must not be able
+    // to read a real clock or draw real entropy even during module evaluation.
+    if (simConfig !== undefined) {
+      const [{ installSimRealm }, { resolveSimConfig }] = await Promise.all([
+        import('internal:sim/install'),
+        import('internal:sim/config'),
+      ]);
+      installSimRealm(resolveSimConfig(simConfig as import('./sim/config.ts').SimConfig));
+    }
     if (sandboxPolicy !== undefined) {
       const { installSandboxRealmPolicy } = await import('internal:security/sandbox/realm');
       installSandboxRealmPolicy(

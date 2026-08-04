@@ -30,6 +30,7 @@
 import { dlopen, FfiCallback, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from './encoding.ts';
+import { randomSource } from 'internal:sim/random';
 /**
  * Result returned by symmetric encryption helpers.
  *
@@ -1033,8 +1034,21 @@ function _normalizeCipherAlgorithm(algorithm: string): CipherAlgorithm {
  * @internal
  */
 export function randBytes(buf: ArrayBuffer, len: number): void {
+  // Every random byte in the runtime is drawn here — `crypto.getRandomValues`,
+  // `crypto.randomUUID`, and `fino:security/random` all land on this call — so
+  // a simulated realm only has to seed this one source.
+  const seeded = randomSource();
+  if (seeded !== null) {
+    seeded.fillBytes(new Uint8Array(buf, 0, len));
+    return;
+  }
   const rc = _requireCrypto().symbols.RAND_bytes(buf, len);
   if (rc !== 1) throw new Error('RAND_bytes failed: ' + getErrorString());
+}
+function requireOpenSslEntropy(operation: string): void {
+  if (randomSource() !== null) {
+    throw new Error(`fino:sim — ${operation} uses entropy that cannot be seeded`);
+  }
 }
 // ---------------------------------------------------------------------------
 // Digest
@@ -1694,6 +1708,7 @@ export function ecdsaCoordSize(namedCurve: string): number {
  * @internal
  */
 export function evpPkeyGenerateEc(namedCurve: string): object {
+  requireOpenSslEntropy('EC key generation');
   if (!_CURVE_INFO[namedCurve]) throw new Error(`Unsupported EC curve: ${namedCurve}`);
   const lib = _requireCrypto();
   const nid = _curveNID(namedCurve);
@@ -2248,6 +2263,7 @@ export function evpPkeyImportSpki(der: Uint8Array): {
  * @internal
  */
 export function ecdsaSign(hash: Uint8Array, pkey: object): Uint8Array {
+  requireOpenSslEntropy('ECDSA signing');
   const lib = _requireCrypto();
   const ecKey = lib.symbols.EVP_PKEY_get0_EC_KEY(pkey);
   if (ecKey === null) throw new Error('EVP_PKEY_get0_EC_KEY returned null');
@@ -2328,6 +2344,7 @@ function _setRsaOaepLabel(
  * @internal
  */
 export function evpPkeyGenerateRsa(modulusBits: number, publicExponent: number): object {
+  requireOpenSslEntropy('RSA key generation');
   const lib = _requireCrypto();
   const rsa = lib.symbols.RSA_new();
   if (rsa === null) throw new Error('RSA_new failed: ' + getErrorString());
@@ -2439,6 +2456,7 @@ export function rsaOaepEncrypt(
   label: Uint8Array | null,
   data: Uint8Array,
 ): Uint8Array {
+  requireOpenSslEntropy('RSA-OAEP encryption');
   const lib = _requireCrypto();
   const ctx = lib.symbols.EVP_PKEY_CTX_new(pkey, null);
   if (ctx === null) throw new Error('EVP_PKEY_CTX_new failed: ' + getErrorString());
@@ -2558,6 +2576,7 @@ export function rsaPssSign(
   saltLength: number,
   data: Uint8Array,
 ): Uint8Array {
+  requireOpenSslEntropy('RSA-PSS signing');
   const lib = _requireCrypto();
   const norm = _normalizeDigestAlgorithm(hashAlg);
   const hash = digest(hashAlg, data);

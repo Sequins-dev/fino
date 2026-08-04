@@ -111,6 +111,75 @@ function _sendControl(kind: number, reqId: number, payload: unknown): void {
     [],
   );
 }
+let _responseDelay: (() => Promise<void>) | null = null;
+/**
+ * Hold every settled response for a delay before delivering it.
+ *
+ * A simulation uses this to give facade calls virtual latency. The delay is
+ * applied here, in the child, rather than by the parent, because only the child
+ * owns the virtual clock — a parent-side wait would be real seconds, and would
+ * stall the very clock it was trying to advance.
+ *
+ * Pass `null` to deliver responses as soon as they arrive.
+ *
+ * @internal
+ */
+export function _installResponseDelay(delay: (() => Promise<void>) | null): void {
+  _responseDelay = delay;
+}
+/**
+ * Run `settle` now, or after the installed delay.
+ *
+ * Callers must already have removed the request from its pending registry, so
+ * that the call no longer counts as outstanding: a simulated realm refuses to
+ * advance virtual time while it is waiting on the parent, and the delay itself
+ * is measured in that same virtual time.
+ */
+function _afterResponseDelay(settle: () => void): void {
+  if (_responseDelay === null) {
+    settle();
+    return;
+  }
+  void _responseDelay().then(settle, settle);
+}
+/**
+ * Per-stream delivery chains, so delayed chunks cannot reorder.
+ *
+ * Each chunk draws and schedules its latency after the preceding frame is
+ * delivered. This makes virtual deadlines independent of how the host batches
+ * transport arrivals, while preserving chunk order and keeping end-of-stream
+ * behind every chunk.
+ */
+const _streamDelays = new Map<number, Promise<void>>();
+function _afterStreamDelay(reqId: number, drawDelay: boolean, deliver: () => void): void {
+  if (_responseDelay === null) {
+    deliver();
+    return;
+  }
+  const responseDelay = _responseDelay;
+  const prev = _streamDelays.get(reqId) ?? Promise.resolve();
+  const next = prev.then(() => (drawDelay ? responseDelay() : undefined)).then(deliver, deliver);
+  _streamDelays.set(reqId, next);
+}
+/**
+ * Number of request/response calls still awaiting the parent.
+ *
+ * Counts scalar calls and sinks, whose answers are due back promptly. Read
+ * streams are deliberately excluded: a subscription stays open for as long as
+ * the guest iterates it, so counting one would stall a simulated realm's clock
+ * forever rather than merely holding it while a reply is in flight.
+ *
+ * ```typescript no_run
+ * import { outstandingCalls } from 'internal:parent-rpc';
+ *
+ * if (outstandingCalls() === 0) console.log('nothing in flight');
+ * ```
+ *
+ * @internal
+ */
+export function outstandingCalls(): number {
+  return _pending.size + _pendingSinks.size;
+}
 // ---------------------------------------------------------------------------
 // Public API — scalar calls
 // ---------------------------------------------------------------------------
@@ -171,25 +240,27 @@ export function resolveRpc(reqId: number, result: unknown): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
     _pending.delete(reqId);
-    // Auto-wrap handle results in a transparent method proxy.
-    if (
-      result !== null &&
-      typeof result === 'object' &&
-      typeof (
-        result as {
-          __handle?: unknown;
-        }
-      ).__handle === 'string'
-    ) {
-      const h = result as {
-        __handle: string;
-        streams?: string[];
-        sinks?: string[];
-      };
-      entry.resolve(_makeHandleProxy(h.__handle, h.streams ?? [], h.sinks ?? []));
-    } else {
-      entry.resolve(result);
-    }
+    _afterResponseDelay(() => {
+      // Auto-wrap handle results in a transparent method proxy.
+      if (
+        result !== null &&
+        typeof result === 'object' &&
+        typeof (
+          result as {
+            __handle?: unknown;
+          }
+        ).__handle === 'string'
+      ) {
+        const h = result as {
+          __handle: string;
+          streams?: string[];
+          sinks?: string[];
+        };
+        entry.resolve(_makeHandleProxy(h.__handle, h.streams ?? [], h.sinks ?? []));
+      } else {
+        entry.resolve(result);
+      }
+    });
     return true;
   }
   // Fall through: the __rpc_res may be the final result of a write-stream (sink).
@@ -237,7 +308,7 @@ export function rejectRpc(reqId: number, error: string): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
     _pending.delete(reqId);
-    entry.reject(new Error(error));
+    _afterResponseDelay(() => entry.reject(new Error(error)));
     return true;
   }
   // Fall through: error may belong to a write-stream (sink).
@@ -292,7 +363,8 @@ export function callStream(
  */
 export function pushChunk(reqId: number, chunk: unknown): void {
   const channel = _pendingStreams.get(reqId);
-  if (channel !== undefined) void channel.writer.write(chunk);
+  if (channel === undefined) return;
+  _afterStreamDelay(reqId, true, () => void channel.writer.write(chunk));
 }
 /**
  * Signal end-of-stream for a pending streaming call.
@@ -309,10 +381,15 @@ export function pushChunk(reqId: number, chunk: unknown): void {
  * ```
  */
 export function endStream(reqId: number): void {
-  const q = _pendingStreams.get(reqId);
-  if (!q) return;
+  const channel = _pendingStreams.get(reqId);
+  if (channel === undefined) return;
   _pendingStreams.delete(reqId);
-  void q.writer.close();
+  // End-of-stream draws no latency of its own — it is the FIN riding behind
+  // the last chunk — but it must still queue behind the chunks in flight.
+  _afterStreamDelay(reqId, false, () => {
+    _streamDelays.delete(reqId);
+    void channel.writer.close();
+  });
 }
 /**
  * Signal an error on a pending streaming call.
@@ -330,10 +407,13 @@ export function endStream(reqId: number): void {
  * ```
  */
 export function errStream(reqId: number, error: string): void {
-  const q = _pendingStreams.get(reqId);
-  if (!q) return;
+  const channel = _pendingStreams.get(reqId);
+  if (channel === undefined) return;
   _pendingStreams.delete(reqId);
-  void q.writer.close(new Error(error));
+  _afterStreamDelay(reqId, false, () => {
+    _streamDelays.delete(reqId);
+    void channel.writer.close(new Error(error));
+  });
 }
 // ---------------------------------------------------------------------------
 // Public API — write-stream (sink) calls  [QUIC: client-initiated unidirectional stream]
@@ -563,7 +643,7 @@ export function resolveSink(reqId: number, result: unknown): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
   _pendingSinks.delete(reqId);
-  sink._resolve(result);
+  _afterResponseDelay(() => sink._resolve(result));
   return true;
 }
 /**
@@ -586,6 +666,6 @@ export function rejectSink(reqId: number, error: string): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
   _pendingSinks.delete(reqId);
-  sink._reject(error);
+  _afterResponseDelay(() => sink._reject(error));
   return true;
 }
