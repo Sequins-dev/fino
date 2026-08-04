@@ -238,6 +238,12 @@ const _cryptoSymbols = {
     parameters: ['buffer', 'i32', 'buffer', 'i32', 'i32', 'pointer', 'i32', 'buffer'],
     result: 'i32',
   },
+  // libcrypto, not libssl: reading a private key from memory is a crypto
+  // operation, and declaring it in the ssl table breaks that handle's dlsym.
+  PEM_read_bio_PrivateKey: {
+    parameters: ['pointer', 'pointer', 'pointer', 'pointer'],
+    result: 'pointer',
+  },
   EVP_PKEY_CTX_new: {
     parameters: ['pointer', 'pointer'],
     result: 'pointer',
@@ -780,6 +786,23 @@ const _sslSymbols = {
     parameters: ['pointer', 'buffer', 'i32'],
     result: 'i32',
   },
+  // In-memory equivalents of the *_file loaders above. Certificates that are
+  // generated at runtime — ACME renewals, rotating workload identities, a
+  // cluster node's own ephemeral identity — must never be forced through the
+  // filesystem just to be installed.
+  // NOTE: SSL_CTX_add1_chain_cert is a MACRO over SSL_CTX_ctrl, not an
+  // exported symbol — declaring it here makes dlsym fail and nulls the entire
+  // libssl handle, disabling TLS process-wide. Chain certificates go through
+  // SSL_CTX_ctrl below. Likewise PEM_read_bio_PrivateKey belongs to
+  // libcrypto, not libssl.
+  SSL_CTX_use_certificate: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  SSL_CTX_use_PrivateKey: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
   SSL_CTX_check_private_key: {
     parameters: ['pointer'],
     result: 'i32',
@@ -866,6 +889,8 @@ const _sslQuicSymbols = {
   },
 } satisfies NativeSymbolMap;
 const SSL_CTRL_SET_GROUPS_LIST = 92;
+/** `SSL_CTX_add1_chain_cert(ctx, x)` expands to this ctrl. */
+const SSL_CTRL_CHAIN_CERT = 89;
 // ---------------------------------------------------------------------------
 // Library loading
 // ---------------------------------------------------------------------------
@@ -3167,6 +3192,83 @@ export function sslCtxNewQuicServer(): object {
  *
  * @internal
  */
+/**
+ * Load a PEM certificate chain and private key held in memory into `ctx`.
+ *
+ * The in-memory counterpart of `sslCtxUseCertKey()`. Certificates minted at
+ * runtime — ACME renewals, rotating workload identities, a cluster node's own
+ * ephemeral identity — have no reason to touch the filesystem, and writing a
+ * private key to disk purely to hand it to OpenSSL is a security regression
+ * rather than a convenience.
+ *
+ * `certPem` may contain a leaf followed by intermediates; every certificate
+ * after the first is added to the context's chain in order.
+ *
+ * ```ts no_run
+ * import { sslCtxNewServer, sslCtxUseCertKeyPem } from 'internal:openssl';
+ * const ctx = sslCtxNewServer();
+ * sslCtxUseCertKeyPem(ctx, certPem, keyPem);
+ * ```
+ *
+ * @internal
+ */
+export function sslCtxUseCertKeyPem(ctx: object, certPem: string, keyPem: string): void {
+  const ssl = _requireSsl();
+  const certBytes = encodeUtf8(certPem);
+  const certBio = ssl.symbols.BIO_new_mem_buf(certBytes, certBytes.byteLength) as object | null;
+  if (certBio === null) throw new Error('TLS: BIO_new_mem_buf failed: ' + getErrorString());
+  try {
+    // The first certificate is the leaf; anything after it is chain.
+    let index = 0;
+    for (;;) {
+      const cert = ssl.symbols.PEM_read_bio_X509(certBio, null, null, null) as object | null;
+      if (cert === null) break;
+      const rc =
+        index === 0
+          ? ssl.symbols.SSL_CTX_use_certificate(ctx, cert)
+          : // SSL_CTX_add1_chain_cert(ctx, x) expands to this ctrl.
+            ssl.symbols.SSL_CTX_ctrl(ctx, SSL_CTRL_CHAIN_CERT, 1n, cert);
+      // use_certificate and add1_chain_cert both take their own reference, so
+      // this handle is ours to release either way.
+      ssl.symbols.X509_free(cert);
+      if (rc !== 1) {
+        throw new Error(
+          `TLS: failed to install ${index === 0 ? 'certificate' : 'chain certificate'} from memory: ` +
+            getErrorString(),
+        );
+      }
+      index++;
+    }
+    if (index === 0) {
+      throw new Error('TLS: no certificate found in the supplied PEM');
+    }
+  } finally {
+    ssl.symbols.BIO_free(certBio);
+  }
+  const keyBytes = encodeUtf8(keyPem);
+  const keyBio = ssl.symbols.BIO_new_mem_buf(keyBytes, keyBytes.byteLength) as object | null;
+  if (keyBio === null) throw new Error('TLS: BIO_new_mem_buf failed: ' + getErrorString());
+  try {
+    const pkey = _requireCrypto().symbols.PEM_read_bio_PrivateKey(
+      keyBio,
+      null,
+      null,
+      null,
+    ) as object | null;
+    if (pkey === null) throw new Error('TLS: failed to read private key from memory: ' + getErrorString());
+    const rc = ssl.symbols.SSL_CTX_use_PrivateKey(ctx, pkey);
+    evpPkeyFree(pkey);
+    if (rc !== 1) {
+      throw new Error('TLS: failed to install private key from memory: ' + getErrorString());
+    }
+  } finally {
+    ssl.symbols.BIO_free(keyBio);
+  }
+  if (ssl.symbols.SSL_CTX_check_private_key(ctx) !== 1) {
+    throw new Error('TLS: certificate and key do not match: ' + getErrorString());
+  }
+}
+
 export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string): void {
   const lib = _requireSsl();
   const certBuf = encodeUtf8(certPath + '\0');
