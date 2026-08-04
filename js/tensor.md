@@ -385,10 +385,37 @@ what makes `autocast` worth turning on for speed.
 
 The matrix kernel is used only where all of it holds: the device can compile it, the
 operands are `f16`, the multiply is not batched or transposed, every extent divides its
-tile since it has no edge handling, and both sides are at least 1024. Everything else
+tile since it has no edge handling, and `m * n * k` is at least 2²⁷. Everything else
 takes the scalar kernel, including all of Vulkan — SPIR-V has cooperative matrices, but
 no form of them that MoltenVK and lavapipe both accept, so the lowering refuses rather
 than emitting something that works on one driver and is undefined on the next.
+
+That last condition used to require both output extents to reach 1024, which followed
+from the square sweep above and was not tested by it: every shape in a square sweep has
+long sides and plenty of work at once, so it cannot say which mattered. It is the work.
+`tests/tensor/gemm-selection.test.ts` alternates the two kernels over non-square shapes
+in one process, and at or above 2²⁷ the matrix kernel wins everywhere measured:
+
+| shape | work | matrix vs scalar |
+|---|---|---|
+| 256³ | 17M | 0.81x |
+| 384³ | 57M | 0.94x |
+| 512³ | 134M | 1.18x |
+| 128×1024×1024 | 134M | 1.20x |
+| 256×768×768 | 151M | 1.05–1.15x |
+| 256×1024×1024 | 268M | 1.43x |
+| 768³ | 453M | 1.35x |
+
+Below that the two trade places — 0.81x at 256³ and 0.94x at 384³, but 1.16x at
+512×256×256 — so the line is drawn where the answer stops depending on the shape rather
+than at the last winning measurement. The old rule was refusing the matrix kernel on
+ordinary transformer sizes: a 256 by 768 activation against a 768 by 768 weight divides
+the tiling exactly and was turned away for having a short side.
+
+Both of those measurements had to be taken in a single process with the kernels
+alternated. Comparing across runs gave differences up to 40% on identical builds, and the
+first shape measured in any process reads about 20% low while a kernel compiles and the
+clock comes up — enough, on its own, to have made 256×768×768 look like a loss.
 
 `f32` deliberately does not use them. Measured, the matrix instructions run at an eighth
 of the scalar kernel's rate at single precision on this hardware; they are 16-bit units

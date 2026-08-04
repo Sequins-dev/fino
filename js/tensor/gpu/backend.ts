@@ -110,15 +110,23 @@ function gemmTiling(m: number, n: number) {
 }
 
 /**
- * Smallest output side that takes the cooperative-matrix kernel.
+ * Smallest multiply that takes the cooperative-matrix kernel, counted in `m * n * k`.
  *
- * Swept against the scalar kernel on an M5 Max: 1.05x at 512, 1.31x at 1024, 1.41x at
- * 2048, 1.32x at 4096. The threshold sits above the 512 measurement rather than at it,
- * because five percent is inside the run-to-run variance that has reversed a conclusion
- * in this engine twice, and the scalar kernel is the one with edge handling and every
- * dtype — so where the two are level, it is the better default.
+ * This used to require both output extents to reach 1024, which followed from a sweep of
+ * *square* multiplies and was not tested by it: every shape in a square sweep has large
+ * extents and plenty of work together, so it cannot say which of the two mattered. It is
+ * the work. `tests/tensor/gemm-selection.test.ts` measures both kernels alternately over
+ * non-square shapes, and at or above this figure the matrix kernel wins everywhere —
+ * 1.18x at 512x512x512, 1.20x at 128x1024x1024, 1.43x at 256x1024x1024, 1.35x at
+ * 768x768x768. Below it the two trade places (0.81x at 256 cubed, 0.94x at 384 cubed,
+ * and yet 1.16x at 512x256x256), so the boundary is drawn where the answer stops
+ * depending on the shape rather than at the last winning measurement.
+ *
+ * The old rule was refusing the matrix kernel on ordinary transformer sizes: a 256 by 768
+ * activation against a 768 by 768 weight divides its tiling exactly and was turned away
+ * for having a short side.
  */
-const MATRIX_TILE_SIDE = 1024;
+const MATRIX_MIN_WORK = 1 << 27;
 
 const GPU_DTYPES: readonly DType[] = ['f32', 'f16', 'bf16', 'i32', 'u8', 'bool'];
 
@@ -947,16 +955,15 @@ export class GpuBackend implements DeviceBackend {
     }
     // The matrix path when everything it needs holds: the device can compile it, the
     // operands are the half precision it is faster for, the shapes divide its tile since
-    // it has no edge handling, and the multiply is large enough for the margin to be
-    // real. Anything else is the scalar kernel, which covers every case.
+    // it has no edge handling, and there is enough work for the margin to be real.
+    // Anything else is the scalar kernel, which covers every case.
     const useMatrix =
       this.#driver.caps.matrix &&
       this.#scalar(a) === 'f16' &&
       !batched &&
       !opts.transA &&
       !opts.transB &&
-      opts.m >= MATRIX_TILE_SIDE &&
-      opts.n >= MATRIX_TILE_SIDE &&
+      opts.m * opts.n * opts.k >= MATRIX_MIN_WORK &&
       gemmMmaFits(opts.m, opts.n, opts.k);
     if (useMatrix) {
       this.#run(
