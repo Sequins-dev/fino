@@ -254,10 +254,12 @@ async function runClusterStatus(input: unknown): Promise<void> {
         const pending = peer.load.pendingSpecs ?? 0;
         const active = peer.load.activeWorkloads ?? 0;
         const queue = ` queue ${pending} pending / ${active} active`;
-        // Whether the node is dialable directly. A cluster where everything
-        // says seed-relay is one where the seed carries all realm-to-realm
-        // traffic, which is the first thing to check when it saturates.
-        const path = peer.endpoint !== undefined ? '  mesh' : '  seed-relay';
+        // Whether the node advertises a directly dialable endpoint — not
+        // whether a session is currently open, which only the two ends know.
+        // Say "dialable" rather than "mesh" so this cannot be read as proof
+        // that traffic is bypassing the seed; a cluster where every node says
+        // seed-relay definitely is not.
+        const path = peer.endpoint !== undefined ? '  dialable' : '  seed-relay';
         const draining = peer.load.draining === true ? '  [draining]' : '';
         await print(`${peer.nodeId}  cpu ${cpu}  rss ${memory}${idle}${queue}${path}${draining}\n`);
       }

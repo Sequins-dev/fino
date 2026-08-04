@@ -142,7 +142,7 @@ async function scenario(label: string, mesh: boolean): Promise<Measurement> {
   const advertised = status
     .split('\n')
     .filter((line) => line.startsWith('worker-'))
-    .map((line) => `${line.split(' ')[0]}: ${line.includes(' mesh') ? 'mesh' : 'seed-relay'}`);
+    .map((line) => `${line.split(' ')[0]}: ${line.includes(' dialable') ? 'dialable' : 'seed-relay'}`);
 
   // The child fixture lives on the shared filesystem, so a remote spawn can
   // name it by path. Casks are deliberately not involved: this measures the
