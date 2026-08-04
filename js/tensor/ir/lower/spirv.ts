@@ -32,7 +32,7 @@ import {
   StorageClass,
   GroupOperation,
 } from 'internal:spirv';
-import type { BinOp, Expr, KernelIR, MathFn, ScalarDType, Stmt, ValType } from '../types.ts';
+import type { BinOp, Expr, KernelIR, MathFn, ScalarDType, Stmt, ValType, VecWidth } from '../types.ts';
 import { scalarBytes, validateKernel } from '../types.ts';
 import { TypeEnv, checkExpr, typeOf } from '../typing.ts';
 
@@ -319,6 +319,26 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
     return m.constComposite(valType(t), new Array(t.lanes).fill(scalar));
   }
 
+  /**
+   * Emit an operand widened to `lanes`, splatting it when it is a scalar.
+   *
+   * The IR permits a binary operation to mix a vector with a scalar, following MSL, where
+   * `x * 2` means the same thing whatever width `x` has. SPIR-V requires both operands to
+   * have exactly the same type, so the scalar side is broadcast here. Nothing needed this
+   * until the elementwise kernels became four lanes wide and `pow` started comparing a
+   * scalar exponent against a vector literal.
+   */
+  function widen(e: Expr, lanes: VecWidth): Id {
+    const id = expr(e);
+    const t = typeOf(e, env);
+    if (t.lanes === lanes) return id;
+    return fn.emit(
+      Op.CompositeConstruct,
+      valType({ scalar: t.scalar, lanes }),
+      Array.from({ length: lanes }, () => id),
+    );
+  }
+
   /** Emit a constant of a value type. */
   function constant(t: ValType, value: number): Id {
     let scalar: Id;
@@ -507,6 +527,12 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       case 'bin': {
         const aType = typeOf(e.a, env);
         const resultType = valType(typeOf(e, env));
+        // Both operands have to reach the wider side's width. The IR follows MSL in
+        // letting a scalar stand in for a vector, and MSL broadcasts it silently where
+        // SPIR-V requires the types to match exactly.
+        const lanes = Math.max(aType.lanes, typeOf(e.b, env).lanes) as VecWidth;
+        const left = () => widen(e.a, lanes);
+        const right = () => widen(e.b, lanes);
         if (e.op === 'min' || e.op === 'max') {
           const float = aType.scalar === 'f32' || aType.scalar === 'f16';
           const signed = aType.scalar === 'i32';
@@ -522,15 +548,15 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
                 : signed
                   ? Glsl.SMax
                   : Glsl.UMax;
-          return fn.extInst(resultType, m.glsl(), inst, [expr(e.a), expr(e.b)]);
+          return fn.extInst(resultType, m.glsl(), inst, [left(), right()]);
         }
         if (e.op === 'mulhi') {
           // OpUMulExtended yields a struct of { low, high }.
           const pair = m.typeStruct([u32, u32]);
-          const product = fn.emit(Op.UMulExtended, pair, [expr(e.a), expr(e.b)]);
+          const product = fn.emit(Op.UMulExtended, pair, [left(), right()]);
           return fn.emit(Op.CompositeExtract, u32, [product, 1]);
         }
-        return fn.emit(binOpcode(e.op, aType.scalar), resultType, [expr(e.a), expr(e.b)]);
+        return fn.emit(binOpcode(e.op, aType.scalar), resultType, [left(), right()]);
       }
       case 'un': {
         const t = typeOf(e.a, env);
@@ -546,16 +572,24 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
         return fn.emit(t.scalar === 'bool' ? Op.LogicalNot : Op.Not, resultType, [expr(e.a)]);
       }
       case 'call': {
-        const resultType = valType(typeOf(e, env));
-        return fn.extInst(resultType, m.glsl(), GLSL_FN[e.fn], e.args.map(expr));
+        const t = typeOf(e, env);
+        // Every argument at the result's width: `GLSL.std.450` requires all operands to
+        // match the result type exactly, where MSL takes a scalar and broadcasts it.
+        return fn.extInst(
+          valType(t),
+          m.glsl(),
+          GLSL_FN[e.fn],
+          e.args.map((arg) => widen(arg, t.lanes)),
+        );
       }
       case 'select': {
         const result = typeOf(e.a, env);
         const condition = expr(e.cond);
         // `OpSelect` wants a condition with as many components as the result. A scalar
-        // boolean choosing between vectors is only allowed from SPIR-V 1.4, and these
-        // modules target lower, so the condition is splatted instead. A comparison
-        // between vectors already yields a vector and passes straight through.
+        // boolean choosing between vectors is only legal from SPIR-V 1.4, above what
+        // these modules target, so a scalar condition is broadcast. A comparison between
+        // vectors already yields a vector and passes straight through — which, since the
+        // typing rule started widening mixed-width operations, is now the common case.
         const selector =
           result.lanes > 1 && typeOf(e.cond, env).lanes === 1
             ? fn.emit(

@@ -229,6 +229,35 @@ describe('spirv-val conformance', () => {
     );
     t.ok(ext.ok, `atomic-float extension path validates: ${ext.output}`);
   });
+  it('validates a vectorised kernel that mixes a scalar parameter with a vector', async (t) => {
+    const tool = await findValidator();
+    if (!tool) {
+      t.ok(true, 'SKIP: install the Vulkan SDK to enable spirv-val checks');
+      return;
+    }
+    const { BINARY, ewKernel } = await import('internal:tensor/ir');
+    // `pow` with a scalar exponent, four lanes wide. This shape shipped broken: the
+    // exponent is a push constant and `ctx.lit` is vector-typed, so comparing them
+    // produced `OpFOrdEqual %bool %float %v4float`. MSL broadcasts a scalar into a
+    // comparison silently, SPIR-V does not, and the two dialects disagreed the moment
+    // anything became wider than one lane. Metal compiled it; lavapipe refused the
+    // pipeline; only the validator names the reason, which is why the check lives here
+    // rather than waiting for a driver that happens to be strict.
+    const build = (vec: 1 | 4) =>
+      ewKernel({
+        op: 'pow_scalar',
+        inputs: [{ dtype: 'f32', layout: 'cont' }],
+        out: 'f32',
+        vec,
+        scalars: [{ name: 'operand', type: 'f32' }],
+        body: ([value], ctx) => BINARY.pow!(value!, ctx.scalar('operand'), ctx),
+      }).ir;
+    for (const vec of [1, 4] as const) {
+      const result = await validate(tool, `pow_scalar_x${vec}`, lowerToSPIRV(build(vec)));
+      t.ok(result.ok, `scalar-exponent pow at ${vec} lane(s) validates: ${result.output}`);
+    }
+  });
+
   it('validates the subgroup reduction path', async (t) => {
     const tool = await findValidator();
     if (!tool) {

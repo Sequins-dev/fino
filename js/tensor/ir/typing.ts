@@ -10,7 +10,7 @@
  *
  * This module is re-exported through `internal:tensor/ir`; import from there.
  */
-import type { Expr, KernelIR, ScalarDType, ValType } from './types.ts';
+import type { Expr, KernelIR, ScalarDType, ValType, VecWidth } from './types.ts';
 import { typeKey, vt } from './types.ts';
 
 /** Names in scope while walking a kernel body. */
@@ -95,18 +95,27 @@ export function typeOf(expr: Expr, env: TypeEnv): ValType {
     case 'shload':
       return vt(env.sharedElem(expr.sh));
     case 'bin': {
-      if (PREDICATE_OPS.has(expr.op)) {
-        const operand = typeOf(expr.a, env);
-        return vt('bool', operand.lanes);
-      }
-      if (expr.op === 'mulhi') return vt('u32', typeOf(expr.a, env).lanes);
-      return typeOf(expr.a, env);
+      // A binary operation may legitimately mix a vector with a scalar, and when it does
+      // the result is as wide as the wider side — reading the width off the left operand
+      // alone called `scalarParam == vec4Literal` a scalar comparison, which MSL was
+      // happy to broadcast and SPIR-V rejected outright once anything was vectorised.
+      const lanes = Math.max(typeOf(expr.a, env).lanes, typeOf(expr.b, env).lanes) as VecWidth;
+      if (PREDICATE_OPS.has(expr.op)) return vt('bool', lanes);
+      if (expr.op === 'mulhi') return vt('u32', lanes);
+      return vt(typeOf(expr.a, env).scalar, lanes);
     }
     case 'un':
       return typeOf(expr.a, env);
-    case 'call':
+    case 'call': {
       if (expr.args.length === 0) throw new Error(`math call '${expr.fn}' needs an argument`);
-      return typeOf(expr.args[0]!, env);
+      // As with a binary operation, an argument may be a scalar standing in for a vector
+      // — `pow(vector, scalarExponent)` — so the call is as wide as its widest argument.
+      const lanes = expr.args.reduce(
+        (widest, arg) => Math.max(widest, typeOf(arg, env).lanes),
+        1,
+      ) as VecWidth;
+      return vt(typeOf(expr.args[0]!, env).scalar, lanes);
+    }
     case 'select':
       return typeOf(expr.a, env);
     case 'cast':

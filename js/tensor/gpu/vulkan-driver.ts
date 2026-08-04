@@ -62,8 +62,11 @@ export function createVulkanDriver(): GpuDriver {
     atomicFloat: info.atomicFloat && !info.portable,
     subgroups: false,
     // Not because the hardware lacks them — on this machine it is the same GPU Metal
-    // reports true for — but because there is no cooperative-matrix lowering that
-    // MoltenVK and lavapipe both accept, so no kernel using them can be compiled here.
+    // reports true for — but because no Vulkan implementation reachable from here
+    // offers `VK_KHR_cooperative_matrix`. MoltenVK does not list it, and neither does
+    // lavapipe, whose 153 device extensions on Mesa 25.0.7 include two shader-atomic-float
+    // extensions and nothing cooperative. So there is no driver to validate a lowering
+    // against rather than two drivers disagreeing about one.
     matrix: false,
     maxWorkgroup: info.maxWorkgroupInvocations,
   };

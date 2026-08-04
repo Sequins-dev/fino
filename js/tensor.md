@@ -386,9 +386,13 @@ what makes `autocast` worth turning on for speed.
 The matrix kernel is used only where all of it holds: the device can compile it, the
 operands are `f16`, the multiply is not batched or transposed, every extent divides its
 tile since it has no edge handling, and `m * n * k` is at least 2²⁷. Everything else
-takes the scalar kernel, including all of Vulkan — SPIR-V has cooperative matrices, but
-no form of them that MoltenVK and lavapipe both accept, so the lowering refuses rather
-than emitting something that works on one driver and is undefined on the next.
+takes the scalar kernel, including all of Vulkan. SPIR-V has cooperative matrices and
+neither implementation reachable from this machine offers them: MoltenVK does not list
+`VK_KHR_cooperative_matrix` at all, and neither does lavapipe, whose 153 device extensions
+on Mesa 25.0.7 include `VK_EXT_shader_atomic_float` and `VK_EXT_shader_atomic_float2` but
+nothing cooperative. So the SPIR-V lowering refuses rather than emitting something no
+driver here could run — and the missing piece is a device that implements the extension,
+not a lowering that two drivers could agree on.
 
 That last condition used to require both output extents to reach 1024, which followed
 from the square sweep above and was not tested by it: every shape in a square sweep has
@@ -527,6 +531,25 @@ So the capability is taken where the driver is native and declined where it adve
 measurement says the emulated path loses, and says nothing about the instruction on
 hardware that has one. Real non-Apple hardware would settle it, and is the same thing
 missing everywhere else in this section.
+
+### A scalar standing in for a vector
+
+The IR lets a binary operation or a math call mix a vector with a scalar, following MSL,
+where `x * 2` means the same thing whatever width `x` has. SPIR-V does not: `OpFOrdEqual`
+and the `GLSL.std.450` instructions require every operand to match the result type
+exactly. So the SPIR-V lowering broadcasts the scalar side, and the typing rule reports
+such an expression at the *wider* of its operands rather than at its left one.
+
+That rule was wrong for as long as everything was one lane wide, where the two readings
+coincide. Vectorising the elementwise kernels made them differ, and `pow` with a scalar
+exponent — `x.pow(2)` — began emitting `OpFOrdEqual %bool %float %v4float`, comparing a
+push constant against a vector literal. Metal compiled it. Lavapipe refused the pipeline
+with `VK_ERROR_UNKNOWN`, which names nothing. `spirv-val` says exactly what is wrong, and
+it is the only one of the three that does.
+
+Worth stating plainly, because it is the argument for keeping a second implementation
+around: this shipped, and passing tests on Apple hardware could not have found it. A
+single driver's tolerance is not a specification.
 
 ### Undefined is not the same as unspecified
 
