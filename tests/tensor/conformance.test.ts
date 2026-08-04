@@ -6,6 +6,7 @@
  * exist to locate a defect, this one exists to be a statement a third party can make.
  */
 import { describe, it } from 'fino:test/test';
+import { compareValues } from 'internal:tensor/harness';
 import {
   conformanceCases,
   formatReport,
@@ -74,5 +75,44 @@ describe('portability', () => {
         x.dispose();
       }
     }
+  });
+});
+
+/**
+ * The rule that decides whether every differential test passes.
+ *
+ * Its absolute floor scales with the largest expected magnitude, so that an output
+ * element where a reduction cancelled is judged against the scale of the computation
+ * rather than against its own small value. That relaxation has to stay narrow: it exists
+ * for rounding that lands equally on every element, and a comparison that waved through
+ * a genuinely wrong number would make the whole suite decorative.
+ */
+describe('comparison tolerance', () => {
+  it('forgives cancellation without forgiving a wrong answer', (t) => {
+    // One element cancels to a thousandth of the range, carrying the absolute rounding
+    // error of the terms that produced it. Every neighbour holds the same error happily.
+    const want = [9.4, -8.2, 0.030572308, 7.1, -6.5];
+    const rounded = [...want];
+    rounded[2] = 0.030573219;
+    t.ok(
+      compareValues(rounded, want, 'f32', 32).ok,
+      'rounding on a cancelled element passes',
+    );
+
+    // The same element, wrong by a part in fifty of the range rather than by rounding.
+    const wrong = [...want];
+    wrong[2] = 0.2;
+    t.ok(!compareValues(wrong, want, 'f32', 32).ok, 'a wrong small value still fails');
+
+    // And a large element wrong by more than `rtol` allows, which the floor must not
+    // rescue however big the range is.
+    const drifted = [...want];
+    drifted[0] = 9.4 * (1 + 1e-3);
+    t.ok(!compareValues(drifted, want, 'f32', 32).ok, 'a drifted large value still fails');
+
+    // Outputs no larger than one are unaffected by the scaling.
+    const small = [0.4, -0.2, 0.11];
+    const smallWrong = [0.4, -0.2, 0.11 + 1e-3];
+    t.ok(!compareValues(smallWrong, small, 'f32', 32).ok, 'small outputs keep their floor');
   });
 });

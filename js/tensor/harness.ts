@@ -68,7 +68,23 @@ export function compareValues(
     throw new Error(`length mismatch: got ${got.length}, want ${want.length}`);
   }
   const { rtol, atol } = TOLERANCE[dtype];
-  const scaled = atol * Math.sqrt(Math.max(reductionLength, 1));
+  // The absolute floor scales with the size of the values being reduced rather than
+  // being a constant. A dot product of length K over terms of magnitude T rounds to
+  // about sqrt(K) * eps * T, and that error lands on every output element equally —
+  // including one where the terms cancelled. Such an element is small, so `rtol` buys it
+  // almost no room, and it fails a comparison that every element around it passes while
+  // carrying the same absolute error.
+  //
+  // Anchoring the floor to the largest expected magnitude judges it against the scale of
+  // the computation that produced it instead of against itself. Outputs no larger than
+  // one keep exactly the previous tolerance, and large elements are still governed by
+  // `rtol`, which dominates there.
+  let magnitude = 1;
+  for (let i = 0; i < want.length; i++) {
+    const value = Math.abs(want[i]!);
+    if (Number.isFinite(value) && value > magnitude) magnitude = value;
+  }
+  const scaled = atol * Math.sqrt(Math.max(reductionLength, 1)) * magnitude;
   let worst: Mismatch | null = null;
   let failures = 0;
   let maxDelta = 0;
