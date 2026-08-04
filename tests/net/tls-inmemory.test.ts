@@ -10,7 +10,13 @@
 import { describe, it } from 'fino:test/test';
 import { cwd } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import { serveHttp } from 'fino:net/http/server';
+import { TlsSocket } from 'fino:net/tls';
+import { quicAvailable } from 'fino:net/quic';
+import { fetch as h3Fetch, h3Available, serve as h3Serve } from 'internal:net/http/h3';
 import {
+  generateSelfSignedCertificate,
+  isPemText,
   sslCtxFree,
   sslCtxNewServer,
   sslCtxUseCertKey,
@@ -78,6 +84,172 @@ describe('in-memory TLS material', () => {
       );
     } finally {
       sslCtxFree(ctx);
+    }
+  });
+});
+
+describe('path-or-PEM detection', () => {
+  it('tells PEM text apart from a filesystem path', async (t) => {
+    t.ok(isPemText(await read(certPath)), 'certificate PEM is recognised as text');
+    t.ok(isPemText(await read(keyPath)), 'key PEM is recognised as text');
+    t.ok(!isPemText(certPath), 'a path is not mistaken for PEM');
+    t.ok(!isPemText('/etc/tls/fullchain.pem'), 'a .pem path is still a path');
+  });
+
+  it('loads either source through the one loader', async (t) => {
+    const ctx = sslCtxNewServer();
+    try {
+      // Mixed on purpose: a certificate fetched from ACME pairs with a key
+      // that already lives on disk, and each side is decided independently.
+      sslCtxUseCertKey(ctx, await read(certPath), keyPath);
+      t.ok(true, 'certificate from memory, key from disk');
+    } finally {
+      sslCtxFree(ctx);
+    }
+  });
+
+  it('names the failing source without printing key material', async (t) => {
+    const ctx = sslCtxNewServer();
+    try {
+      const keyPem = await read(keyPath);
+      let message = '';
+      try {
+        // A certificate that does not match this key: the error has to say so
+        // without dumping the private key into a log.
+        sslCtxUseCertKey(ctx, `${cwd()}/tests/net/fixtures/nonexistent.crt`, keyPem);
+      } catch (error) {
+        message = (error as Error).message;
+      }
+      t.ok(message.includes('nonexistent.crt'), `path named in error: ${message}`);
+      t.ok(!message.includes('PRIVATE KEY'), 'key material never reaches the error message');
+    } finally {
+      sslCtxFree(ctx);
+    }
+  });
+});
+
+describe('minting an ephemeral identity', () => {
+  it('produces PEM for both halves', (t) => {
+    const identity = generateSelfSignedCertificate({ commonName: 'node-a' });
+    t.ok(identity.certPem.includes('-----BEGIN CERTIFICATE-----'), 'certificate is PEM');
+    t.ok(isPemText(identity.keyPem), 'key is PEM');
+    t.ok(!identity.keyPem.includes('ENCRYPTED'), 'key is unencrypted, as an in-memory key should be');
+  });
+
+  it('mints a certificate OpenSSL will actually load', (t) => {
+    const identity = generateSelfSignedCertificate({
+      commonName: 'node-a',
+      subjectAltNames: 'DNS:node-a,IP:127.0.0.1',
+    });
+    const ctx = sslCtxNewServer();
+    try {
+      // The real check: the key matches the certificate and both parse. A
+      // malformed field here fails at handshake time otherwise, which is much
+      // further from the mistake.
+      sslCtxUseCertKey(ctx, identity.certPem, identity.keyPem);
+      t.ok(true, 'minted material installs into a context');
+    } finally {
+      sslCtxFree(ctx);
+    }
+  });
+
+  it('gives every identity a distinct serial', (t) => {
+    const a = generateSelfSignedCertificate({ commonName: 'node-a' });
+    const b = generateSelfSignedCertificate({ commonName: 'node-a' });
+    t.ok(a.certPem !== b.certPem, 'two mints with the same name are still different certificates');
+  });
+
+  it('serves real traffic under a certificate minted seconds ago', async (t) => {
+    const identity = generateSelfSignedCertificate({
+      commonName: 'localhost',
+      subjectAltNames: 'DNS:localhost,IP:127.0.0.1',
+    });
+    const server = serveHttp(
+      { port: 0, tls: { cert: identity.certPem, key: identity.keyPem } },
+      async () => new Response('minted'),
+    );
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false },
+      );
+      const [reader, writer] = tls.split();
+      await writer.write(
+        new TextEncoder().encode(
+          `GET / HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`,
+        ),
+      );
+      await writer.close();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      await reader.close();
+      const body = chunks.map((c) => new TextDecoder().decode(c)).join('');
+      t.ok(body.includes('minted'), 'handshake completed against a freshly minted certificate');
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+describe('a server serving from memory', () => {
+  it('completes a TLS handshake with a certificate never written to disk', async (t) => {
+    const [certPem, keyPem] = await Promise.all([read(certPath), read(keyPath)]);
+    const server = serveHttp(
+      { port: 0, tls: { cert: certPem, key: keyPem } },
+      async () => new Response('served from memory'),
+    );
+    try {
+      const tls = await TlsSocket.connect(
+        { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        { hostname: '127.0.0.1', rejectUnauthorized: false },
+      );
+      const [reader, writer] = tls.split();
+      await writer.write(
+        new TextEncoder().encode(
+          `GET / HTTP/1.1\r\nHost: 127.0.0.1:${server.port}\r\nConnection: close\r\n\r\n`,
+        ),
+      );
+      await writer.close();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of reader) chunks.push(chunk);
+      await reader.close();
+      const body = chunks.map((c) => new TextDecoder().decode(c)).join('');
+      t.ok(body.includes('served from memory'), `response arrived over TLS: ${body.slice(0, 40)}`);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('builds a QUIC SSL_CTX from PEM text too', async (t) => {
+    // The QUIC listener reaches OpenSSL through newServerContext rather than
+    // the TCP path, so covering only HTTPS above would leave h3 untested —
+    // and h3 is where the cluster's own ephemeral certificate has to work.
+    if (!quicAvailable || !h3Available) {
+      t.ok(true, 'QUIC/h3 libraries not installed on this host');
+      return;
+    }
+    const [certPem, keyPem] = await Promise.all([read(certPath), read(keyPath)]);
+    const server = await h3Serve(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        certificateFile: certPem,
+        privateKeyFile: keyPem,
+      },
+      () => new Response('h3 from memory'),
+    );
+    try {
+      const response = await h3Fetch(`https://127.0.0.1:${server.port}/`, {
+        quic: { verifyPeer: false },
+      });
+      t.equal(response.status, 200, 'h3 handshake completed against an in-memory certificate');
+      t.equal(
+        new TextDecoder().decode(await response.arrayBuffer()),
+        'h3 from memory',
+        'response body received over QUIC',
+      );
+    } finally {
+      await server.close();
     }
   });
 });

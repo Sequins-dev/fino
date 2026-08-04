@@ -130,9 +130,11 @@ export interface ServeOptions {
   reusePort?: boolean;
   /** Enable TLS. Presence upgrades the listener to HTTPS and enables ALPN-negotiated HTTP/2. */
   tls?: {
-    /** Filesystem path to the PEM-encoded server certificate (chain). */
+    /** PEM-encoded server certificate (chain): a filesystem path, or the PEM
+     * text itself for a certificate minted at runtime. */
     cert: string;
-    /** Filesystem path to the PEM-encoded private key for `cert`. */
+    /** PEM-encoded private key for `cert`: a filesystem path, or the PEM text
+     * itself, so a key need never be written to disk. */
     key: string;
     /** PEM CA bundle used to verify client certificates. */
     ca?: string;

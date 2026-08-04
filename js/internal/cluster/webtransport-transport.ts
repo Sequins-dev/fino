@@ -78,6 +78,8 @@ export const DEFAULT_CLUSTER_PATH = '/__fino_cluster';
 const CLUSTER_PROTOCOL = 'fino-cluster-v1';
 type ServerHandle = {
   ready: Promise<void>;
+  /** The actual bound port, which is the only way to learn it after `port: 0`. */
+  readonly port: number;
   close(): Promise<void>;
 };
 type Handler = (from: string, msg: ClusterMessage) => void;
@@ -988,6 +990,16 @@ export class PeerMesh {
   /** Node IDs with a live direct session. */
   get connected(): string[] {
     return Array.from(this.#sessions.keys());
+  }
+
+  /**
+   * The port the listener actually bound, or `null` when this node has none.
+   *
+   * A node that asked for port `0` cannot advertise an endpoint until this is
+   * readable, so the join sequence listens before it announces itself.
+   */
+  get port(): number | null {
+    return this.#server?.port ?? null;
   }
 
   /** Register a handler for messages arriving over direct sessions. */

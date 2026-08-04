@@ -72,6 +72,7 @@ import {
   sslCtxSetServernameCallback,
   sslCtxSetVerify,
   sslCtxUseCertKey,
+  isPemText,
   sslEnableQuicEarlyData,
   sslFree,
   sslGetAlpnSelected,
@@ -377,9 +378,27 @@ function configureOpenSslCa(ctx: object, ca: QuicCaOptions | undefined, verifyPe
   }
 }
 /**
+ * Rejects in-memory PEM on the GnuTLS backend, which can only load from a file.
+ *
+ * Only `gnutls_certificate_set_x509_key_file` is bound, so PEM text would reach
+ * GnuTLS as a nonsense filename and fail with an error about the first line of
+ * the certificate. Say what is actually unsupported instead, matching how TLS
+ * groups and per-SNI contexts report their backend limits.
+ */
+function requireFileBackedCertKey(cert?: string, key?: string): void {
+  if ((cert !== undefined && isPemText(cert)) || (key !== undefined && isPemText(key))) {
+    throw new Error(
+      'QUIC TLS certificates supplied as PEM text are only supported by the OpenSSL crypto ' +
+        'backend; the GnuTLS backend requires a file path',
+    );
+  }
+}
+/**
  * Builds a server-side TLS context from a certificate and private key.
  *
- * The context loads `certFile`/`keyFile`, advertises `alpnProtocols` during
+ * `certFile`/`keyFile` are each either a PEM file path or the PEM text itself;
+ * in-memory certificates require the OpenSSL backend. The context loads them,
+ * advertises `alpnProtocols` during
  * negotiation, and encodes the client-authentication policy: `tlsOptions.clientAuth`
  * wins if set, otherwise `verifyClient: true` maps to `'require'` and the default
  * is `'none'`. When a client certificate is demanded, `tlsOptions.ca` supplies
@@ -458,6 +477,7 @@ export function newServerContext(
   }
   if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
     throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
+  requireFileBackedCertKey(certFile, keyFile);
   const cred = newGnutlsCredentials('server', certFile, keyFile);
   configureGnutlsServerMtls(
     cred,
@@ -535,6 +555,7 @@ export function newClientContext(
   }
   if (tlsOptions.groups !== undefined && tlsOptions.groups !== null)
     throw new Error('QUIC TLS groups are only supported by the OpenSSL crypto backend');
+  requireFileBackedCertKey(tlsOptions.certificateFile, tlsOptions.privateKeyFile);
   return {
     backend: 'gnutls',
     handle: newGnutlsCredentials(
