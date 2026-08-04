@@ -1003,6 +1003,17 @@ export class SeedServer {
         }
         break;
       }
+      case 'SHED_OFFER':
+      case 'SHED_RESULT': {
+        // Peers reach each other directly when a mesh session exists. Nodes
+        // that never opened a peer listener have none, and their offers fall
+        // back to here — so the seed relays them by the destination the
+        // message names, exactly as it relays SPAWN. Without this the offer
+        // vanishes and the balancer waits forever on a reply that cannot
+        // come.
+        this.#transport.send(msg.toNode, msg);
+        break;
+      }
       case 'DEPLOY': {
         void this.#handleDeploy(from, msg);
         break;

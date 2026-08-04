@@ -436,6 +436,7 @@ export class ClusterClient {
     const config = shedWorkloadConfig(shedHandle);
     const offer: ClusterMessage = {
       t: 'SHED_OFFER',
+      toNode: toNodeId,
       spawnReqId,
       parentPortId,
       config: {
@@ -1014,6 +1015,7 @@ export class ClusterClient {
     const reply = (ok: boolean, childPortId: string, error?: string): void => {
       const result: ClusterMessage = {
         t: 'SHED_RESULT',
+        toNode: from,
         spawnReqId: msg.spawnReqId,
         childPortId,
         ok,

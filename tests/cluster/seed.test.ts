@@ -81,6 +81,19 @@ class TestSeedTransport {
   }
 }
 let _activeSeed: SeedServer | null = null;
+/**
+ * Poll until `check` passes. The seed handles DEPLOY, cask, and ledger
+ * messages asynchronously — inspectCask reads an archive, the ledger writes
+ * SQLite — so fixed sleeps race those operations and flake under load.
+ */
+async function settleUntil(check: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function makeSeed(
   nodeId = 'seed-node',
   options: {
@@ -1333,7 +1346,10 @@ describe('SeedServer — cask store', () => {
     const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
     return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
   }
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
 
   it('stores a verified upload and streams it back', async (t) => {
     const caskDir = `/tmp/fino-casks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1400,7 +1416,10 @@ describe('SeedServer — cask store', () => {
 
 describe('SeedServer — deploy flow', () => {
   afterEach(stopActiveSeed);
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
 
   async function seedWithStore() {
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1491,7 +1510,10 @@ describe('SeedServer — deploy flow', () => {
 
 describe('SeedServer — deployment history and rollback', () => {
   afterEach(stopActiveSeed);
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
 
   it('lists history and places a rollback of the previous generation', async (t) => {
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1560,7 +1582,10 @@ describe('SeedServer — deployment history and rollback', () => {
 
 describe('SeedServer — replica-set controller', () => {
   afterEach(stopActiveSeed);
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
 
   async function replicatedSetup(replicas: number) {
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -1679,7 +1704,10 @@ describe('SeedServer — replica-set controller', () => {
 
 describe('SeedServer — rolling generation replacement', () => {
   afterEach(stopActiveSeed);
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 30));
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
 
   async function rolloutSetup(options: { readyAfterMs: number; minHealthy?: number }) {
     const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

@@ -43,6 +43,7 @@ const settle = async (): Promise<void> => {
 
 const offer = (): ClusterMessage => ({
   t: 'SHED_OFFER',
+  toNode: 'node-b',
   spawnReqId: 'node-a/o-1',
   parentPortId: 'node-a/p-shed-1',
   config: { entry: '/app/shed.ts', root: '/app', rules: [] },

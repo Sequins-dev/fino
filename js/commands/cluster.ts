@@ -228,7 +228,13 @@ async function runClusterStatus(input: unknown): Promise<void> {
           peer.load.loopIdle !== undefined
             ? ` loop-idle ${(peer.load.loopIdle * 100).toFixed(0)}%`
             : '';
-        await print(`${peer.nodeId}  cpu ${cpu}  rss ${memory}${idle}\n`);
+        // Queue depth is the balancer's input and the operator's earliest
+        // warning: pending specs are work that has nowhere to run yet.
+        const pending = peer.load.pendingSpecs ?? 0;
+        const active = peer.load.activeWorkloads ?? 0;
+        const queue = ` queue ${pending} pending / ${active} active`;
+        const draining = peer.load.draining === true ? '  [draining]' : '';
+        await print(`${peer.nodeId}  cpu ${cpu}  rss ${memory}${idle}${queue}${draining}\n`);
       }
     } finally {
       client.stop();

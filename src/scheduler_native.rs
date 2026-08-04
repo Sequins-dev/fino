@@ -943,8 +943,13 @@ fn run_watchdog(shared: std::sync::Weak<PoolShared>, tuning: WatchdogTuning) {
                 let stale_ms = now_micros()
                     .saturating_sub(shared.last_progress_micros.load(Ordering::Relaxed))
                     / 1_000;
+                let system_ready = queue
+                    .ready
+                    .iter()
+                    .filter(|entry| entry.class == CLASS_SYSTEM)
+                    .count();
                 eprintln!(
-                    "fino:watchdog trace ready={} active={} stale_progress={}ms running={}",
+                    "fino:watchdog trace sysready={system_ready} ready={} active={} stale_progress={}ms running={}",
                     queue.ready.len(),
                     queue.active.len(),
                     stale_ms,
@@ -1184,10 +1189,16 @@ impl PoolShared {
     }
 
     fn signal(&self, owner: u32) {
+        if matches!(std::env::var("FINO_WAKE_TRACE").as_deref(), Ok("1")) {
+            eprintln!("fino:wake signal owner={owner}");
+        }
         {
             let mut queue = self.queue.write().unwrap();
             let parked = self.parked.lock().unwrap();
             if !parked.contains_key(&owner) && !queue.active.contains(&owner) {
+                if matches!(std::env::var("FINO_WAKE_TRACE").as_deref(), Ok("1")) {
+                    eprintln!("fino:wake signal owner={owner} ABSENT (neither parked nor active)");
+                }
                 pool_trace!("pool: signal owner={owner} absent");
                 return;
             }
@@ -1383,7 +1394,13 @@ impl PoolShared {
         }
     }
 
-    fn park(&self, resident: Resident) {
+    /// Park a resident workload.
+    ///
+    /// `polling` records whether the workload still had its own pending work
+    /// when it stopped; it is diagnostic only. A parked workload is woken by
+    /// `signal`, which the main thread drives when the readiness it
+    /// registered — timers included — completes.
+    fn park(&self, resident: Resident, polling: bool) {
         let Resident { mut item, active } = resident;
         let owner = item.owner;
         deactivate(item.live_mut(), active);
@@ -1392,7 +1409,10 @@ impl PoolShared {
             queue.active.remove(&owner);
             self.parked.lock().unwrap().insert(owner, item);
         }
-        pool_trace!("pool: park owner={owner}");
+        if matches!(std::env::var("FINO_WAKE_TRACE").as_deref(), Ok("1")) {
+            eprintln!("fino:wake park owner={owner} polling={polling}");
+        }
+        pool_trace!("pool: park owner={owner} polling={polling}");
         self.wake_all();
     }
 
@@ -1561,7 +1581,7 @@ enum Claim {
     Shutdown,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum CurrentState {
     Parked,
     Polling,
@@ -1625,7 +1645,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
                 kept = 0;
                 let previous = current_owner;
                 if let Some(resident) = current.take() {
-                    shared.park(resident);
+                    shared.park(resident, current_state == CurrentState::Polling);
                 }
                 let owner = item.owner;
                 let class = item.class;
@@ -1753,7 +1773,9 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>) {
         }
     }
     if let Some(resident) = current {
-        shared.park(resident);
+        // Shutdown path: re-queue a polling workload so a surviving reactor
+        // can still pick it up.
+        shared.park(resident, current_state == CurrentState::Polling);
     }
 }
 

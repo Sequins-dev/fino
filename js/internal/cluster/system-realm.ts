@@ -128,6 +128,11 @@ while (running) {
       workloads: takeReactorLoadSample(),
     },
   });
+  if (env.FINO_BALANCE_TRACE === '1') {
+    console.error(
+      `fino:balance trace peers=${JSON.stringify(peers)} pending=${reactorQueueDepth().pendingSpecs} balancing=${balancing}`,
+    );
+  }
   if (!balancing && peers.length > 0 && Date.now() - lastBalance >= balanceEveryMs()) {
     lastBalance = Date.now();
     balancing = true;
@@ -135,7 +140,14 @@ while (running) {
     // the guard keeps passes from overlapping.
     void balancer
       .balance(peers)
-      .catch(() => undefined)
+      .then((outcome) => {
+        if (env.FINO_BALANCE_TRACE === '1') {
+          console.error(`fino:balance outcome ${JSON.stringify(outcome)}`);
+        }
+      })
+      .catch((err: unknown) => {
+        if (env.FINO_BALANCE_TRACE === '1') console.error(`fino:balance threw ${err}`);
+      })
       .finally(() => {
         balancing = false;
       });

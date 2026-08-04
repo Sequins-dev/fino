@@ -285,18 +285,26 @@ describe('shed handoff messages', () => {
     const offer = decode(
       encode({
         t: 'SHED_OFFER',
+        toNode: 'node-b',
         spawnReqId: 'node-a-o-7',
         parentPortId: 'node-a/p-shed-42',
         config: { entry: 'main.ts', root: '/app', rules: [] },
       }),
     );
     if (offer.t !== 'SHED_OFFER') throw new Error('wrong kind');
+    t.equal(offer.toNode, 'node-b', 'the destination the seed relays by survives');
     t.equal(offer.spawnReqId, 'node-a-o-7', 'request id survives');
     t.equal(offer.parentPortId, 'node-a/p-shed-42', 'port id survives');
     t.equal(offer.config.entry, 'main.ts', 'config survives');
 
     const accept = decode(
-      encode({ t: 'SHED_RESULT', spawnReqId: 'node-a-o-7', childPortId: 'node-b/9', ok: true }),
+      encode({
+        t: 'SHED_RESULT',
+        toNode: 'node-a',
+        spawnReqId: 'node-a-o-7',
+        childPortId: 'node-b/9',
+        ok: true,
+      }),
     );
     if (accept.t !== 'SHED_RESULT') throw new Error('wrong kind');
     t.equal(accept.childPortId, 'node-b/9', 'accepted port survives');
@@ -304,6 +312,7 @@ describe('shed handoff messages', () => {
     const refuse = decode(
       encode({
         t: 'SHED_RESULT',
+        toNode: 'node-a',
         spawnReqId: 'node-a-o-7',
         childPortId: '',
         ok: false,
@@ -314,7 +323,14 @@ describe('shed handoff messages', () => {
     t.equal(refuse.error, 'overloaded', 'refusal reason survives');
 
     t.throws(
-      () => encode({ t: 'SHED_OFFER', spawnReqId: 'node-a/o-7', parentPortId: 'node-a/p-1', config: { entry: 'm', root: '', rules: [] } }),
+      () =>
+        encode({
+          t: 'SHED_OFFER',
+          toNode: 'node-b',
+          spawnReqId: 'node-a/o-7',
+          parentPortId: 'node-a/p-1',
+          config: { entry: 'm', root: '', rules: [] },
+        }),
       /malformed/,
       'slash-joined request ids are refused at encode — the bug this guards',
     );

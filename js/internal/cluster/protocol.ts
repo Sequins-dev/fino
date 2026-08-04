@@ -325,6 +325,12 @@ export type ClusterMessage =
        * the spec until it accepts.
        */
       t: 'SHED_OFFER';
+      /**
+       * The node being offered the workload. Peers reach each other directly
+       * when a mesh session exists; otherwise the seed relays, and it needs
+       * the destination named in the message to do so.
+       */
+      toNode: string;
       /** Correlates the reply; unique to the offering node. */
       spawnReqId: string;
       /** Port the source proxies for, so the destination addresses replies. */
@@ -397,6 +403,8 @@ export type ClusterMessage =
   | {
       /** A peer's answer to `SHED_OFFER`. */
       t: 'SHED_RESULT';
+      /** The node that made the offer, so the seed can relay the answer. */
+      toNode: string;
       spawnReqId: string;
       /** Port id of the accepted workload on the destination, else empty. */
       childPortId: string;
@@ -933,6 +941,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
     case 'SHED_OFFER':
       return {
         kind: MessageKind.SHED_OFFER,
+        nodeId: parseNodeId(msg.toNode),
         spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
         parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
         config: encodeSpawnConfig(msg.config),
@@ -961,6 +970,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
     case 'SHED_RESULT':
       return {
         kind: MessageKind.SHED_RESULT,
+        nodeId: parseNodeId(msg.toNode),
         spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
         childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
         ok: msg.ok,
@@ -1127,6 +1137,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
       if (value.config === undefined) throw protocolError('config is missing');
       return {
         t: 'SHED_OFFER',
+        toNode: parseNodeId(requiredWireString(value.nodeId, 'toNode')),
         spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
         parentPortId: parseClusterId(
           requiredWireString(value.parentPortId, 'parentPortId'),
@@ -1161,6 +1172,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
       if (value.ok === undefined) throw protocolError('ok must be a boolean');
       return {
         t: 'SHED_RESULT',
+        toNode: parseNodeId(requiredWireString(value.nodeId, 'toNode')),
         spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
         childPortId:
           shedChildPortId === '' ? '' : parseClusterId(shedChildPortId, 'childPortId'),
