@@ -11,6 +11,7 @@
  * Skipped when no Metal device is present.
  */
 import { describe, it } from 'fino:test/test';
+import { env } from 'fino:process';
 import {
   createMetalApi,
   metalAvailable,
@@ -31,6 +32,16 @@ import {
 
 /** Whether to run the GPU tests at all. */
 const available = metalAvailable();
+
+// The counterpart to `FINO_REQUIRE_VULKAN`, and for the same reason: every case below
+// skips when there is no device, so a machine that was meant to have one reports a pass
+// either way. Whether a hosted macOS runner exposes Metal at all is the open question
+// this is set to answer — if it does not, the job says so instead of going quietly green.
+if (!available && env.FINO_REQUIRE_METAL === '1') {
+  throw new Error(
+    `FINO_REQUIRE_METAL=1 but there is no Metal device: ${metalUnavailableReason() ?? 'unknown'}`,
+  );
+}
 
 describe('Objective-C runtime', () => {
   it('loads, or explains why not', (t) => {
