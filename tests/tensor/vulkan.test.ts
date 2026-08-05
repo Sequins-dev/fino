@@ -9,6 +9,7 @@
  * Skipped when no Vulkan loader or device is present.
  */
 import { describe, it } from 'fino:test/test';
+import { env } from 'fino:process';
 import {
   VulkanCompute,
   vulkanAvailable,
@@ -31,6 +32,15 @@ const available = vulkanAvailable() && vulkanComputeAvailable();
 /** Reason to report when skipping. */
 function reason(): string {
   return vulkanUnavailableReason() ?? 'no usable Vulkan compute device';
+}
+
+// Every case here skips when there is no device, which is right on a machine that has
+// none and useless where one was meant to be installed: a driver that failed to install
+// leaves the whole Vulkan suite passing vacuously, and that is precisely how three
+// SPIR-V defects reached the tree. Somewhere that means to test Vulkan sets this and
+// finds out instead.
+if (!available && env.FINO_REQUIRE_VULKAN === '1') {
+  throw new Error(`FINO_REQUIRE_VULKAN=1 but there is no Vulkan compute device: ${reason()}`);
 }
 
 describe('Vulkan loader', () => {

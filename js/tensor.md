@@ -532,6 +532,37 @@ measurement says the emulated path loses, and says nothing about the instruction
 hardware that has one. Real non-Apple hardware would settle it, and is the same thing
 missing everywhere else in this section.
 
+### Running against a second implementation
+
+The SPIR-V emitter is the part of this engine with the least margin for error and the
+fewest witnesses: on a developer's Mac it is only ever executed by MoltenVK. Three defects
+reached the tree that way, all of them things MoltenVK accepted and a stricter driver did
+not, and one of them `spirv-val` would have named outright.
+
+CI now installs `mesa-vulkan-drivers` on the Linux job, which brings up lavapipe — Mesa's
+software Vulkan implementation, which needs no hardware — and sets `FINO_REQUIRE_VULKAN=1`
+so a driver that fails to install fails the job instead of quietly skipping the suite it
+was there to run. That distinction matters more than it sounds: the job already ran these
+tests and skipped every one that needed a device, which looks exactly like passing.
+
+Locally, the same thing in a container:
+
+```sh
+container run -d --name fino-linux -c 5 -m 8g \
+  -v "$PWD:/src" -v /tmp/fino-linux/target:/work/target -v /tmp/fino-linux/cargo:/work/cargo \
+  -w /src docker.io/library/debian:trixie sleep infinity
+container exec fino-linux bash -c 'apt-get update && apt-get install -y \
+  clang cmake g++ libsqlite3-dev pkg-config python3 curl mesa-vulkan-drivers vulkan-tools spirv-tools'
+# install rustup, then:
+container exec fino-linux bash -c '. /root/.cargo/env && \
+  CARGO_TARGET_DIR=/work/target CARGO_HOME=/work/cargo cargo build && \
+  /work/target/debug/fino test "tests/tensor/*.test.ts"'
+```
+
+The benchmarks deliberately do **not** get a Vulkan driver in CI. Lavapipe runs on the
+CPU, and a rate measured there says nothing about a GPU — it would put numbers into the
+series that are not about this engine.
+
 ### A scalar standing in for a vector
 
 The IR lets a binary operation or a math call mix a vector with a scalar, following MSL,
