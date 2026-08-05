@@ -48,13 +48,11 @@ jobs:
       - name: Build release binary
         run: cargo build --release
 
-      - name: Upload Linux release build
-        uses: actions/upload-artifact@v4
+      - name: Save Linux release build
+        uses: actions/cache/save@v4
         with:
-          name: fino-linux-release
           path: target/release/fino
-          if-no-files-found: error
-          retention-days: 3
+          key: fino-linux-release-${{ github.run_id }}-${{ github.run_attempt }}
 
   linux-benchmarks:
     name: Linux Benchmarks (benchmarks/${{ matrix.path }})
@@ -87,11 +85,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsqlite3-0
 
-      - name: Download Linux release build
-        uses: actions/download-artifact@v4
+      - name: Restore Linux release build
+        uses: actions/cache/restore@v4
         with:
-          name: fino-linux-release
-          path: target/release
+          path: target/release/fino
+          key: fino-linux-release-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fino-linux-release-${{ github.run_id }}-
+          fail-on-cache-miss: true
 
       - name: Prepare binary
         run: chmod +x target/release/fino
