@@ -125,14 +125,8 @@ jobs:
           path: target/debug/fino
           key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
 
-  # Built and tested in one job because the macOS runners cannot read the
-  # Actions cache — a save succeeds, and the matching restore is refused with
-  # ECONNREFUSED on GetCacheEntryDownloadURL. Artifacts are not an option
-  # either, since their quota is org-wide and fails the upload outright. With
-  # no way to hand a binary to a second job, the second job has to go. Linux
-  # can still split, and does.
   macos-build:
-    name: macOS Build & Tests
+    name: macOS Build
     runs-on: blacksmith-6vcpu-macos-15
     steps:
       - name: Check out repository
@@ -145,7 +139,7 @@ jobs:
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
-        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 snappy sqlite
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
 
       - name: Build
         run: cargo build
@@ -153,8 +147,11 @@ jobs:
       - name: Run Rust tests
         run: cargo test --quiet
 
-      - name: Run full test suite
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
+      - name: Save macOS build
+        uses: actions/cache/save@v4
+        with:
+          path: target/debug/fino
+          key: fino-macos-debug-${{ github.run_id }}-${{ github.run_attempt }}
 
   linux-tests:
     name: Linux Tests
@@ -212,3 +209,28 @@ jobs:
 
       - name: Verify public builtin benchmark inventory
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts
+
+  macos-tests:
+    name: macOS Tests
+    runs-on: blacksmith-6vcpu-macos-15
+    needs: macos-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install native dependencies
+        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 snappy sqlite
+
+      - name: Restore macOS build
+        uses: actions/cache/restore@v4
+        with:
+          path: target/debug/fino
+          key: fino-macos-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fino-macos-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
+
+      - name: Prepare binary
+        run: chmod +x target/debug/fino
+
+      - name: Run full test suite
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
