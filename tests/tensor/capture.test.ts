@@ -12,7 +12,7 @@
 import { describe, it } from 'fino:test/test';
 import { backendFor, listDevices } from 'fino:tensor/backend';
 import type { DeviceBackend } from 'fino:tensor/backend';
-import { tensor } from 'fino:tensor';
+import { poolStats, tensor } from 'fino:tensor';
 import type { Tensor } from 'fino:tensor';
 import type { TensorDesc } from 'fino:tensor/backend';
 
@@ -124,5 +124,104 @@ describe('capture plane', () => {
     backend.captureEnd!();
     a.dispose();
     out.dispose();
+  });
+
+  it('does not hand a recording\'s intermediate to the next allocation', async (t) => {
+    const backends = await capturing();
+    if (backends.length === 0) {
+      t.ok(true, 'SKIP: no backend here records');
+      return;
+    }
+    for (const backend of backends) {
+      const device = backend.device;
+      const a = await tensor([1, 2, 3, 4], { device });
+      const b = await tensor([10, 20, 30, 40], { device });
+      const out = await tensor([0, 0, 0, 0], { device });
+      const mid = await tensor([0, 0, 0, 0], { device });
+
+      const work = () => {
+        backend.elementwise('add', [desc(a), desc(b)], desc(mid), null);
+        backend.elementwise('mul', [desc(mid), desc(a)], desc(out), null);
+      };
+      // Warms both kernels and drains the queue: capture refuses to record a launch it
+      // would have to defer, and refuses to begin while anything is still in flight.
+      work();
+      await out.data();
+
+      backend.captureBegin!();
+      work();
+      // The intermediate's last handle goes here, inside the recording.
+      mid.dispose();
+      const executable = backend.captureEnd!();
+
+      // The hazard runs this way round. Replaying *writes* the intermediate before
+      // reading it, so a reused buffer would not corrupt the replay — it would corrupt
+      // whoever was given that buffer afterwards, silently, on a step they had nothing
+      // to do with. These stand in for that unlucky allocation.
+      const squatters: Tensor[] = [];
+      for (let i = 0; i < 8; i++) {
+        squatters.push(await tensor([-99, -99, -99, -99], { device }));
+      }
+
+      backend.replay!(executable);
+      t.deepEqual(
+        [...(await out.data())].map(Number),
+        [11, 44, 99, 176],
+        `${device.type} replays correctly`,
+      );
+      let clobbered = 0;
+      for (const squatter of squatters) {
+        const values = [...(await squatter.data())].map(Number);
+        if (values.some((v) => v !== -99)) clobbered++;
+      }
+      t.equal(clobbered, 0, `${device.type} left every later allocation untouched`);
+
+      for (const squatter of squatters) squatter.dispose();
+      backend.destroyExecutable?.(executable);
+      a.dispose();
+      b.dispose();
+      out.dispose();
+    }
+  });
+
+  it("gives a recording's buffers back once it is destroyed", async (t) => {
+    const backends = await capturing();
+    if (backends.length === 0) {
+      t.ok(true, 'SKIP: no backend here records');
+      return;
+    }
+    for (const backend of backends) {
+      const device = backend.device;
+      const a = await tensor([1, 2, 3, 4], { device });
+      const out = await tensor([0, 0, 0, 0], { device });
+      const mid = await tensor([0, 0, 0, 0], { device });
+      const work = () => {
+        backend.elementwise('add', [desc(a), desc(a)], desc(mid), null);
+        backend.elementwise('mul', [desc(mid), desc(a)], desc(out), null);
+      };
+      work();
+      await out.data();
+
+      const before = poolStats(device).liveBuffers;
+      backend.captureBegin!();
+      work();
+      mid.dispose();
+      const executable = backend.captureEnd!();
+
+      t.equal(
+        poolStats(device).liveBuffers,
+        before,
+        `${device.type} still counts the pinned intermediate as handed out`,
+      );
+      backend.destroyExecutable?.(executable);
+      t.equal(
+        poolStats(device).liveBuffers,
+        before - 1,
+        `${device.type} returns it when the recording is destroyed`,
+      );
+
+      a.dispose();
+      out.dispose();
+    }
   });
 });

@@ -808,10 +808,21 @@ deferred to a microtask and would land outside the recording, producing a step m
 some of its work that replays as silently wrong numbers; capturing such a launch throws
 instead, and running the step once beforehand is what makes it recordable.
 
-The plane is `captureBegin` / `captureEnd` / `replay` on `fino:tensor/backend`. It is not
-yet wired to a training-loop helper: the piece that would let `optimizer.step()` replay a
-captured step needs every intermediate the step touches to be pinned for the executable's
-lifetime, which the pool does not yet promise.
+The plane is `captureBegin` / `captureEnd` / `replay` / `destroyExecutable` on
+`fino:tensor/backend`.
+
+A step's intermediates are pinned for as long as the recording naming them exists. The
+pool holds anything released between `captureBegin` and `captureEnd` instead of returning
+it to the free list, and gives it back when the recording is destroyed. The hazard runs
+the opposite way from the obvious one: a replay *writes* an intermediate before reading
+it, so a reused buffer would not corrupt the replay — it would corrupt whoever was handed
+that buffer afterwards, silently, on a step they had nothing to do with. Without the
+pinning, `tests/tensor/capture.test.ts` catches exactly that, one allocation's contents
+destroyed by a replay it never asked for.
+
+The remaining piece is the training-loop helper itself — `markStep()` and
+`lastStepHash()` already produce the key a loop would replay against, and nothing yet
+consumes them.
 
 ## Diagnostics
 

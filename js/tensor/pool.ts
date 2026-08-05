@@ -76,6 +76,13 @@ export class BufferPool {
   #misses = 0;
   #leaked = 0;
 
+  /**
+   * Buffers released while a capture is recording, or null when none is.
+   *
+   * @internal
+   */
+  #pinned: PooledBuffer[] | null = null;
+
   constructor(backend: DeviceBackend) {
     this.#backend = backend;
   }
@@ -107,8 +114,40 @@ export class BufferPool {
     return { buffer, bytes: size, requested: bytes, stream };
   }
 
+  /**
+   * Hold released buffers rather than reusing them, until {@link endPinning}.
+   *
+   * A recording holds buffer *addresses*, so a buffer released while one is open cannot
+   * go back on the free list: the next taker would be given memory the replay writes
+   * over, and would find its own contents destroyed the next time the step ran. Pinning
+   * keeps such a buffer out of circulation for as long as the recording naming it exists.
+   */
+  beginPinning(): void {
+    if (this.#pinned) throw new Error('this pool is already pinning for a capture');
+    this.#pinned = [];
+  }
+
+  /** Stop pinning, returning what was held for the recording to own. */
+  endPinning(): PooledBuffer[] {
+    const held = this.#pinned;
+    if (!held) throw new Error('this pool is not pinning');
+    this.#pinned = null;
+    return held;
+  }
+
+  /** Return buffers a recording was holding, once it is gone. */
+  releasePinned(held: readonly PooledBuffer[]): void {
+    for (const pooled of held) this.give(pooled);
+  }
+
   /** Return a buffer for reuse. */
   give(pooled: PooledBuffer): void {
+    if (this.#pinned) {
+      // Still handed out as far as the counters go: a replay writes through it, so it
+      // has been released by its last JS handle and by nothing else.
+      this.#pinned.push(pooled);
+      return;
+    }
     this.#inUse -= pooled.bytes;
     this.#live--;
     if (pooled.bytes > LARGE_THRESHOLD) {

@@ -81,6 +81,8 @@ import {
 import { chainKey, chainScalars } from '../fusion.ts';
 import { contiguousStrides } from '../shape.ts';
 import { KernelCache } from '../kernel-cache.ts';
+import { poolFor } from '../pool.ts';
+import type { PooledBuffer } from '../pool.ts';
 import type { DriverBuffer, DriverExecutable, DriverKernel, GpuDriver } from './driver.ts';
 
 /** Element types a GPU handles. `f64` and `i64` are CPU-only by design. */
@@ -559,6 +561,13 @@ export class GpuBackend implements DeviceBackend {
   /** @internal */
   #nextExecutable = 1;
 
+  /**
+   * Buffers each recording refers to, released when that recording is.
+   *
+   * @internal
+   */
+  #pinnedByExecutable = new Map<number, readonly PooledBuffer[]>();
+
   // -- capture plane (caps.captureReplay) -------------------------------
 
   captureBegin(): void {
@@ -572,6 +581,10 @@ export class GpuBackend implements DeviceBackend {
       );
     }
     this.#capturing = true;
+    // Everything released between here and `captureEnd` is held rather than reused. The
+    // recording refers to buffers by address, so handing one back out would let the next
+    // taker write into memory the replay still reads.
+    poolFor(this).beginPinning();
     this.#driver.captureBegin();
   }
 
@@ -580,6 +593,8 @@ export class GpuBackend implements DeviceBackend {
     this.#capturing = false;
     const id = this.#nextExecutable++;
     this.#executables.set(id, this.#driver.captureEnd!());
+    // The executable owns them now, and gives them back when it is destroyed.
+    this.#pinnedByExecutable.set(id, poolFor(this).endPinning());
     return { id };
   }
 
@@ -596,6 +611,11 @@ export class GpuBackend implements DeviceBackend {
     if (recorded === undefined) return;
     this.#executables.delete(executable.id);
     this.#driver.destroyExecutable?.(recorded);
+    const held = this.#pinnedByExecutable.get(executable.id);
+    if (held) {
+      this.#pinnedByExecutable.delete(executable.id);
+      poolFor(this).releasePinned(held);
+    }
   }
 
   /**
