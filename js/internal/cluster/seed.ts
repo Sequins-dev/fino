@@ -1080,6 +1080,15 @@ export class SeedServer {
         break;
       }
       default:
+        // Loud on purpose. Twice now a message kind has reached this arm and
+        // been dropped in silence: SHED_OFFER, which hung the balancer mid-pass
+        // forever waiting on a reply that could not come, and one before it.
+        // Both cost far more to find than this line costs to print. The seed
+        // legitimately never receives its own downstream kinds, so anything
+        // landing here is a routing mistake, not traffic.
+        console.error(
+          `fino:cluster seed has no handler for ${msg.t} from ${from} — message dropped`,
+        );
         break;
     }
   }

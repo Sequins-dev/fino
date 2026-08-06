@@ -958,6 +958,13 @@ export class ClusterClient {
         break;
       }
       default:
+        // The seed-directed kinds (HELLO, HEARTBEAT, DEPLOY, CASK_PUT, …) never
+        // travel this way. One arriving here means it was routed to the wrong
+        // node, and dropping it silently is how a hung balancer looked like a
+        // deadlock rather than a missing case.
+        console.error(
+          `fino:cluster client has no handler for ${msg.t} from ${from} — message dropped`,
+        );
         break;
     }
   }
