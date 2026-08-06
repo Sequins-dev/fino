@@ -244,6 +244,58 @@ export function gatherKernel(spec: { dtype: ScalarDType; wg?: number }): {
   return { ir: b.build(), key: specKey('gather', { dtype: spec.dtype, wg }) };
 }
 
+/**
+ * Accumulate one element per source position along an axis.
+ *
+ * The gather kernel run backwards: it reads the index at the *source* position and adds
+ * there, rather than reading it at the output position and taking from there. Repeated
+ * indices land on the same destination, so the add is atomic.
+ */
+export function scatterAddAtKernel(spec: { dtype: ScalarDType; wg?: number }): {
+  ir: KernelIR;
+  key: string;
+} {
+  const wg = spec.wg ?? 256;
+  const b = new KernelBuilder(`scatteraddat_${spec.dtype}`, [wg, 1, 1]);
+  b.buffer('idx', vt('i32'), 'read');
+  b.buffer('src', vt(spec.dtype), 'read');
+  b.buffer('out0', vt(spec.dtype), 'readwrite');
+  b.buffer('status', vt('u32'), 'readwrite');
+  const n = b.param('n');
+  const inner = b.param('inner');
+  const axisSize = b.param('axisSize');
+  const srcAxis = b.param('srcAxis');
+
+  b.gridStride(n, (i) => {
+    const span = b.letTemp(vt('u32'), E.mul(srcAxis, inner), 'span');
+    const outer = b.letTemp(vt('u32'), E.div(i, span), 'o');
+    const rest = b.letTemp(vt('u32'), E.mod(i, span), 'rest');
+    const offset = b.letTemp(vt('u32'), E.mod(rest, inner), 'off');
+    const raw = b.letTemp(vt('i32'), E.load('idx', i), 'r');
+    const wrapped = b.letTemp(
+      vt('u32'),
+      E.select(
+        E.lt(raw, E.i32(0)),
+        E.cast(vt('u32'), E.add(raw, E.cast(vt('i32'), axisSize))),
+        E.cast(vt('u32'), raw),
+      ),
+      'ix',
+    );
+    b.if(
+      E.lt(wrapped, axisSize),
+      () => {
+        const dst = E.add(E.mul(E.add(E.mul(outer, axisSize), wrapped), inner), offset);
+        b.atomicAdd('out0', dst, E.load('src', i));
+      },
+      () => {
+        b.store('status', E.u32(0), E.add(wrapped, E.u32(1)));
+      },
+    );
+  });
+
+  return { ir: b.build(), key: specKey('scatteraddat', { dtype: spec.dtype, wg }) };
+}
+
 export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
   ir: KernelIR;
   key: string;

@@ -18,6 +18,7 @@ import {
   rand,
   randint,
   randn,
+  scatterAddAt,
   tensor,
   tidy,
   zerosLike,
@@ -276,6 +277,25 @@ export function conformanceCases(): ConformanceCase[] {
       // straight to indices would only ever choose columns zero and one and the case
       // would pass on a kernel that ignored most of the axis.
       run: (table, ids) => table.gather(ids.mul(3).abs().cast('i32'), 1).mul(2),
+    },
+    {
+      name: 'scattering one element per position',
+      group: 'forward',
+      covers: ['scatterAddAt'],
+      // Indices repeat deliberately: a destination chosen twice must accumulate, which
+      // is why a device needs an atomic here rather than a plain store.
+      inputs: [{ shape: [5, 4] }, { shape: [5, 4], seed: 8 }, { shape: [5, 4], seed: 9 }],
+      run: (dest, ids, src) => scatterAddAt(dest, ids.mul(3).abs().cast('i32'), src, 1),
+    },
+    {
+      name: 'scattering one element per position back',
+      group: 'gradient',
+      covers: ['gather', 'scatterAddAt'],
+      // The adjoint of a gather, exercised as a gradient because that is what it is
+      // for. The indices repeat deliberately: a position chosen twice must accumulate,
+      // which is the whole reason this needs an atomic on a device.
+      inputs: [{ shape: [5, 4] }, { shape: [5, 4], seed: 7 }],
+      run: (x, ids) => x.gather(ids.mul(3).abs().cast('i32'), 1).mul(2).sum(),
     },
 
     {

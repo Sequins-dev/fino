@@ -341,6 +341,15 @@ export class RefBackend implements DeviceBackend {
     this.#run('gather', [x, indices], out, { axis });
   }
 
+  scatterAddAt(
+    out: TensorDesc,
+    indices: TensorDesc,
+    src: TensorDesc,
+    axis: number,
+  ): void {
+    this.#run('scatterAddAt', [indices, src], out, { axis });
+  }
+
   scatterAdd(
     out: TensorDesc,
     indices: TensorDesc,

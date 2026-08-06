@@ -339,6 +339,7 @@ export {
   reshape,
   rsqrt,
   scatterAdd,
+  scatterAddAt,
   sigmoid,
   sign,
   sin,

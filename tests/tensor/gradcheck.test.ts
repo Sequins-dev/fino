@@ -7,7 +7,7 @@
  * f32 the quotient's cancellation error exceeds the gradient it is measuring.
  */
 import { describe, it } from 'fino:test/test';
-import { device, tensor } from 'fino:tensor';
+import { device, scatterAddAt, tensor } from 'fino:tensor';
 import type { Tensor } from 'fino:tensor';
 import { describeGradCheck, gradCheck, sampleValues } from 'internal:tensor/harness';
 import { differentiableOps } from 'internal:tensor/ops/registry';
@@ -217,6 +217,42 @@ describe('gradcheck: matmul and movement', () => {
     // Index 2 appears twice, so its gradient must accumulate rather than overwrite.
     await check(t, 'indexSelect', (x) => x.indexSelect(idx, 0).sum(), [table]);
   });
+  it('checks gather', async (t) => {
+    const table = await input([3, 4], 151);
+    const cpu = await device('cpu');
+    // Position [0,0] and [0,2] both take column 1, so that element's gradient has to
+    // accumulate — which is the whole reason the adjoint needs an atomic on a device.
+    const idx = await tensor([1, 3, 1, 0, 2, 2, 0, 3, 1, 1, 3, 0], {
+      shape: [3, 4],
+      dtype: 'i32',
+      device: cpu,
+    });
+    await check(t, 'gather', (x) => x.gather(idx, 1).sum(), [table]);
+  });
+  it('checks scatterAddAt', async (t) => {
+    const source = await input([3, 4], 157);
+    const cpu = await device('cpu');
+    // f64, like every other input here: the destination's dtype decides the operation's,
+    // and a single-precision one makes the central difference disagree with the analytic
+    // gradient by more than the check's tolerance.
+    const dest = await tensor(new Array(12).fill(0), {
+      shape: [3, 4],
+      dtype: 'f64',
+      device: cpu,
+      requiresGrad: true,
+    });
+    const idx = await tensor([0, 0, 3, 1, 2, 2, 2, 0, 1, 1, 3, 3], {
+      shape: [3, 4],
+      dtype: 'i32',
+      device: cpu,
+    });
+    await check(
+      t,
+      'scatterAddAt',
+      (src) => scatterAddAt(dest, idx, src, 1).mul(2).sum(),
+      [source],
+    );
+  });
 });
 
 describe('gradcheck: composed expressions', () => {
@@ -377,6 +413,8 @@ describe('gradcheck coverage', () => {
       'expand',
       'indexSelect',
       'scatterAdd',
+      'scatterAddAt',
+      'gather',
       'slice',
     ]);
     const uncovered = differentiableOps()

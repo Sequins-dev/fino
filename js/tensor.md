@@ -503,10 +503,10 @@ independently — picking the score of the correct class out of a batch of logit
 accept negative indices, and an out-of-range index on either raises at the next
 synchronisation point rather than reading whatever was there.
 
-`gather` is not differentiable yet. Its adjoint accumulates at the same positions, and
-`scatterAdd` here accumulates whole slices at a list of positions — the adjoint of
-`indexSelect`, not of `gather` — so the gradient is waiting on a kernel rather than on a
-rule.
+Each has its own adjoint, and they are not each other's. `scatterAdd` is the adjoint of
+`indexSelect`; `scatterAddAt` — one element accumulated per source position — is the
+adjoint of `gather`. Both are differentiable, and both accumulate where an index repeats,
+which is why a device needs an atomic add for them rather than a store.
 
 ### An extension being offered is not a reason to use it
 

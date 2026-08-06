@@ -178,6 +178,7 @@ export type OpKind =
   | 'logSoftmax'
   | 'layerNorm'
   | 'gather'
+  | 'scatterAddAt'
   | 'scatterAdd'
   | 'indexSelect'
   | 'oneHot'
@@ -349,6 +350,22 @@ export interface DeviceBackend {
     stream: Stream,
   ): void;
   /** Scatter-add into `out` along an axis. */
+  /**
+   * Accumulate one element per source position along an axis.
+   *
+   * The element-wise counterpart to {@link scatterAdd}, and the adjoint of
+   * {@link gather}: `indices` has `src`'s shape and every position chooses its own
+   * destination, where `scatterAdd` takes a list of positions and moves whole slices.
+   * Repeated indices accumulate, so this is atomic on a device.
+   */
+  scatterAddAt(
+    out: TensorDesc,
+    indices: TensorDesc,
+    src: TensorDesc,
+    axis: number,
+    stream: Stream,
+  ): void;
+
   scatterAdd(
     out: TensorDesc,
     indices: TensorDesc,

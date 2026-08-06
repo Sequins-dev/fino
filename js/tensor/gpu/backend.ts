@@ -62,6 +62,7 @@ import {
   randomKernel,
   reduceKernel,
   rowGrid,
+  scatterAddAtKernel,
   scatterAddKernel,
   softmaxKernel,
   stridedCopyKernel,
@@ -1077,6 +1078,27 @@ export class GpuBackend implements DeviceBackend {
         count: numel(indices.shape),
         inner: trailingExtent(out.shape, axis),
         axisSize: out.shape[axis]!,
+      },
+      linearGrid(elements),
+    );
+  }
+
+  scatterAddAt(
+    out: TensorDesc,
+    indices: TensorDesc,
+    src: TensorDesc,
+    axis: number,
+  ): void {
+    const elements = numel(src.shape);
+    if (elements === 0) return;
+    this.#run(
+      () => scatterAddAtKernel({ dtype: this.#scalar(out) }),
+      [indices.buffer, src.buffer, out.buffer, this.#statusBuffer() as unknown as DeviceBuffer],
+      {
+        n: elements,
+        inner: trailingExtent(out.shape, axis),
+        axisSize: out.shape[axis]!,
+        srcAxis: src.shape[axis]!,
       },
       linearGrid(elements),
     );

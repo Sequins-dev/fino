@@ -119,6 +119,7 @@ export {
   optimizerKernel,
   randomKernel,
   gatherKernel,
+  scatterAddAtKernel,
   scatterAddKernel,
   stridedCopyKernel,
 } from './templates/structural.ts';

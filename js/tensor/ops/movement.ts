@@ -349,6 +349,17 @@ MOVE.gather = registerOp({
   },
   enqueue: (backend, inputs, out, attrs, stream) =>
     backend.gather(inputs[0]!, inputs[1]!, out, attrs!.axis as number, stream),
+  vjp: {
+    saves: (inputs) => [inputs[1]!],
+    backward: (cot, [indices], attrs, needs) => {
+      if (!needs[0]) return [null, null];
+      // Each output took one element, so each cotangent goes back to exactly where it
+      // came from — and positions chosen more than once accumulate.
+      const shape = attrs!.inputShape as readonly number[];
+      const zeros = zerosOf(shape, cot.dtype, cot.device);
+      return [scatterAddAt(zeros, indices!, cot, attrs!.axis as number), null];
+    },
+  },
   refImpl: (inputs, out, attrs) => {
     const x = inputs[0]!;
     const indices = inputs[1]!;
@@ -370,6 +381,55 @@ MOVE.gather = registerOp({
         flat += (d === axis ? index : coords[d]!) * inStrides[d]!;
       }
       out.set(i, x.get(flat));
+    }
+  },
+});
+
+/**
+ * Accumulate one element per source position along an axis; the adjoint of a gather.
+ *
+ * The element-wise sibling of {@link scatterAdd}, which takes a list of positions and
+ * moves whole slices. Here the index tensor has the *source's* shape and every position
+ * chooses its own destination independently, so repeated indices accumulate.
+ */
+MOVE.scatterAddAt = registerOp({
+  name: 'scatterAddAt',
+  group: 'indexing',
+  arity: 3,
+  dtypeRule: (inputs) => inputs[0]!.dtype,
+  shapeRule: (inputs) => inputs[0]!.shape,
+  enqueue: (backend, inputs, out, attrs, stream) => {
+    // The destination is copied in first, then accumulated into, as `scatterAdd` does.
+    backend.copyStrided(inputs[0]!, out, stream);
+    backend.scatterAddAt(out, inputs[1]!, inputs[2]!, attrs!.axis as number, stream);
+  },
+  vjp: {
+    saves: (inputs) => [inputs[1]!],
+    backward: (cot, [indices], attrs, needs) => [
+      needs[0] ? cot : null,
+      null,
+      // What was added at those positions is what flows back from them.
+      needs[2] ? gather(cot, indices!, attrs!.axis as number) : null,
+    ],
+  },
+  refImpl: (inputs, out, attrs) => {
+    const indices = inputs[0]!;
+    const src = inputs[1]!;
+    const axis = attrs!.axis as number;
+    const outStrides = contiguousStrides(out.shape);
+    const axisSize = out.shape[axis]!;
+    for (let i = 0; i < src.size; i++) {
+      const coords = unravel(i, src.shape);
+      const raw = indices.get(i);
+      const index = raw < 0 ? raw + axisSize : raw;
+      if (index < 0 || index >= axisSize) {
+        throw new Error(`index ${raw} is out of range for axis ${axis} of size ${axisSize}`);
+      }
+      let flat = 0;
+      for (let d = 0; d < coords.length; d++) {
+        flat += (d === axis ? index : coords[d]!) * outStrides[d]!;
+      }
+      out.set(flat, out.get(flat) + src.get(i));
     }
   },
 });
@@ -526,6 +586,17 @@ export function gather(t: Tensor, indices: Tensor, axis = 0): Tensor {
     axis: resolved,
     inputShape: t.shape,
   });
+}
+
+/** Accumulate one element of `src` per position, at `indices`, along an axis. */
+export function scatterAddAt(
+  dest: Tensor,
+  indices: Tensor,
+  src: Tensor,
+  axis = 0,
+): Tensor {
+  const resolved = normalizeAxis(axis, dest.rank);
+  return dispatch(MOVE.scatterAddAt!, [dest, indices, src], { axis: resolved });
 }
 
 /** Accumulate `src` into `dest` at `indices` along an axis. */
