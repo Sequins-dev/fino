@@ -1226,14 +1226,28 @@ export class SeedServer {
     // pending queue is oversubscribed for new work regardless of current CPU.
     let best: string | null = null;
     let bestScore = Infinity;
+    const trace: string[] = [];
     for (const [nId, peer] of this.#peers) {
       if (excluded.has(nId)) continue;
       if (peer.load.draining === true) continue;
       const score = peer.load.cpu + (peer.load.pendingSpecs ?? 0);
+      if (env.FINO_CLUSTER_TRACE === '1') {
+        trace.push(`${nId}=${score.toFixed(2)}(pending=${peer.load.pendingSpecs ?? 0})`);
+      }
       if (score < bestScore) {
         best = nId;
         bestScore = score;
       }
+    }
+    if (env.FINO_CLUSTER_TRACE === '1') {
+      // Why a deployment landed where it did. "Placement never spreads" and
+      // "the only candidate was the loaded node" look identical from outside,
+      // and the difference decides whether to reach for the balancer or for
+      // membership.
+      console.error(
+        `fino:cluster placement candidates=[${trace.join(' ') || 'none'}] chose=${best ?? 'none'} ` +
+          `(of ${this.#peers.size} known peers)`,
+      );
     }
     return best;
   }

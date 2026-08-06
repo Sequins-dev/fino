@@ -213,6 +213,10 @@ export function startBalanceLoop(client: BalanceClient, options: BalanceLoopOpti
     {
       highWatermark: envCount('FINO_CLUSTER_SHED_WATERMARK', 2),
       minDelta: envCount('FINO_CLUSTER_SHED_MIN_DELTA', 2),
+      // How many specs one pass may move. The third of the three knobs that
+      // decide balancing behaviour, and the only one that was not tunable —
+      // which made it the only one that could not be measured.
+      batch: envCount('FINO_CLUSTER_SHED_BATCH', 2),
       ...(options.samplePeers === undefined ? {} : { samplePeers: options.samplePeers }),
     },
   );
