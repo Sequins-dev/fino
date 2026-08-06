@@ -1515,9 +1515,17 @@ fn settle_dynamic_import<'s, 'tc>(
         let exc = if tc.has_caught() {
             tc.exception().unwrap_or_else(|| v8::undefined(tc).into())
         } else {
-            v8::String::new(tc, "dynamic import failed")
-                .map(|s| -> v8::Local<v8::Value> { s.into() })
-                .unwrap_or_else(|| v8::undefined(tc).into())
+            // A resolver returned nothing and threw nothing. That is a bug in
+            // the resolver rather than in the importing code, so reject with a
+            // real Error — a bare string arrives at the catch clause with no
+            // message and no stack, which is indistinguishable from nothing
+            // having happened at all.
+            v8::String::new(
+                tc,
+                "dynamic import failed: module resolver returned no module",
+            )
+            .map(|s| v8::Exception::error(tc, s))
+            .unwrap_or_else(|| v8::undefined(tc).into())
         };
         resolver.reject(tc, exc);
     }
@@ -1670,7 +1678,27 @@ fn get_or_load_builtin_inner<'s>(
     }
 
     // 3. Fall back to the static BUILTINS registry.
-    let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
+    //
+    // A miss must throw. V8's module-resolve contract is that an empty result
+    // carries a pending exception; returning None without one makes
+    // instantiation fail silently — the import promise never settles, and the
+    // process exits 0 having run nothing at all. That is how a whole test file
+    // could vanish from a suite (and take the rest of the run with it) because
+    // of one unregistered specifier.
+    let Some(entry) = BUILTINS.iter().find(|(s, _)| *s == spec) else {
+        let msg = v8::String::new(
+            scope,
+            &match from {
+                Some(referrer) => {
+                    format!("Cannot resolve builtin module '{spec}' imported from '{referrer}'")
+                }
+                None => format!("Cannot resolve builtin module '{spec}'"),
+            },
+        )?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    };
     let (spec_key, kind) = entry;
 
     let module = match kind {

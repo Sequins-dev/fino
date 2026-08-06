@@ -329,7 +329,7 @@ describe('fino:workflow', () => {
     t.equal('workflow' in mod, true);
     await t.rejects(
       () => import('fino:ai/workflow'),
-      /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
   });
 });

@@ -72,7 +72,7 @@ describe('AI public surface', () => {
   it('legacy harness specifier is not available', async (t) => {
     await t.rejects(
       () => import('fino:ai/harness'),
-      /dynamic import failed|Cannot find module|Unable to resolve|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
   });
   it('Agent constructor and factory both default to append-only history', async (t) => {

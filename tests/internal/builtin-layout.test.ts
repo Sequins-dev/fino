@@ -53,7 +53,7 @@ describe('builtin module layout', () => {
   it('exposes sessions only through the HTTP app surface', async (t) => {
     await t.rejects(
       () => import('fino:security/session'),
-      /dynamic import failed|Cannot find module|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
     const app = await import('fino:net/http/app');
     t.equal(typeof app.sessions, 'function');
@@ -62,19 +62,19 @@ describe('builtin module layout', () => {
   it('keeps HTTP protocol drivers out of the public builtin API', async (t) => {
     await t.rejects(
       () => import('fino:net/http/h1'),
-      /dynamic import failed|Cannot find module|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
     await t.rejects(
       () => import('fino:net/http/h2'),
-      /dynamic import failed|Cannot find module|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
     await t.rejects(
       () => import('fino:net/http/h3'),
-      /dynamic import failed|Cannot find module|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
     await t.rejects(
       () => import('fino:net/http/driver'),
-      /dynamic import failed|Cannot find module|not found|unknown/i,
+      /Cannot resolve builtin module/,
     );
   });
   it('keeps HTTP globals and private protocol internals out of the public HTTP barrel', async (t) => {
