@@ -134,6 +134,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:realm/transport-port",
         "internal/realm/transport-port"
     ),
+    source_builtin!(
+        "internal:realm/workload-spawn",
+        "internal/realm/workload-spawn"
+    ),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),

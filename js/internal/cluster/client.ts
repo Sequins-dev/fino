@@ -90,6 +90,30 @@ import {
   unpackCask,
   type UnpackedCask,
 } from './cask.ts';
+/**
+ * Resolve a cask-relative entry path, refusing anything that escapes the cask.
+ *
+ * A workload names its children's entries, and a workload is untrusted code.
+ * Absolute paths and `..` segments are rejected outright rather than
+ * normalised: a containment check on a normalised path is easy to write
+ * subtly wrong, and no legitimate entry inside a cask needs either.
+ */
+export function caskRelativeEntry(caskDir: string, entry: string): string {
+  if (entry.startsWith('/')) {
+    throw new Error(`spawn entry must be relative to the cask, got absolute "${entry}"`);
+  }
+  const segments = entry.split('/');
+  if (segments.some((segment) => segment === '..')) {
+    throw new Error(`spawn entry must not escape the cask, got "${entry}"`);
+  }
+  return `${caskDir}/${entry}`;
+}
+
+/** Per-workload cap on spawned children; a runaway must not take the node. */
+function workloadSpawnQuota(): number {
+  const configured = Number(env.FINO_WORKLOAD_SPAWN_QUOTA);
+  return Number.isFinite(configured) && configured > 0 ? configured : 64;
+}
 const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
   const configured = Number(env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS);
@@ -121,6 +145,16 @@ interface RealmRelay {
    */
   lastRelayedSeq: number;
   lastCallError?: string;
+  /** Children this workload has spawned, for the per-workload quota. */
+  spawnedChildren: number;
+  /**
+   * The import rules this workload itself was granted.
+   *
+   * A child inherits them verbatim. Taking rules from the spawn request would
+   * let a workload grant its children capabilities it was denied, which is the
+   * narrowing rule the realm layer already enforces locally.
+   */
+  spawnRules: unknown[];
 }
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
 type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
@@ -697,7 +731,71 @@ export class ClusterClient {
    * await client.spawnRemote('n/p-parent', { entry: 'main.ts', root: '.', rules: [] });
    * ```
    */
-  spawnRemote(parentPortId: string, config: SerializedSpawnConfig): Promise<string> {
+  /**
+   * Spawn a realm on behalf of a workload running on this node.
+   *
+   * The capability is deliberately mediated rather than handed over. A
+   * workload has no cluster client of its own — module state is per isolate —
+   * and giving it one would also give it the node's identity. Instead it asks
+   * its host, and the host supplies the three things the workload must not
+   * choose for itself:
+   *
+   * - **Parentage.** The child is spawned with the workload's own port as its
+   *   parent, so it lands under the workload in the ownership tree and dies
+   *   with it. This is what makes the tree structured rather than flat.
+   * - **The cask.** The parent's artifact hash is propagated and the entry is
+   *   resolved against that cask on the target, so a workload cannot name a
+   *   path outside the code it was deployed as.
+   * - **A quota.** Unbounded self-spawning is a denial of service against
+   *   whichever node the workload happens to sit on.
+   *
+   * Import rules come from the parent's own spawn config, never from the
+   * request: a child cannot be granted what its parent was denied.
+   */
+  async #handleWorkloadSpawn(relay: RealmRelay, request: Record<string, unknown>): Promise<void> {
+    const id = request.id;
+    const reply = (result: Record<string, unknown>): void => {
+      if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __cluster_spawn_ack: { id, ...result } });
+    };
+    try {
+      const entry = request.entry;
+      if (typeof entry !== 'string' || entry === '') {
+        throw new Error('spawn requires an entry path relative to the cask');
+      }
+      if (relay.caskHash === undefined) {
+        // Without a cask there is no root to constrain the entry against, so
+        // there is no safe way to honour the request.
+        throw new Error('only workloads deployed from a cask may spawn realms');
+      }
+      const quota = workloadSpawnQuota();
+      if (relay.spawnedChildren >= quota) {
+        throw new Error(`workload spawn quota of ${quota} reached`);
+      }
+      relay.spawnedChildren++;
+      const childPortId = await this.spawnRemote(
+        relay.childPortId,
+        {
+          entry,
+          root: '',
+          rules: relay.spawnRules,
+          ...(request.bootstrapData === undefined
+            ? {}
+            : { bootstrapData: request.bootstrapData }),
+        },
+        relay.caskHash,
+      );
+      reply({ childPortId });
+    } catch (error) {
+      relay.spawnedChildren = Math.max(0, relay.spawnedChildren - 1);
+      reply({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  spawnRemote(
+    parentPortId: string,
+    config: SerializedSpawnConfig,
+    caskHash?: string,
+  ): Promise<string> {
     const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
     return new Promise<string>((resolve, reject) => {
       this.#pendingSpawns.set(spawnReqId, {
@@ -709,6 +807,7 @@ export class ClusterClient {
         spawnReqId,
         parentPortId,
         config,
+        ...(caskHash === undefined ? {} : { caskHash }),
       });
     });
   }
@@ -1106,7 +1205,13 @@ export class ClusterClient {
       // fetchCask is a cache no-op when this node already holds the hash.
       const cacheDir = env.FINO_CASK_CACHE_DIR ?? `/tmp/fino-cask-cache-${this.nodeId}`;
       const slot = await this.fetchCask(msg.caskHash, cacheDir);
-      config = { ...config, entry: slot.entryPath, root: slot.dir };
+      // A workload spawning a sibling names its entry relative to the cask it
+      // came from; the manifest entry is the default for a deployment root.
+      // The path is resolved here, on the target, so the requester never gets
+      // to name a host path — see caskRelativeEntry.
+      const entry =
+        config.entry === '' ? slot.entryPath : caskRelativeEntry(slot.dir, config.entry);
+      config = { ...config, entry, root: slot.dir };
     }
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
     const scheduled = createScheduledRealm(
@@ -1130,6 +1235,8 @@ export class ClusterClient {
       pendingSends: [],
       lastPortSeq: 0,
       lastRelayedSeq: 0,
+      spawnedChildren: 0,
+      spawnRules: config.rules,
       ...(caskHash === undefined ? {} : { caskHash }),
     };
     this.#relays.set(childPortId, relay);
@@ -1246,6 +1353,7 @@ export class ClusterClient {
         if (!mainBuf) continue;
         // Quick peek to detect __terminate without a full deserialize+reserialize cycle.
         let isTerminate = false;
+        let isClusterRequest = false;
         try {
           const peeked = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
           isTerminate =
@@ -1263,7 +1371,20 @@ export class ClusterClient {
               ).message ?? 'Realm call failed',
             );
           }
+          // A workload asking its host to spawn on its behalf. The request
+          // stops here rather than travelling to the parent: the capability
+          // belongs to the node hosting the workload, which is the only party
+          // that knows the workload's cask root and can enforce it.
+          if (
+            peeked !== null &&
+            typeof peeked === 'object' &&
+            isRecord((peeked as any).__cluster_spawn)
+          ) {
+            isClusterRequest = true;
+            void this.#handleWorkloadSpawn(relay, (peeked as any).__cluster_spawn);
+          }
         } catch {}
+        if (isClusterRequest) continue;
         if (isTerminate) {
           finalize();
           return;
