@@ -11,6 +11,8 @@ if (port === undefined) {
 port.onmessage = (ev) => {
   port!.postMessage(`echo:${ev.data as string}`);
 };
+// Announced rather than waited for. A parent that sleeps instead has to guess how long
+// a realm takes to boot, and anything it posts before this line is simply lost.
 port.postMessage('ready');
 // Keep alive until terminated — this TLA never resolves
 await new Promise<void>(() => {});

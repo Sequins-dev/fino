@@ -19,6 +19,22 @@ async function readFirstMessage(realm: Realm, timeoutMs = 5e3): Promise<unknown>
     realm.port.start();
   });
 }
+/**
+ * Wait for a condition, or fail saying what it was still waiting for.
+ *
+ * This replaces two fixed sleeps — 20ms for a child realm to boot and 30ms for two round
+ * trips — which are generous on a developer's machine and not on a two-core CI runner.
+ * There the first message was posted before the child had installed its handler, was
+ * lost, and the test reported one echo where it wanted two.
+ */
+async function until(what: string, done: () => boolean, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 5));
+  }
+}
+
 describe('Realm messaging', { exclusive: true }, () => {
   it('parent and child can exchange messages via realm.port', async (t) => {
     const realm = new Realm({
