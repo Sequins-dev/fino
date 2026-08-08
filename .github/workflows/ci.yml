@@ -59,11 +59,15 @@ jobs:
       - name: Run Rust lint
         run: cargo clippy
 
-      - name: Download Linux build
-        uses: ./.github/actions/download-artifact
+      - name: Restore Linux build
+        uses: actions/cache/restore@v4
         with:
-          name: fino-linux-debug
-          path: target/debug
+          path: target/debug/fino
+          key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          # A re-run of only the failed jobs bumps the attempt without
+          # re-running the build, so fall back to any attempt in this run.
+          restore-keys: fino-linux-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
@@ -112,15 +116,14 @@ jobs:
       - name: Run Rust tests
         run: cargo test --quiet
 
-      - name: Upload Linux build
-        uses: actions/upload-artifact@v4
+      # Handed to the jobs below through the cache rather than an artifact.
+      # Nothing outside this run consumes it, and artifact storage is an
+      # org-wide quota that a full one blocks with a hard upload failure.
+      - name: Save Linux build
+        uses: actions/cache/save@v4
         with:
-          name: fino-linux-debug
           path: target/debug/fino
-          if-no-files-found: error
-          # Only the test jobs in this same run consume it. Re-running a job
-          # rebuilds and re-uploads, so nothing needs it after the run ends.
-          retention-days: 3
+          key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
 
   macos-build:
     name: macOS Build
@@ -144,13 +147,11 @@ jobs:
       - name: Run Rust tests
         run: cargo test --quiet
 
-      - name: Upload macOS build
-        uses: actions/upload-artifact@v4
+      - name: Save macOS build
+        uses: actions/cache/save@v4
         with:
-          name: fino-macos-debug
           path: target/debug/fino
-          if-no-files-found: error
-          retention-days: 3
+          key: fino-macos-debug-${{ github.run_id }}-${{ github.run_attempt }}
 
   linux-tests:
     name: Linux Tests
@@ -169,11 +170,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsqlite3-0
 
-      - name: Download Linux build
-        uses: ./.github/actions/download-artifact
+      - name: Restore Linux build
+        uses: actions/cache/restore@v4
         with:
-          name: fino-linux-debug
-          path: target/debug
+          path: target/debug/fino
+          key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          # A re-run of only the failed jobs bumps the attempt without
+          # re-running the build, so fall back to any attempt in this run.
+          restore-keys: fino-linux-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
@@ -189,11 +194,15 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Download Linux build
-        uses: ./.github/actions/download-artifact
+      - name: Restore Linux build
+        uses: actions/cache/restore@v4
         with:
-          name: fino-linux-debug
-          path: target/debug
+          path: target/debug/fino
+          key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          # A re-run of only the failed jobs bumps the attempt without
+          # re-running the build, so fall back to any attempt in this run.
+          restore-keys: fino-linux-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
@@ -212,11 +221,13 @@ jobs:
       - name: Install native dependencies
         run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 snappy sqlite
 
-      - name: Download macOS build
-        uses: ./.github/actions/download-artifact
+      - name: Restore macOS build
+        uses: actions/cache/restore@v4
         with:
-          name: fino-macos-debug
-          path: target/debug
+          path: target/debug/fino
+          key: fino-macos-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fino-macos-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
