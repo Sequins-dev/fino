@@ -31,8 +31,9 @@ import { topic } from 'fino:context/topic';
 import { CLIENT_HASH, CLIENT_SOURCE } from 'internal:ui/web/client';
 import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fino:security/cookie';
 import { escapeHtml } from 'fino:template';
-import { batch, h, Signal, type Props, type VNode } from 'fino:ui';
+import { batch, h, renderStatic, Signal, type Props, type Sink, type VNode } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
+import { toPortable, type PortableVNode } from 'fino:ui/portable';
 import { parse as parseSchema, type JsonSchema } from 'fino:validate';
 import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
@@ -57,43 +58,32 @@ type ActionHandler = (
   ctx: ViewActionContext,
   input: Record<string, unknown>,
 ) => unknown | Promise<unknown>;
-type ViewRender = (ctx: { state: StateRecord; actions: Record<string, ActionRef> }) => VNode;
+type ViewRender = (ctx: {
+  state: StateRecord;
+  actions: Record<string, PortableActionRef>;
+}) => VNode;
 type EmbedSpec =
   | string
   | {
       key: string;
       sealed?: boolean;
     };
+export type { PortableValue, PortableVNode } from 'fino:ui/portable';
 /**
- * JSON value allowed in the UI protocol.
+ * Sink that hands back the tree it was given.
  *
- * Component props cross the SSE boundary as data. Functions, class instances,
- * non-finite numbers, and cyclic values are rejected before a render event is
- * sent.
+ * View rendering needs the tree itself, because form annotation and portability
+ * conversion happen after the component runs. Going through a sink anyway means
+ * a view's render pass gets the same one-shot guarantees as every other: a
+ * component that mutates a signal mid-render is reported rather than silently
+ * producing output that disagrees with its own state.
  */
-export type PortableValue =
-  | null
-  | boolean
-  | number
-  | string
-  | PortableValue[]
-  | { [key: string]: PortableValue };
-/**
- * Host-neutral component node carried by a render event.
- *
- * Clients route `type` to their own named implementation. `key` is semantic
- * instance identity for reconciliation; it is not a component implementation
- * id.
- */
-export interface PortableVNode {
-  /** Named component implementation requested from the client. */
-  type: string;
-  /** JSON props interpreted by that client component. */
-  props: Record<string, PortableValue>;
-  /** Ordered child components and text. */
-  children: Array<PortableVNode | string>;
-  /** Stable instance identity, or `null` when the node is unkeyed. */
-  key: string | number | null;
+function passthroughSink(): Sink<VNode> {
+  return {
+    commit(tree: VNode): VNode {
+      return tree;
+    },
+  };
 }
 /**
  * Serializable action descriptor embedded in component props.
@@ -268,79 +258,32 @@ export class ViewActionError extends Error {
   }
 }
 const views = new Map<string, ServerView>();
-class ActionRef {
-  readonly view: ServerView;
-  readonly name: string;
-  readonly viewId: string;
-  readonly version: number;
-  readonly nonce: string;
-  readonly csrf: string;
-  readonly secret: string;
-  readonly url: string;
-  readonly confirm?: string;
-  constructor(args: {
-    view: ServerView;
-    name: string;
-    viewId: string;
-    version: number;
-    nonce: string;
-    csrf: string;
-    secret: string;
-    url: string;
-    confirm?: string;
-  }) {
-    this.view = args.view;
-    this.name = args.name;
-    this.viewId = args.viewId;
-    this.version = args.version;
-    this.nonce = args.nonce;
-    this.csrf = args.csrf;
-    this.secret = args.secret;
-    this.url = args.url;
-    this.confirm = args.confirm;
-  }
-  toString(): string {
-    return this.url;
-  }
-  toJSON(): PortableActionRef {
-    const ref: PortableActionRef = {
-      action: this.name,
-      url: this.url,
-      view: this.viewId,
-      revision: this.version,
-      request: this.nonce,
-    };
-    if (this.confirm !== undefined) ref.confirm = this.confirm;
-    return ref;
-  }
+/**
+ * Per-instance data an action needs but must never be rendered into.
+ *
+ * The CSRF token and the sealing secret belong to the request, not to the view's
+ * output. Keeping them here instead of on the descriptor in `props` means the
+ * render tree holds only what is safe to send: a tree can be serialized,
+ * streamed, or rendered in another isolate without a secret riding along.
+ */
+interface ActionContext {
+  view: ServerView;
+  viewId: string;
+  version: number;
+  nonce: string;
+  csrf: string;
+  secret: string;
 }
-function portableTree(tree: VNode): PortableVNode {
-  const seen = new Set<object>();
-  const copy = (value: unknown): unknown => {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'boolean' ||
-      (typeof value === 'number' && Number.isFinite(value))
-    )
-      return value;
-    if (value instanceof ActionRef) return copy(value.toJSON());
-    if (typeof value !== 'object') throw new TypeError('Portable UI values must be JSON data');
-    if (seen.has(value)) throw new TypeError('Portable UI values must not contain cycles');
-    seen.add(value);
-    try {
-      if (Array.isArray(value)) return value.map(copy);
-      const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null)
-        throw new TypeError('Portable UI values must be plain objects');
-      const out: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(value)) out[key] = copy(entry);
-      return out;
-    } finally {
-      seen.delete(value);
-    }
-  };
-  return copy(tree) as PortableVNode;
+function isActionRef(value: unknown): value is PortableActionRef {
+  if (value === null || typeof value !== 'object') return false;
+  const ref = value as Partial<PortableActionRef>;
+  return (
+    typeof ref.action === 'string' &&
+    typeof ref.url === 'string' &&
+    typeof ref.view === 'string' &&
+    typeof ref.revision === 'number' &&
+    typeof ref.request === 'string'
+  );
 }
 interface RenderEnv {
   ctx: HttpContext;
@@ -501,38 +444,44 @@ function hidden(name: string, value: unknown): VNode {
     value: String(value),
   });
 }
-function annotateForms(node: VNode, actionRef?: ActionRef, state?: StateRecord): VNode {
+function annotateForms(
+  node: VNode,
+  ctx: ActionContext,
+  state?: StateRecord,
+  inForm = false,
+): VNode {
   if (node.type === 'fragment') {
     return {
       ...node,
       children: node.children.map((child) =>
-        typeof child === 'string' ? child : annotateForms(child, actionRef, state),
+        typeof child === 'string' ? child : annotateForms(child, ctx, state, inForm),
       ),
     };
   }
   const props = cloneProps(node.props);
-  let currentAction = actionRef;
-  if (node.type === 'form' && props.action instanceof ActionRef) {
-    currentAction = props.action;
-    props.action = currentAction.toString();
+  let formAction = inForm;
+  if (node.type === 'form' && isActionRef(props.action)) {
+    const ref = props.action;
+    formAction = true;
+    props.action = ref.url;
     props.method = props.method ?? 'post';
-    props['data-fi-action'] = `${currentAction.view.def.id}.${currentAction.name}`;
+    props['data-fi-action'] = `${ctx.view.def.id}.${ref.action}`;
   }
   const children = node.children.map((child) =>
-    typeof child === 'string' ? child : annotateForms(child, currentAction, state),
+    typeof child === 'string' ? child : annotateForms(child, ctx, state, formAction),
   );
-  if (node.type === 'form' && currentAction !== undefined) {
+  if (node.type === 'form' && formAction) {
     children.unshift(
-      hidden('_view', currentAction.viewId),
-      hidden('_ver', currentAction.version),
-      hidden('_nonce', currentAction.nonce),
-      hidden('_csrf', currentAction.csrf),
+      hidden('_view', ctx.viewId),
+      hidden('_ver', ctx.version),
+      hidden('_nonce', ctx.nonce),
+      hidden('_csrf', ctx.csrf),
     );
-    for (const key of currentAction.view.embed) {
-      const value = currentAction.view.sealedEmbed.has(key)
+    for (const key of ctx.view.embed) {
+      const value = ctx.view.sealedEmbed.has(key)
         ? sealCookie(
             JSON.stringify(state?.[key]?.get() ?? findInputValue(node, key) ?? ''),
-            currentAction.secret,
+            ctx.secret,
           )
         : (findInputValue(node, key) ?? '');
       children.unshift(hidden(`$${key}`, value));
@@ -607,16 +556,21 @@ class ServerView {
     const viewId = randomId('view');
     const nonce = randomId('render');
     const csrf = csrfPayload(viewId, nonce, currentRender.options.secret);
-    const actions = this.actions(ctx, viewId, 0, nonce, csrf, currentRender.options.secret);
-    const rawTree = this.def.render({
-      state,
-      actions,
-    });
-    const tree = currentRender.streaming ? portableTree(rawTree) : rawTree;
-    const rendered = currentRender.streaming
-      ? tree
-      : this.wrap(viewId, annotateForms(tree, undefined, state));
-    const encoded = currentRender.streaming ? JSON.stringify(tree) : renderToHtml(rendered);
+    const secret = currentRender.options.secret;
+    const actions = this.actions(ctx, viewId, 0, nonce);
+    const actionCtx: ActionContext = {
+      view: this,
+      viewId,
+      version: 0,
+      nonce,
+      csrf,
+      secret,
+    };
+    const streaming = currentRender.streaming;
+    const rawTree = renderStatic(() => this.def.render({ state, actions }), passthroughSink());
+    const tree = streaming ? (toPortable(rawTree) as unknown as VNode) : rawTree;
+    const rendered = streaming ? tree : this.wrap(viewId, annotateForms(tree, actionCtx, state));
+    const encoded = streaming ? JSON.stringify(tree) : renderToHtml(rendered);
     const now = Date.now();
     const data = this.persisted(state);
     currentRender.pending.push(
@@ -652,28 +606,31 @@ class ServerView {
     );
     return rendered;
   }
+  /**
+   * Build the action descriptors handed to a render.
+   *
+   * These are plain portable data. Everything an action needs that must not be
+   * rendered — the CSRF token, the sealing secret — stays in an `ActionContext`
+   * the sink consults instead.
+   */
   actions(
     ctx: HttpContext,
     viewId: string,
     version: number,
     nonce: string,
-    csrf: string,
-    secret: string,
     pagePath?: string,
-  ): Record<string, ActionRef> {
-    const out: Record<string, ActionRef> = {};
+  ): Record<string, PortableActionRef> {
+    const out: Record<string, PortableActionRef> = {};
     for (const [name, action] of Object.entries(this.def.actions ?? {})) {
-      out[name] = new ActionRef({
-        view: this,
-        name,
-        viewId,
-        version,
-        nonce,
-        csrf,
-        secret,
+      const ref: PortableActionRef = {
+        action: name,
         url: actionUrl(ctx, this.def.id, name, pagePath),
-        confirm: action.confirm,
-      });
+        view: viewId,
+        revision: version,
+        request: nonce,
+      };
+      if (action.confirm !== undefined) ref.confirm = action.confirm;
+      out[name] = ref;
     }
     return out;
   }
@@ -691,14 +648,20 @@ class ServerView {
     hash: string;
     tree: VNode;
   } {
-    const rawTree = this.def.render({
-      state,
-      actions: this.actions(ctx, snapshot.viewId, snapshot.version, nonce, csrf, secret, pagePath),
-    });
-    const tree = semantic ? portableTree(rawTree) : rawTree;
+    const actions = this.actions(ctx, snapshot.viewId, snapshot.version, nonce, pagePath);
+    const actionCtx: ActionContext = {
+      view: this,
+      viewId: snapshot.viewId,
+      version: snapshot.version,
+      nonce,
+      csrf,
+      secret,
+    };
+    const rawTree = renderStatic(() => this.def.render({ state, actions }), passthroughSink());
+    const tree = semantic ? (toPortable(rawTree) as unknown as VNode) : rawTree;
     const rendered = semantic
       ? tree
-      : this.wrap(snapshot.viewId, annotateForms(tree, undefined, state));
+      : this.wrap(snapshot.viewId, annotateForms(tree, actionCtx, state));
     const html = semantic ? '' : renderToHtml(rendered);
     return {
       html,

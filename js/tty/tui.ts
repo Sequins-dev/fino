@@ -21,7 +21,18 @@
  * );
  * ```
  */
-import { h, Fragment, createSignal, batch, type Child, type Props, type VNode } from 'fino:ui';
+import {
+  h,
+  Fragment,
+  createRoot,
+  createSignal,
+  batch,
+  type Child,
+  type Props,
+  type Root,
+  type Sink,
+  type VNode,
+} from 'fino:ui';
 import { writeStdout } from '../tty.ts';
 import { stdin } from '../process.ts';
 import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
@@ -697,39 +708,87 @@ function renderScreen(element: VNode, options: RenderFrameOptions): string {
   return out;
 }
 /**
+ * Sink that turns each committed tree into a terminal frame.
+ *
+ * The frame is a complete screen image rather than a diff, so this is a snapshot
+ * sink like `htmlSink()`. Pair it with `renderStatic()` to capture one frame, or
+ * with `createRoot()` to drive a live screen from signals.
+ *
+ * ```ts no_run
+ * import { createRoot } from 'fino:ui';
+ * import { frameSink } from 'fino:tty/tui';
+ *
+ * const root = createRoot(App, frameSink({ width: 80, height: 24 }));
+ * ```
+ */
+export function frameSink(options: RenderFrameOptions): Sink<string> {
+  return {
+    commit(tree: VNode): string {
+      return renderFrame(tree, options);
+    },
+  };
+}
+/**
  * Render a fullscreen terminal app and return a lifecycle handle.
  *
  * This enters the alternate screen, hides the cursor, writes the current frame,
  * and restores terminal state from `stop()`. Width and height default to the
  * current terminal size when available.
+ *
+ * Passing a function instead of a tree makes the app reactive: every signal read
+ * while rendering becomes a dependency, and the screen repaints when one
+ * changes. `update()` remains available for callers that drive frames
+ * themselves, and takes over from the reactive root when used.
+ *
+ * ```ts no_run
+ * import { createSignal } from 'fino:ui';
+ * import { Text, render } from 'fino:tty/tui';
+ *
+ * const ticks = createSignal(0);
+ * const app = render(() => Text({ children: [String(ticks.get())] }));
+ * ticks.set(1);
+ * app.stop();
+ * ```
  */
-export function render(element: VNode, options: RenderOptions = {}): TuiApp {
-  let current = element;
+export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
   const width = options.width ?? size.width;
   const height = options.height ?? size.height;
   const input =
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
+  let frame = '';
   function paint(): void {
     if (stopped) return;
-    void writeStdout(
-      renderScreen(current, {
-        width,
-        height,
-      }),
-    );
+    const lines = frame.split('\n');
+    let out = '';
+    for (let row = 0; row < lines.length; row++) out += `\x1b[${row + 1};1H${lines[row]}`;
+    void writeStdout(out);
   }
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
-  paint();
+  const sink: Sink<string> = {
+    commit(tree: VNode): string {
+      frame = renderFrame(tree, { width, height });
+      paint();
+      return frame;
+    },
+  };
+  // A tree renders once; a thunk keeps its signal dependencies live. Both go
+  // through the same sink, so the paint path does not fork.
+  let root: Root<string> | null = null;
+  if (typeof element === 'function') root = createRoot(element, sink);
+  else sink.commit(element);
   const app: TuiApp = {
     input,
     update(next: VNode): void {
-      current = next;
-      paint();
+      root?.dispose();
+      root = null;
+      sink.commit(next);
     },
     stop(): void {
       if (stopped) return;
+      root?.dispose();
+      root = null;
       stopped = true;
       input?.close();
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());

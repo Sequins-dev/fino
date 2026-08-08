@@ -173,6 +173,12 @@ describe('fino:ui/web', () => {
     const cookie = cookieHeader(first);
     t.ok(html.includes('<section id="todos"'), 'view renders into the page');
     t.ok(html.includes('data-fi-action'), 'form is annotated for enhancement');
+    t.ok(html.includes('name="_csrf"'), 'form carries its CSRF field');
+    t.equal(
+      html.includes('test-secret'),
+      false,
+      'the sealing secret is never rendered into a form',
+    );
     const body = new URLSearchParams({
       _view: hidden(html, '_view'),
       _ver: hidden(html, '_ver'),

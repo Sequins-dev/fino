@@ -47,7 +47,12 @@ import {
   type MarkdownNode,
   type MarkdownOptions,
 } from '../format/markdown.ts';
-import { escapeHtml, render as renderTemplate } from '../template.ts';
+import { escapeHtml } from '../template.ts';
+import { h, renderStatic, type VNode } from 'fino:ui';
+import { htmlSink, renderToHtml } from 'fino:ui/html';
+import { renderRealmAll } from 'fino:ui/realm';
+import type { PortableValue } from 'fino:ui/portable';
+import { GuideBody, ModuleBody, type DocsNavNode } from './doc/theme.ts';
 import {
   format as formatTypeScript,
   parse as parseTypeScript,
@@ -67,6 +72,7 @@ const DOCS_DB_NAME = 'docs.db';
 const DOCS_CSS_NAME = 'docs.css';
 const DOCS_JS_NAME = 'docs.js';
 const DOCS_LOCK_DIR_NAME = '.docs.lock';
+const DEFAULT_DOCS_THEME = 'fino:commands/doc/theme';
 const SIGNATURE_WRAP_COLUMN = 100;
 const DOC_DISCOVERY_IGNORES = new Set([
   '.git',
@@ -90,11 +96,11 @@ async function readTextFile(path: string): Promise<string> {
 async function writeTextFile(path: string, text: string): Promise<void> {
   await fs.writeFile(path, textEncoder.encode(text));
 }
-interface DocTag {
+export interface DocTag {
   name: string;
   value: string;
 }
-interface DocBlockItem {
+export interface DocBlockItem {
   kind: string;
   text?: string;
   lang?: string;
@@ -104,16 +110,16 @@ interface DocBlockItem {
   name?: string;
   description?: string;
 }
-interface DocBlock {
+export interface DocBlock {
   text: string;
   tags: DocTag[];
   blocks?: DocBlockItem[];
 }
-interface Location {
+export interface Location {
   line: number;
   column: number;
 }
-interface DocMember {
+export interface DocMember {
   id?: string;
   name: string;
   kind: string;
@@ -124,10 +130,10 @@ interface DocMember {
   doc: DocBlock;
   location: Location;
 }
-interface DocExport extends DocMember {
+export interface DocExport extends DocMember {
   members: DocMember[];
 }
-interface ReExportDoc {
+export interface ReExportDoc {
   mode: 'inline' | 'link';
   sourceModule: string;
   sourceName: string;
@@ -140,7 +146,7 @@ interface ReExportSpec {
   namespace?: boolean;
   all?: boolean;
 }
-interface ModuleDoc {
+export interface ModuleDoc {
   id?: string;
   path: string;
   name: string;
@@ -149,7 +155,7 @@ interface ModuleDoc {
   doc: DocBlock;
   exports: DocExport[];
 }
-interface GuideDoc {
+export interface GuideDoc {
   id: string;
   path: string;
   href: string;
@@ -163,7 +169,7 @@ interface ParsedModuleDoc extends ModuleDoc {
   reExports: ReExportSpec[];
   reExportsResolved?: boolean;
 }
-interface ApiDoc {
+export interface ApiDoc {
   schemaVersion?: number;
   input?: DocInputMetadata;
   modules: ModuleDoc[];
@@ -200,7 +206,7 @@ interface SourceAssetRef {
 interface SourceLinkResolverOptions {
   assets?: Map<string, SourceAssetRef>;
 }
-interface HtmlMember {
+export interface HtmlMember {
   id: string;
   name: string;
   kind: string;
@@ -208,15 +214,15 @@ interface HtmlMember {
   overloadsHtml: string;
   docHtml: string;
 }
-interface HtmlExport extends HtmlMember {
+export interface HtmlExport extends HtmlMember {
   memberGroups: HtmlGroup<HtmlMember>[];
   hasMemberGroups: boolean;
 }
-interface HtmlGroup<T> {
+export interface HtmlGroup<T> {
   title: string;
   items: T[];
 }
-interface HtmlModule {
+export interface HtmlModule {
   name: string;
   id: string;
   title: string;
@@ -231,7 +237,7 @@ interface HtmlModule {
   groups: HtmlGroup<HtmlExport>[];
   hasGroups: boolean;
 }
-interface HtmlGuide {
+export interface HtmlGuide {
   id: string;
   title: string;
   path: string;
@@ -268,7 +274,7 @@ interface CurrentDocFile {
 interface DocCacheOptions {
   shouldParseChanged?: (file: CurrentDocFile) => Promise<boolean>;
 }
-interface DocInputMetadata {
+export interface DocInputMetadata {
   files: string[];
   types: string[];
 }
@@ -390,56 +396,6 @@ const DOCS_CLIENT_JS = `
     navigate(new URL(location.href), false).catch(() => location.reload());
   });
 })();
-`;
-const HTML_PAGE_TEMPLATE = `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8">
-<title>{{title}}</title>
-<link rel="stylesheet" href="{{cssHref}}">
-</head>
-<body>
-<div class="docs-layout{{#hasPageIndex}} docs-layout-api{{/hasPageIndex}}">
-{{{sidebarHtml}}}
-{{{pageIndexHtml}}}
-<main>
-{{{contentHtml}}}
-</main>
-</div>
-<script src="{{scriptHref}}" defer data-docs-client-navigation><\/script>
-</body>
-</html>
-`;
-const MODULE_PAGE_TEMPLATE = `<h1 id="{{id}}">{{name}}</h1>
-<p class="muted">{{path}}</p>
-{{{docHtml}}}
-{{^hasGroups}}<p class="muted">No exported declarations found.</p>{{/hasGroups}}
-{{#groups}}
-<h2>{{title}}</h2>
-{{#items}}
-<section class="docs-symbol" id="{{id}}">
-<h3>{{{titleHtml}}}</h3>
-{{{overloadsHtml}}}
-{{{docHtml}}}
-{{#memberGroups}}
-<h4>{{title}}</h4>
-{{#items}}
-<section class="member" id="{{id}}">
-<h5>{{{titleHtml}}}</h5>
-{{{overloadsHtml}}}
-{{{docHtml}}}
-</section>
-{{/items}}
-{{/memberGroups}}
-</section>
-{{/items}}
-{{/groups}}
-`;
-const GUIDE_PAGE_TEMPLATE = `<h1 id="{{id}}">{{title}}</h1>
-<p class="muted">{{path}}</p>
-{{{html}}}
-`;
-const INDEX_PAGE_TEMPLATE = `{{{readmeHtml}}}
 `;
 function dirname(path: string): string {
   const idx = path.lastIndexOf('/');
@@ -2030,45 +1986,89 @@ function collectMarkdownReferences(doc: DocBlock): Record<string, string> {
   }
   return references;
 }
-function renderModuleHtml(api: ApiDoc, moduleDoc: ModuleDoc, title: string): string {
-  const htmlModule = toHtmlModule(api, moduleDoc);
-  const contentHtml = renderTemplate(MODULE_PAGE_TEMPLATE, htmlModule);
-  return renderTemplate(HTML_PAGE_TEMPLATE, {
-    title: `${title} - ${moduleDoc.name}`,
-    cssHref: relativeHref(htmlModule.href, DOCS_CSS_NAME),
-    scriptHref: relativeHref(htmlModule.href, DOCS_JS_NAME),
-    hasPageIndex: htmlModule.hasSymbolIndex,
-    sidebarHtml: renderSidebarHtml(api, htmlModule.href, title),
-    pageIndexHtml: htmlModule.symbolIndexHtml,
-    contentHtml,
-  });
+/**
+ * Build the render request for every HTML page in the site.
+ *
+ * Markdown, cross-reference resolution, and syntax highlighting all need the doc
+ * parser, which does not exist inside a theme's realm, so each page's prose is
+ * rendered here and travels as prepared HTML. The structured records travel
+ * alongside it so a theme can lay the page out itself.
+ */
+async function docsPageItems(
+  api: ApiDoc,
+  title: string,
+): Promise<Array<Record<string, PortableValue>>> {
+  const items: Array<Record<string, PortableValue>> = [];
+  for (const moduleDoc of api.modules) {
+    const htmlModule = toHtmlModule(api, moduleDoc);
+    items.push({
+      page: {
+        kind: 'module',
+        href: htmlModule.href,
+        title: moduleDoc.name,
+        module: moduleDoc,
+      },
+      prepared: {
+        contentHtml: renderStatic(() => h(ModuleBody, { module: htmlModule }), htmlSink()),
+        pageIndexHtml: htmlModule.symbolIndexHtml,
+        module: htmlModule,
+      },
+    } as unknown as Record<string, PortableValue>);
+  }
+  for (const guide of api.guides ?? []) {
+    const htmlGuide = toHtmlGuide(api, guide);
+    items.push({
+      page: {
+        kind: 'guide',
+        href: guide.href,
+        title: guide.title,
+        guide,
+      },
+      prepared: {
+        contentHtml: renderStatic(() => h(GuideBody, { guide: htmlGuide }), htmlSink()),
+        pageIndexHtml: htmlGuide.pageIndexHtml,
+        guide: htmlGuide,
+      },
+    } as unknown as Record<string, PortableValue>);
+  }
+  items.push({
+    page: { kind: 'index', href: 'index.html', title },
+    prepared: {
+      contentHtml: await renderReadmeHtml(api),
+      pageIndexHtml: '',
+    },
+  } as unknown as Record<string, PortableValue>);
+  return items;
 }
-function renderGuideHtml(api: ApiDoc, guide: GuideDoc, title: string): string {
-  const htmlGuide = toHtmlGuide(api, guide);
-  const contentHtml = renderTemplate(GUIDE_PAGE_TEMPLATE, htmlGuide);
-  return renderTemplate(HTML_PAGE_TEMPLATE, {
-    title: `${title} - ${guide.title}`,
-    cssHref: relativeHref(guide.href, DOCS_CSS_NAME),
-    scriptHref: relativeHref(guide.href, DOCS_JS_NAME),
-    hasPageIndex: htmlGuide.hasPageIndex,
-    sidebarHtml: renderSidebarHtml(api, guide.href, title),
-    pageIndexHtml: htmlGuide.pageIndexHtml,
-    contentHtml,
-  });
-}
-async function renderIndexHtml(api: ApiDoc, title: string): Promise<string> {
-  const contentHtml = renderTemplate(INDEX_PAGE_TEMPLATE, {
-    readmeHtml: await renderReadmeHtml(api),
-  });
-  return renderTemplate(HTML_PAGE_TEMPLATE, {
+/**
+ * Render every HTML page through the selected theme component.
+ *
+ * The theme renders in one realm for the whole site, so its isolate is created
+ * once and the shared site data crosses the boundary once regardless of how many
+ * pages there are.
+ */
+async function renderThemedPages(
+  api: ApiDoc,
+  title: string,
+  theme: string,
+): Promise<Array<{ href: string; html: string }>> {
+  const items = await docsPageItems(api, title);
+  const site = {
     title,
+    nav: docsNavTree(api),
     cssHref: DOCS_CSS_NAME,
     scriptHref: DOCS_JS_NAME,
-    hasPageIndex: false,
-    sidebarHtml: renderSidebarHtml(api, 'index.html', title),
-    pageIndexHtml: '',
-    contentHtml,
+    modules: api.modules,
+    guides: api.guides ?? [],
+  };
+  const trees = await renderRealmAll(theme, {
+    shared: { site } as unknown as Record<string, PortableValue>,
+    items,
   });
+  return trees.map((tree, index) => ({
+    href: (items[index]!.page as unknown as { href: string }).href,
+    html: `<!doctype html>${renderToHtml(tree as unknown as VNode)}`,
+  }));
 }
 function toHtmlModule(api: ApiDoc, moduleDoc: ModuleDoc): HtmlModule {
   const href = moduleHref(moduleDoc);
@@ -2733,7 +2733,13 @@ function firstSummary(doc: DocBlock): string {
       .split(/\n\s*\n/)[0] ?? '';
   return text.length > 180 ? text.slice(0, 177).trimEnd() + '...' : text;
 }
-function renderSidebarHtml(api: ApiDoc, currentHref: string, title: string): string {
+/**
+ * Build the site navigation as portable data.
+ *
+ * Themes decide how navigation looks, so this crosses the realm boundary as a
+ * tree of labels and site-root-relative hrefs rather than as finished markup.
+ */
+function docsNavTree(api: ApiDoc): DocsNavNode[] {
   const guideEntries: SidebarEntry[] = (api.guides ?? [])
     .map((guide) => ({
       label: guide.title,
@@ -2749,12 +2755,20 @@ function renderSidebarHtml(api: ApiDoc, currentHref: string, title: string): str
       kind: 'api' as const,
     }))
     .sort((a, b) => compareAscii(a.href, b.href));
-  const guideTree = sidebarTree(guideEntries, 'Docs');
-  const apiTree = sidebarTree(apiEntries, 'API Reference');
-  return `<nav class="docs-sidebar" aria-label="Documentation navigation">
-<p class="docs-sidebar-title"><a href="${escapeHtml(relativeHref(currentHref, 'index.html'))}">${escapeHtml(title)}</a></p>
-${renderSidebarItems([...guideTree, ...apiTree], currentHref)}
-</nav>`;
+  return [
+    ...sidebarTree(guideEntries, 'Docs'),
+    ...sidebarTree(apiEntries, 'API Reference'),
+  ].map(toNavNode);
+}
+function toNavNode(node: SidebarNode): DocsNavNode {
+  const children = [...node.children.values()].map(toNavNode);
+  if (node.entry === undefined) return { label: node.name, children };
+  return {
+    label: node.entry.label,
+    href: node.entry.href,
+    kind: node.entry.kind,
+    children,
+  };
 }
 interface SidebarNode {
   name: string;
@@ -2881,25 +2895,6 @@ function compareGuideWeight(a: SidebarNode, b: SidebarNode): number {
   if (left === undefined) return 1;
   if (right === undefined) return -1;
   return left - right;
-}
-function renderSidebarItems(nodes: SidebarNode[], currentHref: string): string {
-  if (nodes.length === 0) return '';
-  return `<ul>${nodes.map((node) => renderSidebarNode(node, currentHref)).join('')}</ul>`;
-}
-function renderSidebarNode(node: SidebarNode, currentHref: string): string {
-  const children = renderSidebarItems([...node.children.values()], currentHref);
-  if (node.entry) {
-    const href = relativeHref(currentHref, node.entry.href);
-    const current = node.entry.href === currentHref ? ' aria-current="page"' : '';
-    return `<li><a class="docs-sidebar-link docs-sidebar-link-${node.entry.kind}" href="${escapeHtml(href)}"${current}>${sidebarIcon(node.entry.kind)}<span>${escapeHtml(node.entry.label)}</span></a>${children}</li>`;
-  }
-  return `<li><div class="docs-sidebar-directory">${escapeHtml(node.name)}</div>${children}</li>`;
-}
-function sidebarIcon(kind: SidebarEntry['kind']): string {
-  if (kind === 'guide') {
-    return '<svg class="docs-sidebar-icon docs-sidebar-icon-guide" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/><path d="M6 8h2"/><path d="M6 12h2"/><path d="M16 8h2"/><path d="M16 12h2"/></svg>';
-  }
-  return '<svg class="docs-sidebar-icon docs-sidebar-icon-api" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/></svg>';
 }
 function relativeHref(fromHref: string, toHref: string): string {
   if (/^[a-z][a-z0-9+.-]*:/i.test(toHref) || toHref.startsWith('#')) return toHref;
@@ -3866,6 +3861,7 @@ async function runBuildCommand(
   const format = String(input.format ?? 'markdown');
   const title = ctx.optionProvided?.('title') ? String(input.title ?? '') : await inferDocsTitle();
   const includePrivate = input['include-private'] === true;
+  const theme = input.theme === undefined ? DEFAULT_DOCS_THEME : String(input.theme);
   const written: string[] = [];
   const inputRoots = await docDiscoveryRoots(input.files);
   const typeRoots = await docDiscoveryRoots(input.types);
@@ -3900,38 +3896,27 @@ async function runBuildCommand(
     written.push(`Wrote ${cssPath}`);
     written.push(`Wrote ${jsPath}`);
   }
-  for (const moduleDoc of api.modules) {
-    if (format === 'markdown' || format === 'both') {
+  if (format === 'markdown' || format === 'both') {
+    for (const moduleDoc of api.modules) {
       const markdownPath = `${outDir}/${moduleHref(moduleDoc).replace(/\.html$/i, '.md')}`;
       await ensureDir(dirname(markdownPath));
       await writeTextFile(markdownPath, renderModule(moduleDoc));
       written.push(`Wrote ${markdownPath}`);
     }
-    if (format === 'html' || format === 'both') {
-      const htmlPath = `${outDir}/${moduleHref(moduleDoc)}`;
-      await ensureDir(dirname(htmlPath));
-      await writeTextFile(htmlPath, renderModuleHtml(api, moduleDoc, title));
-      written.push(`Wrote ${htmlPath}`);
-    }
-  }
-  for (const guide of api.guides ?? []) {
-    if (format === 'markdown' || format === 'both') {
+    for (const guide of api.guides ?? []) {
       const markdownPath = `${outDir}/${guide.href.replace(/\.html$/i, '.md')}`;
       await ensureDir(dirname(markdownPath));
       await writeTextFile(markdownPath, guide.text);
       written.push(`Wrote ${markdownPath}`);
     }
-    if (format === 'html' || format === 'both') {
-      const htmlPath = `${outDir}/${guide.href}`;
-      await ensureDir(dirname(htmlPath));
-      await writeTextFile(htmlPath, renderGuideHtml(api, guide, title));
-      written.push(`Wrote ${htmlPath}`);
-    }
   }
   if (format === 'html' || format === 'both') {
-    const indexPath = `${outDir}/index.html`;
-    await writeTextFile(indexPath, await renderIndexHtml(api, title));
-    written.push(`Wrote ${indexPath}`);
+    for (const page of await renderThemedPages(api, title, theme)) {
+      const htmlPath = `${outDir}/${page.href}`;
+      await ensureDir(dirname(htmlPath));
+      await writeTextFile(htmlPath, page.html);
+      written.push(`Wrote ${htmlPath}`);
+    }
   }
   const jsonPath = apiJsonPath();
   await ensureDir(dirname(jsonPath));
@@ -4403,6 +4388,12 @@ function buildOptions() {
       flags: '--include-private',
       type: 'boolean' as const,
       description: 'Include private and internal members',
+    },
+    {
+      flags: '--theme',
+      type: 'string' as const,
+      description:
+        'Module whose default export is the component rendering each HTML page',
     },
     {
       flags: '--types',

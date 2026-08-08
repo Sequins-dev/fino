@@ -4,7 +4,8 @@
  * Run with: cargo run -- bench benchmarks/ui.bench.ts
  */
 import { bench } from 'fino:bench';
-import { createRenderer, createSignal, h } from 'fino:ui';
+import { createRenderer, createSignal, h, renderStatic } from 'fino:ui';
+import { portableSink, toPortable } from 'fino:ui/portable';
 const tree = h(
   'row',
   null,
@@ -120,4 +121,23 @@ bench('ui', (b) => {
       ctx.renderer.render(ctx.flip ? reordered : tree, ctx.root);
     },
   });
+});
+
+bench('ui/portable', (b) => {
+  const page = h(
+    'main',
+    { id: 'root', 'data-page': 'report' },
+    ...Array.from({ length: 64 }, (_, index) =>
+      h(
+        'row',
+        { key: index, index, selected: index % 3 === 0 },
+        h('cell', { span: 2 }, `label ${index}`),
+        h('cell', { action: { action: 'open', url: '/x', view: 'v', revision: 0, request: 'r' } }),
+      ),
+    ),
+  );
+  b.measure('toPortable page tree', () => toPortable(page));
+  b.measure('renderStatic through portableSink', () =>
+    renderStatic(() => page, portableSink()),
+  );
 });

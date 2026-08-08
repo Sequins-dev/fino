@@ -16,6 +16,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/init` | not yet benchmarked |
 | `fino:commands/install` | not yet benchmarked |
 | `fino:commands/doc` | not yet benchmarked |
+| `fino:commands/doc/theme` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
@@ -33,6 +34,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
+| `fino:ui/portable` | `benchmarks/ui.bench.ts` |
+| `fino:ui/realm` | not yet benchmarked |
 | `fino:ui/slides` | not yet benchmarked |
 | `fino:ui/web` | not yet benchmarked |
 | `fino:ui/web/flow` | not yet benchmarked |
