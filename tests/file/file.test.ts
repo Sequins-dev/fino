@@ -487,6 +487,21 @@ describe('DiskFileSystem error codes', () => {
   before(() => {
     fs = new DiskFileSystem();
   });
+  it('rejects a non-string path instead of stringifying it', async (t) => {
+    // `new Path(undefined)` used to coerce to the path "undefined" and
+    // silently create a file by that name in the working directory — an
+    // undefined variable became a stray file instead of an error (FIN-154).
+    await t.rejects(
+      () => fs.writeFile(undefined as unknown as string, new Uint8Array()),
+      /path must be a string or Path, got undefined/,
+      'writeFile(undefined) is a TypeError naming the value',
+    );
+    await t.rejects(
+      () => fs.open(null as unknown as string),
+      /path must be a string or Path, got null/,
+      'open(null) is a TypeError too',
+    );
+  });
   it('stat on missing path rejects with ENOENT', async (t) => {
     try {
       await fs.stat('/tmp/__fino_no_such_file__' + Math.random());
