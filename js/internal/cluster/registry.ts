@@ -83,15 +83,39 @@ export class RealmRegistry {
    * ```
    */
   register(portId: string, parentPortId: string | null, nodeId: string): void {
-    const entry: PortEntry = {
+    // Registering a port that already exists must not rebuild it. The seed
+    // registers a spawn's parent on every SPAWN, so a port that spawns twice
+    // arrives here twice — and rebuilding reset its children and erased its
+    // own parent edge, dropping earlier children out of the tree entirely.
+    // They then survived a cancellation that should have reached them, which
+    // is the opposite of what an ownership tree is for.
+    //
+    // An existing entry keeps its children. It also keeps its parent edge
+    // unless this call supplies one, so the `register(port, null, node)` the
+    // seed makes before a spawn cannot orphan a port that already has a
+    // parent, while a genuine re-parent is still expressible.
+    const existing = this.#ports.get(portId);
+    const entry: PortEntry = existing ?? {
       portId,
       parentPortId,
       nodeId,
       children: new Set(),
     };
+    if (existing !== undefined) {
+      if (existing.nodeId !== nodeId) {
+        // A port that moved hosts — a shed — must leave the old node's index,
+        // or that node going down would take down a port it no longer hosts.
+        this.#byNode.get(existing.nodeId)?.delete(portId);
+        existing.nodeId = nodeId;
+      }
+      if (parentPortId !== null && parentPortId !== existing.parentPortId) {
+        this.#ports.get(existing.parentPortId ?? '')?.children.delete(portId);
+        existing.parentPortId = parentPortId;
+      }
+    }
     this.#ports.set(portId, entry);
-    if (parentPortId) {
-      this.#ports.get(parentPortId)?.children.add(portId);
+    if (entry.parentPortId !== null) {
+      this.#ports.get(entry.parentPortId)?.children.add(portId);
     }
     let set = this.#byNode.get(nodeId);
     if (!set) {
