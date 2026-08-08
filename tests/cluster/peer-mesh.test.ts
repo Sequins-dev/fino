@@ -219,4 +219,52 @@ describe('direct peer mesh', () => {
       await loop.timeout(200);
     }
   });
+
+  it('refuses two dialers without leaking a loop handle', async (t) => {
+    if (!quicAvailable || !h3Available) return;
+    // FIN-155: with two refusals the acceptor used to leave a read handle
+    // registered after full teardown, so the process never exited. One
+    // refusal drained cleanly, which is why the suite could only cover one.
+    // The assertion is on the loop, not on the refusal — a leak here means a
+    // hung process, and a hung process is how it was noticed.
+    const hash = await certHash();
+    const port = randomPort();
+    const acceptor = new PeerMesh({
+      nodeId: 'node-z',
+      clusterId: 'c-real',
+      token: 'right-token',
+      incarnation: 1,
+      listen: { port, hostname: '127.0.0.1', tls },
+    });
+    const seen: string[] = [];
+    acceptor.on((from) => seen.push(from));
+    const wrongToken = new PeerMesh({
+      nodeId: 'node-a',
+      clusterId: 'c-real',
+      token: 'wrong-token',
+      incarnation: 1,
+    });
+    const wrongCluster = new PeerMesh({
+      nodeId: 'node-b',
+      clusterId: 'c-other',
+      token: 'right-token',
+      incarnation: 1,
+    });
+    const endpoint = `https://127.0.0.1:${port}/__fino_cluster`;
+    try {
+      await acceptor.listen();
+      await wrongToken.dial({ nodeId: 'node-z', endpoint, certHash: hash });
+      await wrongCluster.dial({ nodeId: 'node-z', endpoint, certHash: hash });
+      await loop.timeout(300);
+      t.equal(seen.length, 0, 'neither unauthenticated dialer delivered anything');
+    } finally {
+      wrongToken.close();
+      wrongCluster.close();
+      acceptor.close();
+      await loop.timeout(700);
+    }
+    const handles = loop._activeHandleCounts();
+    t.equal(handles.reads, 0, `reads drained after two refusals (${JSON.stringify(handles)})`);
+    t.equal(handles.writes, 0, 'writes drained after two refusals');
+  });
 });
