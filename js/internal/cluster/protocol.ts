@@ -81,10 +81,12 @@ export interface NodeLoad {
    */
   cpu: number;
   /**
-   * Resident memory in bytes.
+   * **Peak** resident memory in bytes — `ru_maxrss`, not current RSS.
    *
-   * The value defaults only at the caller layer; the wire decoder requires a
-   * finite, non-negative number and rejects missing or negative memory samples.
+   * Peak never decreases, so this cannot observe a node recovering memory; it
+   * answers "how big has this process been", which is the conservative side
+   * of a placement decision. Compare against `capacityMemory` accordingly.
+   * The wire decoder requires a finite, non-negative number.
    *
    * ```ts
    * const load = { cpu: 0, memory: 0 };
@@ -121,6 +123,15 @@ export interface NodeLoad {
    * own balancer sheds everything it can before the node exits.
    */
   draining?: boolean;
+  /**
+   * Schedulable cores on the sender, from `availableParallelism()`.
+   *
+   * Capacity is what makes `cpu` comparable across heterogeneous nodes: the
+   * same 0.5 is different headroom on 2 cores and on 64. Static per process.
+   */
+  capacityCores?: number;
+  /** Total physical memory on the sender in bytes. Static per process. */
+  capacityMemory?: number;
 }
 /**
  * Cluster membership record for one peer node.
@@ -515,6 +526,8 @@ interface WireLoad {
   pendingSpecs?: number;
   activeWorkloads?: number;
   draining?: boolean;
+  capacityCores?: number;
+  capacityMemory?: number;
 }
 
 interface WirePeer {
@@ -598,6 +611,8 @@ const LoadMessage = defineMessage<WireLoad>({
   pendingSpecs: { number: 4, type: 'double', optional: true },
   activeWorkloads: { number: 5, type: 'double', optional: true },
   draining: { number: 6, type: 'bool', optional: true },
+  capacityCores: { number: 7, type: 'double', optional: true },
+  capacityMemory: { number: 8, type: 'double', optional: true },
 });
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
@@ -1359,9 +1374,17 @@ function parseQueueCounts(value: Record<string, unknown>): {
   pendingSpecs?: number;
   activeWorkloads?: number;
   draining?: boolean;
+  capacityCores?: number;
+  capacityMemory?: number;
 } {
-  const counts: { pendingSpecs?: number; activeWorkloads?: number; draining?: boolean } = {};
-  for (const key of ['pendingSpecs', 'activeWorkloads'] as const) {
+  const counts: {
+    pendingSpecs?: number;
+    activeWorkloads?: number;
+    draining?: boolean;
+    capacityCores?: number;
+    capacityMemory?: number;
+  } = {};
+  for (const key of ['pendingSpecs', 'activeWorkloads', 'capacityCores', 'capacityMemory'] as const) {
     const raw = value[key];
     if (raw === undefined) continue;
     if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {

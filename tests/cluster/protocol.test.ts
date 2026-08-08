@@ -43,6 +43,26 @@ describe('ClusterMessage encode/decode', () => {
       /loopIdle must be in/,
       'out-of-range loopIdle is rejected',
     );
+    // Capacity fields ride the same load message. A real round-trip, not
+    // loopback injection: the codec is the part a missing wire number breaks.
+    const withCapacity = roundTrip({
+      t: 'HEARTBEAT',
+      ts: 44,
+      load: { cpu: 0.5, memory: 4096, capacityCores: 8, capacityMemory: 137438953472 },
+    });
+    if (withCapacity.t === 'HEARTBEAT') {
+      t.equal(withCapacity.load?.capacityCores, 8, 'capacityCores survives the heartbeat');
+      t.equal(
+        withCapacity.load?.capacityMemory,
+        137438953472,
+        'capacityMemory survives the heartbeat',
+      );
+    }
+    t.throws(
+      () => encode({ t: 'HEARTBEAT', ts: 1, load: { cpu: 0, memory: 0, capacityCores: -1 } }),
+      /capacityCores must be a non-negative/,
+      'negative capacity is rejected',
+    );
   });
   it('WELCOME round-trips with peer list', (t) => {
     const msg: ClusterMessage = {

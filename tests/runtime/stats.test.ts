@@ -2,7 +2,13 @@
  * internal:runtime/stats — self-reported load sampling.
  */
 import { describe, it } from 'fino:test/test';
-import { capacityCores, heapSample, resourceSample, sampleNodeLoad } from 'internal:runtime/stats';
+import {
+  capacityCores,
+  capacityMemoryBytes,
+  heapSample,
+  resourceSample,
+  sampleNodeLoad,
+} from 'internal:runtime/stats';
 
 describe('runtime stats', () => {
   it('samples process resources and node load', async (t) => {
@@ -26,5 +32,18 @@ describe('runtime stats', () => {
     const heap = heapSample();
     t.ok(heap.usedHeapSize > 0, 'heap usage is positive');
     t.ok(heap.heapSizeLimit > heap.usedHeapSize, 'heap limit exceeds usage');
+  });
+
+  it('reports total physical memory as capacity', (t) => {
+    const total = capacityMemoryBytes();
+    // The contract allows 0 only when the platform refuses to answer, which
+    // no supported platform does — a 0 here means the FFI call is broken.
+    t.ok(total >= 1024 * 1024 * 1024, `total memory is at least 1GiB (got ${total})`);
+    t.ok(total < 2 ** 48, 'total memory is a sane byte count');
+    t.equal(capacityMemoryBytes(), total, 'the static value is cached');
+    t.ok(
+      resourceSample().maxRssBytes < total,
+      'peak RSS fits inside total memory, so the two are comparable',
+    );
   });
 });

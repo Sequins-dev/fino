@@ -62,7 +62,7 @@ import {
 } from 'internal:cluster/webtransport-transport';
 import { SeedServer } from 'internal:cluster/seed';
 import { ClusterClient, ClusterPort } from 'internal:cluster/client';
-import { sampleNodeLoad } from 'internal:runtime/stats';
+import { capacityCores, capacityMemoryBytes, sampleNodeLoad } from 'internal:runtime/stats';
 import { availableParallelism, reactorQueueDepth } from 'internal:scheduler-native';
 import { WorkloadLedger } from 'internal:cluster/ledger';
 import { gcCasks, gcCaskStore } from 'internal:cluster/cask';
@@ -126,7 +126,23 @@ function startNodeAgent(): () => ReturnType<typeof sampleNodeLoad> {
       pendingSpecs: depth.pendingSpecs,
       activeWorkloads: depth.active + depth.parkedLive,
       ...(_draining ? { draining: true } : {}),
+      ...clusterCapacity(),
     };
+  };
+}
+
+/**
+ * This node's static capacity, attached to every load sample it sends.
+ *
+ * Capacity is the denominator that makes cpu and memory comparable across
+ * heterogeneous nodes. A zero total memory means the platform refused to
+ * say, and the field is omitted rather than sent as a lie.
+ */
+function clusterCapacity(): { capacityCores: number; capacityMemory?: number } {
+  const memory = capacityMemoryBytes();
+  return {
+    capacityCores: capacityCores(),
+    ...(memory > 0 ? { capacityMemory: memory } : {}),
   };
 }
 
@@ -619,7 +635,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   const selfJoinHost = clusterSelfJoinHost(opts.hostname);
   await workerTransport.connect(
     `https://${selfJoinHost}:${opts.port}${path}`,
-    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}) },
+    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}), ...clusterCapacity() },
     {
       serverCertificateHashes: [{ algorithm: 'sha-256', value: hexToBytes(certHash) }],
       ...(joinToken !== undefined ? { token: joinToken } : {}),
@@ -770,7 +786,7 @@ export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
   };
   await transport.connect(
     seed,
-    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}) },
+    { ...sampleNodeLoad(), ...(_draining ? { draining: true } : {}), ...clusterCapacity() },
     connectOptions,
   );
   _client = new ClusterClient(transport, nodeId, {

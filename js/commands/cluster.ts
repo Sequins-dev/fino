@@ -243,8 +243,15 @@ async function runClusterStatus(input: unknown): Promise<void> {
         await print('no members\n');
       }
       for (const peer of rows) {
-        const cpu = `${(peer.load.cpu * 100).toFixed(0)}%`;
-        const memory = `${(peer.load.memory / (1024 * 1024)).toFixed(0)}MiB`;
+        // Load is only meaningful against capacity: 50% of 2 cores and of 64
+        // cores are different amounts of headroom. Show the denominator when
+        // the node reported one.
+        const cores = peer.load.capacityCores;
+        const cpu = `${(peer.load.cpu * 100).toFixed(0)}%${cores !== undefined ? ` of ${cores}c` : ''}`;
+        const totalMemory = peer.load.capacityMemory;
+        const memory =
+          `${(peer.load.memory / (1024 * 1024)).toFixed(0)}MiB` +
+          (totalMemory !== undefined ? `/${(totalMemory / (1024 * 1024 * 1024)).toFixed(0)}GiB` : '');
         const idle =
           peer.load.loopIdle !== undefined
             ? ` loop-idle ${(peer.load.loopIdle * 100).toFixed(0)}%`
