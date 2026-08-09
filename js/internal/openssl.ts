@@ -717,10 +717,6 @@ const _sslSymbols = {
     parameters: ['pointer'],
     result: 'i32',
   },
-  SSL_shutdown_ex: {
-    parameters: ['pointer', 'u64', 'pointer', 'usize'],
-    result: 'i32',
-  },
   SSL_get_error: {
     parameters: ['pointer', 'i32'],
     result: 'i32',
@@ -804,10 +800,6 @@ const _sslSymbols = {
   SSL_set_recv_max_early_data: {
     parameters: ['pointer', 'u32'],
     result: 'i32',
-  },
-  SSL_set_quic_tls_early_data_enabled: {
-    parameters: ['pointer', 'i32'],
-    result: 'void',
   },
   SSL_get1_session: {
     parameters: ['pointer'],
@@ -925,6 +917,20 @@ const _sslSymbols = {
 } satisfies NativeSymbolMap;
 const _sslQuicSymbols = {
   ..._sslSymbols,
+  // Declared here rather than in `_sslSymbols` even though neither name says
+  // QUIC: both arrived with OpenSSL's QUIC stack and are absent from 3.0 and
+  // 3.1, which is what Ubuntu 22.04/24.04 and Debian 12 ship. A failed dlsym
+  // nulls the whole handle, so declaring them above cost those systems every
+  // bit of TLS — not just QUIC — and the loader reported the library as simply
+  // missing.
+  SSL_shutdown_ex: {
+    parameters: ['pointer', 'u64', 'pointer', 'usize'],
+    result: 'i32',
+  },
+  SSL_set_quic_tls_early_data_enabled: {
+    parameters: ['pointer', 'i32'],
+    result: 'void',
+  },
   OSSL_QUIC_client_thread_method: {
     parameters: [],
     result: 'pointer',
@@ -4563,7 +4569,7 @@ export function sslCtxSetRecvMaxEarlyData(ctx: object, maxBytes: number): void {
  * @internal
  */
 export function sslEnableQuicEarlyData(ssl: object, enabled: boolean): void {
-  _requireSsl().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
+  _requireSslQuic().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
 }
 /**
  * Serialize the current TLS session of an `SSL*` to DER, or `null`.
@@ -5336,7 +5342,7 @@ export function sslStreamConclude(ssl: object): void {
  * @internal
  */
 export function sslShutdownQuicRapid(ssl: object): number {
-  return _requireSsl().symbols.SSL_shutdown_ex(ssl, SSL_SHUTDOWN_FLAG_RAPID, null, 0);
+  return _requireSslQuic().symbols.SSL_shutdown_ex(ssl, SSL_SHUTDOWN_FLAG_RAPID, null, 0);
 }
 /**
  * Initiate or continue the TLS shutdown sequence.
