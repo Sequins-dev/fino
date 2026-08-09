@@ -749,9 +749,22 @@ const _sslSymbols = {
     parameters: ['pointer'],
     result: 'pointer',
   },
-  BIO_new_mem_buf: {
-    parameters: ['buffer', 'i32'],
+  // An owning memory BIO, built rather than aliased. `BIO_new_mem_buf` is
+  // shorter but keeps a pointer into the caller's bytes, and every caller here
+  // passes a JS Uint8Array: the FFI layer pins its backing store for one call
+  // and no longer, so the array can be collected while OpenSSL still holds the
+  // pointer. It is deliberately not declared — see `memBio`.
+  BIO_new: {
+    parameters: ['pointer'],
     result: 'pointer',
+  },
+  BIO_s_mem: {
+    parameters: [],
+    result: 'pointer',
+  },
+  BIO_write: {
+    parameters: ['pointer', 'buffer', 'i32'],
+    result: 'i32',
   },
   BIO_free: {
     parameters: ['pointer'],
@@ -3411,11 +3424,33 @@ function useCertFile(ctx: object, certPath: string): void {
     throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
   }
 }
+/**
+ * A memory BIO holding its own copy of `bytes`.
+ *
+ * Deliberately not `BIO_new_mem_buf`, which keeps a pointer into the caller's
+ * buffer rather than copying. That buffer is a JS `Uint8Array`: the FFI layer
+ * pins its backing store for the duration of a single call, so once
+ * `BIO_new_mem_buf` returns, nothing keeps the bytes alive and a collection
+ * during the reads that follow leaves OpenSSL parsing freed memory. Copying
+ * costs one allocation the size of a PEM blob and removes the aliasing.
+ */
+function memBio(lib: SslLibrary, bytes: Uint8Array): object {
+  const bio = lib.symbols.BIO_new(lib.symbols.BIO_s_mem()) as object | null;
+  if (bio === null) throw new Error('TLS: BIO_new(BIO_s_mem()) failed: ' + getErrorString());
+  if (bytes.byteLength > 0) {
+    const written = lib.symbols.BIO_write(bio, bytes, bytes.byteLength);
+    if (written !== bytes.byteLength) {
+      lib.symbols.BIO_free(bio);
+      throw new Error(
+        `TLS: short BIO_write (${written} of ${bytes.byteLength}): ` + getErrorString(),
+      );
+    }
+  }
+  return bio;
+}
 function useCertPem(ctx: object, certPem: string): void {
   const ssl = _requireSsl();
-  const certBytes = encodeUtf8(certPem);
-  const certBio = ssl.symbols.BIO_new_mem_buf(certBytes, certBytes.byteLength) as object | null;
-  if (certBio === null) throw new Error('TLS: BIO_new_mem_buf failed: ' + getErrorString());
+  const certBio = memBio(ssl, encodeUtf8(certPem));
   try {
     // The first certificate is the leaf; anything after it is chain.
     let index = 0;
@@ -3454,9 +3489,7 @@ function useKeyFile(ctx: object, keyPath: string): void {
 }
 function useKeyPem(ctx: object, keyPem: string): void {
   const ssl = _requireSsl();
-  const keyBytes = encodeUtf8(keyPem);
-  const keyBio = ssl.symbols.BIO_new_mem_buf(keyBytes, keyBytes.byteLength) as object | null;
-  if (keyBio === null) throw new Error('TLS: BIO_new_mem_buf failed: ' + getErrorString());
+  const keyBio = memBio(ssl, encodeUtf8(keyPem));
   try {
     const pkey = _requireCrypto().symbols.PEM_read_bio_PrivateKey(
       keyBio,
@@ -4230,8 +4263,7 @@ export function sslCtxAddCaCertificates(
   for (const entry of entries) {
     const bytes = typeof entry === 'string' ? encodeUtf8(entry) : entry;
     if (bytes.byteLength === 0) throw new TypeError('QUIC ca.pem entries must not be empty');
-    const bio = lib.symbols.BIO_new_mem_buf(bytes, bytes.byteLength) as ArrayBuffer | null;
-    if (bio === null) throw new Error('BIO_new_mem_buf failed: ' + getErrorString());
+    const bio = memBio(lib, bytes);
     try {
       let added = 0;
       while (true) {
