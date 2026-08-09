@@ -183,25 +183,8 @@ jobs:
       - name: Prepare binary
         run: chmod +x target/debug/fino
 
-      # TEMPORARY (FIN-166 diagnosis): the suite dies with SIGSEGV before the
-      # test runner prints its failure summary, so the log names which tests
-      # failed and never why. gdb turns the crash into a backtrace. Revert once
-      # the fault is identified.
-      - name: Install gdb
-        run: sudo apt-get install -y --no-install-recommends gdb
-
       - name: Run full test suite
-        run: |
-          FINO_REQUIRE_SQLITE=1 gdb -batch \
-            -ex 'set pagination off' \
-            -ex 'set confirm off' \
-            -ex 'handle SIGPIPE nostop noprint pass' \
-            -ex 'run' \
-            -ex 'printf "\n=== FAULTING THREAD ===\n"' \
-            -ex 'bt 40' \
-            -ex 'printf "\n=== ALL THREADS ===\n"' \
-            -ex 'thread apply all bt 15' \
-            --args ./target/debug/fino test tests
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
 
   release-readiness:
     name: Release Readiness
