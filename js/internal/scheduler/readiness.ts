@@ -27,8 +27,8 @@ import {
 import { currentProcessReadinessController } from './reactor.ts';
 
 /**
- * Reactor thread count: one per online processor bar one, or
- * `FINO_REACTOR_THREADS`.
+ * Reactor thread count: one per online processor, less one where there is a
+ * processor to spare, or `FINO_REACTOR_THREADS`.
  *
  * The pool sized itself from `navigator.hardwareConcurrency`, which fino does
  * not define, so it silently ran a single thread for the whole life of the
@@ -40,10 +40,15 @@ import { currentProcessReadinessController } from './reactor.ts';
  * CPU-bound realms overlap almost perfectly.
  *
  * One fewer reactor than processors, so the main thread — which owns the host
- * loop, the cluster session, and heartbeats — always has a core of its own.
- * Saturating every processor with workloads starves it into missing heartbeats,
- * and the node is swept from cluster membership while the scheduler underneath
- * it is working perfectly.
+ * loop, the cluster session, and heartbeats — has a core of its own. Saturating
+ * every processor with workloads starves it into missing heartbeats, and the
+ * node is swept from cluster membership while the scheduler underneath it is
+ * working perfectly.
+ *
+ * Not below three processors, where there is no core to spare and taking one
+ * away costs more than it protects: a two-processor host would run a single
+ * reactor, and interdependent realms — an in-process cluster seed and its
+ * workers, most visibly — cannot make progress through one.
  *
  * Pin the variable to 1 to get single-threaded behaviour back when isolating a
  * scheduling problem.
@@ -51,7 +56,8 @@ import { currentProcessReadinessController } from './reactor.ts';
 function configuredThreadCount(): number {
   const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
   if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
-  return Math.max(1, onlineProcessors() - 1);
+  const processors = onlineProcessors();
+  return processors > 2 ? processors - 1 : Math.max(1, processors);
 }
 
 /**
