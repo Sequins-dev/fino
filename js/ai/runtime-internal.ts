@@ -2089,10 +2089,12 @@ export class AgentRuntime {
    * Seeds the history strategy first: when `state.history` is present, any
    * `state.messages` beyond what that history renders are appended; for a
    * fresh (empty) strategy, all of `state.messages` are appended. The step
-   * itself emits no agent events. An ambient run context is reused when
-   * present; otherwise a new run id is minted for this call. Harnesses such as
+   * emits agent events only when `opts.onEvent` is supplied — model deltas,
+   * tool activity, retries, and guardrail actions for this one step flow
+   * through the callback. An ambient run context is reused when present;
+   * otherwise a new run id is minted for this call. Harnesses such as
    * `fino:ai/session` drive the loop step-by-step with this method so each
-   * transition can be checkpointed.
+   * transition can be checkpointed while still streaming.
    *
    * ```ts no_run
    * let r = await runtime.step({
@@ -2103,7 +2105,12 @@ export class AgentRuntime {
    * while (!r.done && !r.suspend) r = await runtime.step(r.state);
    * ```
    */
-  step(state: AgentState): Promise<StepResult> {
+  step(
+    state: AgentState,
+    opts: {
+      onEvent?: (ev: AgentEvent) => void;
+    } = {},
+  ): Promise<StepResult> {
     const existing = runContext.get();
     const runId = existing?.runId ?? newRunId();
     const doStep = async (): Promise<StepResult> => {
@@ -2130,12 +2137,18 @@ export class AgentRuntime {
           });
         }
       }
+      opts.onEvent?.({
+        type: 'step_start',
+        stepIndex: state.stepIndex,
+        model: modelId(this.#model),
+        provider: providerName(this.#model),
+      });
       const raw = await this.#step(
         state,
         this.#tools,
         this.#baseToolDefs,
         this.#toolChoice,
-        undefined,
+        opts.onEvent,
         runId,
       );
       const { state: foldedState } = await this.#foldStep(
@@ -2144,6 +2157,13 @@ export class AgentRuntime {
         this.#historyStrategy.history,
         state.cost ?? 0,
       );
+      opts.onEvent?.({
+        type: 'step_end',
+        stepIndex: state.stepIndex,
+        stopReason: raw.stopReason,
+        model: modelId(raw.activeModel),
+        provider: providerName(raw.activeModel),
+      });
       return {
         state: foldedState,
         done: raw.done,
@@ -2183,6 +2203,9 @@ export class AgentRuntime {
     state: AgentState,
     request: ToolApprovalRequest,
     approval: unknown,
+    opts: {
+      onEvent?: (ev: AgentEvent) => void;
+    } = {},
   ): Promise<StepResult> {
     const existing = runContext.get();
     const runId = existing?.runId ?? newRunId();
@@ -2193,6 +2216,12 @@ export class AgentRuntime {
       if (!this.#hasPendingToolCall(messages, request)) {
         throw new Error(`Pending tool call ${request.toolCallId} was not found`);
       }
+      opts.onEvent?.({
+        type: 'tool_start',
+        stepIndex: state.stepIndex,
+        id: request.toolCallId,
+        name: request.toolName,
+      });
       const { part, result } = await this.#invokeApprovedTool(
         request,
         approval,
@@ -2203,6 +2232,13 @@ export class AgentRuntime {
         },
         runId,
       );
+      opts.onEvent?.({
+        type: 'tool_result',
+        stepIndex: state.stepIndex,
+        id: part.id,
+        name: part.name,
+        ...(result.isError ? { isError: true } : {}),
+      });
       const toolResultMessage: ModelMessage = {
         role: 'user',
         content: [

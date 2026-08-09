@@ -36,6 +36,8 @@ import lintCommand from './lint.ts';
 import replCommand from './repl.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
+import codeCommand from './code.ts';
+import mcpCommand from './mcp.ts';
 /**
  * The root `fino` CLI command.
  *
@@ -131,6 +133,8 @@ const command = new Task({
     lintCommand,
     taskCommand,
     replCommand,
+    codeCommand,
+    mcpCommand,
   ],
 });
 export { command as default };

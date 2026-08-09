@@ -1,5 +1,5 @@
 /**
- * fino:format/markdown - safe Markdown parser and HTML renderer for documentation and templates.
+ * fino:format/markdown - safe Markdown parser with HTML and terminal renderers.
  *
  * This module implements a practical CommonMark/GFM-oriented Markdown surface
  * in TypeScript. It supports headings, paragraphs, blockquotes, thematic
@@ -7,14 +7,18 @@
  * GFM tables, reference links, autolinks, emphasis, strong text, code spans,
  * strikethrough, links, images, and raw HTML with safe defaults.
  *
- * Parsing and rendering are split: `parseMarkdown()` produces a
- * `MarkdownDocument` block tree that can be inspected, transformed, or
- * rendered multiple times with different options, while `renderMarkdown()`
+ * The module is named for its source format; the render function chosen
+ * decides the output. Parsing and rendering are split: `parseMarkdown()`
+ * produces a `MarkdownDocument` block tree that can be inspected, transformed,
+ * or rendered multiple times with different options, while `renderMarkdown()`
  * accepts either a source string or a parsed document and emits HTML.
  * `renderMarkdownInline()` renders span-level Markdown without wrapping the
  * result in block elements, which suits one-line summaries and table cells.
- * The parser never throws — malformed constructs fall back to escaped literal
- * text rather than errors.
+ * `renderMarkdownTerminal()` and `renderMarkdownInlineTerminal()` emit
+ * ANSI-styled, word-wrapped text for terminal display, with
+ * `highlightCodeTerminal()` providing TypeScript/JavaScript syntax coloring
+ * for fenced code blocks. The parser never throws — malformed constructs fall
+ * back to escaped literal text rather than errors.
  *
  * Output is safe by default. Raw HTML is escaped unless `allowRawHtml` is
  * enabled, and even then the GFM tagfilter neutralizes dangerous tags such as
@@ -44,6 +48,7 @@
  * - GitHub Flavored Markdown: https://github.github.com/gfm/
  */
 import { Scanner } from '../parsing/scanner.ts';
+import { parse as parseTypeScript } from './typescript.ts';
 /**
  * Options controlling Markdown HTML rendering, link safety, and code output.
  *
@@ -990,4 +995,643 @@ export function renderMarkdown(
     ...options,
     references,
   });
+}
+/**
+ * Options controlling Markdown terminal rendering.
+ *
+ * The defaults render ANSI-colored text wrapped at 80 columns. Set `color`
+ * to `false` for plain wrapped text, which also disables syntax highlighting
+ * in fenced code blocks.
+ *
+ * ```ts no_run
+ * import { renderMarkdownTerminal, type MarkdownTerminalOptions } from 'fino:format/markdown';
+ *
+ * const options: MarkdownTerminalOptions = { width: 100, color: true };
+ * const text = renderMarkdownTerminal('# Release\n\nShipped **today**.', options);
+ * ```
+ */
+export interface MarkdownTerminalOptions {
+  /**
+   * Wrap column for paragraphs, headings, quotes, and list items.
+   *
+   * Code blocks and tables are never wrapped. Defaults to `80`.
+   */
+  width?: number;
+  /**
+   * Emit ANSI escape sequences for styling.
+   *
+   * Defaults to `true`. When disabled the output is plain text: inline code
+   * keeps its backticks and code blocks render without highlighting.
+   */
+  color?: boolean;
+  /**
+   * Reference-style link definitions used in addition to definitions parsed
+   * from the document, matching `MarkdownOptions.references`.
+   */
+  references?: Record<string, string>;
+  /**
+   * Render fenced code blocks, replacing the default output.
+   *
+   * Receives the raw code, the language token, and any trailing info-string
+   * metadata, and returns the block's lines without indentation. Without this
+   * hook, TypeScript/JavaScript blocks are highlighted with
+   * `highlightCodeTerminal()` and other languages render as plain lines.
+   */
+  renderCode?: (code: string, lang: string, meta: string) => string[];
+}
+const ANSI_RESET = '\x1b[0m';
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+const TERMINAL_HIGHLIGHT_LANGUAGES = new Set([
+  'ts',
+  'mts',
+  'cts',
+  'tsx',
+  'typescript',
+  'js',
+  'mjs',
+  'cjs',
+  'jsx',
+  'javascript',
+]);
+const TERMINAL_KEYWORDS = new Set([
+  'abstract',
+  'any',
+  'as',
+  'asserts',
+  'async',
+  'await',
+  'bigint',
+  'boolean',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'constructor',
+  'continue',
+  'debugger',
+  'declare',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'get',
+  'if',
+  'implements',
+  'import',
+  'in',
+  'infer',
+  'instanceof',
+  'interface',
+  'keyof',
+  'let',
+  'module',
+  'namespace',
+  'never',
+  'new',
+  'null',
+  'number',
+  'object',
+  'of',
+  'private',
+  'protected',
+  'public',
+  'readonly',
+  'return',
+  'set',
+  'static',
+  'string',
+  'super',
+  'switch',
+  'symbol',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'type',
+  'typeof',
+  'undefined',
+  'unique',
+  'unknown',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+]);
+function sgr(codes: readonly string[]): string {
+  return codes.length === 0 ? '' : `\x1b[${codes.join(';')}m`;
+}
+function stripControl(text: string): string {
+  let out = '';
+  for (const ch of text) {
+    const code = ch.codePointAt(0)!;
+    if (code === 9 || code === 10 || code >= 32) {
+      if (code !== 127) out += ch;
+    }
+  }
+  return out;
+}
+function visibleWidth(text: string): number {
+  return Array.from(text.replace(ANSI_PATTERN, '')).length;
+}
+function applyAnsiCodes(active: readonly string[], text: string): string[] {
+  let codes = [...active];
+  for (const match of text.matchAll(ANSI_PATTERN)) {
+    const params = match[0]
+      .slice(2, -1)
+      .split(';')
+      .filter((p) => p !== '');
+    if (params.length === 0 || params.includes('0')) codes = [];
+    else codes.push(...params);
+  }
+  return codes;
+}
+function splitStyledLines(styled: string): string[] {
+  const parts = styled.split('\n');
+  const lines: string[] = [];
+  let active: string[] = [];
+  for (const part of parts) {
+    const prefix = sgr(active);
+    active = applyAnsiCodes(active, part);
+    lines.push(prefix + part + (active.length > 0 || prefix !== '' ? ANSI_RESET : ''));
+  }
+  return lines;
+}
+function hardSplitStyledWord(word: string, limit: number): string[] {
+  const pieces: string[] = [];
+  let piece = '';
+  let width = 0;
+  let index = 0;
+  while (index < word.length) {
+    ANSI_PATTERN.lastIndex = index;
+    const match = ANSI_PATTERN.exec(word);
+    if (match && match.index === index) {
+      piece += match[0];
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(word.codePointAt(index)!);
+    if (width >= limit) {
+      pieces.push(piece);
+      piece = '';
+      width = 0;
+    }
+    piece += ch;
+    width += 1;
+    index += ch.length;
+  }
+  if (piece !== '') pieces.push(piece);
+  return pieces.length > 0 ? pieces : [''];
+}
+function wrapStyledText(styled: string, width: number): string[] {
+  const limit = Math.max(1, width);
+  const words = styled.split(' ').filter((word) => word !== '');
+  const lines: string[] = [];
+  let line = '';
+  let lineWidth = 0;
+  let active: string[] = [];
+  const pushLine = (): void => {
+    lines.push(line + (applyAnsiCodes([], line).length > 0 ? ANSI_RESET : ''));
+    line = sgr(active);
+    lineWidth = 0;
+  };
+  for (const rawWord of words) {
+    const parts = visibleWidth(rawWord) > limit ? hardSplitStyledWord(rawWord, limit) : [rawWord];
+    for (const word of parts) {
+      const wordWidth = visibleWidth(word);
+      if (lineWidth > 0 && lineWidth + 1 + wordWidth > limit) pushLine();
+      if (lineWidth > 0) {
+        line += ' ';
+        lineWidth += 1;
+      }
+      line += word;
+      lineWidth += wordWidth;
+      active = applyAnsiCodes(active, word);
+    }
+  }
+  if (lineWidth > 0 || lines.length === 0) {
+    lines.push(line + (applyAnsiCodes([], line).length > 0 ? ANSI_RESET : ''));
+  }
+  return lines;
+}
+interface TerminalRenderContext {
+  color: boolean;
+  references: Record<string, string>;
+  renderCode?: (code: string, lang: string, meta: string) => string[];
+}
+function terminalSpan(
+  codes: readonly string[],
+  inner: string,
+  active: readonly string[],
+  color: boolean,
+): string {
+  if (!color || codes.length === 0) return inner;
+  return sgr(codes) + inner + ANSI_RESET + sgr(active);
+}
+function renderInlineTerminal(
+  markdown: string,
+  ctx: TerminalRenderContext,
+  active: readonly string[],
+): string {
+  const scanner = new Scanner(stripControl(markdown), {
+    encoding: 'utf-8',
+    format: 'markdown-inline',
+  });
+  let out = '';
+  const nested = (source: string, codes: readonly string[]): string =>
+    renderInlineTerminal(source, ctx, [...active, ...codes]);
+  while (!scanner.done) {
+    if (scanner.match('\\')) {
+      out += scanner.done ? '\\' : scanner.eat();
+      continue;
+    }
+    if (scanner.match('~~')) {
+      const text = scanner.eatUntil((value) => value === 126);
+      if (scanner.match('~~')) out += terminalSpan(['9'], nested(text, ['9']), active, ctx.color);
+      else out += '~~' + text;
+      continue;
+    }
+    if (scanner.match('`')) {
+      const code = scanner.eatUntil((value) => value === 96);
+      if (scanner.eatChar('`')) {
+        out += ctx.color ? terminalSpan(['36'], code, active, ctx.color) : '`' + code + '`';
+      } else {
+        out += '`' + code;
+      }
+      continue;
+    }
+    if (scanner.match('**')) {
+      const strong = scanner.eatUntil((value) => value === 42);
+      if (scanner.match('**')) {
+        out += terminalSpan(['1'], nested(strong, ['1']), active, ctx.color);
+      } else {
+        out += '**' + strong;
+      }
+      continue;
+    }
+    if (scanner.match('*')) {
+      const emphasis = scanner.eatUntil((value) => value === 42);
+      if (scanner.eatChar('*')) {
+        out += terminalSpan(['3'], nested(emphasis, ['3']), active, ctx.color);
+      } else {
+        out += '*' + emphasis;
+      }
+      continue;
+    }
+    if (scanner.match('![')) {
+      const alt = scanner.eatUntil((value) => value === 93);
+      if (scanner.eatChar(']') && scanner.eatChar('(')) {
+        const { href, closed } = readLinkDestination(scanner);
+        if (closed) {
+          out += terminalSpan(['2'], `[image: ${alt || href}]`, active, ctx.color);
+          continue;
+        }
+        out += `![${alt}](${href}`;
+        continue;
+      }
+      out += '![' + alt;
+      continue;
+    }
+    if (scanner.match('[')) {
+      const labelSource = scanner.eatUntil((value) => value === 93);
+      if (scanner.eatChar(']')) {
+        if (scanner.eatChar('(')) {
+          const { href, closed } = readLinkDestination(scanner);
+          if (closed) {
+            out += renderTerminalLink(labelSource, href, ctx, active, nested);
+            continue;
+          }
+          out += `[${labelSource}](${href}`;
+          continue;
+        }
+        if (scanner.eatChar('[')) {
+          const id = scanner.eatUntil((value) => value === 93);
+          if (scanner.eatChar(']')) {
+            const href = ctx.references[normalizeReference(id || labelSource)];
+            if (href) out += renderTerminalLink(labelSource, href, ctx, active, nested);
+            else out += `[${labelSource}][${id}]`;
+            continue;
+          }
+          out += `[${labelSource}][${id}`;
+          continue;
+        }
+      }
+      out += '[' + labelSource;
+      continue;
+    }
+    const rawRest = scanner.peek(4096);
+    if (rawRest.startsWith('<')) {
+      const tag = /^<\/?[A-Za-z][A-Za-z0-9-]*(?:\s[^<>]*)?>/.exec(rawRest);
+      if (tag) {
+        scanner.eat(tag[0].length);
+        out += tag[0];
+        continue;
+      }
+    }
+    const rest = scanner.peek(8);
+    if (rest.startsWith('http://') || rest.startsWith('https://')) {
+      const raw = scanner.eatUntil((value) => value <= 32);
+      const { href, suffix } = trimUrlPunctuation(raw);
+      out += terminalSpan(['4', '34'], href, active, ctx.color) + suffix;
+      continue;
+    }
+    out += scanner.eat();
+  }
+  return out;
+}
+function renderTerminalLink(
+  labelSource: string,
+  href: string,
+  ctx: TerminalRenderContext,
+  active: readonly string[],
+  nested: (source: string, codes: readonly string[]) => string,
+): string {
+  const label = terminalSpan(['4', '34'], nested(labelSource, ['4', '34']), active, ctx.color);
+  if (labelSource.trim() === href.trim()) return label;
+  return label + terminalSpan(['2'], ` (${href})`, active, ctx.color);
+}
+/**
+ * Render inline Markdown spans as a single ANSI-styled line of text.
+ *
+ * The terminal counterpart of `renderMarkdownInline()`: emphasis, strong
+ * text, code spans, strikethrough, links, and autolinks become ANSI styling
+ * instead of HTML tags, and no wrapping is applied. Control characters in the
+ * source are stripped, so untrusted text cannot inject escape sequences.
+ * Reference links resolve only against `references`.
+ *
+ * ```ts no_run
+ * import { renderMarkdownInlineTerminal } from 'fino:format/markdown';
+ *
+ * renderMarkdownInlineTerminal('Run `fino test` before **pushing**.');
+ * // 'Run \x1b[36mfino test\x1b[0m before \x1b[1mpushing\x1b[0m.'
+ * ```
+ */
+export function renderMarkdownInlineTerminal(
+  markdown: string,
+  options: MarkdownTerminalOptions = {},
+): string {
+  return renderInlineTerminal(
+    markdown,
+    {
+      color: options.color ?? true,
+      references: Object.assign({}, options.references ?? {}),
+      renderCode: options.renderCode,
+    },
+    [],
+  );
+}
+/**
+ * Highlight TypeScript or JavaScript code for terminal display.
+ *
+ * Tokenizes the code with `fino:format/typescript` and colors keywords,
+ * strings, numbers, regular expressions, and comments with ANSI sequences,
+ * returning one string per source line. Unsupported languages, parse
+ * failures, and `color: false` all degrade to the plain source lines, so the
+ * result is always safe to print.
+ *
+ * ```ts no_run
+ * import { highlightCodeTerminal } from 'fino:format/markdown';
+ *
+ * for (const line of highlightCodeTerminal('const x = 1;', 'ts')) {
+ *   console.log(line);
+ * }
+ * ```
+ */
+export function highlightCodeTerminal(
+  code: string,
+  lang: string,
+  options: { color?: boolean } = {},
+): string[] {
+  const plain = stripControl(code).replace(/\n$/, '').split('\n');
+  if (options.color === false) return plain;
+  if (!TERMINAL_HIGHLIGHT_LANGUAGES.has(lang.toLowerCase())) return plain;
+  const source = plain.join('\n');
+  let parsed;
+  try {
+    parsed = parseTypeScript(source, {
+      sourceType: 'ts',
+      tokens: true,
+    });
+  } catch (_) {
+    return plain;
+  }
+  const spans = [
+    ...parsed.comments.map((comment) => ({
+      start: comment.start,
+      end: comment.end,
+      kind: 'comment',
+    })),
+    ...parsed.tokens.map((token) => ({
+      start: token.start,
+      end: token.end,
+      kind: token.kind,
+    })),
+  ]
+    .filter((span) => span.end > span.start)
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+  const byteToIndex = byteOffsetMap(source);
+  let out = '';
+  let cursor = 0;
+  for (const span of spans) {
+    const start = byteToIndex[span.start] ?? source.length;
+    const end = byteToIndex[span.end] ?? source.length;
+    if (start < cursor || end <= start) continue;
+    out += source.slice(cursor, start);
+    const text = source.slice(start, end);
+    const codes = terminalTokenCodes(text, span.kind);
+    out += codes ? sgr([codes]) + text + ANSI_RESET : text;
+    cursor = end;
+  }
+  out += source.slice(cursor);
+  return splitStyledLines(out);
+}
+function byteOffsetMap(source: string): number[] {
+  const map: number[] = [];
+  let byteOffset = 0;
+  for (let index = 0; index < source.length; ) {
+    map[byteOffset] = index;
+    const codePoint = source.codePointAt(index)!;
+    index += codePoint > 65535 ? 2 : 1;
+    if (codePoint <= 127) byteOffset += 1;
+    else if (codePoint <= 2047) byteOffset += 2;
+    else if (codePoint <= 65535) byteOffset += 3;
+    else byteOffset += 4;
+  }
+  map[byteOffset] = source.length;
+  return map;
+}
+function terminalTokenCodes(text: string, kind: string): string | undefined {
+  if (kind === 'comment') return '90';
+  if (kind === 'jsx' || text.startsWith('"') || text.startsWith("'") || text.startsWith('`'))
+    return '32';
+  if (
+    kind.includes('bigint') ||
+    kind === 'decimal' ||
+    kind === 'float' ||
+    kind === 'binary' ||
+    kind === 'octal' ||
+    kind === 'hex'
+  )
+    return '33';
+  if (kind === '/regexp/') return '31';
+  if (TERMINAL_KEYWORDS.has(kind) || TERMINAL_KEYWORDS.has(text)) return '35';
+  return undefined;
+}
+function renderNodeTerminal(
+  node: MarkdownNode,
+  ctx: TerminalRenderContext,
+  width: number,
+): string[] {
+  if (node.kind === 'paragraph') {
+    const styled = renderInlineTerminal(node.text.replace(/\s+/g, ' ').trim(), ctx, []);
+    return wrapStyledText(styled, width);
+  }
+  if (node.kind === 'heading') {
+    const codes = ctx.color ? ['1', node.level <= 2 ? '36' : '37'] : [];
+    const text = `${'#'.repeat(node.level)} ${node.text.replace(/\s+/g, ' ').trim()}`;
+    const styled = ctx.color
+      ? sgr(codes) + renderInlineTerminal(text, ctx, codes) + ANSI_RESET
+      : renderInlineTerminal(text, ctx, []);
+    return wrapStyledText(styled, width);
+  }
+  if (node.kind === 'thematicBreak') {
+    const rule = '─'.repeat(Math.max(1, Math.min(width, 80)));
+    return [ctx.color ? sgr(['2']) + rule + ANSI_RESET : rule];
+  }
+  if (node.kind === 'blockquote') {
+    const inner = renderNodesTerminal(node.nodes, ctx, Math.max(1, width - 2));
+    const bar = ctx.color ? sgr(['2']) + '│' + ANSI_RESET + ' ' : '│ ';
+    return inner.map((line) => (line === '' ? bar.trimEnd() : bar + line));
+  }
+  if (node.kind === 'htmlBlock') {
+    return stripControl(node.html).replace(/\n$/, '').split('\n');
+  }
+  if (node.kind === 'table') return renderTableTerminal(node, ctx, width);
+  if (node.kind === 'list') return renderListTerminal(node, ctx, width);
+  const codeLines =
+    ctx.renderCode?.(node.code, node.lang, node.meta) ??
+    highlightCodeTerminal(node.code, node.lang, { color: ctx.color });
+  return codeLines.map((line) => '    ' + line);
+}
+function renderNodesTerminal(
+  nodes: MarkdownNode[],
+  ctx: TerminalRenderContext,
+  width: number,
+): string[] {
+  const lines: string[] = [];
+  for (const node of nodes) {
+    const rendered = renderNodeTerminal(node, ctx, width);
+    if (lines.length > 0 && rendered.length > 0) lines.push('');
+    lines.push(...rendered);
+  }
+  return lines;
+}
+function renderListTerminal(
+  list: Extract<MarkdownNode, { kind: 'list' }>,
+  ctx: TerminalRenderContext,
+  width: number,
+): string[] {
+  const lines: string[] = [];
+  const markerWidth = list.ordered ? String(list.items.length).length + 2 : 2;
+  for (let index = 0; index < list.items.length; index++) {
+    const item = list.items[index]!;
+    const marker = list.ordered
+      ? `${String(index + 1)}.`.padEnd(markerWidth, ' ')
+      : '•'.padEnd(markerWidth, ' ');
+    const task = item.task === undefined ? '' : item.task ? '[x] ' : '[ ] ';
+    const indent = ' '.repeat(markerWidth + task.length);
+    const inner = renderNodesTerminal(item.nodes, ctx, Math.max(1, width - indent.length));
+    if (!list.tight && lines.length > 0) lines.push('');
+    if (inner.length === 0) {
+      lines.push((marker + task).trimEnd());
+      continue;
+    }
+    lines.push(marker + task + inner[0]);
+    for (let rest = 1; rest < inner.length; rest++) {
+      const line = inner[rest]!;
+      lines.push(line === '' ? '' : indent + line);
+    }
+  }
+  return lines;
+}
+function renderTableTerminal(
+  table: Extract<MarkdownNode, { kind: 'table' }>,
+  ctx: TerminalRenderContext,
+  width: number,
+): string[] {
+  const headerCells = table.header.map((cell) => renderInlineTerminal(cell, ctx, []));
+  const rowCells = table.rows.map((row) =>
+    table.header.map((_, index) => renderInlineTerminal(row[index] ?? '', ctx, [])),
+  );
+  const widths = table.header.map((_, index) =>
+    Math.max(
+      visibleWidth(headerCells[index] ?? ''),
+      ...rowCells.map((row) => visibleWidth(row[index] ?? '')),
+      1,
+    ),
+  );
+  const pad = (cell: string, index: number): string => {
+    const gap = widths[index]! - visibleWidth(cell);
+    if (gap <= 0) return cell;
+    if (table.align[index] === 'right') return ' '.repeat(gap) + cell;
+    if (table.align[index] === 'center') {
+      const left = Math.floor(gap / 2);
+      return ' '.repeat(left) + cell + ' '.repeat(gap - left);
+    }
+    return cell + ' '.repeat(gap);
+  };
+  const joinRow = (cells: string[]): string =>
+    cells
+      .map((cell, index) => pad(cell, index))
+      .join('  ')
+      .trimEnd();
+  const header = joinRow(headerCells);
+  const rule = widths.map((w) => '─'.repeat(w)).join('  ');
+  const lines = [
+    ctx.color ? sgr(['1']) + header + ANSI_RESET : header,
+    ctx.color ? sgr(['2']) + rule + ANSI_RESET : rule,
+  ];
+  for (const row of rowCells) lines.push(joinRow(row));
+  void width;
+  return lines;
+}
+/**
+ * Render a Markdown document or source string as ANSI-styled terminal text.
+ *
+ * The terminal counterpart of `renderMarkdown()`: the same parsed
+ * `MarkdownDocument` tree renders to word-wrapped text with ANSI styling —
+ * bold headings, `│`-prefixed blockquotes, hanging-indent lists, aligned
+ * tables, dim rules, and syntax-highlighted TypeScript/JavaScript code
+ * blocks. Control characters in the source are stripped before styling is
+ * applied, so untrusted Markdown (such as model output) cannot inject its own
+ * escape sequences. Code blocks and tables are never wrapped; everything else
+ * wraps at `width`.
+ *
+ * ```ts no_run
+ * import { renderMarkdownTerminal } from 'fino:format/markdown';
+ *
+ * const text = renderMarkdownTerminal(assistantReply, { width: 100 });
+ * console.log(text);
+ * ```
+ */
+export function renderMarkdownTerminal(
+  markdown: string | MarkdownDocument,
+  options: MarkdownTerminalOptions = {},
+): string {
+  const document = typeof markdown === 'string' ? parseMarkdown(markdown) : markdown;
+  const references = Object.assign({}, document.references, options.references ?? {});
+  const ctx: TerminalRenderContext = {
+    color: options.color ?? true,
+    references,
+    renderCode: options.renderCode,
+  };
+  return renderNodesTerminal(document.nodes, ctx, Math.max(1, options.width ?? 80)).join('\n');
 }

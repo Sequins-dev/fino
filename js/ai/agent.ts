@@ -217,6 +217,8 @@ export class Agent {
    *
    * Most applications should use `generate()` or `stream()`; `step()` exists
    * for custom loop control, such as sessions checkpointing between steps.
+   * Pass `opts.onEvent` to observe the step's agent events (model deltas,
+   * tool activity, retries) while the caller owns the loop.
    *
    * ```ts no_run
    * import type { AgentState } from 'fino:ai/agent';
@@ -233,8 +235,13 @@ export class Agent {
    * }
    * ```
    */
-  step(state: AgentState): Promise<StepResult> {
-    return this.#runtime.step(state);
+  step(
+    state: AgentState,
+    opts: {
+      onEvent?: (ev: AgentEvent) => void;
+    } = {},
+  ): Promise<StepResult> {
+    return this.#runtime.step(state, opts);
   }
   /**
    * Execute or reject a pending approval-required tool call.
@@ -259,8 +266,11 @@ export class Agent {
     state: AgentState,
     request: ToolApprovalRequest,
     approval: unknown,
+    opts: {
+      onEvent?: (ev: AgentEvent) => void;
+    } = {},
   ): Promise<StepResult> {
-    return this.#runtime.approveTool(state, request, approval);
+    return this.#runtime.approveTool(state, request, approval, opts);
   }
   /**
    * Run until the agent reaches a stop condition, suspension, or error.

@@ -1192,3 +1192,84 @@ describe('SessionStore', () => {
     }
   });
 });
+describe('Session streaming', () => {
+  it('forwards model deltas and tool events through onEvent while checkpointing', async (t) => {
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo a value.',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+      execute: async (args: unknown) => `echo:${(args as { value: string }).value}`,
+    });
+    const bot = agent({
+      model: scriptModel([
+        toolCallTurn('call_1', 'echo', JSON.stringify({ value: 'hi' })),
+        endTurn('all done'),
+      ]),
+      tools: [echo],
+    });
+    const events: string[] = [];
+    let streamed = '';
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => {
+        events.push(ev.type);
+        if (ev.type === 'model_event' && ev.event.type === 'text_delta') streamed += ev.event.text;
+      },
+    });
+    const result = await sess.start('run the echo tool');
+    t.equal(result.status, 'done', 'run completed');
+    t.equal(streamed, 'all done', 'text deltas streamed through onEvent');
+    t.ok(events.includes('tool_start'), 'tool_start delivered');
+    t.ok(events.includes('tool_result'), 'tool_result delivered');
+    t.ok(events.includes('step_start'), 'step boundaries delivered');
+  });
+
+  it('streams approved-tool execution events after approveTool', async (t) => {
+    const gated = tool({
+      name: 'gated',
+      description: 'Requires approval.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+      requiresApproval: true,
+      execute: async () => 'gated ran',
+    });
+    const bot = agent({
+      model: scriptModel([toolCallTurn('call_g', 'gated', '{}'), endTurn('after approval')]),
+      tools: [gated],
+    });
+    const events: string[] = [];
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => events.push(ev.type),
+    });
+    const first = await sess.start('run the gated tool');
+    t.equal(first.status, 'suspended', 'run suspended for approval');
+    const eventsBefore = events.length;
+    const resumed = await sess.approveTool(first.state.suspendedOn!.token);
+    t.equal(resumed.status, 'done', 'run completed after approval');
+    const after = events.slice(eventsBefore);
+    t.ok(after.includes('tool_start'), 'approval execution emits tool_start');
+    t.ok(after.includes('tool_result'), 'approval execution emits tool_result');
+  });
+
+  it('does not fail the run when the onEvent observer throws', async (t) => {
+    const bot = agent({ model: scriptModel([endTurn('fine')]) });
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: () => {
+        throw new Error('observer boom');
+      },
+    });
+    const result = await sess.start('hello');
+    t.equal(result.status, 'done', 'run unaffected by observer error');
+    t.equal(result.text, 'fine', 'result text intact');
+  });
+});

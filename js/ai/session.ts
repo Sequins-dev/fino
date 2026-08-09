@@ -55,7 +55,7 @@
 import { Database, sql, type DatabaseConnection, type SqlFragment } from 'fino:database';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
 import { createSignal } from 'fino:signals';
-import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
+import type { AgentEvent, AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { Agent } from 'fino:ai/agent';
 import type { ModelMessage, Usage } from 'fino:ai/model';
 import type { Memory } from 'fino:ai/memory';
@@ -356,6 +356,17 @@ export interface SessionOptions {
    * Called after each committed step with the new run state.
    */
   onCheckpoint?: (s: RunState) => void;
+  /**
+   * Observe agent events while the session drives a run.
+   *
+   * Model text deltas, tool activity, retries, and guardrail actions from
+   * every driven step — including approved-tool execution after
+   * `approveTool()` — flow through this callback as they happen, so a UI can
+   * stream output while the session still checkpoints durably between steps.
+   * Events are delivery-only: throwing from the callback does not affect the
+   * run.
+   */
+  onEvent?: (ev: AgentEvent) => void;
 }
 let idCounter = 0;
 function newId(): string {
@@ -1021,6 +1032,17 @@ export class Session {
     this.#state = state;
     this.#stateSignal.set(cloneRunState(state));
   }
+  #safeOnEvent(): ((ev: AgentEvent) => void) | undefined {
+    const onEvent = this.#opts.onEvent;
+    if (!onEvent) return undefined;
+    return (ev) => {
+      try {
+        onEvent(ev);
+      } catch (_) {
+        // observer errors must not fail the driven run
+      }
+    };
+  }
   /**
    * Resume a non-suspended run from its persisted checkpoint.
    *
@@ -1397,6 +1419,7 @@ export class Session {
       },
       request,
       approvalValue,
+      { onEvent: this.#safeOnEvent() },
     );
     const approvedHistory = approval.state.history ?? history;
     const approvedState: RunState = {
@@ -1569,7 +1592,7 @@ export class Session {
         };
         let r: StepResult;
         try {
-          r = await this.#opts.agent.step(hState);
+          r = await this.#opts.agent.step(hState, { onEvent: this.#safeOnEvent() });
         } catch (err) {
           const e = err as Error;
           if (e.name === 'AbortError') {

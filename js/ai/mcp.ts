@@ -74,7 +74,7 @@ import type { ContentPart, ModelMessage } from 'fino:ai/model';
 import { Tool } from 'fino:ai/tool';
 import type { ToolRunContext } from 'fino:ai/tool';
 import type { Task } from 'fino:task';
-import { Process } from 'fino:process';
+import { Process, stdin, stdout } from 'fino:process';
 import { HttpClient } from 'fino:net/http/client';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { serveHttp } from 'fino:net/http/server';
@@ -187,6 +187,38 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
     async close(): Promise<void> {
       proc.stdin.close();
     },
+  };
+}
+/**
+ * Create a transport that serves MCP over the current process's stdio.
+ *
+ * The server-side counterpart of `stdioTransport()`: instead of spawning a
+ * child process and talking to *its* stdio, this speaks newline-delimited
+ * JSON-RPC over this process's own stdin and stdout, which is how MCP hosts
+ * launch server commands. Pass the result to `MCPServer.serve()` and keep
+ * all other output on stderr — anything written to stdout would corrupt the
+ * protocol stream.
+ *
+ * `close()` is a no-op: the host owns the pipe lifetime, and `serve()`
+ * resolves when stdin reaches end-of-file.
+ *
+ * ```ts no_run
+ * import { mcpServer, stdioServerTransport } from 'fino:ai/mcp';
+ *
+ * const server = mcpServer({ name: 'fino-tools', tools: [search] });
+ * await server.serve(stdioServerTransport());
+ * ```
+ */
+export function stdioServerTransport(): Transport {
+  const enc = new TextEncoder();
+  return {
+    async send(message: string): Promise<void> {
+      await stdout().write(enc.encode(message + '\n'));
+    },
+    receive(): AsyncIterable<string> {
+      return splitLines(stdin());
+    },
+    close(): void {},
   };
 }
 // ---------------------------------------------------------------------------

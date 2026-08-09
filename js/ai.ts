@@ -231,6 +231,7 @@ export {
   MCPServer,
   mcpServer,
   mountMcp,
+  stdioServerTransport,
   stdioTransport,
 } from 'fino:ai/mcp';
 export type {

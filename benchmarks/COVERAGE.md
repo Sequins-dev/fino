@@ -17,6 +17,12 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/install` | not yet benchmarked |
 | `fino:commands/doc` | not yet benchmarked |
 | `fino:commands/doc/theme` | not yet benchmarked |
+| `fino:commands/code` | not yet benchmarked |
+| `fino:commands/code/tools` | not yet benchmarked |
+| `fino:commands/code/prompt` | not yet benchmarked |
+| `fino:commands/code/engine` | not yet benchmarked |
+| `fino:commands/code/tui` | not yet benchmarked |
+| `fino:commands/mcp` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
