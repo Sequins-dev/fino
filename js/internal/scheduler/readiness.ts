@@ -27,7 +27,8 @@ import {
 import { currentProcessReadinessController } from './reactor.ts';
 
 /**
- * Reactor thread count: one per online processor, or `FINO_REACTOR_THREADS`.
+ * Reactor thread count: one per online processor bar one, or
+ * `FINO_REACTOR_THREADS`.
  *
  * The pool sized itself from `navigator.hardwareConcurrency`, which fino does
  * not define, so it silently ran a single thread for the whole life of the
@@ -38,13 +39,19 @@ import { currentProcessReadinessController } from './reactor.ts';
  * with the thread count under that scheme and is flat under this one, while
  * CPU-bound realms overlap almost perfectly.
  *
+ * One fewer reactor than processors, so the main thread — which owns the host
+ * loop, the cluster session, and heartbeats — always has a core of its own.
+ * Saturating every processor with workloads starves it into missing heartbeats,
+ * and the node is swept from cluster membership while the scheduler underneath
+ * it is working perfectly.
+ *
  * Pin the variable to 1 to get single-threaded behaviour back when isolating a
  * scheduling problem.
  */
 function configuredThreadCount(): number {
   const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
   if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
-  return onlineProcessors();
+  return Math.max(1, onlineProcessors() - 1);
 }
 
 /**
