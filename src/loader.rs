@@ -154,6 +154,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/code/prompt", "commands/code/prompt"),
     source_builtin!("fino:commands/code/engine", "commands/code/engine"),
     source_builtin!("fino:commands/code/tui", "commands/code/tui"),
+    source_builtin!("fino:commands/code/transcript", "commands/code/transcript"),
+    source_builtin!("fino:commands/code/workspace", "commands/code/workspace"),
     source_builtin!("fino:commands/mcp", "commands/mcp"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),

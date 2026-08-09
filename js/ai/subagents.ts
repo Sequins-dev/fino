@@ -175,6 +175,11 @@ export interface SubagentPoolOptions {
   onEvent?: (id: string, ev: AgentEvent) => void;
   /** Called after every child status transition. */
   onStatus?: (id: string, state: SubagentState) => void;
+  /**
+   * Called for every parent→child message: the spawn task and each
+   * `send()`. Lets harnesses mirror the parent side of child transcripts.
+   */
+  onSend?: (id: string, message: string) => void;
 }
 
 interface ChildRecord {
@@ -335,6 +340,14 @@ export class SubagentPool {
     return `subagents:${this.#opts.id}`;
   }
 
+  #notifySend(id: string, message: string): void {
+    try {
+      this.#opts.onSend?.(id, message);
+    } catch (_) {
+      // observer errors must not fail sends
+    }
+  }
+
   #childEvents(id: string): (ev: AgentEvent) => void {
     return (ev) => {
       try {
@@ -396,6 +409,7 @@ export class SubagentPool {
     record.session = sess;
     record.abort = new AbortController();
     this.#setStatus(record, 'working');
+    this.#notifySend(id, spec.task);
     void this.#drive(record, () => sess.start(spec.task, { signal: record.abort!.signal }));
     return id;
   }
@@ -441,6 +455,12 @@ export class SubagentPool {
   #setStatus(record: ChildRecord, status: SubagentStatus): void {
     record.state.status = status;
     if (status !== 'awaiting_approval') record.state.approval = undefined;
+    if (status !== 'working' && status !== 'awaiting_approval') {
+      // Idle children hold no live session or abort controller; revival and
+      // approval paths reattach from the store on demand.
+      record.session = undefined;
+      record.abort = undefined;
+    }
     this.#publish();
     try {
       this.#opts.onStatus?.(record.state.id, cloneState(record.state));
@@ -512,33 +532,77 @@ export class SubagentPool {
    *
    * A working child is steered mid-run (the message injects at its next step
    * boundary); a child suspended on non-approval input is resumed with the
-   * message; a child awaiting review starts a new run with the message,
-   * continuing its thread. Throws for finalized, failed, or cancelled
-   * children — spawn a new child instead.
+   * message; any settled child — awaiting review, finalized, failed, or
+   * cancelled — is *revived*: a new run starts on its existing thread with
+   * the full prior conversation intact, so sub-agents persist across parent
+   * turns and can be picked back up whenever more input arrives. Idle
+   * children hold no live session; revival reattaches from the store.
    */
   send(id: string, message: string): void {
     const record = this.#require(id);
     const { state } = record;
-    if (!record.session) throw new Error(`Subagent ${id} has no session`);
+    this.#notifySend(id, message);
     if (state.status === 'working' || state.status === 'awaiting_approval') {
+      if (!record.session) throw new Error(`Subagent ${id} has no session`);
       record.session.steer(message);
       return;
     }
-    if (state.status !== 'awaiting_review') {
-      throw new Error(`Subagent ${id} is ${state.status}; spawn a new subagent instead`);
-    }
-    const sess = record.session;
-    const suspended = sess.state?.status === 'suspended' ? sess.state.suspendedOn : undefined;
     record.abort = new AbortController();
     state.doneReport = undefined;
+    state.error = undefined;
     this.#setStatus(record, 'working');
+    void this.#reviveAndDrive(record, message);
+  }
+
+  async #reviveAndDrive(record: ChildRecord, message: string): Promise<void> {
+    let sess: Session;
+    try {
+      sess = await this.#sessionFor(record);
+    } catch (err) {
+      record.state.error = err instanceof Error ? err.message : String(err);
+      this.#setStatus(record, 'failed');
+      return;
+    }
+    const suspended = sess.state?.status === 'suspended' ? sess.state.suspendedOn : undefined;
     if (suspended && !isApprovalPayload(suspended.payload)) {
-      void this.#drive(record, () =>
+      await this.#drive(record, () =>
         sess.resume(suspended.token, message, { signal: record.abort!.signal }),
       );
       return;
     }
-    void this.#drive(record, () => sess.start(message, { signal: record.abort!.signal }));
+    await this.#drive(record, () => sess.start(message, { signal: record.abort!.signal }));
+  }
+
+  async #sessionFor(record: ChildRecord): Promise<Session> {
+    if (record.session) return record.session;
+    const { state } = record;
+    const built = await this.#opts.buildAgent(state.spec, {
+      id: state.id,
+      completeTool: this.#completeTool(state.id),
+    });
+    if (state.runId && (await this.#opts.store.loadRun(state.runId))) {
+      record.session = await Session.attach({
+        store: this.#opts.store,
+        agent: built.agent,
+        threadId: state.threadId,
+        runId: state.runId,
+        onEvent: this.#childEvents(state.id),
+        onCheckpoint: (run) => {
+          record.state.runId = run.runId;
+        },
+      });
+      return record.session;
+    }
+    record.session = session({
+      store: this.#opts.store,
+      agent: built.agent,
+      threadId: state.threadId,
+      onEvent: this.#childEvents(state.id),
+      onCheckpoint: (run) => {
+        record.state.runId = run.runId;
+      },
+    });
+    return record.session;
   }
 
   /**
@@ -752,8 +816,10 @@ export function subagentTools(pool: SubagentPool): Tool[] {
     tool({
       name: 'subagent_send',
       description:
-        'Send a message to a sub-agent: steers it mid-run, or starts its next run when it ' +
-        'is awaiting review. Use this to give feedback on a done report instead of finalizing.',
+        'Send a message to a sub-agent: steers it mid-run, starts its next run when it is ' +
+        'awaiting review, or revives a finalized/failed/cancelled sub-agent on its existing ' +
+        'conversation. Sub-agents persist across turns — use this to continue iterating with ' +
+        'one after gathering more input, instead of spawning a fresh sub-agent without context.',
       parameters: v.object({
         id: v.string().describe('Sub-agent id'),
         message: v.string().describe('Instruction or feedback for the sub-agent'),

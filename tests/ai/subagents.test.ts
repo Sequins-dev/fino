@@ -102,19 +102,16 @@ describe('fino:ai/subagents — SubagentPool', () => {
         return 'worked';
       },
     });
+    const sharedModel = scriptModel(
+      [toolCallTurn('call_1', 'slow', '{}'), endTurn('first run over'), endTurn('second run over')],
+      (messages) => requests.push(messages),
+    );
     pool = new SubagentPool({
       id: 'parent-2',
       store,
       buildAgent: (_spec, ctx) => ({
         agent: agent({
-          model: scriptModel(
-            [
-              toolCallTurn('call_1', 'slow', '{}'),
-              endTurn('first run over'),
-              endTurn('second run over'),
-            ],
-            (messages) => requests.push(messages),
-          ),
+          model: sharedModel,
           tools: [slowTool, ctx.completeTool],
         }),
       }),
@@ -192,7 +189,11 @@ describe('fino:ai/subagents — SubagentPool', () => {
     const settled = await pool.waitForSettled();
     t.equal(settled[0]!.status, 'failed', 'child failed');
     t.ok(settled[0]!.error?.includes('provider exploded'), 'error recorded');
-    t.throws(() => pool.send(id, 'hello?'), /failed/, 'sending to a failed child throws');
+    pool.send(id, 'try again');
+    t.equal((pool.status(id) as SubagentState).status, 'working', 'failed child revives on send');
+    await pool.waitForSettled();
+    t.equal((pool.status(id) as SubagentState).status, 'failed', 'still-broken model fails again');
+    t.throws(() => pool.send('sa_999', 'hello?'), /Unknown subagent/, 'unknown id throws');
   });
 
   it('exposes parent tools that drive the pool', async (t) => {
@@ -293,3 +294,76 @@ async function waitForStatus(
   }
   throw new Error(`subagent ${id} never reached ${status}`);
 }
+describe('fino:ai/subagents — revival', () => {
+  it('revives a finalized child on its existing thread with history intact', async (t) => {
+    const store = new InMemorySessionStore();
+    const requests: ModelMessage[][] = [];
+    const sharedRevivalModel = scriptModel(
+      [
+        completeTurn('first pass done'),
+        endTurn('ok'),
+        completeTurn('second pass done'),
+        endTurn('ok'),
+      ],
+      (messages) => requests.push(messages),
+    );
+    const pool = new SubagentPool({
+      id: 'parent-7',
+      store,
+      buildAgent: (_spec, ctx) => ({
+        agent: agent({
+          model: sharedRevivalModel,
+          tools: [ctx.completeTool],
+        }),
+      }),
+    });
+    const id = await pool.spawn({ task: 'iterate on the loader', name: 'iter' });
+    await pool.waitForSettled();
+    pool.finalize(id);
+    t.equal((pool.status(id) as SubagentState).status, 'done', 'finalized');
+
+    pool.send(id, 'please also cover the error paths');
+    t.equal((pool.status(id) as SubagentState).status, 'working', 'revived to working');
+    await pool.waitForSettled();
+    const state = pool.status(id) as SubagentState;
+    t.equal(state.status, 'awaiting_review', 'second run settled for review');
+    t.equal(state.doneReport, 'second pass done', 'new done report');
+
+    const history = await pool.history(id);
+    const texts = history
+      .filter((m) => m.role === 'user' && typeof m.content === 'string')
+      .map((m) => m.content as string);
+    t.ok(texts.includes('iterate on the loader'), 'original task still in thread');
+    t.ok(texts.includes('please also cover the error paths'), 'revival message appended');
+  });
+
+  it('revives after the pool released the idle session (reattach path)', async (t) => {
+    const path = `/tmp/fino-subagents-revive-${Date.now().toString(36)}.db`;
+    const fs = new DiskFileSystem();
+    try {
+      const store = await SqliteSessionStore.open(path);
+      const buildAgent = (_spec: unknown, ctx: { completeTool: unknown }) => ({
+        agent: agent({
+          model: scriptModel([completeTurn('done once'), endTurn('bye')]),
+          tools: [ctx.completeTool as never],
+        }),
+      });
+      const pool = new SubagentPool({ id: 'parent-8', store, buildAgent });
+      const id = await pool.spawn({ task: 'one shot', name: 'shot' });
+      await pool.waitForSettled();
+
+      const restored = await SubagentPool.restore({ id: 'parent-8', store, buildAgent });
+      restored.send(id, 'go again');
+      await restored.waitForSettled();
+      const state = restored.status(id) as SubagentState;
+      t.equal(state.status, 'awaiting_review', 'revived through restore without a live session');
+      const history = await restored.history(id);
+      t.ok(history.length >= 4, 'thread accumulated both runs');
+      await store.close();
+    } finally {
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+});

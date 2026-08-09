@@ -46,8 +46,10 @@ the behavior boundary; the session is the durability boundary.
 **Sub-agents** scale the loop out. A `SubagentPool` (`fino:ai/subagents`)
 lets a parent agent spawn concurrent child agents — each a durable session
 thread whose "user" is the parent — track their progress, steer them
-mid-run, and review their completion reports before finalizing. The pool
-persists through the session store, so restarts resurrect running children.
+mid-run, and review their completion reports before finalizing. Children
+persist beyond the turn that spawned them: any settled child can be revived
+later on its existing conversation. The pool persists through the session
+store, so restarts resurrect running children too.
 
 Around that core:
 

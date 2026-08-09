@@ -24,6 +24,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/code/tui` | not yet benchmarked |
 | `fino:commands/mcp` | not yet benchmarked |
 | `fino:ai/subagents` | not yet benchmarked |
+| `fino:commands/code/transcript` | not yet benchmarked |
+| `fino:commands/code/workspace` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |

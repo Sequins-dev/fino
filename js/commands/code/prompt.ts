@@ -88,6 +88,7 @@ You can fan work out to concurrent sub-agents with the subagent_* tools. Use the
 - Spawn all independent sub-agents first, then block on \`subagent_wait\` (mode "any" to react to the first completion, "all" for everything). Check \`subagent_status\` while deciding.
 - Each finished sub-agent reports a done summary and waits for your review. Read it critically: either \`subagent_finalize\` to accept, or \`subagent_send\` follow-up instructions to iterate — the same way the user iterates with you. Never leave a sub-agent unreviewed.
 - \`subagent_send\` also steers a sub-agent mid-run when its direction needs correcting.
+- Sub-agents persist across turns. After the user provides more input in a later turn, prefer reviving an existing sub-agent with \`subagent_send\` — it keeps its full prior context — over spawning a fresh one without it.
 - Sub-agents' gated tool calls (writes, shell) are approved by the user, not by you.`;
 
 const SUBAGENT_ROLE = `

@@ -55,22 +55,43 @@ main agent's or any sub-agent's — the request appears in a blocking popover
 over the transcript regardless of the active tab; `y`/`n` are the only inputs
 accepted until it is decided, and concurrent requests queue.
 
+## Sessions
+
+Every conversation is a registered session with a durable id and a title
+derived from its first prompt. `fino code sessions` lists them
+(`--archived` for the history list), `fino code --thread <id>` reopens one,
+and `--continue` resumes the most recent. Inside the TUI, `Ctrl+B` opens the
+collapsible session sidebar: active sessions ordered by recent activity with
+`⟳` working / `▲` waiting / `·` idle indicators, each expandable
+(`Ctrl+→`) into its nested sub-agent rows — active children bright, settled
+ones dim — with archived sessions in a scrollable history list below.
+Several sessions can run turns at once; `Ctrl+↑`/`Ctrl+↓` (or clicking)
+switches focus, `/new` starts another session, `/archive` moves the current
+one to history, and `/title <name>` renames it.
+
 ## Sub-agents
 
 The agent can fan work out to concurrent sub-agents (`fino:ai/subagents`),
 each a durable conversation between the parent agent and a child agent —
 mirroring how the main chat is a conversation between you and the parent.
-Every sub-agent gets its own read-only tab (switch with `Ctrl+←`/`Ctrl+→` or
-by clicking; sub-agents are agent-driven, so their tabs have no input box).
-Children default to the parent's model and inherit the parent's mode:
-planning-mode parents spawn read-only children. When a child believes its
-task is done it reports a summary and waits; the parent reviews and either
-finalizes the child or keeps iterating with follow-up messages.
+Every sub-agent gets its own read-only view (cycle with `Ctrl+←`/`Ctrl+→`
+when the sidebar is closed, or select it in the sidebar; sub-agents are
+agent-driven, so their views have no input box). Children default to the
+parent's model and inherit the parent's mode: planning-mode parents spawn
+read-only children. When a child believes its task is done it reports a
+summary and waits; the parent reviews and either finalizes the child or
+keeps iterating with follow-up messages.
+
+Sub-agents persist across turns. A parent turn can end with its children
+quiescent, and after you provide more input the parent can revive any of
+them — including finalized ones — with `subagent_send`, continuing the same
+child conversation with its full context. Idle children hold no resources;
+revival reattaches them from the store.
 
 The turn stays active while sub-agents work — if the parent stops early, the
 engine waits for the children to settle and automatically continues the
 conversation with a settlement summary so nothing goes unreviewed. `Esc` in
-a sub-agent tab cancels that child's run; `/agents` lists all sub-agents.
+a sub-agent view cancels that child's run; `/agents` lists all sub-agents.
 
 ## Queueing and steering
 
@@ -81,12 +102,21 @@ turn at the next step boundary, redirecting the agent mid-turn. Whatever is
 still queued when the turn ends is sent as the next turn. The parent agent
 steers its sub-agents the same way through `subagent_send`.
 
-## Durability
+## Durability and transcripts
 
 Threads, sub-agent conversations, and pending approvals all persist in the
 session store. After a crash or Ctrl-C, `fino code --continue` re-drives an
 interrupted run from its last checkpoint, re-presents a pending approval
-popover, restores sub-agent tabs, and resumes children that were mid-run.
+popover, restores sub-agent views, and resumes children that were mid-run.
+
+Alongside the authoritative SQLite store, every session mirrors its timeline
+to append-only JSONL transcripts under `.fino/code/transcripts/` —
+`<session>.jsonl` for the main conversation and `<session>/<child>.jsonl`
+per sub-agent, one event per line (user input, steering, assistant messages,
+tool activity, approvals, sub-agent status). Transcripts are human-readable,
+greppable, and auditable by the agent itself through its own file tools;
+they are a mirror, so deleting them loses nothing operational.
+`--no-transcripts` disables the mirror.
 
 ## Documentation Index
 

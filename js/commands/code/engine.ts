@@ -55,6 +55,7 @@ import { join } from 'fino:file/path';
 import { env } from 'fino:process';
 import { createCodeTools } from 'fino:commands/code/tools';
 import { codeSystemPrompt } from 'fino:commands/code/prompt';
+import { foldEventsToTranscript, SessionTranscript } from 'fino:commands/code/transcript';
 
 /**
  * Options for `CodeEngine.create()`.
@@ -85,10 +86,31 @@ export interface CodeEngineOptions {
    * pass `false` to keep the session in memory.
    */
   sessionDb?: string | false;
+  /**
+   * Use this already-open store instead of opening one. The engine does not
+   * close an injected store; `CodeWorkspace` shares one across sessions.
+   */
+  store?: SessionStore;
   /** Continue this exact thread id. */
   threadId?: string;
   /** Continue the most recently updated thread in the store. */
   continueThread?: boolean;
+  /**
+   * JSONL transcript mirror directory. Defaults to
+   * `<cwd>/.fino/code/transcripts`; pass `false` to disable mirroring.
+   */
+  transcriptsDir?: string | false;
+  /**
+   * Observe coarse engine activity for session lists and sidebars:
+   * `working` while a turn drives, `waiting` when suspended on an approval,
+   * `idle` between turns.
+   */
+  onActivity?: (status: 'working' | 'waiting' | 'idle') => void;
+  /**
+   * Called with each user turn input before it runs — used by
+   * `CodeWorkspace` to derive session titles and activity timestamps.
+   */
+  onTurn?: (input: string) => void;
 }
 
 /**
@@ -154,6 +176,10 @@ export class CodeEngine {
   #driving = false;
   #queuedSteer: string[] = [];
   #pool?: SubagentPool;
+  #transcript?: SessionTranscript;
+  #transcriptFold?: ReturnType<typeof foldEventsToTranscript>;
+  #childFolds = new Map<string, ReturnType<typeof foldEventsToTranscript>>();
+  #activity: 'working' | 'waiting' | 'idle' = 'idle';
   #reviewPrompted = new Set<string>();
   #subagentEventListener?: (id: string, ev: AgentEvent) => void;
   #subagentStatusListener?: (id: string, state: SubagentState) => void;
@@ -174,6 +200,14 @@ export class CodeEngine {
     this.#threadId = threadId;
     this.#storeCloser = storeCloser;
     if (opts.maxCostUsd !== undefined) this.#budget = new Budget({ usd: opts.maxCostUsd });
+    const mirror =
+      opts.transcriptsDir !== false &&
+      !(opts.transcriptsDir === undefined && opts.sessionDb === false);
+    if (mirror) {
+      const dir = opts.transcriptsDir ?? join(opts.cwd, '.fino', 'code', 'transcripts').toString();
+      this.#transcript = new SessionTranscript(dir, threadId);
+      this.#transcriptFold = foldEventsToTranscript(this.#transcript.parent());
+    }
   }
 
   /**
@@ -210,10 +244,26 @@ export class CodeEngine {
       });
     let store: SessionStore;
     let storeCloser: (() => Promise<void>) | undefined;
-    if (opts.sessionDb === false) {
+    if (opts.store) {
+      store = opts.store;
+    } else if (opts.sessionDb === false) {
       store = new InMemorySessionStore();
     } else {
       const path = opts.sessionDb ?? join(opts.cwd, '.fino', 'code', 'sessions.db').toString();
+      const { DiskFileSystem } = await import('fino:file');
+      const { dirname } = await import('fino:file/path');
+      const fs = new DiskFileSystem();
+      const parent = dirname(path).toString();
+      try {
+        await fs.mkdir(parent);
+      } catch (_) {
+        try {
+          await fs.mkdir(dirname(parent).toString());
+          await fs.mkdir(parent);
+        } catch (_) {
+          // already exists, or open() below will report the real problem
+        }
+      }
       const sqlite = await SqliteSessionStore.open(path);
       store = sqlite;
       storeCloser = () => sqlite.close();
@@ -235,6 +285,16 @@ export class CodeEngine {
     this.#pool = await SubagentPool.restore(this.#poolOptions());
   }
 
+  #childFold(id: string): ReturnType<typeof foldEventsToTranscript> | undefined {
+    if (!this.#transcript) return undefined;
+    let fold = this.#childFolds.get(id);
+    if (!fold) {
+      fold = foldEventsToTranscript(this.#transcript.child(id));
+      this.#childFolds.set(id, fold);
+    }
+    return fold;
+  }
+
   #poolOptions() {
     return {
       id: this.#threadId,
@@ -242,6 +302,7 @@ export class CodeEngine {
       buildAgent: (spec: SubagentSpec, ctx: SubagentBuildContext) =>
         this.#buildChildAgent(spec, ctx),
       onEvent: (id: string, ev: AgentEvent) => {
+        this.#childFold(id)?.onEvent(ev);
         try {
           this.#subagentEventListener?.(id, ev);
         } catch (_) {
@@ -249,11 +310,25 @@ export class CodeEngine {
         }
       },
       onStatus: (id: string, state: SubagentState) => {
+        if (this.#transcript && state.status !== 'working') {
+          this.#childFold(id)?.flush();
+          this.#transcript.parent().append({
+            type: 'subagent_status',
+            id,
+            name: state.name,
+            status: state.status,
+            ...(state.doneReport ? { doneReport: state.doneReport } : {}),
+            ...(state.error ? { error: state.error } : {}),
+          });
+        }
         try {
           this.#subagentStatusListener?.(id, state);
         } catch (_) {
           // observer errors must not fail transitions
         }
+      },
+      onSend: (id: string, message: string) => {
+        this.#transcript?.child(id).append({ type: 'user', text: message });
       },
     };
   }
@@ -336,6 +411,19 @@ export class CodeEngine {
     this.#pool = undefined;
     this.#queuedSteer = [];
     this.#reviewPrompted = new Set();
+    if (this.#transcript) {
+      void this.#transcript.close();
+      const dir =
+        this.#opts.transcriptsDir === false
+          ? undefined
+          : (this.#opts.transcriptsDir ??
+            join(this.#opts.cwd, '.fino', 'code', 'transcripts').toString());
+      if (dir) {
+        this.#transcript = new SessionTranscript(dir, this.#threadId);
+        this.#transcriptFold = foldEventsToTranscript(this.#transcript.parent());
+        this.#childFolds = new Map();
+      }
+    }
     return this.#threadId;
   }
 
@@ -366,6 +454,7 @@ export class CodeEngine {
    */
   steer(message: string): void {
     if (this.#driving && this.#active) {
+      this.#transcript?.parent().append({ type: 'steer', text: message });
       this.#active.steer(message);
       return;
     }
@@ -392,6 +481,14 @@ export class CodeEngine {
     const pool = this.#pool;
     if (!pool) return Promise.resolve([]);
     return pool.history(id);
+  }
+
+  /** Render this session's durable main-thread history. */
+  async history(): Promise<ModelMessage[]> {
+    const thread = await this.#store.loadThread(this.#threadId);
+    if (!thread?.historyRevisionId) return [];
+    const history = await this.#store.loadHistory(thread.historyRevisionId);
+    return history?.render() ?? [];
   }
 
   /** Approve a sub-agent's pending gated tool call. */
@@ -432,8 +529,35 @@ export class CodeEngine {
     });
   }
 
+  #setActivity(activity: 'working' | 'waiting' | 'idle'): void {
+    if (this.#activity === activity) return;
+    this.#activity = activity;
+    try {
+      this.#opts.onActivity?.(activity);
+    } catch (_) {
+      // observer errors must not fail turns
+    }
+  }
+
+  /** Coarse activity for session lists: working, waiting, or idle. */
+  get activity(): 'working' | 'waiting' | 'idle' {
+    return this.#activity;
+  }
+
+  #turnEvents(hooks: TurnHooks): ((ev: AgentEvent) => void) | undefined {
+    const fold = this.#transcriptFold;
+    if (!fold) return hooks.onEvent;
+    if (!hooks.onEvent) return fold.onEvent;
+    const external = hooks.onEvent;
+    return (ev) => {
+      fold.onEvent(ev);
+      external(ev);
+    };
+  }
+
   async #driveTracked(run: () => Promise<RunResult>): Promise<RunResult> {
     this.#driving = true;
+    this.#setActivity('working');
     try {
       return await run();
     } finally {
@@ -442,14 +566,17 @@ export class CodeEngine {
   }
 
   async #runOnThread(input: string, hooks: TurnHooks): Promise<RunResult> {
+    const onEvent = this.#turnEvents(hooks);
     const sess = session({
       store: this.#store,
       agent: this.#buildAgent(),
       threadId: this.#threadId,
-      ...(hooks.onEvent ? { onEvent: hooks.onEvent } : {}),
+      ...(onEvent ? { onEvent } : {}),
     });
     this.#active = sess;
     const steered = this.#queuedSteer.splice(0);
+    for (const text of steered) this.#transcript?.parent().append({ type: 'steer', text });
+    this.#transcript?.parent().append({ type: 'user', text: input });
     const messages: ModelMessage[] = [
       ...steered.map((content): ModelMessage => ({ role: 'user', content })),
       { role: 'user', content: input },
@@ -497,7 +624,13 @@ export class CodeEngine {
         this.#queuedSteer.unshift(...result.unconsumedSteering);
       }
     }
-    return this.#toTurn(result);
+    const turn = this.#toTurn(result);
+    this.#transcriptFold?.flush();
+    if (turn.status !== 'suspended') {
+      this.#transcript?.parent().append({ type: 'turn_end', status: turn.status });
+    }
+    this.#setActivity(turn.status === 'suspended' ? 'waiting' : 'idle');
+    return turn;
   }
 
   /**
@@ -511,7 +644,17 @@ export class CodeEngine {
    * with a settlement summary for review.
    */
   async runTurn(input: string, hooks: TurnHooks = {}): Promise<TurnResult> {
-    return this.#finishTurn(await this.#runOnThread(input, hooks), hooks);
+    try {
+      this.#opts.onTurn?.(input);
+    } catch (_) {
+      // observer errors must not fail turns
+    }
+    try {
+      return await this.#finishTurn(await this.#runOnThread(input, hooks), hooks);
+    } catch (err) {
+      this.#setActivity('idle');
+      throw err;
+    }
   }
 
   /**
@@ -520,10 +663,16 @@ export class CodeEngine {
   async approve(token: string, hooks: TurnHooks = {}): Promise<TurnResult> {
     const active = this.#active;
     if (!active) throw new Error('No active session to approve');
-    return this.#finishTurn(
-      await this.#driveTracked(() => active.approveTool(token, { signal: hooks.signal })),
-      hooks,
-    );
+    this.#transcript?.parent().append({ type: 'approval_decision', approved: true });
+    try {
+      return await this.#finishTurn(
+        await this.#driveTracked(() => active.approveTool(token, { signal: hooks.signal })),
+        hooks,
+      );
+    } catch (err) {
+      this.#setActivity('idle');
+      throw err;
+    }
   }
 
   /**
@@ -533,10 +682,20 @@ export class CodeEngine {
   async reject(token: string, reason?: string, hooks: TurnHooks = {}): Promise<TurnResult> {
     const active = this.#active;
     if (!active) throw new Error('No active session to reject');
-    return this.#finishTurn(
-      await this.#driveTracked(() => active.rejectTool(token, reason, { signal: hooks.signal })),
-      hooks,
-    );
+    this.#transcript?.parent().append({
+      type: 'approval_decision',
+      approved: false,
+      ...(reason ? { reason } : {}),
+    });
+    try {
+      return await this.#finishTurn(
+        await this.#driveTracked(() => active.rejectTool(token, reason, { signal: hooks.signal })),
+        hooks,
+      );
+    } catch (err) {
+      this.#setActivity('idle');
+      throw err;
+    }
   }
 
   /**
@@ -551,13 +710,14 @@ export class CodeEngine {
   async recoverTurn(hooks: TurnHooks = {}): Promise<TurnResult | null> {
     const runs = await this.#store.listRuns({ threadId: this.#threadId });
     const latest = runs[runs.length - 1];
+    const onEvent = this.#turnEvents(hooks);
     if (latest && (latest.status === 'running' || latest.status === 'error')) {
       const sess = await Session.attach({
         store: this.#store,
         agent: this.#buildAgent(),
         threadId: this.#threadId,
         runId: latest.runId,
-        ...(hooks.onEvent ? { onEvent: hooks.onEvent } : {}),
+        ...(onEvent ? { onEvent } : {}),
       });
       this.#active = sess;
       return this.#finishTurn(
@@ -571,9 +731,10 @@ export class CodeEngine {
         agent: this.#buildAgent(),
         threadId: this.#threadId,
         runId: latest.runId,
-        ...(hooks.onEvent ? { onEvent: hooks.onEvent } : {}),
+        ...(onEvent ? { onEvent } : {}),
       });
       this.#active = sess;
+      this.#setActivity('waiting');
       return this.#toTurn({ runId: latest.runId, status: 'suspended', state: latest });
     }
     if (this.#pool && (this.#pool.active || this.#needsSettlementPrompt())) {
@@ -585,9 +746,11 @@ export class CodeEngine {
   }
 
   /**
-   * Close the underlying session store.
+   * Close the transcript mirror and, when this engine opened its own store,
+   * the session store. Injected (workspace-shared) stores stay open.
    */
   async close(): Promise<void> {
+    await this.#transcript?.close();
     await this.#storeCloser?.();
   }
 
@@ -595,6 +758,11 @@ export class CodeEngine {
     if (result.status === 'suspended') {
       const suspendedOn = result.state.suspendedOn;
       if (suspendedOn && isApprovalPayload(suspendedOn.payload)) {
+        this.#transcript?.parent().append({
+          type: 'approval_request',
+          tool: suspendedOn.payload.toolName,
+          args: suspendedOn.payload.args ?? {},
+        });
         return {
           status: 'suspended',
           approval: { token: suspendedOn.token, request: suspendedOn.payload },

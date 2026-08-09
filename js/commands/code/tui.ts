@@ -1,29 +1,29 @@
 /**
- * fino:commands/code/tui — interactive terminal interface for `fino code`.
+ * fino:commands/code/tui — multi-session terminal interface for `fino code`.
  *
- * A tabbed chat TUI over `fino:tty/tui`. The main tab is the human ↔ agent
- * conversation: a scrolling transcript with markdown-rendered assistant
- * messages and tool activity, an input band, and a status bar. Every spawned
- * sub-agent gets its own read-only tab showing the parent ↔ child
- * conversation as it streams; sub-agents are agent-driven, so their tabs
- * have no input. Tool approvals — the parent's and every child's — surface
- * in one global modal popover that overlays the transcript regardless of the
- * active tab and blocks all other interaction until decided with `y`/`n`.
+ * A workspace TUI over `fino:tty/tui`. A collapsible sidebar (hidden by
+ * default for a clean single-session experience, `Ctrl+B` to toggle) lists
+ * open sessions ordered by recent activity with working/waiting/idle
+ * indicators, expands each session into its nested sub-agent rows — active
+ * children bright, settled ones dim — and keeps archived sessions in a
+ * history list below. Several sessions can run turns concurrently; the
+ * focused one renders as a transcript with markdown-rendered assistant
+ * messages, a message queue with clickable `[steer now]` actions, an input
+ * line, and a status bar. Sub-agent views are read-only parent↔child
+ * conversations. Tool approvals from every session and sub-agent surface in
+ * one global blocking popover answered with `y`/`n`.
  *
- * While a turn is active (including while sub-agents work), typed messages
- * queue instead of sending; each queued message has a clickable
- * `[steer now]` action (Ctrl+S for the oldest) that injects it into the
- * running turn as a steering message, and whatever is still queued when the
- * turn ends is sent as the next turn. Turn execution, durability, and the
- * sub-agent pool live in `CodeEngine`; this module only maps keys, clicks,
- * and agent events onto engine calls and screen updates.
+ * Turn execution, durability, transcripts, and the sub-agent pools live in
+ * `CodeEngine`/`CodeWorkspace`; this module maps keys, clicks, and agent
+ * events onto them.
  *
  * ```ts no_run
- * import { CodeEngine } from 'fino:commands/code/engine';
+ * import { CodeWorkspace } from 'fino:commands/code/workspace';
  * import { runCodeTui } from 'fino:commands/code/tui';
  *
- * const engine = await CodeEngine.create({ cwd: '/repo' });
- * await runCodeTui(engine, { recover: true });
+ * const workspace = await CodeWorkspace.open({ cwd: '/repo' });
+ * const engine = await workspace.createSession();
+ * await runCodeTui(workspace, { sessionId: engine.threadId });
  * ```
  */
 import type { AgentEvent, ToolApprovalRequest } from 'fino:ai/runtime';
@@ -31,17 +31,9 @@ import type { SubagentState } from 'fino:ai/subagents';
 import type { ModelMessage } from 'fino:ai/model';
 import { renderMarkdownTerminal } from 'fino:format/markdown';
 import { h } from 'fino:ui';
-import {
-  Box,
-  Input,
-  ScrollView,
-  Text,
-  measureTerminalSize,
-  render,
-  type TuiApp,
-  type TuiEvent,
-} from 'fino:tty/tui';
+import { Box, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } from 'fino:tty/tui';
 import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
+import type { CodeWorkspace } from 'fino:commands/code/workspace';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -50,9 +42,13 @@ const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
+const BLUE_BG = '\x1b[44m';
+const MAGENTA_BG = '\x1b[45m';
 const RESET = '\x1b[0m';
+const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const REDRAW_INTERVAL_MS = 33;
 const QUEUE_PANE_MAX = 3;
+const SIDEBAR_WIDTH = 28;
 
 interface TranscriptEntry {
   kind: 'user' | 'assistant' | 'tool' | 'notice';
@@ -64,23 +60,46 @@ interface TranscriptEntry {
   cachedKey?: string;
 }
 
-interface ApprovalItem {
-  sourceLabel: string;
-  request: ToolApprovalRequest;
-  decide: (approved: boolean) => void;
-}
-
-interface QueuedMessage {
-  text: string;
-}
-
 interface TabView {
   entries: TranscriptEntry[];
   scrollOffset: number;
   stickToBottom: boolean;
 }
 
-const STATUS_GLYPHS: Record<SubagentState['status'], string> = {
+interface QueuedMessage {
+  text: string;
+}
+
+interface SessionUI {
+  id: string;
+  engine: CodeEngine;
+  views: Map<string, TabView>;
+  viewOrder: string[];
+  viewNames: Map<string, string>;
+  focusedView: string;
+  input: string;
+  inputHistory: string[];
+  historyIndex: number;
+  queue: QueuedMessage[];
+  busy: boolean;
+  abort?: AbortController;
+  status: string;
+  seenChildApprovals: Set<string>;
+}
+
+interface ApprovalItem {
+  sessionId: string;
+  sourceLabel: string;
+  request: ToolApprovalRequest;
+  decide: (approved: boolean) => void;
+}
+
+type SidebarRow =
+  | { kind: 'session'; id: string; archived: boolean }
+  | { kind: 'child'; sessionId: string; childId: string }
+  | { kind: 'divider'; label: string };
+
+const CHILD_GLYPHS: Record<SubagentState['status'], string> = {
   working: '⟳',
   awaiting_approval: '?',
   awaiting_review: '✔',
@@ -88,6 +107,36 @@ const STATUS_GLYPHS: Record<SubagentState['status'], string> = {
   failed: '✗',
   cancelled: '✗',
 };
+
+function visibleWidth(text: string): number {
+  return Array.from(text.replace(ANSI_RE, '')).length;
+}
+
+function padVisible(text: string, width: number): string {
+  const gap = width - visibleWidth(text);
+  return gap > 0 ? text + ' '.repeat(gap) : text;
+}
+
+function clipVisible(text: string, width: number): string {
+  if (visibleWidth(text) <= width) return text;
+  let out = '';
+  let seen = 0;
+  let index = 0;
+  while (index < text.length && seen < width - 1) {
+    ANSI_RE.lastIndex = index;
+    const match = ANSI_RE.exec(text);
+    if (match && match.index === index) {
+      out += match[0];
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(text.codePointAt(index)!);
+    out += ch;
+    seen += 1;
+    index += ch.length;
+  }
+  return out + '…' + RESET;
+}
 
 function wrapPlain(text: string, width: number): string[] {
   const limit = Math.max(1, width);
@@ -117,82 +166,79 @@ function wrapPlain(text: string, width: number): string[] {
  * Options for `runCodeTui()`.
  */
 export interface CodeTuiOptions {
+  /** Session to focus initially; defaults to the most recent. */
+  sessionId?: string;
   /**
-   * Attempt `engine.recoverTurn()` on startup — resume a crashed run,
-   * re-present a suspended approval, and pick up restored sub-agents.
+   * Attempt `engine.recoverTurn()` on the initial session — resume a
+   * crashed run, re-present a suspended approval, pick up sub-agents.
    */
   recover?: boolean;
 }
 
 /**
- * Run the interactive `fino code` TUI until the user exits.
+ * Run the interactive multi-session `fino code` TUI until the user exits.
  *
- * Enters the alternate screen, drives turns on the given engine, and always
- * restores the terminal — including on errors — before resolving.
+ * Enters the alternate screen, drives turns across the workspace's
+ * sessions, and always restores the terminal — including on errors —
+ * before resolving.
  */
-export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}): Promise<void> {
+export async function runCodeTui(
+  workspace: CodeWorkspace,
+  opts: CodeTuiOptions = {},
+): Promise<void> {
   const terminal = await measureTerminalSize();
   const width = terminal.width;
   const height = terminal.height;
-  const contentWidth = Math.max(20, width - 2);
-  const inputBandHeight = 3;
-  const statusHeight = 1;
-  const tabBarHeight = 1;
 
-  const tabIds: string[] = [];
-  const tabNames = new Map<string, string>();
-  const tabByChild = new Map<string, TabView>();
-  let activeTab = 'main';
-  function ensureTab(id: string, name: string): TabView {
-    let view = tabByChild.get(id);
-    if (!view) {
-      view = { entries: [], scrollOffset: 0, stickToBottom: true };
-      tabByChild.set(id, view);
-      tabIds.push(id);
-    }
-    tabNames.set(id, name);
-    return view;
-  }
-  const main = ensureTab('main', 'main');
-  main.entries.push({
-    kind: 'notice',
-    text: 'fino code — /help for commands, Shift+Tab toggles plan mode, Ctrl+←/→ switch tabs, Esc cancels.',
-    done: true,
-  });
-
-  let app: TuiApp;
-  let input = '';
-  const inputHistory: string[] = [];
-  let historyIndex = -1;
-  let status = 'Ready';
-  let busy = false;
+  const sessions = new Map<string, SessionUI>();
+  let focusedSessionId = '';
+  let sidebarVisible = false;
+  let sidebarIndex = 0;
+  let sidebarScroll = 0;
+  const expanded = new Set<string>();
   const approvalQueue: ApprovalItem[] = [];
-  const seenChildApprovals = new Set<string>();
-  const messageQueue: QueuedMessage[] = [];
-  let currentAbort: AbortController | undefined;
+  let app: TuiApp;
   let lastPaint = 0;
   let paintTimer: ReturnType<typeof setTimeout> | undefined;
   let finish: (() => void) | undefined;
   const finished = new Promise<void>((resolve) => {
     finish = resolve;
   });
-  let tabHitSpans: Array<{ start: number; end: number; id: string }> = [];
   let queueHitRows: Array<{ row: number; buttonStart: number; buttonEnd: number; index: number }> =
     [];
   let queueTop = 0;
+  let sidebarRowsCache: SidebarRow[] = [];
 
-  function entryLines(entry: TranscriptEntry): string[] {
-    const key = `${entry.kind}:${entry.done}:${entry.toolState ?? ''}:${entry.text.length}`;
+  function contentWidth(): number {
+    return Math.max(20, width - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0) - 2);
+  }
+
+  function focused(): SessionUI | undefined {
+    return sessions.get(focusedSessionId);
+  }
+
+  function view(session: SessionUI, id: string): TabView {
+    let v = session.views.get(id);
+    if (!v) {
+      v = { entries: [], scrollOffset: 0, stickToBottom: true };
+      session.views.set(id, v);
+      session.viewOrder.push(id);
+    }
+    return v;
+  }
+
+  function entryLines(entry: TranscriptEntry, cw: number): string[] {
+    const key = `${entry.kind}:${entry.done}:${entry.toolState ?? ''}:${entry.text.length}:${cw}`;
     if (entry.cachedKey === key && entry.cachedLines) return entry.cachedLines;
     let lines: string[];
     if (entry.kind === 'user') {
-      lines = wrapPlain(entry.text, contentWidth - 2).map(
+      lines = wrapPlain(entry.text, cw - 2).map(
         (line, index) => (index === 0 ? `${CYAN}❯${RESET} ` : '  ') + line,
       );
     } else if (entry.kind === 'assistant') {
       lines = entry.done
-        ? renderMarkdownTerminal(entry.text, { width: contentWidth }).split('\n')
-        : wrapPlain(entry.text, contentWidth);
+        ? renderMarkdownTerminal(entry.text, { width: cw }).split('\n')
+        : wrapPlain(entry.text, cw);
     } else if (entry.kind === 'tool') {
       const mark =
         entry.toolState === 'running'
@@ -202,82 +248,372 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
             : `${RED}●${RESET}`;
       lines = [`${mark} ${DIM}${entry.text}${RESET}`];
     } else {
-      lines = wrapPlain(entry.text, contentWidth).map((line) => `${DIM}${line}${RESET}`);
+      lines = wrapPlain(entry.text, cw).map((line) => `${DIM}${line}${RESET}`);
     }
     entry.cachedKey = key;
     entry.cachedLines = lines;
     return lines;
   }
 
-  function tabRows(view: TabView): string[] {
+  function transcriptRows(session: SessionUI): string[] {
+    const cw = contentWidth();
+    const tab = view(session, session.focusedView);
     const rows: string[] = [];
-    for (const entry of view.entries) {
+    for (const entry of tab.entries) {
       if (rows.length > 0) rows.push('');
-      rows.push(...entryLines(entry));
+      rows.push(...entryLines(entry, cw));
     }
     return rows;
   }
 
-  function activeView(): TabView {
-    return tabByChild.get(activeTab) ?? main;
+  function notice(session: SessionUI, text: string, viewId = 'main'): void {
+    view(session, viewId).entries.push({ kind: 'notice', text, done: true });
+    redraw();
   }
 
-  function queuePaneLines(): string[] {
-    if (messageQueue.length === 0) return [];
-    const lines: string[] = [];
-    queueHitRows = [];
-    const shown = messageQueue.slice(0, QUEUE_PANE_MAX);
-    for (let index = 0; index < shown.length; index++) {
-      const label = ' [steer now]';
-      const room = Math.max(4, width - label.length - 4);
-      const text = shown[index]!.text;
-      const preview = text.length > room ? text.slice(0, room - 1) + '…' : text;
-      const line = `${DIM}· ${preview}${RESET}${YELLOW}${label}${RESET}`;
-      queueHitRows.push({
-        row: index,
-        buttonStart: 2 + preview.length + 1,
-        buttonEnd: 2 + preview.length + label.length,
-        index,
+  function currentAssistant(tab: TabView): TranscriptEntry {
+    const last = tab.entries[tab.entries.length - 1];
+    if (last && last.kind === 'assistant' && !last.done) return last;
+    const entry: TranscriptEntry = { kind: 'assistant', text: '', done: false };
+    tab.entries.push(entry);
+    return entry;
+  }
+
+  function finalizeAssistant(tab: TabView): void {
+    const last = tab.entries[tab.entries.length - 1];
+    if (last && last.kind === 'assistant' && !last.done) {
+      if (last.text.trim().length === 0) tab.entries.pop();
+      else last.done = true;
+    }
+  }
+
+  function applyAgentEvent(tab: TabView, ev: AgentEvent): void {
+    if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
+      currentAssistant(tab).text += ev.event.text;
+    } else if (ev.type === 'tool_start') {
+      finalizeAssistant(tab);
+      tab.entries.push({
+        kind: 'tool',
+        text: ev.name,
+        done: true,
+        toolState: 'running',
+        toolId: ev.id,
       });
-      lines.push(line);
+    } else if (ev.type === 'tool_result' || ev.type === 'tool_error') {
+      for (let index = tab.entries.length - 1; index >= 0; index--) {
+        const entry = tab.entries[index]!;
+        if (entry.kind === 'tool' && entry.toolId === ev.id) {
+          entry.toolState =
+            ev.type === 'tool_error' || (ev.type === 'tool_result' && ev.isError) ? 'error' : 'ok';
+          break;
+        }
+      }
     }
-    if (messageQueue.length > shown.length) {
-      lines.push(`${DIM}… ${messageQueue.length - shown.length} more queued${RESET}`);
-    }
-    return lines;
+    redraw();
   }
 
-  function tabBarLine(): string {
-    tabHitSpans = [];
-    let line = '';
-    let col = 0;
-    const states = new Map(engine.subagentStates().map((s) => [s.id, s]));
-    for (const id of tabIds) {
-      const name = tabNames.get(id) ?? id;
-      const state = states.get(id);
-      const glyph = state ? ` ${STATUS_GLYPHS[state.status]}` : '';
-      const label = ` ${name}${glyph} `;
-      const start = col;
-      col += label.length + 1;
-      tabHitSpans.push({ start, end: col - 1, id });
-      const styled =
-        id === activeTab
-          ? `${INVERSE}${label}${RESET}`
-          : state && (state.status === 'done' || state.status === 'cancelled')
-            ? `${DIM}${label}${RESET}`
-            : label;
-      line += styled + ' ';
+  function seedFromHistory(tab: TabView, messages: ModelMessage[]): void {
+    tab.entries = [];
+    for (const message of messages) {
+      if (message.role === 'user' && typeof message.content === 'string') {
+        const synthetic = message.content.startsWith('[subagent settlement]');
+        tab.entries.push({
+          kind: synthetic ? 'notice' : 'user',
+          text: message.content,
+          done: true,
+        });
+      } else if (message.role === 'assistant') {
+        if (typeof message.content === 'string') {
+          tab.entries.push({ kind: 'assistant', text: message.content, done: true });
+        } else {
+          for (const part of message.content) {
+            if (part.type === 'text' && part.text.trim().length > 0) {
+              tab.entries.push({ kind: 'assistant', text: part.text, done: true });
+            } else if (part.type === 'tool_use') {
+              tab.entries.push({
+                kind: 'tool',
+                text: part.name,
+                done: true,
+                toolState: 'ok',
+                toolId: part.id,
+              });
+            }
+          }
+        }
+      }
     }
-    return line;
+    redraw();
   }
 
-  function popoverLines(): string[] {
+  function attachSession(engine: CodeEngine): SessionUI {
+    const id = engine.threadId;
+    const existing = sessions.get(id);
+    if (existing) return existing;
+    const session: SessionUI = {
+      id,
+      engine,
+      views: new Map(),
+      viewOrder: [],
+      viewNames: new Map([['main', 'main']]),
+      focusedView: 'main',
+      input: '',
+      inputHistory: [],
+      historyIndex: -1,
+      queue: [],
+      busy: false,
+      status: 'Ready',
+      seenChildApprovals: new Set(),
+    };
+    sessions.set(id, session);
+    view(session, 'main');
+    void engine.history().then((messages) => {
+      if (messages.length > 0 && view(session, 'main').entries.length === 0) {
+        seedFromHistory(view(session, 'main'), messages);
+      }
+    });
+    engine.onSubagentEvent((childId, ev) => {
+      const state = engine.subagentStates().find((s) => s.id === childId);
+      if (state) session.viewNames.set(childId, state.name);
+      applyAgentEvent(view(session, childId), ev);
+    });
+    engine.onSubagentStatus((childId, state) => {
+      session.viewNames.set(childId, state.name);
+      const tab = view(session, childId);
+      if (tab.entries.length === 0) {
+        tab.entries.push({ kind: 'user', text: state.spec.task, done: true });
+      }
+      if (state.status === 'awaiting_approval' && state.approval) {
+        const token = state.approval.token;
+        if (!session.seenChildApprovals.has(token)) {
+          session.seenChildApprovals.add(token);
+          approvalQueue.push({
+            sessionId: id,
+            sourceLabel: `${sessionTitle(id)} / ${state.name}`,
+            request: state.approval.request,
+            decide: (approved) => {
+              if (approved) engine.approveSubagent(childId);
+              else engine.rejectSubagent(childId, 'rejected by user');
+            },
+          });
+        }
+      }
+      if (state.status === 'awaiting_review' || state.status === 'done') {
+        finalizeAssistant(tab);
+        if (state.doneReport) {
+          const marker = `suggests done: ${state.doneReport}`;
+          if (!tab.entries.some((e) => e.kind === 'notice' && e.text === marker)) {
+            tab.entries.push({ kind: 'notice', text: marker, done: true });
+          }
+        }
+        void engine.subagentHistory(childId).then((messages) => {
+          if (messages.length > 0) seedFromHistory(tab, messages);
+        });
+      }
+      if (state.status === 'failed') {
+        tab.entries.push({
+          kind: 'notice',
+          text: `failed: ${state.error ?? 'unknown'}`,
+          done: true,
+        });
+      }
+      redraw();
+    });
+    for (const state of engine.subagentStates()) {
+      session.viewNames.set(state.id, state.name);
+      const tab = view(session, state.id);
+      void engine.subagentHistory(state.id).then((messages) => {
+        if (messages.length > 0) seedFromHistory(tab, messages);
+      });
+    }
+    return session;
+  }
+
+  function sessionTitle(id: string): string {
+    return workspace.meta(id)?.title ?? id;
+  }
+
+  async function focusSession(id: string): Promise<void> {
+    focusedSessionId = id;
+    if (!sessions.has(id)) {
+      const engine = await workspace.openSession(id);
+      attachSession(engine);
+    }
+    redraw();
+  }
+
+  function requestParentDecision(
+    session: SessionUI,
+    request: ToolApprovalRequest,
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      approvalQueue.push({
+        sessionId: session.id,
+        sourceLabel: `${sessionTitle(session.id)} / main`,
+        request,
+        decide: resolve,
+      });
+      redraw();
+    });
+  }
+
+  function flushQueueAsTurn(session: SessionUI): void {
+    if (session.busy || session.queue.length === 0 || approvalQueue.length > 0) return;
+    const text = session.queue
+      .splice(0)
+      .map((m) => m.text)
+      .join('\n\n');
+    view(session, 'main').entries.push({ kind: 'user', text, done: true });
+    void driveTurn(session, (hooks) => session.engine.runTurn(text, hooks));
+  }
+
+  async function driveTurn(
+    session: SessionUI,
+    start: (hooks: {
+      onEvent: (ev: AgentEvent) => void;
+      signal: AbortSignal;
+    }) => Promise<TurnResult>,
+  ): Promise<void> {
+    session.busy = true;
+    session.status = session.engine.planMode ? 'Planning…' : 'Working…';
+    session.abort = new AbortController();
+    redraw();
+    const main = view(session, 'main');
+    const onEvent = (ev: AgentEvent): void => {
+      if (ev.type === 'retry') session.status = `Retrying (${ev.attempt})…`;
+      else if (ev.type === 'fallback') session.status = `Fallback to ${ev.model}…`;
+      applyAgentEvent(main, ev);
+    };
+    try {
+      let result = await start({ onEvent, signal: session.abort.signal });
+      while (result.status === 'suspended') {
+        if (!result.approval) {
+          notice(session, `suspended: ${result.suspendReason ?? 'external input required'}`);
+          break;
+        }
+        session.status = 'Waiting for approval…';
+        redraw();
+        const token = result.approval.token;
+        const approved = await requestParentDecision(session, result.approval.request);
+        session.status = 'Working…';
+        redraw();
+        result = approved
+          ? await session.engine.approve(token, { onEvent, signal: session.abort.signal })
+          : await session.engine.reject(token, 'rejected by user', {
+              onEvent,
+              signal: session.abort.signal,
+            });
+      }
+      finalizeAssistant(main);
+      if (result.status === 'done') session.status = 'Ready';
+      else if (result.status !== 'suspended') session.status = `Turn ${result.status}`;
+    } catch (err) {
+      finalizeAssistant(main);
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.toLowerCase().includes('abort')) {
+        notice(session, '[turn cancelled]');
+        session.status = 'Cancelled';
+      } else {
+        notice(session, `error: ${message}`);
+        session.status = 'Error';
+      }
+    } finally {
+      session.busy = false;
+      session.abort = undefined;
+      view(session, 'main').stickToBottom = true;
+      redraw();
+      flushQueueAsTurn(session);
+    }
+  }
+
+  function steerMessage(session: SessionUI, index: number): void {
+    const [message] = session.queue.splice(index, 1);
+    if (!message) return;
+    session.engine.steer(message.text);
+    view(session, 'main').entries.push({
+      kind: 'notice',
+      text: `↳ steered: ${message.text}`,
+      done: true,
+    });
+    redraw();
+  }
+
+  // --- sidebar ---------------------------------------------------------
+
+  function sidebarRows(): SidebarRow[] {
+    const rows: SidebarRow[] = [];
+    for (const meta of workspace.list()) {
+      rows.push({ kind: 'session', id: meta.id, archived: false });
+      if (expanded.has(meta.id)) {
+        const session = sessions.get(meta.id);
+        for (const state of session?.engine.subagentStates() ?? []) {
+          rows.push({ kind: 'child', sessionId: meta.id, childId: state.id });
+        }
+      }
+    }
+    const archived = workspace.list({ archived: true });
+    if (archived.length > 0) {
+      rows.push({ kind: 'divider', label: 'archived' });
+      for (const meta of archived) rows.push({ kind: 'session', id: meta.id, archived: true });
+    }
+    return rows;
+  }
+
+  function sessionIndicator(id: string): string {
+    const activity = sessions.get(id)?.engine.activity ?? workspace.activity(id);
+    if (activity === 'working') return `${YELLOW}⟳${RESET}`;
+    if (activity === 'waiting') return `${RED}▲${RESET}`;
+    return `${DIM}·${RESET}`;
+  }
+
+  function sidebarLine(row: SidebarRow, selected: boolean): string {
+    const w = SIDEBAR_WIDTH;
+    if (row.kind === 'divider') {
+      return `${DIM}${padVisible(`— ${row.label} —`, w)}${RESET}`;
+    }
+    if (row.kind === 'session') {
+      const arrow = row.archived ? ' ' : expanded.has(row.id) ? '▾' : '▸';
+      const title = clipVisible(sessionTitle(row.id), w - 5);
+      const base = `${arrow} ${sessionIndicator(row.id)} ${title}`;
+      const padded = padVisible(base, w);
+      if (selected) return `${INVERSE}${padded}${RESET}`;
+      return row.archived ? `${DIM}${padded}${RESET}` : padded;
+    }
+    const session = sessions.get(row.sessionId);
+    const state = session?.engine.subagentStates().find((s) => s.id === row.childId);
+    const glyph = state ? CHILD_GLYPHS[state.status] : '·';
+    const name = clipVisible(session?.viewNames.get(row.childId) ?? row.childId, w - 7);
+    const active = state && (state.status === 'working' || state.status === 'awaiting_approval');
+    const base = `   ${glyph} ${name}`;
+    const padded = padVisible(base, w);
+    if (selected) return `${INVERSE}${padded}${RESET}`;
+    return active ? padded : `${DIM}${padded}${RESET}`;
+  }
+
+  function focusSidebarRow(row: SidebarRow): void {
+    if (row.kind === 'divider') return;
+    if (row.kind === 'session') {
+      void focusSession(row.id);
+      return;
+    }
+    void focusSession(row.sessionId).then(() => {
+      const session = sessions.get(row.sessionId);
+      if (session) {
+        view(session, row.childId);
+        session.focusedView = row.childId;
+        redraw();
+      }
+    });
+  }
+
+  // --- rendering -------------------------------------------------------
+
+  function popoverLines(cw: number): string[] {
     const item = approvalQueue[0];
     if (!item) return [];
     const args = JSON.stringify(item.request.args ?? {});
-    const innerWidth = Math.max(30, Math.min(width - 8, 76));
+    const innerWidth = Math.max(30, Math.min(cw - 4, 76));
     const body = [
-      `${BOLD}approval required${RESET}  ${DIM}(${1} of ${approvalQueue.length})${RESET}`,
+      `${BOLD}approval required${RESET}  ${DIM}(1 of ${approvalQueue.length})${RESET}`,
       '',
       `agent: ${BOLD}${item.sourceLabel}${RESET}`,
       `tool:  ${BOLD}${item.request.toolName}${RESET}${item.request.risk ? ` ${DIM}(${item.request.risk})${RESET}` : ''}`,
@@ -287,37 +623,77 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
     ];
     const top = `${YELLOW}┌${'─'.repeat(innerWidth - 2)}┐${RESET}`;
     const bottom = `${YELLOW}└${'─'.repeat(innerWidth - 2)}┘${RESET}`;
-    const pad = (line: string): string => {
-      const visible = line.replace(/\x1b\[[0-9;]*m/g, '').length;
-      const fill = Math.max(0, innerWidth - 4 - visible);
-      return `${YELLOW}│${RESET} ${line}${' '.repeat(fill)} ${YELLOW}│${RESET}`;
-    };
+    const pad = (line: string): string =>
+      `${YELLOW}│${RESET} ${padVisible(line, innerWidth - 4)} ${YELLOW}│${RESET}`;
     const box = [top, ...body.map(pad), bottom];
-    const indent = ' '.repeat(Math.max(0, Math.floor((width - innerWidth) / 2)));
+    const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
     return box.map((line) => indent + line);
   }
 
-  function view() {
-    const queueLines = queuePaneLines();
-    const transcriptHeight = Math.max(
-      1,
-      height - tabBarHeight - inputBandHeight - statusHeight - queueLines.length,
-    );
-    const view = activeView();
+  function contentLines(session: SessionUI | undefined): string[] {
+    const cw = contentWidth();
+    const lines: string[] = [];
+    if (!session) {
+      lines.push('', `${DIM}no session — Ctrl+B for the sidebar, /new to start one${RESET}`);
+      while (lines.length < height - 2) lines.push('');
+      lines.push(`${BLUE_BG}${padVisible(' fino code', cw + 2)}${RESET}`);
+      return lines;
+    }
+    const queueLines: string[] = [];
+    queueHitRows = [];
+    if (session.queue.length > 0) {
+      const shown = session.queue.slice(0, QUEUE_PANE_MAX);
+      for (let index = 0; index < shown.length; index++) {
+        const label = ' [steer now]';
+        const room = Math.max(4, cw - label.length - 4);
+        const text = shown[index]!.text;
+        const preview = text.length > room ? text.slice(0, room - 1) + '…' : text;
+        queueHitRows.push({
+          row: index,
+          buttonStart: 2 + preview.length + 1,
+          buttonEnd: 2 + preview.length + label.length,
+          index,
+        });
+        queueLines.push(`${DIM}· ${preview}${RESET}${YELLOW}${label}${RESET}`);
+      }
+      if (session.queue.length > shown.length) {
+        queueLines.push(`${DIM}… ${session.queue.length - shown.length} more queued${RESET}`);
+      }
+    }
+    const transcriptHeight = Math.max(1, height - queueLines.length - 2);
     let rows: string[];
+    const tab = view(session, session.focusedView);
     if (approvalQueue.length > 0) {
-      const popover = popoverLines();
+      const popover = popoverLines(cw);
       const padTop = Math.max(0, Math.floor((transcriptHeight - popover.length) / 2));
       rows = [...Array<string>(padTop).fill(''), ...popover];
-      view.scrollOffset = 0;
     } else {
-      rows = tabRows(view);
+      rows = transcriptRows(session);
       const limit = Math.max(0, rows.length - transcriptHeight);
-      if (view.stickToBottom) view.scrollOffset = limit;
-      else view.scrollOffset = Math.max(0, Math.min(view.scrollOffset, limit));
+      if (tab.stickToBottom) tab.scrollOffset = limit;
+      else tab.scrollOffset = Math.max(0, Math.min(tab.scrollOffset, limit));
+      rows = rows.slice(tab.scrollOffset, tab.scrollOffset + transcriptHeight);
     }
-    queueTop = tabBarHeight + transcriptHeight;
-    const states = engine.subagentStates();
+    for (let i = 0; i < transcriptHeight; i++) lines.push(rows[i] ?? '');
+    queueTop = transcriptHeight;
+    lines.push(...queueLines);
+    const isMain = session.focusedView === 'main';
+    const placeholder =
+      approvalQueue.length > 0
+        ? 'decide the approval above (y/n)'
+        : !isMain
+          ? 'sub-agent view — agent-driven, Esc cancels its run'
+          : session.busy
+            ? 'type to queue; Enter queues, [steer now] steers'
+            : session.engine.planMode
+              ? 'describe what to plan…'
+              : 'ask, or /help';
+    const inputLine =
+      isMain && session.input.length > 0
+        ? `${CYAN}❯${RESET} ${session.input}▏`
+        : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
+    lines.push(clipVisible(inputLine, cw + 2));
+    const states = session.engine.subagentStates();
     const activeCount = states.filter(
       (s) => s.status === 'working' || s.status === 'awaiting_approval',
     ).length;
@@ -325,45 +701,39 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
       states.length > 0
         ? ` · ${states.length} agents${activeCount > 0 ? ` (${activeCount} active)` : ''}`
         : '';
-    const modeLabel = engine.planMode ? 'PLAN' : 'CODE';
-    const autoLabel = engine.auto ? ' · auto' : '';
-    const statusLine = ` ${engine.modelId} · ${modeLabel}${autoLabel}${agentSegment} · ${status}`;
-    const isMain = activeTab === 'main';
-    const placeholder =
-      approvalQueue.length > 0
-        ? 'decide the approval above (y/n)'
-        : !isMain
-          ? 'sub-agent tab — agent-driven, Esc cancels its run'
-          : busy
-            ? 'type to queue; Enter queues, [steer now] steers'
-            : engine.planMode
-              ? 'describe what to plan…'
-              : 'ask, or /help';
-    return h(
-      Box,
-      { direction: 'column', gap: 0 },
-      h(Text, null, tabBarLine()),
-      h(
-        ScrollView,
-        { height: transcriptHeight, offset: activeView().scrollOffset },
-        ...rows.map((row) => h(Text, null, row)),
-      ),
-      ...queueLines.map((line) => h(Text, null, line)),
-      h(
-        Box,
-        { height: inputBandHeight, paddingY: 1 },
-        h(Input, {
-          value: isMain && input.length > 0 ? input : placeholder,
-          focused: isMain && approvalQueue.length === 0,
-        }),
-      ),
-      h(Text, { background: engine.planMode ? 'magenta' : 'blue' }, statusLine),
-    );
+    const viewLabel = isMain ? '' : ` · ${session.viewNames.get(session.focusedView) ?? ''}`;
+    const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
+    const autoLabel = session.engine.auto ? ' · auto' : '';
+    const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
+    const statusLine = ` ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · ${session.engine.modelId} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
+    lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
+    return lines;
+  }
+
+  function composedView() {
+    const session = focused();
+    const content = contentLines(session);
+    if (!sidebarVisible) {
+      return h(Box, { direction: 'column', gap: 0 }, ...content.map((line) => h(Text, null, line)));
+    }
+    sidebarRowsCache = sidebarRows();
+    const rows = sidebarRowsCache;
+    sidebarIndex = Math.max(0, Math.min(sidebarIndex, rows.length - 1));
+    if (sidebarIndex < sidebarScroll) sidebarScroll = sidebarIndex;
+    if (sidebarIndex >= sidebarScroll + height) sidebarScroll = sidebarIndex - height + 1;
+    const lines: string[] = [];
+    for (let i = 0; i < height; i++) {
+      const rowIndex = sidebarScroll + i;
+      const row = rows[rowIndex];
+      const cell = row ? sidebarLine(row, rowIndex === sidebarIndex) : ' '.repeat(SIDEBAR_WIDTH);
+      lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
+    }
+    return h(Box, { direction: 'column', gap: 0 }, ...lines.map((line) => h(Text, null, line)));
   }
 
   function paint(): void {
     lastPaint = Date.now();
-    app.update(view());
+    app.update(composedView());
   }
 
   function redraw(): void {
@@ -384,265 +754,78 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
     }
   }
 
-  function notice(text: string, tab: TabView = main): void {
-    tab.entries.push({ kind: 'notice', text, done: true });
-    redraw();
-  }
+  // --- commands --------------------------------------------------------
 
-  function currentAssistant(view: TabView): TranscriptEntry {
-    const last = view.entries[view.entries.length - 1];
-    if (last && last.kind === 'assistant' && !last.done) return last;
-    const entry: TranscriptEntry = { kind: 'assistant', text: '', done: false };
-    view.entries.push(entry);
-    return entry;
-  }
-
-  function finalizeAssistant(view: TabView): void {
-    const last = view.entries[view.entries.length - 1];
-    if (last && last.kind === 'assistant' && !last.done) {
-      if (last.text.trim().length === 0) view.entries.pop();
-      else last.done = true;
-    }
-  }
-
-  function applyAgentEvent(view: TabView, ev: AgentEvent): void {
-    if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
-      currentAssistant(view).text += ev.event.text;
-    } else if (ev.type === 'tool_start') {
-      finalizeAssistant(view);
-      view.entries.push({
-        kind: 'tool',
-        text: ev.name,
-        done: true,
-        toolState: 'running',
-        toolId: ev.id,
-      });
-    } else if (ev.type === 'tool_result' || ev.type === 'tool_error') {
-      for (let index = view.entries.length - 1; index >= 0; index--) {
-        const entry = view.entries[index]!;
-        if (entry.kind === 'tool' && entry.toolId === ev.id) {
-          entry.toolState =
-            ev.type === 'tool_error' || (ev.type === 'tool_result' && ev.isError) ? 'error' : 'ok';
-          break;
-        }
-      }
-    }
-    redraw();
-  }
-
-  function onEvent(ev: AgentEvent): void {
-    if (ev.type === 'retry') status = `Retrying (${ev.attempt})…`;
-    else if (ev.type === 'fallback') status = `Fallback to ${ev.model}…`;
-    applyAgentEvent(main, ev);
-  }
-
-  function seedChildTranscript(id: string, messages: ModelMessage[]): void {
-    const view = tabByChild.get(id);
-    if (!view) return;
-    view.entries = [];
-    for (const message of messages) {
-      if (message.role === 'user' && typeof message.content === 'string') {
-        view.entries.push({
-          kind: 'user',
-          text: message.content,
-          done: true,
-        });
-      } else if (message.role === 'assistant') {
-        if (typeof message.content === 'string') {
-          view.entries.push({ kind: 'assistant', text: message.content, done: true });
-        } else {
-          for (const part of message.content) {
-            if (part.type === 'text' && part.text.trim().length > 0) {
-              view.entries.push({ kind: 'assistant', text: part.text, done: true });
-            } else if (part.type === 'tool_use') {
-              view.entries.push({
-                kind: 'tool',
-                text: part.name,
-                done: true,
-                toolState: 'ok',
-                toolId: part.id,
-              });
-            }
-          }
-        }
-      }
-    }
-    redraw();
-  }
-
-  engine.onSubagentEvent((id, ev) => {
-    const state = engine.subagentStates().find((s) => s.id === id);
-    const view = ensureTab(id, state?.name ?? id);
-    applyAgentEvent(view, ev);
-  });
-
-  engine.onSubagentStatus((id, state) => {
-    const view = ensureTab(id, state.name);
-    if (view.entries.length === 0) {
-      view.entries.push({ kind: 'user', text: state.spec.task, done: true });
-    }
-    if (state.status === 'awaiting_approval' && state.approval) {
-      const token = state.approval.token;
-      if (!seenChildApprovals.has(token)) {
-        seenChildApprovals.add(token);
-        approvalQueue.push({
-          sourceLabel: state.name,
-          request: state.approval.request,
-          decide: (approved) => {
-            if (approved) engine.approveSubagent(id);
-            else engine.rejectSubagent(id, 'rejected by user');
-          },
-        });
-      }
-    }
-    if (state.status === 'awaiting_review' || state.status === 'done') {
-      finalizeAssistant(view);
-      if (state.doneReport) {
-        const marker = `suggests done: ${state.doneReport}`;
-        if (!view.entries.some((e) => e.kind === 'notice' && e.text === marker)) {
-          notice(marker, view);
-        }
-      }
-      void engine.subagentHistory(id).then((messages) => {
-        if (messages.length > 0) seedChildTranscript(id, messages);
-      });
-    }
-    if (state.status === 'failed') notice(`failed: ${state.error ?? 'unknown error'}`, view);
-    redraw();
-  });
-
-  function requestParentDecision(request: ToolApprovalRequest): Promise<boolean> {
-    return new Promise((resolve) => {
-      approvalQueue.push({
-        sourceLabel: 'main',
-        request,
-        decide: resolve,
-      });
-      redraw();
-    });
-  }
-
-  function flushQueueAsTurn(): void {
-    if (busy || messageQueue.length === 0 || approvalQueue.length > 0) return;
-    const text = messageQueue
-      .splice(0)
-      .map((m) => m.text)
-      .join('\n\n');
-    main.entries.push({ kind: 'user', text, done: true });
-    void driveTurn(() => engine.runTurn(text, { onEvent, signal: currentAbort!.signal }));
-  }
-
-  async function driveTurn(start: () => Promise<TurnResult>): Promise<void> {
-    busy = true;
-    status = engine.planMode ? 'Planning…' : 'Working…';
-    currentAbort = new AbortController();
-    redraw();
-    try {
-      let result = await start();
-      while (result.status === 'suspended') {
-        if (!result.approval) {
-          notice(`suspended: ${result.suspendReason ?? 'external input required'}`);
-          break;
-        }
-        status = 'Waiting for approval…';
-        redraw();
-        const token = result.approval.token;
-        const approved = await requestParentDecision(result.approval.request);
-        status = 'Working…';
-        redraw();
-        result = approved
-          ? await engine.approve(token, { onEvent, signal: currentAbort.signal })
-          : await engine.reject(token, 'rejected by user', {
-              onEvent,
-              signal: currentAbort.signal,
-            });
-      }
-      finalizeAssistant(main);
-      if (result.status === 'done') status = 'Ready';
-      else if (result.status !== 'suspended') status = `Turn ${result.status}`;
-    } catch (err) {
-      finalizeAssistant(main);
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.toLowerCase().includes('abort')) {
-        notice('[turn cancelled]');
-        status = 'Cancelled';
-      } else {
-        notice(`error: ${message}`);
-        status = 'Error';
-      }
-    } finally {
-      busy = false;
-      currentAbort = undefined;
-      main.stickToBottom = true;
-      redraw();
-      flushQueueAsTurn();
-    }
-  }
-
-  function steerMessage(index: number): void {
-    const [message] = messageQueue.splice(index, 1);
-    if (!message) return;
-    engine.steer(message.text);
-    main.entries.push({ kind: 'notice', text: `↳ steered: ${message.text}`, done: true });
-    redraw();
-  }
-
-  async function handleCommand(line: string): Promise<void> {
+  async function handleCommand(session: SessionUI, line: string): Promise<void> {
     const [command, ...rest] = line.slice(1).split(/\s+/);
     const arg = rest.join(' ').trim();
     switch (command) {
       case 'help':
         notice(
+          session,
           [
-            '/model <id> — switch model · /models — list discovered models',
-            '/plan · /code — switch mode (also Shift+Tab) · /auto — toggle auto-approval',
-            '/agents — sub-agent status · Ctrl+←/→ or click — switch tabs',
-            '/new — fresh thread · /exit — quit · Esc — cancel turn (or child run in its tab)',
-            'While a turn runs: Enter queues, [steer now]/Ctrl+S steers, queue sends when the turn ends.',
+            '/model <id> — switch model · /models — list models · /title <t> — rename session',
+            '/plan · /code — switch mode (Shift+Tab) · /auto — toggle auto-approval',
+            '/agents — sub-agent status · /new — new session · /archive — archive session',
+            'Ctrl+B — sidebar · Ctrl+↑/↓ — select session · Ctrl+←/→ — cycle views (or collapse/expand)',
+            'Esc — cancel turn (or child run in its view) · Enter queues during a turn; [steer now]/Ctrl+S steers',
           ].join('\n'),
         );
         break;
       case 'models': {
-        status = 'Listing models…';
+        session.status = 'Listing models…';
         redraw();
         try {
-          const models = await engine.listModels();
+          const models = await session.engine.listModels();
           notice(
+            session,
             models.length > 0
               ? models.map((m) => `${m.provider}: ${m.id}`).join('\n')
               : 'No models discovered.',
           );
         } catch (err) {
-          notice(`model listing failed: ${err instanceof Error ? err.message : String(err)}`);
+          notice(
+            session,
+            `model listing failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
-        status = 'Ready';
+        session.status = 'Ready';
         break;
       }
       case 'model':
         if (arg.length === 0) {
-          notice(`current model: ${engine.modelId}`);
+          notice(session, `current model: ${session.engine.modelId}`);
           break;
         }
-        await engine.setModel(arg);
-        notice(`model → ${engine.modelId}`);
+        await session.engine.setModel(arg);
+        notice(session, `model → ${session.engine.modelId}`);
+        break;
+      case 'title':
+        if (arg.length === 0) {
+          notice(session, `title: ${sessionTitle(session.id)}`);
+          break;
+        }
+        await workspace.setTitle(session.id, arg);
+        notice(session, `title → ${sessionTitle(session.id)}`);
         break;
       case 'plan':
-        engine.setPlanMode(true);
-        notice('planning mode: read-only tools (sub-agents inherit read-only)');
+        session.engine.setPlanMode(true);
+        notice(session, 'planning mode: read-only tools (sub-agents inherit read-only)');
         break;
       case 'code':
-        engine.setPlanMode(false);
-        notice('code mode: full tool set');
+        session.engine.setPlanMode(false);
+        notice(session, 'code mode: full tool set');
         break;
       case 'auto':
-        engine.setAuto(!engine.auto);
-        notice(`auto-approval ${engine.auto ? 'on' : 'off'}`);
+        session.engine.setAuto(!session.engine.auto);
+        notice(session, `auto-approval ${session.engine.auto ? 'on' : 'off'}`);
         break;
       case 'agents': {
-        const states = engine.subagentStates();
+        const states = session.engine.subagentStates();
         notice(
+          session,
           states.length === 0
-            ? 'No sub-agents on this thread.'
+            ? 'No sub-agents in this session.'
             : states
                 .map(
                   (s) =>
@@ -652,25 +835,27 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
         );
         break;
       }
-      case 'new':
-        engine.newThread();
-        for (const id of [...tabIds]) {
-          if (id !== 'main') {
-            tabIds.splice(tabIds.indexOf(id), 1);
-            tabByChild.delete(id);
-          }
-        }
-        activeTab = 'main';
-        main.entries.length = 0;
-        messageQueue.length = 0;
-        notice(`new thread ${engine.threadId}`);
+      case 'sessions':
+        sidebarVisible = !sidebarVisible;
         break;
+      case 'archive': {
+        const meta = workspace.meta(session.id);
+        await workspace.archiveSession(session.id, !(meta?.archived ?? false));
+        notice(session, meta?.archived ? 'session unarchived' : 'session archived');
+        break;
+      }
+      case 'new': {
+        const engine = await workspace.createSession();
+        attachSession(engine);
+        focusedSessionId = engine.threadId;
+        break;
+      }
       case 'exit':
       case 'quit':
         quit();
         break;
       default:
-        notice(`unknown command: /${command} — try /help`);
+        notice(session, `unknown command: /${command} — try /help`);
     }
     redraw();
   }
@@ -681,31 +866,24 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
     finish?.();
   }
 
-  function submit(): void {
-    const line = input.trim();
+  function submit(session: SessionUI): void {
+    const line = session.input.trim();
     if (line.length === 0) return;
-    inputHistory.push(line);
-    historyIndex = -1;
-    input = '';
+    session.inputHistory.push(line);
+    session.historyIndex = -1;
+    session.input = '';
     if (line.startsWith('/')) {
-      void handleCommand(line);
+      void handleCommand(session, line);
       return;
     }
-    if (busy) {
-      messageQueue.push({ text: line });
+    if (session.busy) {
+      session.queue.push({ text: line });
       redraw();
       return;
     }
-    main.entries.push({ kind: 'user', text: line, done: true });
-    main.stickToBottom = true;
-    void driveTurn(() => engine.runTurn(line, { onEvent, signal: currentAbort!.signal }));
-  }
-
-  function switchTab(delta: number): void {
-    const index = tabIds.indexOf(activeTab);
-    const next = (index + delta + tabIds.length) % tabIds.length;
-    activeTab = tabIds[next]!;
-    redraw();
+    view(session, 'main').entries.push({ kind: 'user', text: line, done: true });
+    view(session, 'main').stickToBottom = true;
+    void driveTurn(session, (hooks) => session.engine.runTurn(line, hooks));
   }
 
   function decideApproval(approved: boolean): void {
@@ -715,50 +893,69 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
     redraw();
   }
 
+  function cycleView(session: SessionUI, delta: number): void {
+    const order = ['main', ...session.viewOrder.filter((id) => id !== 'main')];
+    const index = order.indexOf(session.focusedView);
+    const next = (index + delta + order.length) % order.length;
+    session.focusedView = order[next]!;
+    redraw();
+  }
+
   async function handleEvent(event: TuiEvent): Promise<void> {
+    const session = focused();
     if (event.type === 'mouse') {
-      if (event.action === 'press' && event.button === 'left' && approvalQueue.length === 0) {
-        if (event.y === 0) {
-          const hit = tabHitSpans.find((span) => event.x >= span.start && event.x <= span.end);
-          if (hit) {
-            activeTab = hit.id;
-            redraw();
+      const inSidebar = sidebarVisible && event.x < SIDEBAR_WIDTH;
+      if (event.action === 'press' && event.button === 'left') {
+        if (inSidebar) {
+          const rowIndex = sidebarScroll + event.y;
+          const row = sidebarRowsCache[rowIndex];
+          if (row) {
+            if (row.kind === 'session' && rowIndex === sidebarIndex && !row.archived) {
+              if (expanded.has(row.id)) expanded.delete(row.id);
+              else expanded.add(row.id);
+            }
+            sidebarIndex = rowIndex;
+            focusSidebarRow(row);
           }
+          redraw();
           return;
         }
-        const queueRow = event.y - queueTop;
-        const hit = queueHitRows.find(
-          (r) => r.row === queueRow && event.x >= r.buttonStart && event.x <= r.buttonEnd,
-        );
-        if (hit) {
-          steerMessage(hit.index);
-          return;
+        if (session && approvalQueue.length === 0) {
+          const contentX = event.x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
+          const queueRow = event.y - queueTop;
+          const hit = queueHitRows.find(
+            (r) => r.row === queueRow && contentX >= r.buttonStart && contentX <= r.buttonEnd,
+          );
+          if (hit) {
+            steerMessage(session, hit.index);
+            return;
+          }
         }
       }
       if (event.action === 'wheel') {
-        const view = activeView();
-        const rows = tabRows(view);
-        const queueLines =
-          messageQueue.length > 0 ? Math.min(messageQueue.length, QUEUE_PANE_MAX + 1) : 0;
-        const transcriptHeight = Math.max(
-          1,
-          height - tabBarHeight - inputBandHeight - statusHeight - queueLines,
-        );
-        const limit = Math.max(0, rows.length - transcriptHeight);
+        if (inSidebar) {
+          sidebarScroll = Math.max(0, sidebarScroll + (event.button === 'wheel-up' ? -3 : 3));
+          redraw();
+          return;
+        }
+        if (!session) return;
+        const tab = view(session, session.focusedView);
+        const rows = transcriptRows(session);
+        const limit = Math.max(0, rows.length - Math.max(1, height - 2));
         if (event.button === 'wheel-up') {
-          view.scrollOffset = Math.max(0, view.scrollOffset - 3);
-          view.stickToBottom = false;
+          tab.scrollOffset = Math.max(0, tab.scrollOffset - 3);
+          tab.stickToBottom = false;
         } else if (event.button === 'wheel-down') {
-          view.scrollOffset = Math.min(limit, view.scrollOffset + 3);
-          if (view.scrollOffset >= limit) view.stickToBottom = true;
+          tab.scrollOffset = Math.min(limit, tab.scrollOffset + 3);
+          if (tab.scrollOffset >= limit) tab.stickToBottom = true;
         }
         redraw();
       }
       return;
     }
     if (event.ctrl && event.key === 'c') {
-      if (busy && currentAbort) {
-        currentAbort.abort();
+      if (session?.busy && session.abort) {
+        session.abort.abort();
         return;
       }
       quit();
@@ -771,86 +968,150 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
       }
       return;
     }
+    if (event.ctrl && event.key === 'b') {
+      sidebarVisible = !sidebarVisible;
+      redraw();
+      return;
+    }
+    if (event.ctrl && (event.key === 'up' || event.key === 'down')) {
+      if (!sidebarVisible) sidebarVisible = true;
+      const rows = sidebarRowsCache.length > 0 ? sidebarRowsCache : sidebarRows();
+      sidebarRowsCache = rows;
+      let next = sidebarIndex + (event.key === 'up' ? -1 : 1);
+      while (next >= 0 && next < rows.length && rows[next]!.kind === 'divider') {
+        next += event.key === 'up' ? -1 : 1;
+      }
+      if (next >= 0 && next < rows.length) {
+        sidebarIndex = next;
+        focusSidebarRow(rows[next]!);
+      }
+      redraw();
+      return;
+    }
     if (event.ctrl && (event.key === 'left' || event.key === 'right')) {
-      switchTab(event.key === 'left' ? -1 : 1);
+      if (sidebarVisible) {
+        const row = sidebarRowsCache[sidebarIndex];
+        if (row?.kind === 'session' && !row.archived) {
+          if (event.key === 'right') expanded.add(row.id);
+          else expanded.delete(row.id);
+        }
+        redraw();
+        return;
+      }
+      if (session) cycleView(session, event.key === 'left' ? -1 : 1);
+      return;
+    }
+    if (!session) {
+      if (event.text === '/' || event.key === 'enter') {
+        const engine = await workspace.createSession();
+        attachSession(engine);
+        focusedSessionId = engine.threadId;
+        redraw();
+      }
       return;
     }
     if (event.key === 'escape') {
-      if (activeTab !== 'main') {
-        engine.cancelSubagent(activeTab);
-        notice('cancelling sub-agent run…', activeView());
+      if (session.focusedView !== 'main') {
+        session.engine.cancelSubagent(session.focusedView);
+        notice(session, 'cancelling sub-agent run…', session.focusedView);
         return;
       }
-      if (busy && currentAbort) currentAbort.abort();
+      if (session.busy && session.abort) session.abort.abort();
       return;
     }
     if (event.key === 'tab' && event.shift) {
-      engine.setPlanMode(!engine.planMode);
+      session.engine.setPlanMode(!session.engine.planMode);
       redraw();
       return;
     }
     if (event.ctrl && event.key === 's') {
-      steerMessage(0);
+      steerMessage(session, 0);
       return;
     }
     if (event.key === 'pageup' || event.key === 'pagedown') {
-      const view = activeView();
-      const rows = tabRows(view);
-      const transcriptHeight = Math.max(1, height - tabBarHeight - inputBandHeight - statusHeight);
-      const limit = Math.max(0, rows.length - transcriptHeight);
-      const page = Math.max(1, transcriptHeight - 1);
+      const tab = view(session, session.focusedView);
+      const rows = transcriptRows(session);
+      const pageSize = Math.max(1, height - 3);
+      const limit = Math.max(0, rows.length - pageSize);
       if (event.key === 'pageup') {
-        view.scrollOffset = Math.max(0, view.scrollOffset - page);
-        view.stickToBottom = false;
+        tab.scrollOffset = Math.max(0, tab.scrollOffset - pageSize);
+        tab.stickToBottom = false;
       } else {
-        view.scrollOffset = Math.min(limit, view.scrollOffset + page);
-        if (view.scrollOffset >= limit) view.stickToBottom = true;
+        tab.scrollOffset = Math.min(limit, tab.scrollOffset + pageSize);
+        if (tab.scrollOffset >= limit) tab.stickToBottom = true;
       }
       redraw();
       return;
     }
-    if (activeTab !== 'main') return;
+    if (session.focusedView !== 'main') return;
     if (event.ctrl && event.key === 'u') {
-      input = '';
+      session.input = '';
       redraw();
       return;
     }
     if (event.key === 'backspace') {
-      input = input.slice(0, -1);
+      session.input = session.input.slice(0, -1);
       redraw();
       return;
     }
     if (event.key === 'enter') {
-      submit();
+      submit(session);
       redraw();
       return;
     }
-    if (event.key === 'up' && !busy) {
-      if (inputHistory.length === 0) return;
-      historyIndex = historyIndex === -1 ? inputHistory.length - 1 : Math.max(0, historyIndex - 1);
-      input = inputHistory[historyIndex] ?? '';
+    if (event.key === 'up' && !session.busy) {
+      if (session.inputHistory.length === 0) return;
+      session.historyIndex =
+        session.historyIndex === -1
+          ? session.inputHistory.length - 1
+          : Math.max(0, session.historyIndex - 1);
+      session.input = session.inputHistory[session.historyIndex] ?? '';
       redraw();
       return;
     }
-    if (event.key === 'down' && !busy) {
-      if (historyIndex === -1) return;
-      historyIndex += 1;
-      if (historyIndex >= inputHistory.length) {
-        historyIndex = -1;
-        input = '';
+    if (event.key === 'down' && !session.busy) {
+      if (session.historyIndex === -1) return;
+      session.historyIndex += 1;
+      if (session.historyIndex >= session.inputHistory.length) {
+        session.historyIndex = -1;
+        session.input = '';
       } else {
-        input = inputHistory[historyIndex] ?? '';
+        session.input = session.inputHistory[session.historyIndex] ?? '';
       }
       redraw();
       return;
     }
     if (event.text && !event.ctrl && !event.alt) {
-      input += event.text;
+      session.input += event.text;
       redraw();
     }
   }
 
-  app = render(view(), {
+  workspace.onChange(() => redraw());
+
+  const initialId = opts.sessionId ?? workspace.list()[0]?.id;
+  if (initialId) {
+    const engine = workspace.engineFor(initialId) ?? (await workspace.openSession(initialId));
+    const session = attachSession(engine);
+    focusedSessionId = session.id;
+    session.views.get('main')!.entries.unshift({
+      kind: 'notice',
+      text: 'fino code — /help for commands, Ctrl+B for the session sidebar, Shift+Tab toggles plan mode.',
+      done: true,
+    });
+    if (opts.recover) {
+      void driveTurn(session, async (hooks) => {
+        const recovered = await engine.recoverTurn(hooks);
+        if (recovered) {
+          notice(session, '[resumed interrupted turn]');
+          return recovered;
+        }
+        return { status: 'done' } as TurnResult;
+      });
+    }
+  }
+
+  app = render(composedView(), {
     width,
     height,
     input: true,
@@ -858,27 +1119,10 @@ export async function runCodeTui(engine: CodeEngine, opts: CodeTuiOptions = {}):
     onEvent: handleEvent,
   });
 
-  for (const state of engine.subagentStates()) {
-    ensureTab(state.id, state.name);
-    void engine.subagentHistory(state.id).then((messages) => {
-      if (messages.length > 0) seedChildTranscript(state.id, messages);
-    });
-  }
-  if (opts.recover) {
-    void driveTurn(async () => {
-      const recovered = await engine.recoverTurn({ onEvent, signal: currentAbort!.signal });
-      if (recovered) {
-        notice('[resumed interrupted turn]');
-        return recovered;
-      }
-      return { status: 'done' } as TurnResult;
-    });
-  }
-
   try {
     await finished;
   } finally {
     app.stop();
-    await engine.close();
+    await workspace.close();
   }
 }

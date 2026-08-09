@@ -1,0 +1,178 @@
+import { describe, it } from 'fino:test/test';
+import { CodeWorkspace } from 'fino:commands/code/workspace';
+import { SessionTranscript, TranscriptWriter } from 'fino:commands/code/transcript';
+import { ModelStreamImpl } from 'internal:ai/shared';
+import { DiskFileSystem } from 'fino:file';
+import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
+
+function scriptModel(turns: StreamEvent[][]): Model {
+  let idx = 0;
+  return {
+    id: 'mock',
+    name: 'mock',
+    provider: 'test',
+    stream(_req: GenerateRequest): ModelStream {
+      const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+      idx++;
+      async function* gen() {
+        yield* turn;
+      }
+      return new ModelStreamImpl(gen());
+    },
+    async generate(): Promise<never> {
+      throw new Error('use stream');
+    },
+  };
+}
+
+function endTurn(text: string): StreamEvent[] {
+  return [
+    { type: 'text_delta', index: 0, text },
+    { type: 'usage', usage: { inputTokens: 5, outputTokens: 3 } },
+    { type: 'stop', reason: 'end_turn' },
+  ];
+}
+
+function toolCallTurn(id: string, name: string, argsJson: string): StreamEvent[] {
+  return [
+    { type: 'tool_call_start', index: 0, id, name },
+    { type: 'tool_call_delta', index: 0, json: argsJson },
+    { type: 'tool_call_end', index: 0 },
+    { type: 'usage', usage: { inputTokens: 8, outputTokens: 4 } },
+    { type: 'stop', reason: 'tool_use' },
+  ];
+}
+
+let counter = 0;
+function tempDir(): string {
+  return `/tmp/fino-workspace-test-${Date.now().toString(36)}-${counter++}`;
+}
+
+async function readLines(path: string): Promise<Record<string, unknown>[]> {
+  const fs = new DiskFileSystem();
+  const text = new TextDecoder().decode(await fs.readFile(path));
+  return text
+    .split('\n')
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+describe('fino:commands/code — workspace registry', () => {
+  it('registers sessions, derives titles, and lists by recency', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const workspace = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('hi there')]),
+      transcriptsDir: false,
+    });
+    const first = await workspace.createSession();
+    await first.runTurn('investigate the flaky loader test');
+    const second = await workspace.createSession();
+    await second.runTurn('write release notes');
+    const listed = workspace.list();
+    t.equal(listed.length, 2, 'two active sessions');
+    t.equal(listed[0]!.id, second.threadId, 'most recent first');
+    t.equal(listed[1]!.title, 'investigate the flaky loader test', 'title from first prompt');
+    await workspace.close();
+  });
+
+  it('persists the registry across reopen and supports archive', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const open1 = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('done')]),
+      transcriptsDir: false,
+    });
+    const engine = await open1.createSession();
+    await engine.runTurn('first prompt for the title');
+    const id = engine.threadId;
+    await open1.archiveSession(id);
+    t.equal(open1.list().length, 0, 'no active sessions after archive');
+    t.equal(open1.list({ archived: true }).length, 1, 'archived list holds it');
+    await open1.close();
+
+    const open2 = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('done')]),
+      transcriptsDir: false,
+    });
+    const archived = open2.list({ archived: true });
+    t.equal(archived[0]?.id, id, 'registry survived reopen');
+    t.equal(archived[0]?.title, 'first prompt for the title', 'title survived');
+    await open2.archiveSession(id, false);
+    t.equal(open2.list()[0]?.id, id, 'unarchived back to active');
+    const reopened = await open2.openLatest();
+    t.equal(reopened?.threadId, id, 'openLatest returns the session');
+    await open2.close();
+  });
+
+  it('tracks engine activity transitions', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const workspace = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('quick')]),
+      transcriptsDir: false,
+    });
+    const engine = await workspace.createSession();
+    t.equal(workspace.activity(engine.threadId), 'idle', 'idle before first turn');
+    await engine.runTurn('go');
+    t.equal(workspace.activity(engine.threadId), 'idle', 'idle after turn completes');
+    t.equal(engine.activity, 'idle', 'engine agrees');
+    await workspace.close();
+  });
+});
+
+describe('fino:commands/code — JSONL transcripts', () => {
+  it('appends ordered JSONL lines through the writer', async (t) => {
+    const dir = tempDir();
+    const writer = new TranscriptWriter(`${dir}/deep/nested/log.jsonl`);
+    writer.append({ type: 'user', text: 'one' });
+    writer.append({ type: 'assistant', text: 'two' });
+    await writer.close();
+    const lines = await readLines(`${dir}/deep/nested/log.jsonl`);
+    t.equal(lines.length, 2, 'two lines');
+    t.equal(lines[0]!.type, 'user', 'first line type');
+    t.equal(lines[1]!.text, 'two', 'second line text');
+    t.ok(typeof lines[0]!.ts === 'number', 'timestamps added');
+  });
+
+  it('mirrors a full turn including tool activity and turn end', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const workspace = await CodeWorkspace.open({
+      cwd: dir,
+      auto: true,
+      chatModel: scriptModel([
+        toolCallTurn('c1', 'write_file', JSON.stringify({ path: 'x.txt', content: 'hello\n' })),
+        endTurn('wrote the file'),
+      ]),
+    });
+    const engine = await workspace.createSession();
+    await engine.runTurn('please write x.txt');
+    await workspace.close();
+    const lines = await readLines(`${dir}/.fino/code/transcripts/${engine.threadId}.jsonl`);
+    const types = lines.map((line) => line.type);
+    t.deepEqual(
+      types,
+      ['user', 'tool_start', 'tool_result', 'assistant', 'turn_end'],
+      'timeline mirrored in order',
+    );
+    t.equal(lines[0]!.text, 'please write x.txt', 'user text recorded');
+    t.equal(lines[3]!.text, 'wrote the file', 'assistant text folded from deltas');
+  });
+
+  it('writes per-child transcripts for sub-agent conversations', async (t) => {
+    const dir = tempDir();
+    const transcript = new SessionTranscript(`${dir}/transcripts`, 'thread-1');
+    transcript.parent().append({ type: 'user', text: 'root' });
+    transcript.child('sa_1').append({ type: 'user', text: 'child task' });
+    await transcript.close();
+    const parent = await readLines(`${dir}/transcripts/thread-1.jsonl`);
+    const child = await readLines(`${dir}/transcripts/thread-1/sa_1.jsonl`);
+    t.equal(parent[0]!.text, 'root', 'parent file written');
+    t.equal(child[0]!.text, 'child task', 'child file written');
+  });
+});

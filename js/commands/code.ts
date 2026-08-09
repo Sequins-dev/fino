@@ -4,13 +4,17 @@
  * `fino code` starts an interactive terminal coding assistant tuned for the
  * Fino platform: it discovers modules through the documentation index,
  * reads and edits project files, runs shell commands behind approval gates,
- * switches models between turns through the `fino:ai` model registry, and
- * persists conversation threads in a SQLite session store. With a positional
- * prompt it instead runs one non-interactive turn and prints the streamed
- * answer, which suits scripting and piping.
+ * switches models between turns through the `fino:ai` model registry, fans
+ * work out to sub-agents, and persists everything durably — SQLite session
+ * threads plus JSONL transcript mirrors. Sessions are registered in a
+ * workspace: `fino code sessions` lists them, `--thread <id>` reopens one,
+ * `--continue` resumes the most recent, and the TUI sidebar works across
+ * several at once. With a positional prompt it instead runs one
+ * non-interactive turn and prints the streamed answer.
  *
  * The interactive UI lives in `fino:commands/code/tui`, turn execution in
- * `fino:commands/code/engine`, and the tool set in
+ * `fino:commands/code/engine`, the session registry in
+ * `fino:commands/code/workspace`, and the tool set in
  * `fino:commands/code/tools`; this module only defines the CLI surface.
  *
  * ```ts no_run
@@ -27,6 +31,7 @@ import type {
   CodeEngine as CodeEngineType,
   TurnResult as TurnResultType,
 } from 'fino:commands/code/engine';
+import type { CodeWorkspace as CodeWorkspaceType } from 'fino:commands/code/workspace';
 
 interface CodeCommandInput {
   prompt?: string[];
@@ -39,7 +44,62 @@ interface CodeCommandInput {
   'max-cost'?: number;
   'docs-dir'?: string;
   ephemeral?: boolean;
+  'no-transcripts'?: boolean;
 }
+
+async function openWorkspace(input: CodeCommandInput, root: string): Promise<CodeWorkspaceType> {
+  const { CodeWorkspace } = await import('fino:commands/code/workspace');
+  return CodeWorkspace.open({
+    cwd: root,
+    model: input.model,
+    provider: input.provider,
+    planMode: input.plan ?? false,
+    auto: input.auto ?? false,
+    maxCostUsd: input['max-cost'],
+    docsDir: input['docs-dir'],
+    sessionDb: input.ephemeral ? false : undefined,
+    transcriptsDir: input['no-transcripts'] ? false : undefined,
+  });
+}
+
+const sessionsCommand = new Task({
+  name: 'sessions',
+  description: 'List fino code sessions in this project',
+  outputMode: 'both',
+  run: async function runSessionsCommand(input: { archived?: boolean }, ctx) {
+    const root = ctx.cwd ?? cwd();
+    const workspace = await openWorkspace({}, root);
+    try {
+      const sessions = workspace.list({ archived: input.archived ?? false });
+      if (ctx.writer.mode === 'json') {
+        return { command: 'code sessions', ok: true, sessions };
+      }
+      if (sessions.length === 0) {
+        return input.archived ? 'No archived sessions.' : 'No sessions yet — run `fino code`.';
+      }
+      const lines = sessions.map((s) => {
+        const updated = new Date(s.updatedAt).toISOString().replace('T', ' ').slice(0, 16);
+        return `${s.id}  ${updated}  ${s.title}`;
+      });
+      return [
+        'id' +
+          ' '.repeat(Math.max(1, (sessions[0]?.id.length ?? 20) - 2)) +
+          '  updated           title',
+        ...lines,
+        '',
+        'Reopen one with: fino code --thread <id>',
+      ].join('\n');
+    } finally {
+      await workspace.close();
+    }
+  },
+  cli: {
+    usage: 'fino code sessions [--archived]',
+    options: [
+      { flags: '--archived', type: 'boolean', description: 'List archived sessions instead' },
+    ],
+  },
+});
 
 const command = new Task({
   name: 'code',
@@ -47,28 +107,26 @@ const command = new Task({
   outputMode: 'both',
   run: async function runCodeCommand(input: CodeCommandInput, ctx) {
     const root = ctx.cwd ?? cwd();
-    const { CodeEngine } = await import('fino:commands/code/engine');
-    const engine = await CodeEngine.create({
-      cwd: root,
-      model: input.model,
-      provider: input.provider,
-      planMode: input.plan ?? false,
-      auto: input.auto ?? false,
-      maxCostUsd: input['max-cost'],
-      docsDir: input['docs-dir'],
-      sessionDb: input.ephemeral ? false : undefined,
-      threadId: input.thread,
-      continueThread: input.continue ?? false,
-    });
+    const workspace = await openWorkspace(input, root);
+    const continuing = Boolean(input.continue || input.thread);
+    let engine: CodeEngineType;
+    if (input.thread) {
+      engine = await workspace.openSession(input.thread);
+    } else if (input.continue) {
+      engine = (await workspace.openLatest()) ?? (await workspace.createSession());
+    } else {
+      engine = await workspace.createSession();
+    }
     const prompt = (input.prompt ?? []).join(' ').trim();
     if (prompt.length === 0) {
       if (!stdinIsTTY || !stdoutIsTTY) {
-        await engine.close();
+        await workspace.close();
         throw new Error('fino code: interactive mode needs a TTY; pass a prompt for one-shot use');
       }
       const { runCodeTui } = await import('fino:commands/code/tui');
-      await runCodeTui(engine, {
-        recover: Boolean(input.continue || input.thread),
+      await runCodeTui(workspace, {
+        sessionId: engine.threadId,
+        recover: continuing,
       });
       return ctx.writer.mode === 'json'
         ? { command: 'code', ok: true, threadId: engine.threadId }
@@ -77,7 +135,7 @@ const command = new Task({
     try {
       return await runOneShot(engine, prompt, ctx);
     } finally {
-      await engine.close();
+      await workspace.close();
     }
   },
   cli: {
@@ -91,8 +149,8 @@ const command = new Task({
       },
       { flags: '--plan', type: 'boolean', description: 'Start in planning mode (read-only tools)' },
       { flags: '--auto', type: 'boolean', description: 'Run gated tools without approval prompts' },
-      { flags: '--continue', type: 'boolean', description: 'Continue the most recent thread' },
-      { flags: '--thread', type: 'string', description: 'Continue a specific thread id' },
+      { flags: '--continue', type: 'boolean', description: 'Continue the most recent session' },
+      { flags: '--thread', type: 'string', description: 'Continue a specific session id' },
       {
         flags: '--max-cost',
         type: 'number',
@@ -104,6 +162,11 @@ const command = new Task({
         type: 'boolean',
         description: 'Keep the session in memory instead of SQLite',
       },
+      {
+        flags: '--no-transcripts',
+        type: 'boolean',
+        description: 'Disable the JSONL transcript mirror',
+      },
     ],
     positionals: [
       {
@@ -114,6 +177,7 @@ const command = new Task({
       },
     ],
   },
+  children: [sessionsCommand],
 });
 
 async function runOneShot(
