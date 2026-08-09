@@ -50,8 +50,43 @@ Inside the TUI, plain text runs a turn; slash commands control the harness:
 - `/new` starts a fresh thread; `/exit` quits.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
 
-When a gated tool (`write_file`, `edit_file`, `shell`) needs approval the turn
-suspends durably and the TUI asks for a `y`/`n` decision inline.
+When a gated tool (`write_file`, `edit_file`, `shell`) needs approval — the
+main agent's or any sub-agent's — the request appears in a blocking popover
+over the transcript regardless of the active tab; `y`/`n` are the only inputs
+accepted until it is decided, and concurrent requests queue.
+
+## Sub-agents
+
+The agent can fan work out to concurrent sub-agents (`fino:ai/subagents`),
+each a durable conversation between the parent agent and a child agent —
+mirroring how the main chat is a conversation between you and the parent.
+Every sub-agent gets its own read-only tab (switch with `Ctrl+←`/`Ctrl+→` or
+by clicking; sub-agents are agent-driven, so their tabs have no input box).
+Children default to the parent's model and inherit the parent's mode:
+planning-mode parents spawn read-only children. When a child believes its
+task is done it reports a summary and waits; the parent reviews and either
+finalizes the child or keeps iterating with follow-up messages.
+
+The turn stays active while sub-agents work — if the parent stops early, the
+engine waits for the children to settle and automatically continues the
+conversation with a settlement summary so nothing goes unreviewed. `Esc` in
+a sub-agent tab cancels that child's run; `/agents` lists all sub-agents.
+
+## Queueing and steering
+
+While a turn is active, `Enter` queues your message instead of sending it.
+Queued messages render above the input with a clickable `[steer now]` action
+(`Ctrl+S` steers the oldest): steering injects the message into the running
+turn at the next step boundary, redirecting the agent mid-turn. Whatever is
+still queued when the turn ends is sent as the next turn. The parent agent
+steers its sub-agents the same way through `subagent_send`.
+
+## Durability
+
+Threads, sub-agent conversations, and pending approvals all persist in the
+session store. After a crash or Ctrl-C, `fino code --continue` re-drives an
+interrupted run from its last checkpoint, re-presents a pending approval
+popover, restores sub-agent tabs, and resumes children that were mid-run.
 
 ## Documentation Index
 

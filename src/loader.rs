@@ -697,6 +697,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/runtime", "ai/runtime"),
     source_builtin!("fino:ai/budget", "ai/budget"),
     source_builtin!("fino:ai/gateway", "ai/gateway"),
+    source_builtin!("fino:ai/subagents", "ai/subagents"),
     source_builtin!("fino:ai/sandbox", "ai/sandbox"),
     source_builtin!("fino:ai/cache", "ai/cache"),
     source_builtin!("fino:ai/agent", "ai/agent"),

@@ -265,6 +265,21 @@ export interface SessionStore {
     history: MessageHistory;
     baseRevisionId?: string;
   }): Promise<void>;
+  /**
+   * Persist one JSON-serializable metadata value under a key.
+   *
+   * A small key-value side channel for harness state that belongs with the
+   * conversation data but is not itself a run, thread, or history — for
+   * example `fino:ai/subagents` persists each pool's child registry here so
+   * a restarted process can resurrect its sub-agents. Values are stored as
+   * JSON; writing `undefined` deletes the key.
+   */
+  putMeta(key: string, value: unknown): Promise<void>;
+  /**
+   * Load a metadata value previously stored with `putMeta()`, or `null`
+   * when the key is unknown.
+   */
+  getMeta(key: string): Promise<unknown>;
 }
 /**
  * Result returned by session start, resume, and fork operations.
@@ -298,6 +313,12 @@ export interface RunResult {
    * Last assistant text, present when the run completed.
    */
   text?: string;
+  /**
+   * Steering messages queued with `Session.steer()` that the run ended
+   * before consuming, in queue order. Harnesses should roll these into the
+   * next turn (or re-queue them) so steering input is never silently lost.
+   */
+  unconsumedSteering?: string[];
 }
 /**
  * Decision supplied when resuming a tool approval suspension.
@@ -518,6 +539,21 @@ export class InMemorySessionStore implements SessionStore {
   #threads = new Map<string, ThreadState>();
   #entries = new Map<string, MessageHistoryEntry>();
   #revisions = new Map<string, MessageHistoryRevision>();
+  #meta = new Map<string, string>();
+  /**
+   * Store a metadata value as JSON; `undefined` deletes the key.
+   */
+  async putMeta(key: string, value: unknown): Promise<void> {
+    if (value === undefined) this.#meta.delete(key);
+    else this.#meta.set(key, JSON.stringify(value));
+  }
+  /**
+   * Load a metadata value, or `null` when the key is unknown.
+   */
+  async getMeta(key: string): Promise<unknown> {
+    const raw = this.#meta.get(key);
+    return raw === undefined ? null : JSON.parse(raw);
+  }
   /**
    * Load a copy of a run checkpoint, or `null` if the run id is unknown.
    */
@@ -709,7 +745,47 @@ export class SqliteSessionStore implements SessionStore {
     await db.exec(
       `CREATE INDEX IF NOT EXISTS idx_history_revisions_parent ON history_revisions(parent)`,
     );
+    await db.exec(`CREATE TABLE IF NOT EXISTS meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )`);
     return new SqliteSessionStore(db);
+  }
+  /**
+   * Store a metadata value as JSON; `undefined` deletes the key.
+   */
+  async putMeta(key: string, value: unknown): Promise<void> {
+    if (value === undefined) {
+      const stmt = this.#db.prepare(sql`DELETE FROM meta WHERE key = ${key}`);
+      try {
+        await stmt.run();
+      } finally {
+        stmt.finalize();
+      }
+      return;
+    }
+    const stmt = this.#db.prepare(
+      sql`INSERT INTO meta(key, value, updated_at) VALUES(${key}, ${JSON.stringify(value)}, ${Date.now()})
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+    );
+    try {
+      await stmt.run();
+    } finally {
+      stmt.finalize();
+    }
+  }
+  /**
+   * Load a metadata value, or `null` when the key is unknown.
+   */
+  async getMeta(key: string): Promise<unknown> {
+    const stmt = this.#db.prepare(sql`SELECT value FROM meta WHERE key = ${key}`);
+    try {
+      const row = (await stmt.get()) as { value?: string } | undefined;
+      return row?.value === undefined ? null : JSON.parse(row.value);
+    } finally {
+      stmt.finalize();
+    }
   }
   async #saveEntry(entry: MessageHistoryEntry): Promise<void> {
     const stmt = this.#db.prepare(
@@ -996,6 +1072,7 @@ export class Session {
   #threadId: string;
   #state: RunState | undefined;
   #stateSignal;
+  #steering: string[] = [];
   private constructor(opts: SessionOptions, loaded?: RunState) {
     this.#opts = opts;
     this.#threadId = loaded?.threadId ?? opts.threadId ?? newId();
@@ -1032,6 +1109,35 @@ export class Session {
     this.#state = state;
     this.#stateSignal.set(cloneRunState(state));
   }
+  /**
+   * Queue a steering message for injection into the driven run.
+   *
+   * The message is appended to history as a `user` message at the next step
+   * boundary of the active drive loop — after the current model/tool step
+   * commits, before the next model request — so a running agent can be
+   * redirected mid-turn without waiting for it to finish. Steering while the
+   * run is suspended is allowed; the message injects when the run resumes.
+   * Messages the run ends before consuming are returned on
+   * `RunResult.unconsumedSteering` so the caller can roll them into the next
+   * turn.
+   *
+   * This is the primitive behind both "user steers the agent mid-turn" and
+   * "parent agent steers a sub-agent" — a steering source is just whoever
+   * plays the user role for this session.
+   *
+   * ```ts no_run
+   * const pending = sess.start('refactor the loader');
+   * sess.steer('prefer renaming over moving files');
+   * const result = await pending;
+   * ```
+   */
+  steer(message: string): void {
+    this.#steering.push(message);
+  }
+  #takeSteering(): string[] {
+    if (this.#steering.length === 0) return [];
+    return this.#steering.splice(0);
+  }
   #safeOnEvent(): ((ev: AgentEvent) => void) | undefined {
     const onEvent = this.#opts.onEvent;
     if (!onEvent) return undefined;
@@ -1062,6 +1168,64 @@ export class Session {
    * console.log(result.status, result.text);
    * ```
    */
+  /**
+   * Attach a `Session` instance to a persisted run without driving it.
+   *
+   * Unlike the static `resume()`, which re-drives internally and returns only
+   * the result, `attach()` hands back the instance itself so callers keep the
+   * full session surface for the loaded run: `steer()`, `approveTool()` /
+   * `rejectTool()`, `resume()`, `watch()`, and `redrive()` for crashed
+   * checkpoints. This is the crash-recovery entry point for harnesses that
+   * manage many sessions, such as `fino:ai/subagents` resurrecting a pool.
+   *
+   * ```ts no_run
+   * const sess = await Session.attach({ store, agent: bot, runId });
+   * if (sess.state?.status === 'running') await sess.redrive();
+   * ```
+   */
+  static async attach(
+    opts: SessionOptions & {
+      runId: string;
+    },
+  ): Promise<Session> {
+    const loaded = await opts.store.loadRun(opts.runId);
+    if (!loaded) throw new Error(`Run ${opts.runId} not found`);
+    return new Session(opts, loaded);
+  }
+  /**
+   * Re-drive a non-suspended checkpoint loaded into this instance.
+   *
+   * Intended after `attach()`: a run checkpointed as `running` (the process
+   * died mid-drive) or `error` continues from its committed history
+   * revision. Already-terminal runs return their stored result without
+   * invoking the agent. Throws when no run is loaded or the run is
+   * `suspended` — suspended runs need their resume token via `resume()`,
+   * `approveTool()`, or `rejectTool()`.
+   */
+  async redrive(opts: { signal?: AbortSignal } = {}): Promise<RunResult> {
+    const loaded = this.#state;
+    if (!loaded) throw new Error('No run loaded; use attach() or start()');
+    if (loaded.status === 'done' || loaded.status === 'cancelled') {
+      return {
+        runId: loaded.runId,
+        status: loaded.status,
+        state: loaded,
+        text: typeof loaded.result === 'string' ? loaded.result : undefined,
+      };
+    }
+    if (loaded.status === 'suspended') {
+      throw new Error(
+        `Run ${loaded.runId} is suspended; use resume(), approveTool(), or rejectTool()`,
+      );
+    }
+    return this.#drive(
+      {
+        ...loaded,
+        status: 'running',
+      },
+      opts.signal,
+    );
+  }
   static async resume(
     opts: SessionOptions & {
       runId: string;
@@ -1582,6 +1746,14 @@ export class Session {
           await this.#commit(state, history, baseRevisionId, thread);
           throw new Error('Session exceeded maximum step count');
         }
+        const steered = this.#takeSteering();
+        if (steered.length > 0) {
+          const base = pendingMessages ?? history.render();
+          pendingMessages = [
+            ...base,
+            ...steered.map((content): ModelMessage => ({ role: 'user', content })),
+          ];
+        }
         const hState: AgentState = {
           messages: pendingMessages ?? history.render(),
           stepIndex: state.stepIndex,
@@ -1668,11 +1840,13 @@ export class Session {
           };
           this.#setState(state);
           await this.#commit(state, history, baseRevisionId, thread);
+          const unconsumed = this.#takeSteering();
           return {
             runId: state.runId,
             status: 'done',
             state,
             text,
+            ...(unconsumed.length > 0 ? { unconsumedSteering: unconsumed } : {}),
           };
         }
       }

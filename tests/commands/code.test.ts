@@ -257,3 +257,193 @@ describe('fino:commands/code — engine', () => {
     await engine.close();
   });
 });
+function roleModel(parentTurns: StreamEvent[][], childTurns: StreamEvent[][]): Model {
+  let parentIdx = 0;
+  let childIdx = 0;
+  const requests: { role: 'parent' | 'child'; messages: unknown[] }[] = [];
+  const model = {
+    id: 'role-mock',
+    name: 'role-mock',
+    provider: 'test',
+    requests,
+    stream(req: GenerateRequest): ModelStream {
+      const system = typeof req.system === 'string' ? req.system : '';
+      const child = system.includes('You are a sub-agent');
+      requests.push({ role: child ? 'child' : 'parent', messages: req.messages });
+      const turns = child ? childTurns : parentTurns;
+      const idx = child ? childIdx++ : parentIdx++;
+      const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+      async function* gen() {
+        yield* turn;
+      }
+      return new ModelStreamImpl(gen());
+    },
+    async generate(): Promise<never> {
+      throw new Error('use stream');
+    },
+  };
+  return model as Model & { requests: typeof requests };
+}
+
+describe('fino:commands/code — sub-agents', () => {
+  it('spawns, waits, reviews, and finalizes within one turn', async (t) => {
+    const dir = tempDir();
+    const model = roleModel(
+      [
+        toolCallTurn(
+          'p1',
+          'subagent_spawn',
+          JSON.stringify({ task: 'research the loader', name: 'loader' }),
+        ),
+        toolCallTurn('p2', 'subagent_wait', '{}'),
+        toolCallTurn('p3', 'subagent_finalize', JSON.stringify({ id: 'sa_1' })),
+        endTurn('delegated work reviewed and accepted'),
+      ],
+      [
+        toolCallTurn(
+          'c1',
+          'subagent_complete',
+          JSON.stringify({ summary: 'loader research complete' }),
+        ),
+        endTurn('stopping'),
+      ],
+    );
+    const engine = await CodeEngine.create({ cwd: dir, chatModel: model, sessionDb: false });
+    const result = await engine.runTurn('parallelize the research');
+    t.equal(result.status, 'done', 'turn completed');
+    t.equal(result.text, 'delegated work reviewed and accepted', 'parent saw the review through');
+    const states = engine.subagentStates();
+    t.equal(states.length, 1, 'one child spawned');
+    t.equal(states[0]!.status, 'done', 'child finalized');
+    t.equal(states[0]!.doneReport, 'loader research complete', 'done report captured');
+    await engine.close();
+  });
+
+  it('keeps the turn active and auto-continues when the parent stops early', async (t) => {
+    const dir = tempDir();
+    const model = roleModel(
+      [
+        toolCallTurn(
+          'p1',
+          'subagent_spawn',
+          JSON.stringify({ task: 'research kqueue', name: 'kq' }),
+        ),
+        endTurn('spawned, ending my run early'),
+        toolCallTurn('p2', 'subagent_finalize', JSON.stringify({ id: 'sa_1' })),
+        endTurn('reviewed after settlement'),
+      ],
+      [
+        toolCallTurn('c1', 'subagent_complete', JSON.stringify({ summary: 'kqueue notes ready' })),
+        endTurn('stopping'),
+      ],
+    );
+    const engine = await CodeEngine.create({ cwd: dir, chatModel: model, sessionDb: false });
+    const result = await engine.runTurn('go research');
+    t.equal(result.status, 'done', 'turn only ends after settlement');
+    t.equal(result.text, 'reviewed after settlement', 'settlement continuation ran');
+    const parentRequests = (
+      model as unknown as { requests: { role: string; messages: ModelMessage[] }[] }
+    ).requests.filter((r) => r.role === 'parent');
+    const settlement = parentRequests.some((r) =>
+      r.messages.some(
+        (m) =>
+          m.role === 'user' &&
+          typeof m.content === 'string' &&
+          m.content.includes('[subagent settlement]'),
+      ),
+    );
+    t.ok(settlement, 'parent received the settlement summary');
+    t.equal(engine.subagentStates()[0]!.status, 'done', 'child finalized in continuation');
+    await engine.close();
+  });
+
+  it('propagates planning mode to children as read-only', async (t) => {
+    const dir = tempDir();
+    const model = roleModel(
+      [
+        toolCallTurn(
+          'p1',
+          'subagent_spawn',
+          JSON.stringify({ task: 'survey the docs', name: 'survey' }),
+        ),
+        toolCallTurn('p2', 'subagent_wait', '{}'),
+        toolCallTurn('p3', 'subagent_finalize', JSON.stringify({ id: 'sa_1' })),
+        endTurn('plan ready'),
+      ],
+      [
+        toolCallTurn('c1', 'subagent_complete', JSON.stringify({ summary: 'surveyed' })),
+        endTurn('bye'),
+      ],
+    );
+    const engine = await CodeEngine.create({
+      cwd: dir,
+      chatModel: model,
+      sessionDb: false,
+      planMode: true,
+    });
+    const result = await engine.runTurn('plan the work');
+    t.equal(result.status, 'done', 'plan turn completed');
+    t.equal(
+      engine.subagentStates()[0]!.spec.readOnly,
+      true,
+      'child inherited read-only from plan mode',
+    );
+    await engine.close();
+  });
+
+  it('queues steering between runs and injects it into the next run', async (t) => {
+    const dir = tempDir();
+    const model = roleModel([endTurn('first'), endTurn('second')], []);
+    const engine = await CodeEngine.create({ cwd: dir, chatModel: model, sessionDb: false });
+    await engine.runTurn('first prompt');
+    engine.steer('remember: prefer edits over rewrites');
+    await engine.runTurn('second prompt');
+    const requests = (
+      model as unknown as { requests: { role: string; messages: ModelMessage[] }[] }
+    ).requests;
+    const second = requests[1]!.messages;
+    const texts = second
+      .filter((m) => m.role === 'user' && typeof m.content === 'string')
+      .map((m) => m.content as string);
+    t.ok(texts.includes('remember: prefer edits over rewrites'), 'queued steering prepended');
+    const steerIndex = texts.indexOf('remember: prefer edits over rewrites');
+    const promptIndex = texts.indexOf('second prompt');
+    t.ok(steerIndex < promptIndex, 'steering precedes the new prompt');
+    await engine.close();
+  });
+
+  it('recovers a suspended approval turn across engine restarts', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const db = `${dir}/sessions.db`;
+    const model = roleModel(
+      [
+        toolCallTurn('p1', 'write_file', JSON.stringify({ path: 'out.txt', content: 'durable\n' })),
+        endTurn('written after restart approval'),
+      ],
+      [],
+    );
+    const first = await CodeEngine.create({ cwd: dir, chatModel: model, sessionDb: db });
+    const initial = await first.runTurn('write the file');
+    t.equal(initial.status, 'suspended', 'suspended for approval');
+    const threadId = first.threadId;
+    await first.close();
+
+    const second = await CodeEngine.create({
+      cwd: dir,
+      chatModel: model,
+      sessionDb: db,
+      threadId,
+    });
+    const recovered = await second.recoverTurn();
+    t.equal(recovered?.status, 'suspended', 'approval re-surfaced after restart');
+    t.equal(recovered?.approval?.request.toolName, 'write_file', 'same pending tool');
+    const finished = await second.approve(recovered!.approval!.token);
+    t.equal(finished.status, 'done', 'turn completed after restart approval');
+    t.equal(finished.text, 'written after restart approval', 'continuation text');
+    const fs = new DiskFileSystem();
+    const written = new TextDecoder().decode(await fs.readFile(`${dir}/out.txt`));
+    t.equal(written, 'durable\n', 'approved tool executed after restart');
+    await second.close();
+  });
+});

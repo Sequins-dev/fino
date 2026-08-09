@@ -43,6 +43,12 @@ threads, and suspend/resume state through a `SessionStore`, so a conversation
 can survive process restarts or pause for human approval. The agent remains
 the behavior boundary; the session is the durability boundary.
 
+**Sub-agents** scale the loop out. A `SubagentPool` (`fino:ai/subagents`)
+lets a parent agent spawn concurrent child agents — each a durable session
+thread whose "user" is the parent — track their progress, steer them
+mid-run, and review their completion reports before finalizing. The pool
+persists through the session store, so restarts resurrect running children.
+
 Around that core:
 
 - [Interactive CLI Harness](./ai/interactive-cli-harness.md) shows how to wire

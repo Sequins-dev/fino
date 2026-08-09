@@ -23,7 +23,10 @@ import { Task, type TaskContext } from '../task.ts';
 import { cwd } from '../process.ts';
 import { stdinIsTTY, stdoutIsTTY } from '../tty.ts';
 import type { AgentEvent } from 'fino:ai/runtime';
-import type { CodeEngine as CodeEngineType } from 'fino:commands/code/engine';
+import type {
+  CodeEngine as CodeEngineType,
+  TurnResult as TurnResultType,
+} from 'fino:commands/code/engine';
 
 interface CodeCommandInput {
   prompt?: string[];
@@ -64,7 +67,9 @@ const command = new Task({
         throw new Error('fino code: interactive mode needs a TTY; pass a prompt for one-shot use');
       }
       const { runCodeTui } = await import('fino:commands/code/tui');
-      await runCodeTui(engine);
+      await runCodeTui(engine, {
+        recover: Boolean(input.continue || input.thread),
+      });
       return ctx.writer.mode === 'json'
         ? { command: 'code', ok: true, threadId: engine.threadId }
         : '';
@@ -126,25 +131,33 @@ async function runOneShot(
       void ctx.writer.writeText?.(`\n[tool: ${ev.name}]\n`);
     }
   };
-  let result = await engine.runTurn(prompt, { onEvent, signal: ctx.signal });
-  while (result.status === 'suspended' && result.approval) {
-    const req = result.approval.request;
-    const summary = `${req.toolName} ${JSON.stringify(req.args ?? {})}`;
-    let approved = false;
-    if (ctx.prompt?.isInteractive) {
-      approved = await ctx.prompt.confirm({
-        label: `Approve ${summary}?`,
-        defaultValue: false,
-      });
+  const settleApprovals = async (turn: TurnResultType): Promise<TurnResultType> => {
+    let current = turn;
+    while (current.status === 'suspended' && current.approval) {
+      const req = current.approval.request;
+      const summary = `${req.toolName} ${JSON.stringify(req.args ?? {})}`;
+      let approved = false;
+      if (ctx.prompt?.isInteractive) {
+        approved = await ctx.prompt.confirm({
+          label: `Approve ${summary}?`,
+          defaultValue: false,
+        });
+      }
+      current = approved
+        ? await engine.approve(current.approval.token, { signal: ctx.signal })
+        : await engine.reject(
+            current.approval.token,
+            'not approved in non-interactive mode; rerun with --auto',
+            { signal: ctx.signal },
+          );
     }
-    result = approved
-      ? await engine.approve(result.approval.token, { signal: ctx.signal })
-      : await engine.reject(
-          result.approval.token,
-          'not approved in non-interactive mode; rerun with --auto',
-          { signal: ctx.signal },
-        );
-  }
+    return current;
+  };
+  const recovered = await engine.recoverTurn({ onEvent, signal: ctx.signal });
+  if (recovered) await settleApprovals(recovered);
+  const result = await settleApprovals(
+    await engine.runTurn(prompt, { onEvent, signal: ctx.signal }),
+  );
   const text = result.text ?? streamed;
   if (json) {
     return {

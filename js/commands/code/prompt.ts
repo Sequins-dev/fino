@@ -28,6 +28,16 @@ export interface CodePromptOptions {
    * produce a plan instead of making changes.
    */
   planMode?: boolean;
+  /**
+   * Which seat this prompt is for: the main chat agent (`main`, default) or
+   * a spawned sub-agent (`subagent`), whose "user" is the parent agent.
+   */
+  role?: 'main' | 'subagent';
+  /**
+   * Append the delegation addendum describing the subagent_* tools. Set for
+   * the main agent when a subagent pool is mounted.
+   */
+  subagents?: boolean;
 }
 
 const PLATFORM = `You are the Fino coding agent: a terminal assistant for building applications with the Fino runtime and for developing Fino itself.
@@ -68,6 +78,24 @@ Verify with real code (\`search_files\`, \`read_file\`) when the docs and the so
 - Report what you did factually — if a test fails, show the failure rather than claiming success.
 - Keep answers terse. The user is a developer in a terminal.`;
 
+const SUBAGENT_PARENT_ADDENDUM = `
+
+# Delegating to sub-agents
+
+You can fan work out to concurrent sub-agents with the subagent_* tools. Use them when a task splits into independent pieces — parallel research across subsystems, exploring multiple approaches, or implementing separable changes.
+
+- \`subagent_spawn\` starts a sub-agent immediately and returns its id. Give each a complete, self-contained task prompt; it cannot see this conversation. Omit \`model\` to use your model; pick a different one when the task warrants it. Set \`readOnly\` for research-only work.
+- Spawn all independent sub-agents first, then block on \`subagent_wait\` (mode "any" to react to the first completion, "all" for everything). Check \`subagent_status\` while deciding.
+- Each finished sub-agent reports a done summary and waits for your review. Read it critically: either \`subagent_finalize\` to accept, or \`subagent_send\` follow-up instructions to iterate — the same way the user iterates with you. Never leave a sub-agent unreviewed.
+- \`subagent_send\` also steers a sub-agent mid-run when its direction needs correcting.
+- Sub-agents' gated tool calls (writes, shell) are approved by the user, not by you.`;
+
+const SUBAGENT_ROLE = `
+
+# You are a sub-agent
+
+You are a sub-agent working for a parent agent, which delegates and reviews like a user. Stay strictly on the delegated task; do not expand scope. Messages from the parent may arrive mid-run to steer you — incorporate them immediately. When you believe the task is complete, call \`subagent_complete\` with a concise, information-dense summary of what you did and found, then stop. If the parent sends follow-up instructions afterwards, continue the task and report again.`;
+
 const PLAN_ADDENDUM = `
 
 # Planning mode
@@ -85,6 +113,8 @@ You are in planning mode. Your tool set is read-only: research the codebase and 
  */
 export function codeSystemPrompt(opts: CodePromptOptions): string {
   const parts = [PLATFORM, `\n\nProject root: ${opts.cwd}`];
+  if (opts.role === 'subagent') parts.push(SUBAGENT_ROLE);
+  else if (opts.subagents) parts.push(SUBAGENT_PARENT_ADDENDUM);
   if (opts.planMode) parts.push(PLAN_ADDENDUM);
   return parts.join('');
 }

@@ -207,6 +207,25 @@ function decodeCsi(sequence: string): TuiEvent | null {
   if (sequence === '\x1B[H') return keyEvent('home');
   if (sequence === '\x1B[F') return keyEvent('end');
   if (sequence === '\x1B[Z') return keyEvent('tab', { shift: true });
+  const modified = /^\x1b\[1;(\d+)([ABCDHF])$/.exec(sequence);
+  if (modified) {
+    const name = (
+      {
+        A: 'up',
+        B: 'down',
+        C: 'right',
+        D: 'left',
+        H: 'home',
+        F: 'end',
+      } as Record<string, string>
+    )[modified[2]!]!;
+    const bits = Number(modified[1]) - 1;
+    return keyEvent(name, {
+      ...(bits & 1 ? { shift: true } : {}),
+      ...(bits & 2 ? { alt: true } : {}),
+      ...(bits & 4 ? { ctrl: true } : {}),
+    });
+  }
   const sgr = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(sequence);
   if (sgr) {
     const code = Number(sgr[1]);
@@ -277,7 +296,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
-      const csi = sgr ?? /^\x1b\[(?:\d+~|[A-Za-z])/.exec(text.slice(i));
+      const csi = sgr ?? /^\x1b\[(?:\d+~|\d+;\d+[A-Za-z~]|[A-Za-z])/.exec(text.slice(i));
       if (csi) {
         const event = decodeCsi(csi[0]);
         if (event) events.push(event);

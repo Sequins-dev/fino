@@ -1273,3 +1273,155 @@ describe('Session streaming', () => {
     t.equal(result.text, 'fine', 'result text intact');
   });
 });
+describe('Session steering', () => {
+  it('injects steering messages at the next step boundary', async (t) => {
+    const requests: ModelMessage[][] = [];
+    let sess: Session;
+    const steerTool = tool({
+      name: 'work',
+      description: 'Do some work.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        sess.steer('actually, focus on the tests');
+        return 'working';
+      },
+    });
+    const turns = [toolCallTurn('call_1', 'work', '{}'), endTurn('done')];
+    let idx = 0;
+    const model: Model = {
+      id: 'capture',
+      name: 'capture',
+      provider: 'test',
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req.messages);
+        const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+        idx++;
+        async function* gen() {
+          yield* turn;
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    sess = session({
+      store: new InMemorySessionStore(),
+      agent: agent({ model, tools: [steerTool] }),
+    });
+    const result = await sess.start('start working');
+    t.equal(result.status, 'done', 'run completed');
+    const second = requests[1]!;
+    const last = second[second.length - 1]!;
+    t.equal(last.role, 'user', 'steered message appended as user');
+    t.equal(last.content, 'actually, focus on the tests', 'steering text visible to the model');
+  });
+
+  it('returns steering the run ended before consuming', async (t) => {
+    let sess: Session;
+    const model: Model = {
+      id: 'late',
+      name: 'late',
+      provider: 'test',
+      stream(): ModelStream {
+        sess.steer('too late for this run');
+        async function* gen() {
+          yield* endTurn('finished');
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    sess = session({ store: new InMemorySessionStore(), agent: agent({ model }) });
+    const result = await sess.start('go');
+    t.equal(result.status, 'done', 'run completed');
+    t.deepEqual(
+      result.unconsumedSteering,
+      ['too late for this run'],
+      'unconsumed steering returned',
+    );
+  });
+
+  it('holds steering across a suspension and injects after approval', async (t) => {
+    const gated = tool({
+      name: 'gated',
+      description: 'Needs approval.',
+      parameters: { type: 'object', properties: {} },
+      requiresApproval: true,
+      execute: async () => 'ran',
+    });
+    const requests: ModelMessage[][] = [];
+    const turns = [toolCallTurn('call_g', 'gated', '{}'), endTurn('after')];
+    let idx = 0;
+    const model: Model = {
+      id: 'capture',
+      name: 'capture',
+      provider: 'test',
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req.messages);
+        const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+        idx++;
+        async function* gen() {
+          yield* turn;
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: agent({ model, tools: [gated] }),
+    });
+    const first = await sess.start('run it');
+    t.equal(first.status, 'suspended', 'suspended for approval');
+    sess.steer('note while you were paused');
+    const resumed = await sess.approveTool(first.state.suspendedOn!.token);
+    t.equal(resumed.status, 'done', 'completed after approval');
+    const second = requests[1]!;
+    const texts = second
+      .filter((m) => m.role === 'user' && typeof m.content === 'string')
+      .map((m) => m.content);
+    t.ok(
+      texts.includes('note while you were paused'),
+      'steering queued during suspension reached the model after approval',
+    );
+  });
+});
+
+describe('SessionStore metadata', () => {
+  it('round-trips JSON values in the in-memory store', async (t) => {
+    const store = new InMemorySessionStore();
+    t.equal(await store.getMeta('missing'), null, 'unknown key is null');
+    await store.putMeta('k', { list: [1, 2], name: 'x' });
+    t.deepEqual(await store.getMeta('k'), { list: [1, 2], name: 'x' }, 'value round-trips');
+    await store.putMeta('k', undefined);
+    t.equal(await store.getMeta('k'), null, 'undefined deletes');
+  });
+
+  it('persists metadata across sqlite reopen', async (t) => {
+    const path = `/tmp/fino-session-meta-${Date.now().toString(36)}.db`;
+    const fs = new DiskFileSystem();
+    try {
+      const store = await SqliteSessionStore.open(path);
+      await store.putMeta('pool', { children: ['a', 'b'] });
+      await store.close();
+      const reopened = await SqliteSessionStore.open(path);
+      t.deepEqual(
+        await reopened.getMeta('pool'),
+        { children: ['a', 'b'] },
+        'value survives reopen',
+      );
+      await reopened.putMeta('pool', undefined);
+      t.equal(await reopened.getMeta('pool'), null, 'delete works');
+      await reopened.close();
+    } finally {
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+});

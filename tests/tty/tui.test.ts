@@ -176,6 +176,28 @@ describe('fino:tty/tui input decoding', () => {
       ],
       'shift-tab',
     );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B[1;5D')),
+      [
+        {
+          type: 'key',
+          key: 'left',
+          ctrl: true,
+        },
+      ],
+      'ctrl-left arrow',
+    );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B[1;2C')),
+      [
+        {
+          type: 'key',
+          key: 'right',
+          shift: true,
+        },
+      ],
+      'shift-right arrow',
+    );
   });
   it('decodes SGR mouse events', (t) => {
     t.deepEqual(
