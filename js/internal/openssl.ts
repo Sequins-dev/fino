@@ -901,8 +901,7 @@ const _sslSymbols = {
   // NOTE: SSL_CTX_add1_chain_cert is a MACRO over SSL_CTX_ctrl, not an
   // exported symbol — declaring it here makes dlsym fail and nulls the entire
   // libssl handle, disabling TLS process-wide. Chain certificates go through
-  // SSL_CTX_ctrl below. Likewise PEM_read_bio_PrivateKey belongs to
-  // libcrypto, not libssl.
+  // SSL_CTX_ctrl below.
   SSL_CTX_use_certificate: {
     parameters: ['pointer', 'pointer'],
     result: 'i32',
@@ -910,6 +909,20 @@ const _sslSymbols = {
   SSL_CTX_use_PrivateKey: {
     parameters: ['pointer', 'pointer'],
     result: 'i32',
+  },
+  // libcrypto's, reached through libssl's dependency on it — the same way
+  // BIO_free and X509_free are bound here. They belong on this handle because
+  // an `EVP_PKEY` must be created, installed, and freed by one OpenSSL: the
+  // key carries provider and library-context pointers, and handing one to a
+  // second instance crashes inside `ssl_cert_lookup_by_pkey` the moment
+  // `SSL_CTX_use_PrivateKey` looks at what kind of key it is.
+  PEM_read_bio_PrivateKey: {
+    parameters: ['pointer', 'pointer', 'pointer', 'pointer'],
+    result: 'pointer',
+  },
+  EVP_PKEY_free: {
+    parameters: ['pointer'],
+    result: 'void',
   },
   SSL_CTX_check_private_key: {
     parameters: ['pointer'],
@@ -3491,16 +3504,15 @@ function useKeyPem(ctx: object, keyPem: string): void {
   const ssl = _requireSsl();
   const keyBio = memBio(ssl, encodeUtf8(keyPem));
   try {
-    const pkey = _requireCrypto().symbols.PEM_read_bio_PrivateKey(
-      keyBio,
-      null,
-      null,
-      null,
-    ) as object | null;
+    // Read, install, and free on the one handle. Crossing to the libcrypto
+    // handle here produced a key whose provider pointers belonged to a
+    // different OpenSSL instance than the context consuming it, and
+    // `SSL_CTX_use_PrivateKey` segfaulted dereferencing them.
+    const pkey = ssl.symbols.PEM_read_bio_PrivateKey(keyBio, null, null, null) as object | null;
     if (pkey === null)
       throw new Error('TLS: failed to read private key from memory: ' + getErrorString());
     const rc = ssl.symbols.SSL_CTX_use_PrivateKey(ctx, pkey);
-    evpPkeyFree(pkey);
+    ssl.symbols.EVP_PKEY_free(pkey);
     if (rc !== 1) {
       throw new Error('TLS: failed to install private key from memory: ' + getErrorString());
     }
