@@ -68,6 +68,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:file` | `benchmarks/file/fs.bench.ts` |
 | `fino:file/path` | `benchmarks/file/path.bench.ts` |
 | `fino:file/watch` | `benchmarks/file/watch.bench.ts` |
+| `fino:file/memory` | not yet benchmarked |
 | `fino:archive` | `benchmarks/archive.bench.ts` |
 | `fino:cluster` | `benchmarks/cluster.bench.ts` |
 | `fino:opentelemetry` | `benchmarks/opentelemetry.bench.ts` |

@@ -20,9 +20,9 @@
  * ```
  *
  * This is intentional. It keeps the backend swappable behind the abstract
- * `FileSystem` interface — enabling alternative backends (in-memory, zip
- * archive, overlay) — and avoids shared global state that makes testing
- * harder.
+ * `FileSystem` interface — `MemoryFileSystem` in `fino:file/memory` is one such
+ * backend, and zip-archive and overlay providers would be others — and avoids
+ * shared global state that makes testing harder.
  *
  * ## Object hierarchy
  *

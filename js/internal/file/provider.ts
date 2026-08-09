@@ -4,7 +4,7 @@
  * Defines the contract that all filesystem providers must satisfy. Concrete
  * implementations include:
  *   - DiskFileSystem — POSIX filesystem backed by libc syscalls (fino:file)
- *   - MemoryFileSystem — in-memory Map<path, Uint8Array> (future)
+ *   - MemoryFileSystem — in-memory tree (fino:file/memory)
  *   - OverlayFileSystem — copy-on-write layer over a base provider (future)
  *   - RestrictedFileSystem — path-allowlist enforcement (future)
  *   - S3FileSystem — remote object storage via fetch() (future)
@@ -373,6 +373,19 @@ export abstract class FileSystem {
    * ```
    */
   abstract entry(path: Path | string): Promise<unknown>;
+  /**
+   * List a directory's immediate children as `Entry` objects.
+   *
+   * Optional, and the seam that makes non-disk providers listable: `DirEntry`
+   * iteration calls this when a provider offers it, and otherwise falls back to
+   * reading the local directory through libc. Any provider not backed by the
+   * local filesystem must implement it.
+   *
+   * ```typescript no_run
+   * const children = await fs.readdir?.('/tmp');
+   * ```
+   */
+  readdir?(path: Path | string): Promise<unknown[]>;
   /**
    * Create a directory.
    *
