@@ -11,8 +11,15 @@
 import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
+import {
+  decodeEnvelope,
+  encodeEnvelope,
+  EnvelopeKind,
+  messageEnvelope,
+  type Envelope,
+} from 'internal:realm/envelope';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
-import { sandboxPortSend, sandboxPortRecv } from 'internal:realm-native';
+import { sandboxPortRecv, sandboxPortSend } from 'internal:realm-native';
 import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
@@ -49,6 +56,12 @@ export abstract class BaseTransportPort extends EventTarget {
    * @internal
    */
   #onmessage: ((ev: Event) => void) | null = null;
+  /**
+   * Handlers for runtime protocol frames.
+   *
+   * @internal
+   */
+  #controlHandlers = new Set<(envelope: Envelope, value: unknown) => boolean>();
   /**
    * Start delivery for this transport-backed port.
    *
@@ -87,8 +100,109 @@ export abstract class BaseTransportPort extends EventTarget {
    */
   protected _onClose(): void {}
   /**
-   * Deserialize `buf`+`stores`, intercept internal RPC envelopes, and dispatch
-   * a MessageEvent. Subclasses call this from their per-message drain loop.
+   * Hand an encoded message to the concrete transport.
+   *
+   * @internal
+   */
+  protected abstract _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    ports: [number, number][],
+  ): void;
+  /**
+   * Whether this transport can move a live `MessagePort` to the far side.
+   *
+   * A transit channel is a pair of descriptors in one process, so only
+   * transports that stay inside it can carry one. Declaring this up front means
+   * the port is rejected before a channel is created for it, rather than after.
+   *
+   * @internal
+   */
+  protected _supportsPortTransfer(): boolean {
+    return true;
+  }
+  /**
+   * Serialize `message` and send it under `envelope`.
+   *
+   * Every transport shares this: the structured clone, the transfer-list rules,
+   * and the envelope header are identical regardless of which channel carries
+   * the bytes, so only `_send` differs between port types.
+   *
+   * @internal
+   */
+  protected _postEnvelope(
+    envelope: Envelope,
+    message: unknown,
+    transferOrOpts?: Transferable[] | StructuredSerializeOptions,
+  ): void {
+    if (this._closed) return;
+    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
+      ? (transferOrOpts as Transferable[])
+      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
+    const transferABs: ArrayBuffer[] = [];
+    const portInfos: [number, number][] = [];
+    for (const item of rawTransfer ?? []) {
+      if (item instanceof ArrayBuffer) {
+        transferABs.push(item);
+      } else if (item instanceof MessagePort) {
+        if (!this._supportsPortTransfer()) {
+          throw new TypeError(
+            `${this.constructor.name} transfer list only supports ArrayBuffer values`,
+          );
+        }
+        const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
+          createTransitChannel as () => {
+            p2Handle: number;
+            p2WakeReadFd: number;
+            qHandle: number;
+            qWakeReadFd: number;
+          }
+        )();
+        item._transferCrossThread(p2Handle, p2WakeReadFd);
+        portInfos.push([qHandle, qWakeReadFd]);
+      } else {
+        throw new TypeError(
+          `${this.constructor.name} transfer list only supports ArrayBuffer and MessagePort values`,
+        );
+      }
+    }
+    const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
+      message,
+      transferABs.length > 0 ? transferABs : undefined,
+    );
+    const [data, ...stores] = parts;
+    this._send(encodeEnvelope(envelope), data!, stores, portInfos);
+  }
+  /**
+   * Send runtime control traffic — a call, a result, a termination request, or
+   * an RPC frame — rather than application data.
+   *
+   * The kind travels in the header, never in the payload, so a realm cannot
+   * fabricate one by posting a plain object with the right property on it.
+   *
+   * @internal
+   */
+  _postControl(
+    kind: Envelope['kind'],
+    correlation: number,
+    message: unknown,
+    transfer?: Transferable[],
+  ): void {
+    this._postEnvelope({ kind, correlation }, message, transfer);
+  }
+  /**
+   * Send an application message.
+   */
+  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
+    this._postEnvelope(messageEnvelope(), message, transferOrOpts);
+  }
+  /**
+   * Decode one incoming message and route it by envelope kind.
+   *
+   * RPC frames are settled against the pending-request registry and never
+   * surface as events; everything else is dispatched to listeners. Subclasses
+   * call this from their per-message drain loop.
    *
    * @internal
    */
@@ -96,8 +210,10 @@ export abstract class BaseTransportPort extends EventTarget {
     buf: Uint8Array,
     stores?: Uint8Array[],
     ports: MessagePort[] = [],
+    header?: Uint8Array,
   ): void {
     if (!this._started) return;
+    const envelope = decodeEnvelope(header);
     let value: unknown;
     try {
       value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
@@ -110,47 +226,38 @@ export abstract class BaseTransportPort extends EventTarget {
       this.dispatchEvent(event);
       return;
     }
-    if (value !== null && typeof value === 'object') {
-      const obj = value as Record<string, unknown>;
-      if (obj['__rpc_res'] === true) {
-        const rpc = obj as {
-          reqId: number;
-          result?: unknown;
-          error?: string;
-        };
-        if (rpc.error !== undefined) {
-          if (!rejectRpc(rpc.reqId, rpc.error)) errStream(rpc.reqId, rpc.error);
+    switch (envelope.kind) {
+      case EnvelopeKind.RpcResponse: {
+        const response = value as { result?: unknown; error?: string };
+        if (response?.error !== undefined) {
+          if (!rejectRpc(envelope.correlation, response.error)) {
+            errStream(envelope.correlation, response.error);
+          }
         } else {
-          resolveRpc(rpc.reqId, rpc.result);
+          resolveRpc(envelope.correlation, response?.result);
         }
         return;
       }
-      if (obj['__rpc_chunk'] === true) {
-        const m = obj as {
-          reqId: number;
-          chunk: unknown;
-        };
-        pushChunk(m.reqId, m.chunk);
+      case EnvelopeKind.RpcChunk:
+        pushChunk(envelope.correlation, value);
         return;
-      }
-      if (obj['__rpc_end'] === true) {
-        endStream(
-          (
-            obj as {
-              reqId: number;
-            }
-          ).reqId,
-        );
+      case EnvelopeKind.RpcEnd:
+        endStream(envelope.correlation);
         return;
-      }
-      if (obj['__rpc_err'] === true) {
-        const m = obj as {
-          reqId: number;
-          error: string;
-        };
-        errStream(m.reqId, m.error);
+      case EnvelopeKind.RpcError:
+        errStream(envelope.correlation, String((value as { error?: unknown })?.error ?? value));
         return;
+      default:
+        break;
+    }
+    if (envelope.kind !== EnvelopeKind.Message) {
+      for (const handler of this.#controlHandlers) {
+        if (handler(envelope, value)) return;
       }
+      // Unclaimed runtime protocol is dropped rather than surfaced. Delivering
+      // it as a message would let application listeners see frames they have no
+      // business seeing, and would resurrect the payload sniffing this replaced.
+      return;
     }
     const event = new MessageEvent('message', {
       data: value,
@@ -158,6 +265,22 @@ export abstract class BaseTransportPort extends EventTarget {
     });
     _markEventTrusted(event);
     this.dispatchEvent(event);
+  }
+  /**
+   * Register a handler for runtime protocol frames on this port.
+   *
+   * The handler returns true once it has claimed the frame. Control traffic is
+   * routed only to these handlers and never reaches `message` listeners, so
+   * application code cannot observe — or be confused by — the runtime's own
+   * protocol, and cannot forge it either.
+   *
+   * @internal
+   */
+  _addControlHandler(handler: (envelope: Envelope, value: unknown) => boolean): () => void {
+    this.#controlHandlers.add(handler);
+    return () => {
+      this.#controlHandlers.delete(handler);
+    };
   }
   /**
    * Message handler property for transport-backed ports.
@@ -181,259 +304,222 @@ export abstract class BaseTransportPort extends EventTarget {
 }
 
 /**
- * Drain one batch of messages from a thread-port receive queue.
- */
-function _recvThreadMessages(handle?: number): [Uint8Array[], [number, number][]][] {
-  const raw =
-    handle === undefined
-      ? (nativeRecv as () => unknown)()
-      : (sandboxPortRecv as (handle: number) => unknown)(handle);
-  return raw as [Uint8Array[], [number, number][]][];
-}
-
-/**
- * MessagePort-compatible endpoint for cross-thread realm messaging.
- *
- * ThreadPort is constructed by realm bootstrap and realm internals. It is not a
- * web global; application code should treat `Realm.port` as a port-like object
- * and use the public `MessagePort`/`MessageChannel` types for web-compatible
- * channel messaging.
+ * One frame as it arrives from a link: payload bytes, transferred port
+ * descriptors, and the envelope header when the transport carries one.
  *
  * @internal
  */
-export class ThreadPort extends BaseTransportPort {
+export type RealmFrame = [bytes: Uint8Array[], ports: [number, number][], header?: Uint8Array];
+
+/**
+ * One end of a realm message channel.
+ *
+ * A link owns nothing but the movement of bytes. Serialization, transfer-list
+ * rules, envelope handling and event dispatch all live in the port, so adding a
+ * transport means describing how its bytes travel — not reimplementing a port.
+ *
+ * @internal
+ */
+export interface RealmLink {
   /**
-   * Wake-pipe read fd registered with loop.readable(); becomes readable when
-   * the partner thread sends a message.
-   *
-   * @internal
+   * Which transport moves this link's bytes. Reported by `RealmPort.transport`
+   * so a port's channel stays identifiable now that every transport shares one
+   * port class.
    */
-  #wakeReadFd: number;
-  /** Parent-side native sandbox handle; absent inside the child isolate. */
-  #handle?: number;
+  readonly transport: 'parent' | 'scheduled' | 'sandbox' | 'process' | 'cluster';
   /**
-   * Current onmessageerror handler.
-   *
-   * @internal
+   * Descriptor that becomes readable when frames arrive, or `-1` for links that
+   * are pushed to from elsewhere rather than polled.
    */
+  readonly wakeFd: number;
+  /** Whether a live `MessagePort` can cross this link. */
+  readonly supportsPortTransfer: boolean;
+  send(header: Uint8Array, data: Uint8Array, stores: Uint8Array[], ports: [number, number][]): void;
+  /** Take every frame currently queued. */
+  drain(): RealmFrame[];
+  /** Release transport-owned resources when the port closes. */
+  close?(): void;
+}
+
+/**
+ * MessagePort-compatible endpoint over a {@link RealmLink}.
+ *
+ * Every realm transport — reactor-pooled, process, cluster — is this one class
+ * with a different link. It is not a web global; application code should treat
+ * `Realm.port` as a port-like object and use `MessagePort`/`MessageChannel` for
+ * web-compatible channel messaging.
+ *
+ * @internal
+ */
+export class RealmPort extends BaseTransportPort {
+  #link: RealmLink;
   #onmessageerror: ((ev: Event) => void) | null = null;
+
+  constructor(link: RealmLink) {
+    super();
+    this.#link = link;
+  }
+
+  /** Which transport carries this port's messages. */
+  get transport(): RealmLink['transport'] {
+    return this.#link.transport;
+  }
+
+  /** @internal */
+  protected override _send(
+    header: Uint8Array,
+    data: Uint8Array,
+    stores: Uint8Array[],
+    ports: [number, number][],
+  ): void {
+    this.#link.send(header, data, stores, ports);
+  }
+
+  /** @internal */
+  protected override _supportsPortTransfer(): boolean {
+    return this.#link.supportsPortTransfer;
+  }
+
+  /** @internal */
+  protected override _onStart(): void {
+    if (this.#link.wakeFd >= 0) void this.#watchLoop();
+  }
+
+  /** @internal */
+  protected override _onClose(): void {
+    if (this.#link.wakeFd >= 0) removeRead(this.#link.wakeFd);
+    this.#link.close?.();
+  }
+
+  /** Message error handler property. */
+  get onmessageerror() {
+    return this.#onmessageerror;
+  }
+
+  /** Set or clear the messageerror handler property. */
+  set onmessageerror(fn: ((ev: Event) => void) | null) {
+    if (this.#onmessageerror !== null)
+      this.removeEventListener('messageerror', this.#onmessageerror);
+    this.#onmessageerror = typeof fn === 'function' ? fn : null;
+    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
+  }
+
   /**
-   * Create a ThreadPort over an existing wake pipe.
+   * Await readable() on the link's descriptor and drain on each signal.
    *
    * @internal
    */
-  constructor(wakeReadFd: number, handle?: number) {
-    super();
-    this.#wakeReadFd = wakeReadFd;
-    this.#handle = handle;
-  }
-  /**
-   * Serialize and send a message to the opposite thread endpoint.
-   */
-  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
-      ? (transferOrOpts as Transferable[])
-      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    if (rawTransfer) {
-      for (const item of rawTransfer) {
-        if (item instanceof ArrayBuffer) {
-          transferABs.push(item);
-        } else if (item instanceof MessagePort) {
-          const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
-            createTransitChannel as () => {
-              p2Handle: number;
-              p2WakeReadFd: number;
-              qHandle: number;
-              qWakeReadFd: number;
-            }
-          )();
-          item._transferCrossThread(p2Handle, p2WakeReadFd);
-          portInfos.push([qHandle, qWakeReadFd]);
-        } else {
-          throw new TypeError(
-            'ThreadPort transfer list only supports ArrayBuffer and MessagePort values',
-          );
-        }
-      }
+  async #watchLoop(): Promise<void> {
+    while (!this._closed) {
+      await readable(this.#link.wakeFd);
+      if (this._closed) break;
+      this._drain();
     }
-    const serResult = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transferABs.length > 0 ? transferABs : undefined,
-    );
-    const data = serResult[0];
-    const stores = serResult.length > 1 ? serResult.slice(1) : ([] as Uint8Array[]);
-    if (this.#handle === undefined) {
-      (nativeSend as (b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void)(
-        data,
-        stores,
-        portInfos,
-      );
-    } else {
+  }
+
+  /**
+   * Dispatch every frame currently queued on the link.
+   *
+   * Realm completion drains synchronously before closing the port, so a final
+   * response cannot lose a race with the separate completion signal.
+   *
+   * @internal
+   */
+  _drain(): void {
+    for (const [byteArr, portArr, header] of this.#link.drain()) {
+      const [buf, ...stores] = byteArr;
+      if (!buf) continue;
+      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports, header);
+    }
+  }
+}
+
+/**
+ * Link from a child realm back to whichever realm created it.
+ *
+ * @internal
+ */
+export function parentRealmLink(wakeFd: number): RealmLink {
+  return {
+    transport: 'parent',
+    wakeFd,
+    supportsPortTransfer: true,
+    send: (header, data, stores, ports) =>
+      (
+        nativeSend as (h: Uint8Array, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void
+      )(header, data, stores, ports),
+    drain: () => (nativeRecv as () => RealmFrame[])(),
+  };
+}
+
+/**
+ * Link from a parent realm to one of its reactor-pooled children.
+ *
+ * @internal
+ */
+export function scheduledRealmLink(handle: number, wakeFd: number): RealmLink {
+  return {
+    transport: 'scheduled',
+    wakeFd,
+    supportsPortTransfer: true,
+    send: (header, data, stores, ports) => scheduledRealmSend(handle, header, data, stores, ports),
+    drain: () => scheduledRealmRecv(handle) as RealmFrame[],
+  };
+}
+
+/**
+ * Link from a parent realm to a Linux sandbox realm.
+ *
+ * A sandbox realm owns a dedicated OS thread so its thread-scoped Landlock,
+ * seccomp and cgroup controls never touch the reactor pool, but it is still in
+ * this process — so a transit channel can cross it like any other same-process
+ * transport.
+ *
+ * @internal
+ */
+export function sandboxRealmLink(handle: number, wakeFd: number): RealmLink {
+  return {
+    transport: 'sandbox',
+    wakeFd,
+    supportsPortTransfer: true,
+    send: (header, data, stores, ports) =>
       (
         sandboxPortSend as (
           handle: number,
+          h: Uint8Array,
           b: Uint8Array,
           s: Uint8Array[],
           p: [number, number][],
         ) => void
-      )(this.#handle, data, stores, portInfos);
-    }
-  }
-  /**
-   * Start watching the wake fd for incoming messages.
-   *
-   * @internal
-   */
-  protected override _onStart(): void {
-    this.#watchLoop();
-  }
-  /**
-   * Remove the runtime read watcher for this port.
-   *
-   * @internal
-   */
-  protected override _onClose(): void {
-    removeRead(this.#wakeReadFd);
-  }
-  /**
-   * Message error handler property.
-   */
-  get onmessageerror() {
-    return this.#onmessageerror;
-  }
-  /**
-   * Set or clear the messageerror handler property.
-   */
-  set onmessageerror(fn: ((ev: Event) => void) | null) {
-    if (this.#onmessageerror !== null)
-      this.removeEventListener('messageerror', this.#onmessageerror);
-    this.#onmessageerror = typeof fn === 'function' ? fn : null;
-    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
-  }
-  /**
-   * Await readable() on the wake fd and drain each time the partner signals.
-   *
-   * @internal
-   */
-  async #watchLoop(): Promise<void> {
-    while (!this._closed) {
-      await readable(this.#wakeReadFd);
-      if (this._closed) break;
-      this._drain();
-    }
-  }
-  /**
-   * Drain the mpsc channel and dispatch all buffered messages.
-   *
-   * @internal
-   */
-  _drain(): void {
-    const messages = _recvThreadMessages(this.#handle);
-    for (const [byteArr, portArr] of messages as any[]) {
-      const [buf, ...stores] = byteArr as Uint8Array[];
-      if (!buf) continue;
-      const ports = (portArr as [number, number][]).map(([h, wfd]) =>
-        MessagePort._fromTransit(h, wfd),
-      );
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
-    }
-  }
+      )(handle, header, data, stores, ports),
+    drain: () => (sandboxPortRecv as (handle: number) => RealmFrame[])(handle),
+  };
 }
 
 /**
- * Parent-side transport for a realm scheduled on the process reactor pool.
+ * Port for a parent realm talking to a Linux sandbox realm.
  *
  * @internal
  */
-export class ScheduledPort extends BaseTransportPort {
-  #wakeReadFd: number;
-  #handle: number;
-  #onmessageerror: ((ev: Event) => void) | null = null;
+export function createSandboxPort(wakeFd: number, handle: number): RealmPort {
+  return new RealmPort(sandboxRealmLink(handle, wakeFd));
+}
 
-  constructor(wakeReadFd: number, handle: number) {
-    super();
-    this.#wakeReadFd = wakeReadFd;
-    this.#handle = handle;
-  }
+/**
+ * Port for a child realm talking back to its creator.
+ *
+ * @internal
+ */
+export function createParentPort(wakeFd: number): RealmPort {
+  return new RealmPort(parentRealmLink(wakeFd));
+}
 
-  postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
-    if (this._closed) return;
-    const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
-      ? (transferOrOpts as Transferable[])
-      : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
-    const transferABs: ArrayBuffer[] = [];
-    const portInfos: [number, number][] = [];
-    for (const item of rawTransfer ?? []) {
-      if (item instanceof ArrayBuffer) {
-        transferABs.push(item);
-      } else if (item instanceof MessagePort) {
-        const { p2Handle, p2WakeReadFd, qHandle, qWakeReadFd } = (
-          createTransitChannel as () => {
-            p2Handle: number;
-            p2WakeReadFd: number;
-            qHandle: number;
-            qWakeReadFd: number;
-          }
-        )();
-        item._transferCrossThread(p2Handle, p2WakeReadFd);
-        portInfos.push([qHandle, qWakeReadFd]);
-      } else {
-        throw new TypeError(
-          'ScheduledPort transfer list only supports ArrayBuffer and MessagePort values',
-        );
-      }
-    }
-    const [data, ...stores] = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transferABs.length > 0 ? transferABs : undefined,
-    );
-    scheduledRealmSend(this.#handle, data!, stores, portInfos);
-  }
-
-  protected override _onStart(): void {
-    void this.#watchLoop();
-  }
-
-  protected override _onClose(): void {
-    removeRead(this.#wakeReadFd);
-  }
-
-  get onmessageerror() {
-    return this.#onmessageerror;
-  }
-
-  set onmessageerror(fn: ((ev: Event) => void) | null) {
-    if (this.#onmessageerror !== null)
-      this.removeEventListener('messageerror', this.#onmessageerror);
-    this.#onmessageerror = typeof fn === 'function' ? fn : null;
-    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
-  }
-
-  async #watchLoop(): Promise<void> {
-    while (!this._closed) {
-      await readable(this.#wakeReadFd);
-      if (this._closed) break;
-      this._drain();
-    }
-  }
-
-  /**
-   * Drain every currently queued message synchronously.
-   *
-   * Realm completion uses this before closing the port so a final response
-   * cannot lose a race with the independent completion readiness signal.
-   *
-   * @internal
-   */
-  _drain(): void {
-    for (const [byteArr, portArr] of scheduledRealmRecv(this.#handle)) {
-      const [buf, ...stores] = byteArr;
-      if (!buf) continue;
-      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports);
-    }
-  }
+/**
+ * Port for a parent realm talking to a reactor-pooled child.
+ *
+ * @internal
+ */
+export function createScheduledPort(wakeFd: number, handle: number): RealmPort {
+  return new RealmPort(scheduledRealmLink(handle, wakeFd));
 }

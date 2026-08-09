@@ -46,11 +46,12 @@
  * @internal
  */
 import { nativeSend } from 'internal:thread-port';
+import { encodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
 import { serialize } from 'internal:serializer';
 // ---------------------------------------------------------------------------
 // Transport selection
 //
-// For thread and process child realms, `globalThis.realmPort` is a ThreadPort
+// For reactor-pooled and process child realms, `globalThis.realmPort` is a
 // whose `.postMessage()` routes through the Rust native channel (same as
 // calling nativeSend directly).  For embedded realms it is a MessagePort
 // backed by an in-process IntraPort queue.  Using `.postMessage()` uniformly
@@ -125,20 +126,32 @@ const _send = nativeSend;
 // ---------------------------------------------------------------------------
 // Internal send helper
 // ---------------------------------------------------------------------------
-function _sendMsg(msg: unknown): void {
-  // Prefer the realm port (works for all realm types including embedded).
+/**
+ * Send an RPC request to the parent under its envelope kind.
+ *
+ * The request id rides in the header rather than the payload, so the receiving
+ * side classifies and correlates the frame without trusting anything the
+ * payload claims about itself.
+ */
+function _sendControl(kind: number, reqId: number, payload: unknown): void {
+  // Prefer the realm port, which encodes the envelope for us.
   const port = (globalThis as Record<string, unknown>).realmPort as
     | {
-        postMessage(m: unknown): void;
+        _postControl(kind: number, correlation: number, message: unknown): void;
       }
     | undefined;
-  if (port) {
-    port.postMessage(msg);
+  if (port?._postControl) {
+    port._postControl(kind, reqId, payload);
     return;
   }
-  // Fallback: direct native send for thread/process realms before realmPort is set.
-  const bytes = (_ser as (v: unknown) => Uint8Array[])(msg)[0]!;
-  (_send as (b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(bytes, [], []);
+  // Fallback: direct native send for realms whose port is not installed yet.
+  const bytes = (_ser as (v: unknown) => Uint8Array[])(payload)[0]!;
+  (_send as (h: Uint8Array, b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(
+    encodeEnvelope({ kind: kind as 0, correlation: reqId }),
+    bytes,
+    [],
+    [],
+  );
 }
 // ---------------------------------------------------------------------------
 // Public API — scalar calls
@@ -170,13 +183,7 @@ export function call(specifier: string, method: string, args: unknown[]): Promis
       resolve,
       reject,
     });
-    _sendMsg({
-      __rpc_req: true,
-      specifier,
-      method,
-      reqId,
-      args,
-    });
+    _sendControl(EnvelopeKind.RpcRequest, reqId, { specifier, method, args });
   });
 }
 /**
@@ -308,13 +315,7 @@ export function callStream(
   const reqId = _nextId++;
   const q = new _StreamQueue();
   _pendingStreams.set(reqId, q);
-  _sendMsg({
-    __rpc_req: true,
-    specifier,
-    method,
-    reqId,
-    args,
-  });
+  _sendControl(EnvelopeKind.RpcRequest, reqId, { specifier, method, args });
   return q;
 }
 /**
@@ -486,11 +487,7 @@ export class WriteSink {
    * ```
    */
   write(chunk: unknown): void {
-    _sendMsg({
-      __rpc_send_chunk: true,
-      reqId: this.#reqId,
-      chunk,
-    });
+    _sendControl(EnvelopeKind.SinkChunk, this.#reqId, chunk);
   }
   /**
    * Signal end-of-stream.
@@ -503,10 +500,7 @@ export class WriteSink {
    * ```
    */
   close(): void {
-    _sendMsg({
-      __rpc_send_end: true,
-      reqId: this.#reqId,
-    });
+    _sendControl(EnvelopeKind.SinkEnd, this.#reqId, null);
   }
   /**
    * Close the stream when a `using` binding leaves scope.
@@ -538,11 +532,7 @@ export class WriteSink {
    * ```
    */
   abort(error: string): void {
-    _sendMsg({
-      __rpc_send_err: true,
-      reqId: this.#reqId,
-      error,
-    });
+    _sendControl(EnvelopeKind.SinkError, this.#reqId, { error });
   }
   /**
    * Settle `result` with a value.
@@ -590,13 +580,7 @@ export function callSink(specifier: string, method: string, args: unknown[]): Wr
   const reqId = _nextId++;
   const sink = new WriteSink(reqId);
   _pendingSinks.set(reqId, sink);
-  _sendMsg({
-    __rpc_send_start: true,
-    specifier,
-    method,
-    reqId,
-    args,
-  });
+  _sendControl(EnvelopeKind.SinkStart, reqId, { specifier, method, args });
   return sink;
 }
 /**

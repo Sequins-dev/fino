@@ -650,7 +650,8 @@ export class MessagePort extends EventTarget {
     }
   }
   /**
-   * Dispatch queued same-isolate messages for this port.
+   * Dispatch queued same-isolate messages for this port and return how many
+   * were delivered.
    *
    * Called by _flushPorts during the runtime task step. Transit ports use their
    * own wake-loop path instead.
@@ -663,9 +664,9 @@ export class MessagePort extends EventTarget {
    *
    * @internal
    */
-  _drain(): void {
-    if (!this.#started) return;
-    if (this.#transitHandle !== null) return;
+  _drain(): number {
+    if (!this.#started) return 0;
+    if (this.#transitHandle !== null) return 0;
     const pending = this.#queue.splice(0);
     for (const item of pending) {
       const event = new MessageEvent('message', {
@@ -675,6 +676,7 @@ export class MessagePort extends EventTarget {
       _markEventTrusted(event);
       this.dispatchEvent(event);
     }
+    return pending.length;
   }
   // ---------------------------------------------------------------------------
   // Private helpers
@@ -778,18 +780,24 @@ export class MessageChannel {
 // _flushPorts — called from driveLoop step
 // ---------------------------------------------------------------------------
 /**
- * Dispatch all queued messages on every started MessagePort in this context.
+ * Dispatch all queued messages on every started MessagePort in this context and
+ * return how many were delivered.
+ *
  * Called from driveLoop between tick() and drainMicrotasks() so that port
- * messages are treated as tasks that run before the microtask checkpoint.
+ * messages are treated as tasks that run before the microtask checkpoint. The
+ * count feeds the loop's progress signal, which the reactor uses to tell a
+ * quiescent realm from a busy one.
  *
  * ```typescript no_run
- * _flushPorts();
+ * const delivered = _flushPorts();
  * ```
  *
  * @internal
  */
-export function _flushPorts(): void {
+export function _flushPorts(): number {
+  let dispatched = 0;
   for (const port of _activePorts) {
-    port._drain();
+    dispatched += port._drain();
   }
+  return dispatched;
 }

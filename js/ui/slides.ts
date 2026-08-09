@@ -360,10 +360,19 @@ export class Presentation {
     meta: PresentationMeta;
     theme: PresentationTheme;
   }> {
+    // The deck renders in the child and its tree is structured-cloned back, so
+    // convert inside the realm: toPortable() names the offending prop path,
+    // where a raw clone failure would only say the value was uncloneable.
     const wrapper = `
       import Deck, * as deckModule from ${JSON.stringify(filename)};
+      import { renderStatic } from 'fino:ui';
+      import { portableSink } from 'fino:ui/portable';
       export default function renderPresentationModule() {
-        return { vnode: Deck(), meta: deckModule.meta ?? {}, theme: deckModule.theme ?? {} };
+        return {
+          vnode: renderStatic(() => Deck(), portableSink()),
+          meta: deckModule.meta ?? {},
+          theme: deckModule.theme ?? {},
+        };
       }
     `;
     const realm = Realm.fromSource<
@@ -403,8 +412,8 @@ export class Presentation {
     const directory = slash > 0 ? filename.slice(0, slash) : '.';
     const watcher = new Watcher({ recursive: true });
     this.#watcher = watcher;
-    watcher.watch(directory);
-    watcher.watch(filename);
+    await watcher.watch(directory);
+    await watcher.watch(filename);
     try {
       for await (const event of watcher) {
         if (this.#closed) break;

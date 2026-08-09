@@ -1,225 +1,119 @@
 /**
  * internal:scheduler/readiness — TypeScript-owned reactor pool.
  *
- * TypeScript constructs each reactor thread independently, owns pool sizing and
- * lifecycle, installs readiness listeners, and reports runnable owners to the
- * shared native queue. A reactor thread mechanically claims the highest
- * priority available owner. It retains its current isolate on ties and exits it
- * only when a strictly higher-priority realm is available.
+ * TypeScript owns pool sizing and lifecycle and creates each reactor thread
+ * separately, so the pool can grow or shrink without changing native policy. A
+ * reactor thread mechanically claims the highest-priority runnable realm. It
+ * retains its current isolate on ties and exits it only when a strictly
+ * higher-priority realm is available.
  *
  * @internal
  */
 import * as loop from 'internal:runtime/loop';
+import { env } from '../../process.ts';
+import { onlineProcessors } from '../runtime/libc.ts';
 import {
-  availableParallelism,
-  closeReactorQueue,
-  closeReactorThread,
-  createReactorQueue,
   createReactorThread,
-  signalReactorOwner,
+  createWorkload,
+  closeReactorThread,
+  registerReactorWake,
+  startReactorPool,
+  stopReactorPool,
   submitReactorWorkload,
   takeReactorEvents,
+  workloadOwner,
+  workloadWakeFd,
 } from 'internal:scheduler-native';
-import { Isolate } from './isolate.ts';
-import { env } from 'internal:process';
 import { currentProcessReadinessController } from './reactor.ts';
 
-/** Completion and transition counters reported by the TypeScript pool. */
-export interface PooledResidentRunResult<T = unknown> {
-  values: T[];
-  workloadSwitches: number;
-  workloadMigrations: number;
-  schedulerReadinessTurns: number;
-  isolateEntries: number;
-  isolateExits: number;
-  loopTurns: number;
-  workerThreads: number;
+/**
+ * Reactor thread count: one per online processor, or `FINO_REACTOR_THREADS`.
+ *
+ * The pool sized itself from `navigator.hardwareConcurrency`, which fino does
+ * not define, so it silently ran a single thread for the whole life of the
+ * reactor and realms never executed in parallel. Scaling out only became worth
+ * taking once wake-ups were targeted: a shared condvar plus `notify_all` meant
+ * every readiness completion dragged every parked worker out of the kernel, and
+ * all but one found nothing to do. Per-operation cost for I/O-bound realms grew
+ * with the thread count under that scheme and is flat under this one, while
+ * CPU-bound realms overlap almost perfectly.
+ *
+ * Pin the variable to 1 to get single-threaded behaviour back when isolating a
+ * scheduling problem.
+ */
+function configuredThreadCount(): number {
+  const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
+  if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
+  return onlineProcessors();
 }
 
 /**
- * Construct a TS-managed reactor pool and run copies of an entry realm.
- *
- * Every thread is created separately through the native reactor-thread
- * primitive, allowing the TS pool to grow or shrink without changing native
- * policy. `inputs` currently determines the number of entry realms; realm data
- * will move through the ordinary scheduler transport.
+ * Run one entry realm on the process reactor pool until it, and every realm it
+ * spawns, has settled.
  *
  * @internal
  */
-export async function runPooledResidentReadinessWorkloadsAsync<T = unknown>(
+export async function runReactorPool(
   entryPath: string,
-  inputs: unknown[],
   options: {
     threads?: number;
   } = {},
-): Promise<PooledResidentRunResult<T>> {
-  if (inputs.length === 0) {
-    return {
-      values: [],
-      workloadSwitches: 0,
-      workloadMigrations: 0,
-      schedulerReadinessTurns: 0,
-      isolateEntries: 0,
-      isolateExits: 0,
-      loopTurns: 0,
-      workerThreads: 0,
-    };
-  }
+): Promise<void> {
   const readiness = currentProcessReadinessController();
   if (readiness === undefined) {
     throw new Error('the process scheduler must run in the main TypeScript realm');
   }
 
-  const queue = createReactorQueue();
-  // Threads track demand: one per live workload, capped at hardware
-  // parallelism (or the explicit override). A quiet process runs one reactor;
-  // growth happens on `submitted` events as realms enter the queue.
-  // One fewer reactor than hardware threads, so the main thread — which
-  // owns the host loop, the cluster session, and heartbeats — always has a
-  // core of its own. Saturating every thread with workloads starves it into
-  // missing heartbeats, and the node is swept from membership while the
-  // scheduler underneath is working perfectly. FINO_REACTOR_THREADS caps the
-  // pool explicitly for capacity experiments.
-  const envCap = Number(env.FINO_REACTOR_THREADS);
-  const defaultCap =
-    Number.isFinite(envCap) && envCap >= 1
-      ? Math.floor(envCap)
-      : Math.max(1, availableParallelism() - 1);
-  const threadCap = Math.max(1, Math.floor(options.threads ?? defaultCap));
-  const threads: Array<ReturnType<typeof createReactorThread>> = [];
-  let liveWorkloads = 0;
-  const ensureThreads = (): void => {
-    const desired = Math.min(Math.max(1, liveWorkloads), threadCap);
-    while (threads.length < desired) {
-      threads.push(createReactorThread(queue.handle));
-    }
-  };
-  // Start with a single reactor; the initial submissions below arrive as
-  // `submitted` events and grow the pool like any other demand.
-  ensureThreads();
-  const isolates = inputs.map(() => new Isolate(entryPath));
-  const isolateInfo = isolates.map((isolate) => ({
-    handle: isolate.nativeHandle,
-    wakeFd: isolate.wakeFd,
-  }));
-  const owners = isolateInfo.map(({ handle }) => submitReactorWorkload(queue.handle, handle));
-  const values = new Array<T>(inputs.length);
-  const positions = new Map(owners.map((owner, position) => [owner, position]));
-  const initialOwners = new Set(owners);
-  const lastWorkers = new Map<number, number>();
-  const wakeArmed = new Set<number>();
-  let stopped = false;
-  let remaining = owners.length;
-  let workloadSwitches = 0;
-  let workloadMigrations = 0;
-  let schedulerReadinessTurns = 0;
-  let isolateEntries = 0;
-  let isolateExits = 0;
-  let loopTurns = 0;
+  const controlFd = startReactorPool();
+  const threadCount = Math.max(1, Math.floor(options.threads ?? configuredThreadCount()));
+  const threads: number[] = [];
+  for (let index = 0; index < threadCount; index++) threads.push(createReactorThread().handle);
 
-  const signal = (owner: number): void => {
-    if (!stopped) signalReactorOwner(owner);
-  };
-  const stopReadiness = owners.map((owner) => readiness.listen(owner, () => signal(owner)));
-  const armWorkloadWake = (owner: number): void => {
-    if (stopped || wakeArmed.has(owner)) return;
-    const position = positions.get(owner);
-    if (position === undefined) return;
-    wakeArmed.add(owner);
-    void loop.readable(isolateInfo[position]!.wakeFd).then(() => {
-      wakeArmed.delete(owner);
-      if (stopped || !positions.has(owner)) return;
-      signal(owner);
-      armWorkloadWake(owner);
-    });
-  };
-  for (const owner of owners) armWorkloadWake(owner);
+  // Creating a workload and queueing it are separate steps: until it is
+  // submitted, no reactor can claim it, which is what makes it safe to read its
+  // owner and arm its wake descriptor first. Doing that after submission would
+  // race a reactor that has already started the realm.
+  const workload = createWorkload(entryPath);
+  const owner = workloadOwner(workload);
+  // Realms register their own wake descriptor the same way, whether they are
+  // created here or by another realm: the mailbox tells this realm to watch it
+  // and re-signal the owner. Keeping one path means the reactor cannot be woken
+  // by two mechanisms with different lifetimes.
+  registerReactorWake(owner, workloadWakeFd(workload));
+  submitReactorWorkload(null, workload);
+  // Owners tracked here are the entry realm plus every realm it spawns onto the
+  // same pool; the run ends only once all of them have settled.
+  const liveOwners = new Set([owner]);
 
   try {
-    while (remaining > 0) {
-      await loop.readable(queue.controlFd);
-      schedulerReadinessTurns++;
-      for (const event of takeReactorEvents(queue.handle)) {
-        loopTurns += event.loopTurns;
-        if (event.kind === 'overrun' || event.kind === 'halted') {
-          // Watchdog escalations are advisory: a workload held its reactor
-          // while queued work starved. They are NOT lifecycle transitions —
-          // a halted workload still settles through its own error event — so
-          // they must not fall through to the settle path, which treats an
-          // untracked owner as fatal and takes the whole node down with it.
-          console.error(`fino:scheduler watchdog ${event.kind}: workload ${event.owner}`);
-          continue;
+    while (liveOwners.size > 0) {
+      await loop.readable(controlFd);
+      for (const event of takeReactorEvents()) {
+        // `settled`, `error` and `shed` retire an owner; `submitted` and
+        // `activated` announce one. `overrun` and `halted` are watchdog
+        // escalations against a slice, and the workload they interrupt still
+        // reports its own terminal event afterwards — treating them as
+        // terminal would end the run while realms were still going.
+        switch (event.kind) {
+          case 'submitted':
+          case 'activated':
+            liveOwners.add(event.owner);
+            continue;
+          case 'overrun':
+          case 'halted':
+            continue;
+          default:
+            break;
         }
-        if (event.kind === 'submitted') {
-          liveWorkloads++;
-          ensureThreads();
-          continue;
-        }
-        if (event.kind === 'activated') {
-          if (!positions.has(event.owner)) {
-            positions.set(event.owner, -1);
-            remaining++;
-          }
-          isolateEntries++;
-          if (event.previous !== undefined) {
-            workloadSwitches++;
-            isolateExits++;
-          }
-          const previousWorker = lastWorkers.get(event.owner);
-          if (previousWorker !== undefined && previousWorker !== event.worker) {
-            workloadMigrations++;
-          }
-          lastWorkers.set(event.owner, event.worker);
-          continue;
-        }
-        const position = positions.get(event.owner);
-        if (position === undefined) {
-          throw new Error(`reactor returned unknown owner ${event.owner}`);
-        }
-        positions.delete(event.owner);
-        liveWorkloads = Math.max(0, liveWorkloads - 1);
-        isolateExits++;
-        remaining--;
-        if (position >= 0) loop.removeRead(isolateInfo[position]!.wakeFd);
-        wakeArmed.delete(event.owner);
-        if (event.kind === 'error' && initialOwners.has(event.owner)) {
+        liveOwners.delete(event.owner);
+        if (event.owner === owner && event.kind === 'error') {
           throw event.error ?? `scheduled realm ${event.owner} failed`;
         }
-        if (position >= 0) values[position] = undefined as T;
       }
     }
   } finally {
-    stopped = true;
-    for (const stop of stopReadiness) stop();
-    loop.removeRead(queue.controlFd);
-    for (const [owner, position] of positions) {
-      if (position >= 0) loop.removeRead(isolateInfo[position]!.wakeFd);
-      wakeArmed.delete(owner);
-    }
-    for (const thread of threads) closeReactorThread(thread.handle);
-    closeReactorQueue(queue.handle);
-    for (const isolate of isolates) isolate.terminate();
+    loop.removeRead(controlFd);
+    for (const thread of threads) closeReactorThread(thread);
+    stopReactorPool();
   }
-
-  return {
-    values,
-    workloadSwitches,
-    workloadMigrations,
-    schedulerReadinessTurns,
-    isolateEntries,
-    isolateExits,
-    loopTurns,
-    workerThreads: threads.length,
-  };
-}
-
-/** Synchronous adapter for a main realm that is not already awaiting work. */
-export function runPooledResidentReadinessWorkloads<T = unknown>(
-  entryPath: string,
-  inputs: unknown[],
-  options: {
-    threads?: number;
-  } = {},
-): PooledResidentRunResult<T> {
-  return loop.run(() => runPooledResidentReadinessWorkloadsAsync<T>(entryPath, inputs, options));
 }

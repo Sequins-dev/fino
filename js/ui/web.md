@@ -100,11 +100,41 @@ finoUI.register('app.counter.v1', (props, children) => {
 });
 ```
 
-Version 1 sends complete trees. Clients use `key` and `type` with the existing
-`HostAdapter` reconciliation model to preserve component identity and avoid
-recreating unchanged host nodes. Platform interaction state such as focus,
-scroll position, text composition, gestures, and animation remains local to
-the client rather than being round-tripped through view snapshots.
+Version 1 sends complete trees. `key` and `type` are the identity information a
+client uses to reconcile against the previous tree, preserving component
+identity and avoiding recreation of unchanged host nodes. Platform interaction
+state such as focus, scroll position, text composition, gestures, and animation
+is client-local and is never round-tripped through view snapshots.
+
+The bundled browser adapter reconciles rather than replacing. An unchanged
+render performs no DOM mutations, keyed children are moved instead of rebuilt,
+and only props that actually changed are written. Because props are diffed, a
+value the server did not change is never written back over what someone is
+typing; a value the server *did* change still wins. Focus, selection, and
+scroll position are restored if reordering detached the active element.
+
+Registered components are opaque to the reconciler: an instance is reused
+untouched while its props and children are unchanged, and rebuilt when they
+change. Add `data-fi-preserve` to an element to stop reconciliation at that
+boundary and keep whatever the page has put inside it.
+
+The adapter dispatches these events on `globalThis` so a page can react without
+owning the transport:
+
+- `fino-ui-render`: `{ viewId, revision }` after a tree is applied.
+- `fino-ui-heartbeat`: a live stream is still connected.
+- `fino-ui-error`: `{ code, recoverable, retry }`. `retry` re-sends the last
+  action when one is available.
+- `fino-ui-online` / `fino-ui-offline`: live-stream connectivity changed. A
+  reconnect restarts with a full snapshot and resynchronizes through the same
+  reconciliation path, so local interaction state survives.
+
+While an enhanced action is in flight its form carries `aria-busy="true"` and a
+`data-fi-busy` attribute, its submit controls are disabled, and repeat submits
+are ignored. Set `confirm` on an action descriptor to require confirmation
+before the request is sent. `finoUI.applyUi(event)` applies a single protocol
+event directly, which is the seam used to drive the adapter from tests or a
+custom embedding.
 
 Action props are serialized as `PortableActionRef` objects. POST
 `application/json` to the supplied `url` while retaining the authenticated
@@ -128,6 +158,45 @@ limit, configurable with `maxActionBytes`. Posting `application/json` selects
 the JSON action envelope and always returns an SSE UI response; no custom
 `Accept` parameter is needed. Action responses and live updates use the same
 event schema.
+
+## Derived state
+
+A view whose data already lives in another durable store should not copy it into
+the view snapshot. List those signal keys in `derived` and they are rendered but
+never persisted, so the other store stays the only durable copy:
+
+```ts
+view({
+  id: 'run-view',
+  derived: ['run'],
+  state: () => ({ runId: new Signal(''), run: new Signal(null) }),
+  async derive({ state }) {
+    state.run.set(await runs.load(state.runId.get() as string));
+  },
+  render: ({ state }) => renderRun(state.run.get()),
+});
+```
+
+`derive` runs before the action and live-stream renders, both of which are
+already async. `mount()` is synchronous and cannot await it, so pass initial
+values as `view.mount(ctx, { runId, run })` from a handler that loaded them
+first. `fino:ui/web/flow` is built this way.
+
+## Action errors
+
+An action handler that throws is reported as `action_failed` with its details
+published only to `fino:ui/action:error`. Throw a `ViewActionError` to choose a
+stable public code instead:
+
+```ts
+import { ViewActionError } from 'fino:ui/web';
+
+throw new ViewActionError('flow_stale_step', { status: 409, recoverable: true });
+```
+
+Enhanced clients receive it as an `error` UI event with that code; the
+no-JavaScript path receives the code as the response body with that status.
+Nothing else about the thrown value is exposed.
 
 Long-running actions can call and await `checkpoint()` after changing their
 signals. Each checkpoint is compare-and-swap persisted and published to live

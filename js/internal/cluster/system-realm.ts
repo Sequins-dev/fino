@@ -15,7 +15,7 @@
  *
  * @internal
  */
-import { port } from 'fino:realm/self';
+import { onTerminate, port } from 'fino:realm/self';
 import { reactorQueueDepth, takeReactorLoadSample } from 'internal:scheduler-native';
 import { sampleNodeLoad } from 'internal:runtime/stats';
 import { env } from 'internal:process';
@@ -74,24 +74,36 @@ function envCount(name: string, fallback: number): number {
   return Number.isFinite(configured) && configured > 0 ? configured : fallback;
 }
 
+/**
+ * Stop re-arming the sampling timer.
+ *
+ * The child loop exits only once the realm is done AND holds no live handles,
+ * so an interval that keeps re-arming pins the realm alive through
+ * `terminate()`. Nothing else releases that handle — the realm has to decide.
+ */
+function stopReporting(): void {
+  running = false;
+  for (const pending of pendingOffers.values()) {
+    clearTimeout(pending.timer as number);
+    pending.resolve({ accepted: false, reason: 'system realm stopping' });
+  }
+  pendingOffers.clear();
+}
+
+// `terminate()` is a control frame and never arrives as a message, so it has to
+// be listened for rather than recognised in the payload. `__system_stop` is the
+// agent's own graceful signal and stays a message.
+onTerminate(stopReporting);
+
 port.onmessage = (event) => {
   const data = (event as MessageEvent).data as {
     __system_stop?: boolean;
-    __terminate?: boolean;
     __peers?: PeerPressure[];
     __shed_result?: { id: number; accepted: boolean; reason?: string };
   } | null;
   if (data === null || typeof data !== 'object') return;
-  // Stop re-arming the sampling timer on either signal: the child loop only
-  // exits once the realm is done AND has no live handles, so an interval
-  // that keeps re-arming would pin the realm alive through terminate().
-  if (data.__system_stop === true || data.__terminate === true) {
-    running = false;
-    for (const pending of pendingOffers.values()) {
-      clearTimeout(pending.timer as number);
-      pending.resolve({ accepted: false, reason: 'system realm stopping' });
-    }
-    pendingOffers.clear();
+  if (data.__system_stop === true) {
+    stopReporting();
     return;
   }
   if (Array.isArray(data.__peers)) {

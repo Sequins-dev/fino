@@ -130,6 +130,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:module", "module"),
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
+    source_builtin!("internal:realm/envelope", "internal/realm/envelope"),
+    source_builtin!("internal:realm/lifecycle", "internal/realm/lifecycle"),
     source_builtin!(
         "internal:realm/transport-port",
         "internal/realm/transport-port"
@@ -147,6 +149,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/install", "commands/install"),
     source_builtin!("fino:commands/init", "commands/init"),
     source_builtin!("fino:commands/doc", "commands/doc"),
+    source_builtin!("fino:commands/doc/theme", "commands/doc/theme"),
     source_builtin!("fino:commands/fmt", "commands/fmt"),
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
@@ -267,6 +270,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:signals", "signals"),
     source_builtin!("fino:ui", "ui"),
     source_builtin!("fino:ui/html", "ui/html"),
+    source_builtin!("fino:ui/portable", "ui/portable"),
+    source_builtin!("fino:ui/realm", "ui/realm"),
     source_builtin!("fino:ui/web", "ui/web"),
     source_builtin!("fino:ui/web/flow", "ui/web/flow"),
     source_builtin!("fino:ui/web/state", "ui/web/state"),
@@ -578,6 +583,64 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:data/parquet/reader", "data/parquet/reader"),
     source_builtin!("internal:data/parquet/writer", "data/parquet/writer"),
+    // ml
+    source_builtin!("fino:ml/metrics", "ml/metrics/index"),
+    source_builtin!("internal:ml/metrics/shared", "ml/metrics/shared"),
+    source_builtin!("internal:ml/metrics/confusion", "ml/metrics/confusion"),
+    source_builtin!(
+        "internal:ml/metrics/classification",
+        "ml/metrics/classification"
+    ),
+    source_builtin!("internal:ml/metrics/regression", "ml/metrics/regression"),
+    source_builtin!("internal:ml/metrics/ranking", "ml/metrics/ranking"),
+    source_builtin!("internal:ml/metrics/calibration", "ml/metrics/calibration"),
+    source_builtin!("internal:ml/metrics/similarity", "ml/metrics/similarity"),
+    source_builtin!("internal:ml/metrics/streaming", "ml/metrics/streaming"),
+    source_builtin!("fino:model/hub", "model/hub"),
+    source_builtin!("internal:model/hub/cache", "internal/model/hub/cache"),
+    source_builtin!("internal:model/hub/lockfile", "internal/model/hub/lockfile"),
+    source_builtin!("internal:model/hub/download", "internal/model/hub/download"),
+    source_builtin!("fino:text/tokenizer", "text/tokenizer"),
+    source_builtin!(
+        "internal:text/tokenizer/normalized",
+        "internal/text/tokenizer/normalized"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/types",
+        "internal/text/tokenizer/types"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/bytes",
+        "internal/text/tokenizer/bytes"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/normalizers",
+        "internal/text/tokenizer/normalizers"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/pre-tokenizers",
+        "internal/text/tokenizer/pre-tokenizers"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/models",
+        "internal/text/tokenizer/models"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/post-processors",
+        "internal/text/tokenizer/post-processors"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/decoders",
+        "internal/text/tokenizer/decoders"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/added-tokens",
+        "internal/text/tokenizer/added-tokens"
+    ),
+    source_builtin!(
+        "internal:text/tokenizer/tiktoken",
+        "internal/text/tokenizer/tiktoken"
+    ),
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/protobuf", "format/protobuf"),
@@ -625,7 +688,6 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:task/durable", "task/durable"),
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
-    source_builtin!("internal:scheduler/isolate", "internal/scheduler/isolate"),
     source_builtin!(
         "internal:scheduler/bootstrap",
         "internal/scheduler/bootstrap"

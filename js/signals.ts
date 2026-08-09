@@ -80,12 +80,42 @@ export interface ObservedReads<T> {
 
 type ReadObserver = (signal: ReadonlySignal<unknown>) => void;
 
+/**
+ * Callback consulted before a signal write is applied.
+ *
+ * A guard that throws rejects the write. Guards see only writes that change the
+ * value, so a redundant `set()` never trips one.
+ */
+export type WriteGuard = (signal: ReadonlySignal<unknown>) => void;
+
 let batchDepth = 0;
 const pendingSignals = new Set<Signal<unknown>>();
 const readObservers: ReadObserver[] = [];
+const writeGuards: WriteGuard[] = [];
 
 function currentReadObserver(): ReadObserver | undefined {
   return readObservers[readObservers.length - 1];
+}
+
+function currentWriteGuard(): WriteGuard | undefined {
+  return writeGuards[writeGuards.length - 1];
+}
+
+/**
+ * Run `fn` with `guard` consulted before every value-changing signal write.
+ *
+ * This is the low-level hook behind one-shot renderers, which treat state
+ * mutation during a pass as a bug rather than a re-render trigger. Only
+ * synchronous writes made during `fn` are seen; work deferred to a later turn
+ * runs outside the guard.
+ */
+export function withWriteGuard<T>(guard: WriteGuard, fn: () => T): T {
+  writeGuards.push(guard);
+  try {
+    return fn();
+  } finally {
+    writeGuards.pop();
+  }
 }
 
 function flushSignals(): void {
@@ -143,6 +173,7 @@ export class Signal<T> implements ReadonlySignal<T> {
     const previous = this.#value;
     const value = typeof next === 'function' ? (next as (value: T) => T)(previous) : next;
     if (Object.is(previous, value)) return;
+    currentWriteGuard()?.(this as ReadonlySignal<unknown>);
     if (!this.#dirty) this.#previous = previous;
     this.#value = value;
     this.#dirty = true;

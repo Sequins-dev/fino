@@ -147,9 +147,14 @@ fn schedule_sync(
     rv.set(promise.into());
 }
 
-/// Called by `internal/main.ts` with `(step, onDone)` to hand off host-safe loop
+/// Called by `driveLoop` with `(step, onDone)` to hand off host-safe loop
 /// stepping to Rust. JS owns scheduling policy; Rust only calls `step()`
 /// outside checkpoints and services deferred sync work between calls.
+///
+/// `step()` returns a progress count: negative means the realm is finished,
+/// zero means it is alive but quiescent, and positive means it did work. The
+/// reactor scheduler in `scheduler_native` uses that distinction to park a
+/// realm instead of spinning on it.
 fn run_loop(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,

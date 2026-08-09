@@ -483,7 +483,36 @@ export type ClusterMessage =
       toPort: string;
       payload: Uint8Array[];
       seq: number;
+      /**
+       * How `payload` is encoded. See `PayloadFormat`.
+       *
+       * A frame from a node that predates this field decodes as
+       * `PayloadFormat.Unspecified`, which the receiver treats as "assume the
+       * local encoding" for compatibility.
+       */
+      payloadFormat?: number;
     };
+/**
+ * How a `PORT_MSG` frame's `payload` parts are encoded.
+ *
+ * The cluster frame itself is protobuf, but the parts it carries are an opaque
+ * realm payload. Naming the encoding on the wire is what lets a receiver refuse
+ * a frame it cannot decode, instead of handing mismatched bytes to a
+ * deserializer and getting corruption.
+ *
+ * @internal
+ */
+export const PayloadFormat = {
+  /** Absent — a peer that predates this field. Assume the local encoding. */
+  Unspecified: 0,
+  /**
+   * V8 structured clone. The serializer's own wire version leads each part, so
+   * a receiver can check compatibility byte-for-byte rather than trusting that
+   * both nodes were built against the same V8.
+   */
+  V8StructuredClone: 1,
+} as const;
+
 // ---------------------------------------------------------------------------
 // Codec
 // ---------------------------------------------------------------------------
@@ -602,6 +631,7 @@ interface WireEnvelope {
   toPort?: string;
   payload: Uint8Array[];
   seq?: bigint;
+  payloadFormat?: number;
 }
 
 const LoadMessage = defineMessage<WireLoad>({
@@ -696,6 +726,11 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   last: { number: 27, type: 'bool', optional: true },
   deployName: { number: 28, type: 'string', optional: true },
   deployments: { number: 29, type: DeploymentMessage, repeated: true },
+  // Both sides of the merge claimed 19. This branch had already spent 19-29
+  // across eleven tested fields, so payloadFormat moves rather than they do.
+  // Field numbers are wire identity: safe to renumber only because both ends
+  // of a cluster ship as the same binary.
+  payloadFormat: { number: 30, type: 'uint32', optional: true },
 });
 
 function parseCaskHash(value: unknown): string {
@@ -1091,6 +1126,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         toPort: parseClusterId(msg.toPort, 'toPort'),
         payload: msg.payload,
         seq: encodeSequence(msg.seq, 'seq', false),
+        ...(msg.payloadFormat === undefined ? {} : { payloadFormat: msg.payloadFormat }),
         peers: [],
       };
     default:
@@ -1296,6 +1332,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         toPort: parseClusterId(requiredWireString(value.toPort, 'toPort'), 'toPort'),
         payload: value.payload,
         seq: decodeSequence(value.seq, 'seq', false),
+        ...(value.payloadFormat === undefined ? {} : { payloadFormat: value.payloadFormat }),
       };
     default:
       throw protocolError(`unknown message type ${value.kind}`);

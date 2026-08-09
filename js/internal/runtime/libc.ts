@@ -74,6 +74,7 @@
  */
 import { dlopen } from 'fino:ffi';
 import type { DynamicLibrary } from 'fino:ffi';
+import { os } from 'internal:process';
 import { encodeUtf8 } from '../encoding.ts';
 // ---------------------------------------------------------------------------
 // Platform library path
@@ -90,6 +91,10 @@ function openLibc(): DynamicLibrary<{
   getpid: {
     parameters: [];
     result: 'i32';
+  };
+  sysconf: {
+    parameters: ['i32'];
+    result: 'isize';
   };
 }> {
   const candidates = ['/usr/lib/libSystem.B.dylib', 'libc.so.6', 'libc.so'];
@@ -108,15 +113,39 @@ function openLibc(): DynamicLibrary<{
           parameters: [],
           result: 'i32',
         },
+        sysconf: {
+          parameters: ['i32'],
+          result: 'isize',
+        },
       });
     } catch (_) {}
   }
   throw new Error('fino:libc — could not open the platform C library');
 }
 const _lib = openLibc();
+// `_SC_NPROCESSORS_ONLN` is not a standardised value: Darwin and glibc assign
+// it different numbers, so it has to be selected per platform.
+const _SC_NPROCESSORS_ONLN = os === 'darwin' ? 58 : 84;
 // ---------------------------------------------------------------------------
 // Exported primitives
 // ---------------------------------------------------------------------------
+/**
+ * Number of processors currently online, or `1` when the platform will not say.
+ *
+ * Backs `navigator.hardwareConcurrency` and sizes the reactor thread pool.
+ *
+ * ```typescript no_run
+ * import { onlineProcessors } from 'internal:runtime/libc';
+ *
+ * const threads = onlineProcessors();
+ * ```
+ *
+ * @internal
+ */
+export function onlineProcessors(): number {
+  const count = _lib.symbols.sysconf(_SC_NPROCESSORS_ONLN) as number;
+  return Number.isFinite(count) && count >= 1 ? Math.floor(count) : 1;
+}
 /**
  * Write raw bytes to a file descriptor with a single synchronous `write(2)`.
  *

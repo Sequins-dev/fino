@@ -2,23 +2,37 @@
  * fino:ui — host-neutral component construction and rendering.
  *
  * `fino:ui` is the portable core for JSX-style Fino interfaces. It owns VNode
- * construction, function components, and keyed reconciliation into a host
- * adapter. It re-exports the reactive primitives from `fino:signals` for
- * compatibility, but the signal kernel itself is shared runtime
- * infrastructure. This module does not know about the DOM, HTML, terminal
- * cells, input devices, or styling rules. Renderers such as `fino:tty/tui`
- * provide those host details.
+ * construction, function components, keyed reconciliation, and the render
+ * programs that drive them. It re-exports the reactive primitives from
+ * `fino:signals` for compatibility, but the signal kernel itself is shared
+ * runtime infrastructure. This module does not know about the DOM, HTML,
+ * terminal cells, input devices, or styling rules. Renderers such as
+ * `fino:tty/tui` and `fino:ui/html` provide those host details.
  *
  * ## Design
  *
- * Components are plain functions that receive normalized props and a
- * `children` array. State is held in explicit `Signal` objects rather than
- * hook order. Hosts provide a small imperative adapter for creating nodes,
- * moving children, updating props, and batching mutations.
+ * Components are plain synchronous functions from props to a tree. They hold no
+ * hidden state and perform no asynchronous work: state lives in explicit
+ * `Signal` objects the component reads, so the same component renders the same
+ * way wherever it runs.
+ *
+ * What varies is the *render program* around it, along two independent axes.
+ * A `Sink` decides what a committed tree becomes — HTML text, a terminal frame,
+ * a portable JSON descriptor, or mutations against a `HostAdapter`. The choice
+ * of `renderStatic()` or `createRoot()` decides the lifetime: one pass and done,
+ * or re-render for as long as the tree's signals keep changing.
+ *
+ * Asynchronous state is therefore never a component concern. It reaches a tree
+ * by resolving into a signal, which re-renders whatever root is watching.
+ * `fino:ui/realm` builds the third option on that: a component rendered in a
+ * child realm publishes a tree per revision and completes when the realm's
+ * event loop drains, which turns async data loading into static output without
+ * either side changing.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
- * import { createSignal } from 'fino:ui';
+ * import { createRoot, createSignal, renderStatic } from 'fino:ui';
+ * import { htmlSink } from 'fino:ui/html';
  *
  * const count = createSignal(0);
  *
@@ -26,12 +40,13 @@
  *   return <label>Count: {count.get()}</label>;
  * }
  *
- * count.subscribe(() => {
- *   // Ask the selected host renderer to render Counter again.
- * });
+ * const once = renderStatic(Counter, htmlSink());
+ * const live = createRoot(Counter, htmlSink());
+ * count.set(1);
+ * live.dispose();
  * ```
  */
-import { Signal, batch, createSignal } from 'fino:signals';
+import { Signal, batch, createSignal, effect, withWriteGuard } from 'fino:signals';
 export { Signal, batch, createSignal };
 export type { ObservedReads, ReadonlySignal, SignalSetter, SignalSubscriber } from 'fino:signals';
 
@@ -364,6 +379,162 @@ export function createRenderer<Node, Root>(host: HostAdapter<Node, Root>) {
       } finally {
         host.endUpdate?.();
       }
+    },
+  };
+}
+/**
+ * Destination for a rendered tree.
+ *
+ * A sink is the whole of what a host contributes to a render program: it turns
+ * one complete VNode tree into whatever that host cares about, and releases any
+ * resources it holds when the render program ends. `commit()` is called once per
+ * render pass and its return value becomes the root's output.
+ *
+ * Sinks come in two shapes. A *snapshot* sink is total and stateless — HTML
+ * text, a terminal frame, a portable JSON descriptor. An *incremental* sink
+ * keeps a mounted tree and mutates a host node graph; wrap a `HostAdapter` with
+ * `hostSink()` to get one.
+ */
+export interface Sink<Out> {
+  /** Turn one complete tree into this host's output. */
+  commit(tree: VNode): Out;
+  /** Release host resources when the render program ends. */
+  dispose?(): void;
+}
+/**
+ * Handle for a continuously rendered tree.
+ *
+ * The root re-renders whenever a signal read during the previous pass changes,
+ * so `output` always reflects the latest committed tree.
+ */
+export interface Root<Out> {
+  /** Output of the most recent commit. */
+  readonly output: Out;
+  /**
+   * Observe every subsequent commit.
+   *
+   * The callback is not called for the render that already happened; read
+   * `output` for that. The returned function removes the subscription.
+   */
+  subscribe(subscriber: (output: Out) => void): () => void;
+  /** Stop re-rendering and dispose the sink. Safe to call more than once. */
+  dispose(): void;
+}
+/**
+ * Signal write attempted during a one-shot render.
+ *
+ * `renderStatic()` has no way to publish a second tree, so a component that
+ * mutates state during its pass has produced output that does not match its
+ * own state. Render in a realm, or with `createRoot()`, when state must change.
+ */
+export class StaticRenderError extends Error {
+  constructor(message = 'Cannot set a signal during a static render') {
+    super(message);
+    this.name = 'StaticRenderError';
+  }
+}
+/**
+ * Render one tree, commit it, and dispose the sink.
+ *
+ * This is the one-shot half of the render model: exactly one pass, no
+ * subscriptions, no way to publish a revision. Signal *reads* are ordinary, so
+ * a component can render whatever state already holds; a signal *write* during
+ * the pass throws `StaticRenderError`, because the committed output could never
+ * reflect it.
+ *
+ * Only synchronous writes are caught. Components are synchronous by
+ * construction, so state that arrives later belongs to a render program with
+ * somewhere to publish it — `createRoot()`, or a realm rendered to completion.
+ *
+ * ```ts no_run
+ * import { h, renderStatic } from 'fino:ui';
+ * import { htmlSink } from 'fino:ui/html';
+ *
+ * const html = renderStatic(() => h('main', null, 'Ready'), htmlSink());
+ * ```
+ */
+export function renderStatic<Out>(element: () => VNode, sink: Sink<Out>): Out {
+  try {
+    const tree = withWriteGuard(() => {
+      throw new StaticRenderError();
+    }, element);
+    return sink.commit(tree);
+  } finally {
+    sink.dispose?.();
+  }
+}
+/**
+ * Render continuously until disposed.
+ *
+ * The first pass runs immediately. Every signal read during a pass becomes a
+ * dependency, so later writes re-render and commit again; dependencies are
+ * re-tracked on each pass. Use `batch()` to coalesce a burst of writes into one
+ * commit.
+ *
+ * ```ts no_run
+ * import { createRoot, createSignal, h } from 'fino:ui';
+ * import { htmlSink } from 'fino:ui/html';
+ *
+ * const name = createSignal('world');
+ * const root = createRoot(() => h('p', null, `hello ${name.get()}`), htmlSink());
+ * root.subscribe((html) => console.log(html));
+ * name.set('fino');
+ * root.dispose();
+ * ```
+ */
+export function createRoot<Out>(element: () => VNode, sink: Sink<Out>): Root<Out> {
+  const subscribers = new Set<(output: Out) => void>();
+  let output!: Out;
+  let disposed = false;
+  // The first pass runs before this function returns, so no subscriber can
+  // exist yet; that is what makes `subscribe()` observe later commits only.
+  const stop = effect(() => {
+    output = sink.commit(element());
+    for (const subscriber of Array.from(subscribers)) subscriber(output);
+  });
+  return {
+    get output(): Out {
+      return output;
+    },
+    subscribe(subscriber: (output: Out) => void): () => void {
+      subscribers.add(subscriber);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        subscribers.delete(subscriber);
+      };
+    },
+    dispose(): void {
+      if (disposed) return;
+      disposed = true;
+      stop();
+      subscribers.clear();
+      sink.dispose?.();
+    },
+  };
+}
+/**
+ * Adapt a `HostAdapter` and its root object into a `Sink`.
+ *
+ * The returned sink reconciles each committed tree against the previously
+ * mounted one, so a host that owns mutable nodes participates in the same
+ * render programs as a snapshot host.
+ *
+ * ```ts no_run
+ * import { createRoot, hostSink } from 'fino:ui';
+ *
+ * const root = createRoot(App, hostSink(domHost, document.body));
+ * ```
+ */
+export function hostSink<Node, RootNode>(
+  host: HostAdapter<Node, RootNode>,
+  root: RootNode,
+): Sink<void> {
+  const renderer = createRenderer(host);
+  return {
+    commit(tree: VNode): void {
+      renderer.render(tree, root);
     },
   };
 }

@@ -1078,6 +1078,8 @@ const _signalNumbers: Record<string, number> = {
 const _childDefaultSignals = Object.values(_signalNumbers).filter((signo) => signo !== SIGKILL);
 /** Set of signal names already registered with the event loop. */
 const _registeredSignals = new Set<string>();
+/** Arming promise per registered signal name, awaited by `signalArmed()`. */
+const _signalArmed = new Map<string, Promise<void>>();
 const _emptySandboxReport: ProcessSandboxReport = {
   mode: 'none',
   backend: 'none',
@@ -1462,6 +1464,11 @@ function validateStrictSandboxSupported(sandbox: ProcessSandboxOptions): void {
  *
  * Unknown signal names throw. The returned topic is shared by signal name, so
  * multiple calls subscribe to the same event source.
+ *
+ * The signal's default action is suppressed immediately, but the watch itself
+ * is armed asynchronously by the realm that owns the process event loop. Await
+ * `signalArmed()` before raising the signal yourself; delivery from outside the
+ * process needs no such care.
  */
 export function signal(name: string): Topic {
   const t = topic('process:' + name);
@@ -1469,14 +1476,37 @@ export function signal(name: string): Topic {
     const signo = _signalNumbers[name];
     if (signo == null) throw new Error('Unknown signal: ' + name);
     _registeredSignals.add(name);
-    loop.signal(signo, function fireSignal() {
-      t.publish({
-        signal: name,
-        signo,
-      });
-    });
+    _signalArmed.set(
+      name,
+      loop.signal(signo, function fireSignal() {
+        t.publish({
+          signal: name,
+          signo,
+        });
+      }),
+    );
   }
   return t;
+}
+/**
+ * Resolve once `name`'s watch is armed on the process event loop.
+ *
+ * `signal()` registers the watch without waiting for it, so a signal raised in
+ * the same turn can be missed. Await this first when the process signals
+ * itself, as tests and self-restart flows do.
+ *
+ * ```ts no_run
+ * import { signal, signalArmed, kill, pid, SIGUSR1 } from 'fino:process';
+ *
+ * const events = signal('SIGUSR1');
+ * await signalArmed('SIGUSR1');
+ * kill(pid, SIGUSR1);
+ * ```
+ *
+ * @param name Signal name previously passed to `signal()`.
+ */
+export function signalArmed(name: string): Promise<void> {
+  return _signalArmed.get(name) ?? Promise.resolve();
 }
 // ---------------------------------------------------------------------------
 // Process class

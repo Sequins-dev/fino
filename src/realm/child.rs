@@ -15,7 +15,7 @@ use ::v8;
 
 use super::thread::ThreadMessage;
 use crate::{
-    loader, realm,
+    loader,
     state::{FinoState, ImportRule, ProcessEnv, get_state, root_queue_ptr},
 };
 
@@ -249,12 +249,15 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 None => break 'main,
             };
 
+            // step() -> progress count; negative means the realm is finished.
+            // A process realm owns its whole OS process, so nothing competes
+            // for this thread and only the sign matters.
             let should_continue = {
                 let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
                 v8::Local::new(scope, &loop_step_fn)
                     .call(scope, undef, &[])
-                    .map(|v| v.boolean_value(scope))
-                    .unwrap_or(false)
+                    .and_then(|v| v.number_value(scope))
+                    .is_some_and(|progress| progress >= 0.0)
             };
 
             if should_continue {
@@ -301,7 +304,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         if !should_continue {
             break 'main;
         }
-        realm::process_pending_creates(isolate_scope, &state_rc);
     }
 
     // -----------------------------------------------------------------------
@@ -309,7 +311,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     // -----------------------------------------------------------------------
     {
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
-        realm::terminate_all_children(scope);
 
         let on_done_fn = state_rc.borrow().on_done_fn.clone();
         if let Some(f) = on_done_fn {
@@ -355,18 +356,32 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 // Helpers (also pub so thread.rs / process.rs don't need their own copies)
 // ---------------------------------------------------------------------------
 
-pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
-    // A terminating isolate returns empty from every API that runs JS, and
-    // driving a microtask checkpoint into one aborts the process. Termination
-    // can begin at any point here — the watchdog runs on another thread — so
-    // every step re-checks rather than trusting an entry guard.
+/// Pump V8 platform foreground tasks then drain the microtask queue.
+///
+/// Fixed-point loop: Rust executor → drain completions/pending → microtask
+/// checkpoint. Repeats until quiescent so Rust futures awaiting JS Promises
+/// (and vice-versa) always converge in one call.
+///
+/// Returns whether anything actually ran. The reactor scheduler folds this into
+/// the realm's progress signal: V8 foreground tasks and Rust-side resolutions
+/// enqueue microtasks without the TypeScript step ever seeing them, so a realm
+/// is only quiescent when this reports `false` too.
+///
+/// A terminating isolate returns empty from every API that runs JS, and driving
+/// a microtask checkpoint into one aborts the process. Termination can begin at
+/// any point here — the watchdog runs on another thread — so every step
+/// re-checks rather than trusting an entry guard, and reports the work done so
+/// far rather than claiming a quiescence it never observed.
+pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) -> bool {
     if scope.is_execution_terminating() {
-        return;
+        return false;
     }
     let platform = v8::V8::get_current_platform();
+    let mut worked = false;
     while v8::Platform::pump_message_loop(&platform, scope, false) {
+        worked = true;
         if scope.is_execution_terminating() {
-            return;
+            return worked;
         }
     }
     let state_rc = get_state(scope);
@@ -377,24 +392,33 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) {
         }
         progress |= crate::async_rt::drain_all(scope, &state_rc);
         if scope.is_execution_terminating() {
-            return;
+            return worked;
         }
-        {
+        let terminated = {
             // A TryCatch frames the checkpoint so a termination raised inside
             // it — the watchdog stopping a runaway handler — unwinds into an
-            // observable state instead of escaping.
+            // observable state instead of escaping into V8's uncaught-exception
+            // path.
             let tc = &mut v8::TryCatch::new(scope);
             let queue_ptr = unsafe { root_queue_ptr(&state_rc) };
             let isolate: &mut v8::Isolate = tc.as_mut();
             unsafe { &*queue_ptr }.perform_checkpoint(isolate);
-            if tc.has_terminated() {
-                return;
-            }
+            tc.has_terminated()
+        };
+        if terminated {
+            // Catching a termination consumes it. The frame above exists to
+            // keep the unwind observable, not to grant a reprieve — without
+            // re-raising, execution would resume as if the realm had never been
+            // asked to stop.
+            scope.terminate_execution();
+            return worked;
         }
         if !progress || scope.is_execution_terminating() {
             break;
         }
+        worked = true;
     }
+    worked
 }
 
 pub fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {

@@ -17,7 +17,7 @@
  * - Exposes registerPort() so ClusterPort instances can receive PORT_MSG.
  *
  * `ClusterPort` is the parent-side handle for a remotely spawned realm: a
- * `BaseTransportPort` whose messages travel as PORT_MSG cluster frames
+ * `RealmPort` whose messages travel as PORT_MSG cluster frames
  * instead of an in-process channel. Ports register themselves with the
  * client on construction, queue outbound messages until SPAWN_ACK assigns
  * the child port ID, and preserve transferred ArrayBuffers end-to-end as raw
@@ -65,6 +65,71 @@ import {
 } from './protocol.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import {
+  decodeEnvelope,
+  encodeEnvelope,
+  EnvelopeKind,
+  messageEnvelope,
+} from 'internal:realm/envelope';
+import { PayloadFormat } from './protocol.ts';
+
+/**
+ * V8 structured-clone wire version produced by this build.
+ *
+ * The serializer stamps its format version into every payload it produces, so
+ * one probe gives the value to compare incoming frames against. Computed on
+ * first use rather than at module load: this module is imported during realm
+ * bootstrap, and reaching into the serializer while the module graph is still
+ * being evaluated is a side effect worth not having.
+ */
+let _localPayloadVersion: number | undefined;
+function localPayloadVersion(): number {
+  if (_localPayloadVersion === undefined) {
+    const probe = (serialize as (value: unknown) => Uint8Array[])(null)[0]!;
+    _localPayloadVersion = probe.length >= 2 && probe[0] === 0xff ? probe[1]! : -1;
+  }
+  return _localPayloadVersion;
+}
+
+/**
+ * Wire version stamped into a structured-clone payload, or `null` when the
+ * bytes do not carry one.
+ */
+function payloadVersion(part: Uint8Array | undefined): number | null {
+  if (part === undefined || part.length < 2 || part[0] !== 0xff) return null;
+  return part[1]!;
+}
+
+/**
+ * Reject a frame this node cannot decode.
+ *
+ * The cluster frame is protobuf and version-tolerant, but the realm payload it
+ * carries is V8's structured-clone format, which is tied to the V8 build that
+ * produced it. Without this check a peer built against a different V8 hands
+ * over bytes that deserialize into corruption rather than failing cleanly.
+ */
+function assertDecodablePayload(message: {
+  payload: Uint8Array[];
+  payloadFormat?: number;
+  fromPort: string;
+}): void {
+  const format = message.payloadFormat ?? PayloadFormat.Unspecified;
+  if (format !== PayloadFormat.Unspecified && format !== PayloadFormat.V8StructuredClone) {
+    throw new Error(
+      `fino:cluster — port payload from ${message.fromPort} uses unsupported encoding ${format}`,
+    );
+  }
+  // payload[0] is the envelope header, which is our own fixed layout; the realm
+  // payload is the part after it.
+  const version = payloadVersion(message.payload[1]);
+  const local = localPayloadVersion();
+  if (version !== null && local !== -1 && version !== local) {
+    throw new Error(
+      `fino:cluster — port payload from ${message.fromPort} was serialized by structured-clone ` +
+        `version ${version}, but this node reads version ${local}`,
+    );
+  }
+}
+import {
   closeScheduledRealm,
   createScheduledRealm,
   dropShedWorkload,
@@ -81,7 +146,7 @@ import {
 } from 'internal:scheduler-native';
 import type { PeerMesh } from './webtransport-transport.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { BaseTransportPort } from 'internal:realm/transport-port';
+import { RealmPort, type RealmLink } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
 import { DiskFileSystem } from 'fino:file';
 import {
@@ -90,6 +155,10 @@ import {
   unpackCask,
   type UnpackedCask,
 } from './cask.ts';
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 /**
  * Resolve a cask-relative entry path, refusing anything that escapes the cask.
  *
@@ -710,6 +779,7 @@ export class ClusterClient {
       toPort,
       payload: parts,
       seq,
+      payloadFormat: PayloadFormat.V8StructuredClone,
     };
     // Per-port sequencing is assigned before the path is chosen, so a pair
     // that gains a direct session mid-stream stays correctly ordered at the
@@ -755,7 +825,9 @@ export class ClusterClient {
   async #handleWorkloadSpawn(relay: RealmRelay, request: Record<string, unknown>): Promise<void> {
     const id = request.id;
     const reply = (result: Record<string, unknown>): void => {
-      if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __cluster_spawn_ack: { id, ...result } });
+      if (!relay.closed) {
+        this.#sendToRealm(relay.realmHandle, EnvelopeKind.ClusterSpawnResult, { id, ...result });
+      }
     };
     try {
       const entry = request.entry;
@@ -864,7 +936,7 @@ export class ClusterClient {
     }
     this.#pendingCaskFetches.clear();
     for (const relay of this.#relays.values()) {
-      if (!relay.closed) this.#sendToRealm(relay.realmHandle, { __terminate: true });
+      if (!relay.closed) this.#sendToRealm(relay.realmHandle, EnvelopeKind.Terminate, null);
       relay.cancel?.();
     }
     this.#relays.clear();
@@ -1020,7 +1092,7 @@ export class ClusterClient {
       case 'TERMINATE': {
         const relay = this.#relays.get(msg.realmId);
         if (relay && !relay.closed) {
-          this.#sendToRealm(relay.realmHandle, { __terminate: true });
+          this.#sendToRealm(relay.realmHandle, EnvelopeKind.Terminate, null);
           break;
         }
         const handler = this.#exitHandlers.get(msg.realmId);
@@ -1088,6 +1160,15 @@ export class ClusterClient {
   }
   /** Deliver one ordered port frame to its local parent port or child relay. */
   #deliverPortMessage(msg: PortMessage): void {
+    try {
+      assertDecodablePayload(msg);
+    } catch (err: unknown) {
+      // Refuse the frame rather than handing mismatched bytes to a
+      // deserializer; a decode failure here is a peer compatibility problem,
+      // not a malformed message from a healthy peer.
+      console.error(String(err));
+      return;
+    }
     const localPort = this.#portHandlers.get(msg.toPort);
     if (localPort) {
       try {
@@ -1100,14 +1181,9 @@ export class ClusterClient {
     const relay = this.#relays.get(msg.toPort);
     if (!relay || relay.closed) return;
     try {
-      const parts = msg.payload;
-      const [mainBuf, ...stores] = parts;
+      const [header, mainBuf, ...stores] = msg.payload;
       if (mainBuf) {
-        const value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
-          mainBuf,
-          stores.length > 0 ? stores : undefined,
-        );
-        this.#sendToRealm(relay.realmHandle, value);
+        scheduledRealmSend(relay.realmHandle, header ?? new Uint8Array(), mainBuf, stores, []);
       }
     } catch (err: unknown) {
       console.error(`fino:cluster PORT_MSG decode error (relay): ${err}`);
@@ -1346,56 +1422,47 @@ export class ClusterClient {
    */
   #drainInbound(relay: RealmRelay, finalize: () => void): void {
     const messages = scheduledRealmRecv(relay.realmHandle);
-    for (const [byteArr] of messages) {
+    for (const [byteArr, , header] of messages) {
       try {
         const parts = byteArr as Uint8Array[];
         const mainBuf = parts[0];
         if (!mainBuf) continue;
-        // Quick peek to detect __terminate without a full deserialize+reserialize cycle.
-        let isTerminate = false;
-        let isClusterRequest = false;
-        try {
-          const peeked = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
-          isTerminate =
-            peeked !== null && typeof peeked === 'object' && (peeked as any).__terminate === true;
-          if (
-            peeked !== null &&
-            typeof peeked === 'object' &&
-            (peeked as any).__call_error === true
-          ) {
-            relay.lastCallError = String(
-              (
-                peeked as {
-                  message?: unknown;
-                }
-              ).message ?? 'Realm call failed',
-            );
-          }
-          // A workload asking its host to spawn on its behalf. The request
-          // stops here rather than travelling to the parent: the capability
-          // belongs to the node hosting the workload, which is the only party
-          // that knows the workload's cask root and can enforce it.
-          if (
-            peeked !== null &&
-            typeof peeked === 'object' &&
-            isRecord((peeked as any).__cluster_spawn)
-          ) {
-            isClusterRequest = true;
-            void this.#handleWorkloadSpawn(relay, (peeked as any).__cluster_spawn);
-          }
-        } catch {}
-        if (isClusterRequest) continue;
-        if (isTerminate) {
+        // The envelope is readable on its own, so classifying a frame no longer
+        // costs a deserialize of the payload it describes.
+        const envelope = decodeEnvelope(header);
+        // A workload asking its host to spawn on its behalf. The request stops
+        // here rather than travelling to the parent: the capability belongs to
+        // the node hosting the workload, which is the only party that knows
+        // the workload's cask root and can enforce it. It carries its own
+        // envelope kind so this stays a header read.
+        if (envelope.kind === EnvelopeKind.ClusterSpawnRequest) {
+          try {
+            const request = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
+            if (isRecord(request)) void this.#handleWorkloadSpawn(relay, request);
+          } catch {}
+          continue;
+        }
+        if (envelope.kind === EnvelopeKind.Terminate) {
           finalize();
           return;
         }
-        // Forward raw serialized bytes (preserves stores for ArrayBuffer transfers).
+        if (envelope.kind === EnvelopeKind.CallError) {
+          try {
+            const failure = (deserialize as (b: Uint8Array) => unknown)(mainBuf) as {
+              message?: unknown;
+            };
+            relay.lastCallError = String(failure?.message ?? 'Realm call failed');
+          } catch {}
+        }
+        // Forward the raw serialized bytes (preserving stores for ArrayBuffer
+        // transfers) behind the envelope header, so the receiving node can
+        // classify the frame without decoding the payload either.
         const seq = ++relay.lastPortSeq;
         const msg: ClusterMessage = {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
-          payload: parts,
+          payload: [header ?? encodeEnvelope(messageEnvelope()), ...parts],
           seq,
         };
         // The child-to-parent direction is half of every realm conversation.
@@ -1420,9 +1487,9 @@ export class ClusterClient {
    *
    * @internal
    */
-  #sendToRealm(handle: number, value: unknown): void {
+  #sendToRealm(handle: number, kind: number, value: unknown): void {
     const bytes = (serialize as (v: unknown) => Uint8Array[])(value)[0]!;
-    scheduledRealmSend(handle, bytes, [], []);
+    scheduledRealmSend(handle, encodeEnvelope({ kind: kind as 0, correlation: 0 }), bytes, [], []);
   }
 }
 // ---------------------------------------------------------------------------
@@ -1433,7 +1500,7 @@ export class ClusterClient {
  *
  * Outbound messages are serialized and sent as `PORT_MSG` cluster messages;
  * inbound payloads are deserialized and dispatched through the shared
- * `BaseTransportPort` machinery. Messages posted before the child port ID is
+ * shared realm-port machinery. Messages posted before the child port ID is
  * assigned are queued and flushed once `SPAWN_ACK` delivers the ID.
  *
  * ```ts no_run
@@ -1445,7 +1512,7 @@ export class ClusterClient {
  *
  * @internal
  */
-export class ClusterPort extends BaseTransportPort {
+export class ClusterPort extends RealmPort {
   /**
    * Parent-side port ID used for seed routing and inbound lookup.
    *
@@ -1496,10 +1563,37 @@ export class ClusterPort extends BaseTransportPort {
    * ```
    */
   constructor(portId: string, client: ClusterClient) {
-    super();
+    // A cluster hop leaves the process, so no transit channel can follow it and
+    // there is no descriptor to poll — inbound frames are pushed in by the
+    // transport through `_deliver`.
+    const link: RealmLink = {
+      transport: 'cluster',
+      wakeFd: -1,
+      supportsPortTransfer: false,
+      send: (header, data, stores) => this.#route([header, data, ...stores]),
+      drain: () => [],
+      close: () => this.#client.unregisterPort(this.portId),
+    };
+    super(link);
     this.portId = portId;
     this.#client = client;
     client.registerPort(portId, this);
+  }
+  /**
+   * Send a framed message to the child, or queue it until the child port ID
+   * arrives.
+   *
+   * Spawn is asynchronous, so early sends — including a prompt `terminate()` —
+   * must not be lost.
+   *
+   * @internal
+   */
+  #route(parts: Uint8Array[]): void {
+    if (this.#childPortId === null) {
+      this.#preSpawnQueue.push(parts);
+      return;
+    }
+    this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
   }
   /**
    * Set the remote child port ID after a successful `SPAWN_ACK`.
@@ -1541,39 +1635,6 @@ export class ClusterPort extends BaseTransportPort {
    * port.postMessage({ ok: true });
    * ```
    */
-  postMessage(message: unknown, transfer?: ArrayBuffer[]): void {
-    if (this._closed) return;
-    if (transfer !== undefined && !transfer.every((item) => item instanceof ArrayBuffer)) {
-      throw new TypeError('ClusterPort transfer list only supports ArrayBuffer values');
-    }
-    const parts = (serialize as (v: unknown, t?: ArrayBuffer[]) => Uint8Array[])(
-      message,
-      transfer && transfer.length > 0 ? transfer : undefined,
-    );
-    if (this.#childPortId === null) {
-      this.#preSpawnQueue.push(parts);
-      return;
-    }
-    this.#client.sendPortMsg(this.portId, this.#childPortId, parts);
-  }
-  /**
-   * Unregister this port from the owning client during close.
-   *
-   * The base transport port calls this hook once close processing reaches the
-   * subclass. Unknown or already-unregistered IDs are ignored by the client.
-   *
-   * ```ts no_run
-   * import { ClusterClient, ClusterPort } from 'internal:cluster/client';
-   * const client = new ClusterClient({ nodeId: 'n', send() {}, broadcast() {}, on() {}, close() {} }, 'n');
-   * const port = new ClusterPort('n/p-parent', client);
-   * port.close();
-   * ```
-   *
-   * @internal
-   */
-  protected override _onClose(): void {
-    this.#client.unregisterPort(this.portId);
-  }
   /**
    * Deliver raw serialized payload parts from an incoming `PORT_MSG`.
    *
@@ -1590,8 +1651,8 @@ export class ClusterPort extends BaseTransportPort {
    * @internal
    */
   _deliver(parts: Uint8Array[]): void {
-    const [mainBuf, ...stores] = parts;
+    const [header, mainBuf, ...stores] = parts;
     if (!mainBuf) return;
-    this._dispatchMessage(mainBuf, stores.length > 0 ? stores : undefined);
+    this._dispatchMessage(mainBuf, stores.length > 0 ? stores : undefined, [], header);
   }
 }

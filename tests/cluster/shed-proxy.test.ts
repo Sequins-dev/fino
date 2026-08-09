@@ -23,6 +23,7 @@ import {
   takeShedWorkload,
 } from 'internal:scheduler-native';
 import { serialize, deserialize } from 'internal:serializer';
+import { decodeEnvelope, encodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
 
 /** `serialize` yields [payload, ...transferStores]; ports take them apart. */
 const encode = (value: unknown): Uint8Array =>
@@ -79,7 +80,10 @@ describe('shed workload proxying', () => {
     t.ok(shedWorkloadWakeFd(shed) > 0, 'the relay has a wake descriptor to watch');
 
     // Parent -> workload: the source drains it for forwarding to the new host.
-    scheduledRealmSend(realm.handle, encode({ hello: 'moved realm' }));
+    // The envelope travels beside the payload, not inside it, so the relay can
+    // classify a frame without deserializing what a remote realm sent.
+    const request = encodeEnvelope({ kind: EnvelopeKind.Call, correlation: 9 });
+    scheduledRealmSend(realm.handle, request, encode({ hello: 'moved realm' }));
     const forwarded = shedRecvFromParent(shed);
     t.equal(forwarded.length, 1, 'the parent message is available to forward');
     t.deepEqual(
@@ -87,15 +91,30 @@ describe('shed workload proxying', () => {
       { hello: 'moved realm' },
       'the payload survives the proxy path intact',
     );
+    t.deepEqual(
+      decodeEnvelope(forwarded[0]![2]),
+      { kind: EnvelopeKind.Call, correlation: 9 },
+      'the envelope survives the proxy path intact',
+    );
 
     // New host -> parent: delivered back through the local port.
-    shedSendToParent(shed, encode({ reply: 'from the new host' }));
+    shedSendToParent(
+      shed,
+      encode({ reply: 'from the new host' }),
+      [],
+      encodeEnvelope({ kind: EnvelopeKind.CallResult, correlation: 9 }),
+    );
     const received = scheduledRealmRecv(realm.handle);
     t.equal(received.length, 1, 'the parent received the remote reply');
     t.deepEqual(
       decode(received[0]![0]![0]!),
       { reply: 'from the new host' },
       'the reply payload is intact',
+    );
+    t.deepEqual(
+      decodeEnvelope(received[0]![2]),
+      { kind: EnvelopeKind.CallResult, correlation: 9 },
+      'the reply is correlated back to the request the parent made',
     );
 
     // Remote completion settles the parent's pending run().

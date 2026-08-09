@@ -31,8 +31,9 @@ import { topic } from 'fino:context/topic';
 import { CLIENT_HASH, CLIENT_SOURCE } from 'internal:ui/web/client';
 import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fino:security/cookie';
 import { escapeHtml } from 'fino:template';
-import { batch, h, Signal, type Props, type VNode } from 'fino:ui';
+import { batch, h, renderStatic, Signal, type Props, type Sink, type VNode } from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
+import { toPortable, type PortableVNode } from 'fino:ui/portable';
 import { parse as parseSchema, type JsonSchema } from 'fino:validate';
 import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
 import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
@@ -57,43 +58,32 @@ type ActionHandler = (
   ctx: ViewActionContext,
   input: Record<string, unknown>,
 ) => unknown | Promise<unknown>;
-type ViewRender = (ctx: { state: StateRecord; actions: Record<string, ActionRef> }) => VNode;
+type ViewRender = (ctx: {
+  state: StateRecord;
+  actions: Record<string, PortableActionRef>;
+}) => VNode;
 type EmbedSpec =
   | string
   | {
       key: string;
       sealed?: boolean;
     };
+export type { PortableValue, PortableVNode } from 'fino:ui/portable';
 /**
- * JSON value allowed in the UI protocol.
+ * Sink that hands back the tree it was given.
  *
- * Component props cross the SSE boundary as data. Functions, class instances,
- * non-finite numbers, and cyclic values are rejected before a render event is
- * sent.
+ * View rendering needs the tree itself, because form annotation and portability
+ * conversion happen after the component runs. Going through a sink anyway means
+ * a view's render pass gets the same one-shot guarantees as every other: a
+ * component that mutates a signal mid-render is reported rather than silently
+ * producing output that disagrees with its own state.
  */
-export type PortableValue =
-  | null
-  | boolean
-  | number
-  | string
-  | PortableValue[]
-  | { [key: string]: PortableValue };
-/**
- * Host-neutral component node carried by a render event.
- *
- * Clients route `type` to their own named implementation. `key` is semantic
- * instance identity for reconciliation; it is not a component implementation
- * id.
- */
-export interface PortableVNode {
-  /** Named component implementation requested from the client. */
-  type: string;
-  /** JSON props interpreted by that client component. */
-  props: Record<string, PortableValue>;
-  /** Ordered child components and text. */
-  children: Array<PortableVNode | string>;
-  /** Stable instance identity, or `null` when the node is unkeyed. */
-  key: string | number | null;
+function passthroughSink(): Sink<VNode> {
+  return {
+    commit(tree: VNode): VNode {
+      return tree;
+    },
+  };
 }
 /**
  * Serializable action descriptor embedded in component props.
@@ -112,6 +102,8 @@ export interface PortableActionRef {
   revision: number;
   /** Single-use request nonce for replay protection. */
   request: string;
+  /** Message a client should confirm before sending the request. */
+  confirm?: string;
 }
 /**
  * JSON body posted by a client to a `PortableActionRef.url`.
@@ -201,80 +193,97 @@ export interface ViewDefinition {
       input?: JsonSchema;
       /** Whether an operation may safely rebase onto a newer snapshot. */
       stale?: 'reject' | 'rebase';
+      /**
+       * Message an enhanced client should confirm before sending the request.
+       *
+       * This is presentation only. It is not enforced on the server and the
+       * no-JavaScript fallback submits without it.
+       */
+      confirm?: string;
     }
   >;
+  /**
+   * Signal keys projected from an authoritative external store.
+   *
+   * Derived signals are rendered but never written to the view snapshot, so a
+   * store that already owns the data stays the only durable copy. Seed them
+   * through `derive` rather than expecting hydration to restore them.
+   */
+  derived?: string[];
+  /**
+   * Populate `derived` signals before a render web.ts owns.
+   *
+   * This runs on the action and live-stream paths, which are already async. The
+   * initial `mount()` render is synchronous, so a caller that mounts a view with
+   * derived signals must seed them before calling `mount()`.
+   */
+  derive?: (args: {
+    state: StateRecord;
+    http: HttpContext;
+    snapshot: ViewSnapshot;
+  }) => void | Promise<void>;
   /** Render function for the view's current state. */
   render: ViewRender;
 }
-const views = new Map<string, ServerView>();
-class ActionRef {
-  readonly view: ServerView;
-  readonly name: string;
-  readonly viewId: string;
-  readonly version: number;
-  readonly nonce: string;
-  readonly csrf: string;
-  readonly secret: string;
-  readonly url: string;
-  constructor(args: {
-    view: ServerView;
-    name: string;
-    viewId: string;
-    version: number;
-    nonce: string;
-    csrf: string;
-    secret: string;
-    url: string;
-  }) {
-    this.view = args.view;
-    this.name = args.name;
-    this.viewId = args.viewId;
-    this.version = args.version;
-    this.nonce = args.nonce;
-    this.csrf = args.csrf;
-    this.secret = args.secret;
-    this.url = args.url;
-  }
-  toString(): string {
-    return this.url;
-  }
-  toJSON(): PortableActionRef {
-    return {
-      action: this.name,
-      url: this.url,
-      view: this.viewId,
-      revision: this.version,
-      request: this.nonce,
-    };
+/**
+ * Action failure that carries a stable, publicly safe error code.
+ *
+ * An action handler throws this when the caller should learn *why* the request
+ * failed. Any other thrown value is reported as `action_failed` with its details
+ * published only to the internal diagnostics topic, so a handler must opt in
+ * before anything reaches the client.
+ *
+ * ```ts no_run
+ * import { ViewActionError } from 'fino:ui/web';
+ *
+ * throw new ViewActionError('flow_stale_step', { status: 409, recoverable: true });
+ * ```
+ */
+export class ViewActionError extends Error {
+  /** Stable code sent to clients as the SSE error code. */
+  readonly code: string;
+  /** HTTP status for the action response. */
+  readonly status: number;
+  /** Whether a client may retry after resynchronizing. */
+  readonly recoverable: boolean;
+  constructor(
+    code: string,
+    options: { status?: number; recoverable?: boolean; message?: string } = {},
+  ) {
+    super(options.message ?? code);
+    this.name = 'ViewActionError';
+    this.code = code;
+    this.status = options.status ?? 409;
+    this.recoverable = options.recoverable ?? true;
   }
 }
-function portableTree(tree: VNode): PortableVNode {
-  const seen = new Set<object>();
-  const copy = (value: unknown): unknown => {
-    if (
-      value === null ||
-      typeof value === 'string' ||
-      typeof value === 'boolean' ||
-      (typeof value === 'number' && Number.isFinite(value))
-    )
-      return value;
-    if (value instanceof ActionRef) return copy(value.toJSON());
-    if (typeof value !== 'object') throw new TypeError('Portable UI values must be JSON data');
-    if (seen.has(value)) throw new TypeError('Portable UI values must not contain cycles');
-    seen.add(value);
-    try {
-      if (Array.isArray(value)) return value.map(copy);
-      const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null)
-        throw new TypeError('Portable UI values must be plain objects');
-      const out: Record<string, unknown> = {};
-      for (const [key, entry] of Object.entries(value)) out[key] = copy(entry);
-      return out;
-    } finally {
-      seen.delete(value);
-    }
-  };
-  return copy(tree) as PortableVNode;
+const views = new Map<string, ServerView>();
+/**
+ * Per-instance data an action needs but must never be rendered into.
+ *
+ * The CSRF token and the sealing secret belong to the request, not to the view's
+ * output. Keeping them here instead of on the descriptor in `props` means the
+ * render tree holds only what is safe to send: a tree can be serialized,
+ * streamed, or rendered in another isolate without a secret riding along.
+ */
+interface ActionContext {
+  view: ServerView;
+  viewId: string;
+  version: number;
+  nonce: string;
+  csrf: string;
+  secret: string;
+}
+function isActionRef(value: unknown): value is PortableActionRef {
+  if (value === null || typeof value !== 'object') return false;
+  const ref = value as Partial<PortableActionRef>;
+  return (
+    typeof ref.action === 'string' &&
+    typeof ref.url === 'string' &&
+    typeof ref.view === 'string' &&
+    typeof ref.revision === 'number' &&
+    typeof ref.request === 'string'
+  );
 }
 interface RenderEnv {
   ctx: HttpContext;
@@ -333,15 +342,27 @@ function csrfPayload(viewId: string, nonce: string, secret: string): string {
     secret,
   );
 }
-function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
-  const token = String(form.get('_csrf') ?? '');
-  const unsafeCookie =
+/**
+ * Read a header that public `Request` guards may hide.
+ *
+ * Wire requests expose every header directly. Requests constructed in JS hide
+ * forbidden names such as `cookie` and `origin` behind the same guard a browser
+ * applies, so fall back to the original constructor headers.
+ */
+function requestHeader(ctx: HttpContext, name: string): string | null {
+  return (
+    ctx.request.headers.get(name) ??
     (
       ctx.request as Request & {
         _getUnsafeHeader?: (name: string) => string | null;
       }
-    )._getUnsafeHeader?.('cookie') ?? null;
-  const cookies = parseCookieHeader(ctx.request.headers.get('cookie') ?? unsafeCookie ?? '');
+    )._getUnsafeHeader?.(name) ??
+    null
+  );
+}
+function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
+  const token = String(form.get('_csrf') ?? '');
+  const cookies = parseCookieHeader(requestHeader(ctx, 'cookie') ?? '');
   if (token === '' || cookies.fi_csrf !== token) return false;
   const payload = unsealCookie(token, secret);
   if (payload === null) return false;
@@ -356,12 +377,16 @@ function verifyCsrf(ctx: HttpContext, form: FormData, secret: string): boolean {
   }
 }
 function verifyRequestOrigin(ctx: HttpContext): boolean {
-  const site = ctx.request.headers.get('sec-fetch-site');
+  const site = requestHeader(ctx, 'sec-fetch-site');
   if (site !== null && site !== 'same-origin' && site !== 'same-site' && site !== 'none')
     return false;
-  const origin = ctx.request.headers.get('origin');
+  const origin = requestHeader(ctx, 'origin');
   if (origin === null) return true;
-  return new URL(origin).origin === new URL(ctx.request.url).origin;
+  try {
+    return new URL(origin).origin === new URL(ctx.request.url).origin;
+  } catch {
+    return false;
+  }
 }
 async function withViewLock<T>(viewId: string, fn: () => Promise<T>): Promise<T> {
   const previous = locks.get(viewId) ?? Promise.resolve();
@@ -419,38 +444,44 @@ function hidden(name: string, value: unknown): VNode {
     value: String(value),
   });
 }
-function annotateForms(node: VNode, actionRef?: ActionRef, state?: StateRecord): VNode {
+function annotateForms(
+  node: VNode,
+  ctx: ActionContext,
+  state?: StateRecord,
+  inForm = false,
+): VNode {
   if (node.type === 'fragment') {
     return {
       ...node,
       children: node.children.map((child) =>
-        typeof child === 'string' ? child : annotateForms(child, actionRef, state),
+        typeof child === 'string' ? child : annotateForms(child, ctx, state, inForm),
       ),
     };
   }
   const props = cloneProps(node.props);
-  let currentAction = actionRef;
-  if (node.type === 'form' && props.action instanceof ActionRef) {
-    currentAction = props.action;
-    props.action = currentAction.toString();
+  let formAction = inForm;
+  if (node.type === 'form' && isActionRef(props.action)) {
+    const ref = props.action;
+    formAction = true;
+    props.action = ref.url;
     props.method = props.method ?? 'post';
-    props['data-fi-action'] = `${currentAction.view.def.id}.${currentAction.name}`;
+    props['data-fi-action'] = `${ctx.view.def.id}.${ref.action}`;
   }
   const children = node.children.map((child) =>
-    typeof child === 'string' ? child : annotateForms(child, currentAction, state),
+    typeof child === 'string' ? child : annotateForms(child, ctx, state, formAction),
   );
-  if (node.type === 'form' && currentAction !== undefined) {
+  if (node.type === 'form' && formAction) {
     children.unshift(
-      hidden('_view', currentAction.viewId),
-      hidden('_ver', currentAction.version),
-      hidden('_nonce', currentAction.nonce),
-      hidden('_csrf', currentAction.csrf),
+      hidden('_view', ctx.viewId),
+      hidden('_ver', ctx.version),
+      hidden('_nonce', ctx.nonce),
+      hidden('_csrf', ctx.csrf),
     );
-    for (const key of currentAction.view.embed) {
-      const value = currentAction.view.sealedEmbed.has(key)
+    for (const key of ctx.view.embed) {
+      const value = ctx.view.sealedEmbed.has(key)
         ? sealCookie(
             JSON.stringify(state?.[key]?.get() ?? findInputValue(node, key) ?? ''),
-            currentAction.secret,
+            ctx.secret,
           )
         : (findInputValue(node, key) ?? '');
       children.unshift(hidden(`$${key}`, value));
@@ -483,8 +514,10 @@ class ServerView {
   readonly def: ViewDefinition;
   readonly embed: Set<string>;
   readonly sealedEmbed: Set<string>;
+  readonly derived: Set<string>;
   constructor(def: ViewDefinition) {
     this.def = def;
+    this.derived = new Set(def.derived ?? []);
     this.embed = new Set(
       (def.embed ?? []).map((entry) => (typeof entry === 'string' ? entry : entry.key)),
     );
@@ -501,28 +534,45 @@ class ServerView {
         ),
     );
   }
-  mount(ctx: HttpContext): VNode {
+  /** Signal values that belong in the snapshot, excluding embedded and derived keys. */
+  persisted(state: StateRecord): Record<string, unknown> {
+    return signalValues(
+      state,
+      new Set(Object.keys(state).filter((key) => !this.embed.has(key) && !this.derived.has(key))),
+    );
+  }
+  /**
+   * Render a fresh instance of this view into the page currently being rendered.
+   *
+   * `seed` presets signal values before the first render. A view with derived
+   * signals needs it, because `mount()` is synchronous and cannot await
+   * `derive`; the caller's handler is the one place that can load first.
+   */
+  mount(ctx: HttpContext, seed?: Record<string, unknown>): VNode {
     if (currentRender === null)
       throw new Error('view.mount() must be called while rendering a page() handler');
     const state = this.def.state();
+    if (seed !== undefined) hydrate(state, seed);
     const viewId = randomId('view');
     const nonce = randomId('render');
     const csrf = csrfPayload(viewId, nonce, currentRender.options.secret);
-    const actions = this.actions(ctx, viewId, 0, nonce, csrf, currentRender.options.secret);
-    const rawTree = this.def.render({
-      state,
-      actions,
-    });
-    const tree = currentRender.streaming ? portableTree(rawTree) : rawTree;
-    const rendered = currentRender.streaming
-      ? tree
-      : this.wrap(viewId, annotateForms(tree, undefined, state));
-    const encoded = currentRender.streaming ? JSON.stringify(tree) : renderToHtml(rendered);
+    const secret = currentRender.options.secret;
+    const actions = this.actions(ctx, viewId, 0, nonce);
+    const actionCtx: ActionContext = {
+      view: this,
+      viewId,
+      version: 0,
+      nonce,
+      csrf,
+      secret,
+    };
+    const streaming = currentRender.streaming;
+    const rawTree = renderStatic(() => this.def.render({ state, actions }), passthroughSink());
+    const tree = streaming ? (toPortable(rawTree) as unknown as VNode) : rawTree;
+    const rendered = streaming ? tree : this.wrap(viewId, annotateForms(tree, actionCtx, state));
+    const encoded = streaming ? JSON.stringify(tree) : renderToHtml(rendered);
     const now = Date.now();
-    const data = signalValues(
-      state,
-      new Set(Object.keys(state).filter((key) => !this.embed.has(key))),
-    );
+    const data = this.persisted(state);
     currentRender.pending.push(
       currentRender.options.store.save({
         viewId,
@@ -556,27 +606,31 @@ class ServerView {
     );
     return rendered;
   }
+  /**
+   * Build the action descriptors handed to a render.
+   *
+   * These are plain portable data. Everything an action needs that must not be
+   * rendered — the CSRF token, the sealing secret — stays in an `ActionContext`
+   * the sink consults instead.
+   */
   actions(
     ctx: HttpContext,
     viewId: string,
     version: number,
     nonce: string,
-    csrf: string,
-    secret: string,
     pagePath?: string,
-  ): Record<string, ActionRef> {
-    const out: Record<string, ActionRef> = {};
-    for (const name of Object.keys(this.def.actions ?? {})) {
-      out[name] = new ActionRef({
-        view: this,
-        name,
-        viewId,
-        version,
-        nonce,
-        csrf,
-        secret,
+  ): Record<string, PortableActionRef> {
+    const out: Record<string, PortableActionRef> = {};
+    for (const [name, action] of Object.entries(this.def.actions ?? {})) {
+      const ref: PortableActionRef = {
+        action: name,
         url: actionUrl(ctx, this.def.id, name, pagePath),
-      });
+        view: viewId,
+        revision: version,
+        request: nonce,
+      };
+      if (action.confirm !== undefined) ref.confirm = action.confirm;
+      out[name] = ref;
     }
     return out;
   }
@@ -594,14 +648,20 @@ class ServerView {
     hash: string;
     tree: VNode;
   } {
-    const rawTree = this.def.render({
-      state,
-      actions: this.actions(ctx, snapshot.viewId, snapshot.version, nonce, csrf, secret, pagePath),
-    });
-    const tree = semantic ? portableTree(rawTree) : rawTree;
+    const actions = this.actions(ctx, snapshot.viewId, snapshot.version, nonce, pagePath);
+    const actionCtx: ActionContext = {
+      view: this,
+      viewId: snapshot.viewId,
+      version: snapshot.version,
+      nonce,
+      csrf,
+      secret,
+    };
+    const rawTree = renderStatic(() => this.def.render({ state, actions }), passthroughSink());
+    const tree = semantic ? (toPortable(rawTree) as unknown as VNode) : rawTree;
     const rendered = semantic
       ? tree
-      : this.wrap(snapshot.viewId, annotateForms(tree, undefined, state));
+      : this.wrap(snapshot.viewId, annotateForms(tree, actionCtx, state));
     const html = semantic ? '' : renderToHtml(rendered);
     return {
       html,
@@ -696,11 +756,14 @@ function portableError(status: number, code: string, recoverable: boolean): Resp
   );
 }
 async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Response> {
-  if (!verifyRequestOrigin(ctx)) return new Response('Forbidden', { status: 403 });
   const isJson = (ctx.request.headers.get('content-type') ?? '')
     .toLowerCase()
     .startsWith('application/json');
   const streaming = isJson || wantsSse(ctx);
+  if (!verifyRequestOrigin(ctx))
+    return streaming
+      ? portableError(403, 'forbidden', false)
+      : new Response('Forbidden', { status: 403 });
   let form: FormData | null = null;
   let viewId = '';
   let requestVersion = -1;
@@ -708,8 +771,12 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
   let input: Record<string, unknown> = {};
   if (isJson) {
     if (sessionId(ctx) === undefined) return portableError(403, 'forbidden', false);
+    const maxActionBytes = options.maxActionBytes ?? 65_536;
+    const declared = Number(ctx.request.headers.get('content-length') ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > maxActionBytes)
+      return portableError(413, 'action_too_large', false);
     const encoded = await ctx.request.text();
-    if (new TextEncoder().encode(encoded).byteLength > (options.maxActionBytes ?? 65_536))
+    if (new TextEncoder().encode(encoded).byteLength > maxActionBytes)
       return portableError(413, 'action_too_large', false);
     type ActionBody = {
       version?: unknown;
@@ -746,7 +813,10 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
     input = (body.input ?? {}) as Record<string, unknown>;
   } else {
     form = await ctx.request.formData();
-    if (!verifyCsrf(ctx, form, options.secret)) return new Response('Forbidden', { status: 403 });
+    if (!verifyCsrf(ctx, form, options.secret))
+      return streaming
+        ? portableError(403, 'forbidden', false)
+        : new Response('Forbidden', { status: 403 });
     viewId = String(form.get('_view') ?? '');
     requestVersion = Number(form.get('_ver') ?? -1);
     nonce = String(form.get('_nonce') ?? '');
@@ -770,6 +840,13 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
       return streaming
         ? portableError(403, 'forbidden', false)
         : new Response('Forbidden', { status: 403 });
+    // The action URL names a view definition while the request body names a
+    // mounted instance. Without this check either transport could run one
+    // view's action against another view's snapshot.
+    if (snapshot.view !== viewName)
+      return streaming
+        ? portableError(404, 'action_not_found', false)
+        : new Response('Not Found', { status: 404 });
     const rid = `${requestVersion}:${nonce}`;
     if (snapshot.applied.some((entry) => entry.rid === rid && entry.action === name)) {
       return streaming
@@ -788,6 +865,14 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         : new Response('Conflict', { status: 409 });
     const state = serverView.def.state();
     hydrate(state, snapshot.data);
+    try {
+      await serverView.def.derive?.({ state, http: ctx, snapshot });
+    } catch (error) {
+      topic('fino:ui/render:error').publish(error);
+      return streaming
+        ? portableError(500, 'action_failed', true)
+        : new Response('Internal Server Error', { status: 500 });
+    }
     if (form !== null) {
       try {
         hydrate(state, embeddedEntries(form, serverView, options.secret));
@@ -808,10 +893,7 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
     }
     let currentSnapshot = snapshot;
     const commit = async (complete: boolean) => {
-      const data = signalValues(
-        state,
-        new Set(Object.keys(state).filter((key) => !serverView.embed.has(key))),
-      );
+      const data = serverView.persisted(state);
       const nextVersion = currentSnapshot.version + 1;
       const nextNonce = randomId('render');
       const csrf = csrfPayload(viewId, nextNonce, options.secret);
@@ -884,21 +966,27 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         viewId,
         action: name,
       });
+      if (error instanceof ViewActionError) {
+        return streaming
+          ? portableError(error.status, error.code, error.recoverable)
+          : new Response(error.code, { status: error.status });
+      }
       if (streaming) return portableError(500, 'action_failed', true);
       throw error;
     }
   });
 }
-function renderLiveEvent(
+async function renderLiveEvent(
   ctx: HttpContext,
   options: WebUIOptions,
   snapshot: ViewSnapshot,
   pagePath: string,
-): PortableRenderEvent | null {
+): Promise<PortableRenderEvent | null> {
   const serverView = views.get(snapshot.view);
   if (serverView === undefined) return null;
   const state = serverView.def.state();
   hydrate(state, snapshot.data);
+  await serverView.def.derive?.({ state, http: ctx, snapshot });
   const nonce = randomId('render');
   const csrf = csrfPayload(snapshot.viewId, nonce, options.secret);
   const rendered = serverView.renderSnapshot(
@@ -947,7 +1035,7 @@ function liveResponse(
       });
       return;
     }
-    const render = renderLiveEvent(ctx, options, snapshot, pagePath);
+    const render = await renderLiveEvent(ctx, options, snapshot, pagePath);
     if (render !== null)
       writeSse(controller, {
         event: 'ui',

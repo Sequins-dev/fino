@@ -62,6 +62,8 @@ surface for what you are building:
   HTTP/3.
 - [Protocol Versions and Transport](./net/http/protocols.md) — HTTP/1.1, h2,
   h3, ALPN, and TLS configuration.
+- [Components and Render Programs](./ui.md) — the component model, sinks and
+  lifetimes, rendering in a realm, and the portable tree contract.
 - [Server-Driven Web UI](./ui/web.md) — progressive enhancement, live SSE
   patches, cleanup, deployment, and operational guidance.
 
@@ -88,6 +90,12 @@ architecture; the deep dives cover
 - [Testing and Benchmarking](./testing-and-benchmarking.md) — the built-in
   test framework, mocks, and benchmark harness.
 - [Data](./data.md) — Apache Arrow and Parquet tooling.
+- [Machine Learning](./ml.md) — shared metrics for classification, ranking,
+  regression, calibration, and similarity.
+- [Text](./text.md) — tokenizers: loading published BPE and WordPiece
+  vocabularies, offsets, and tokenizing a dataset.
+- [Models](./model.md) — resolving models and datasets from a hub, with
+  content-addressed caching and a `models.lock` pin.
 - [Native FFI](./native-ffi.md) — loading native libraries and binding C ABI
   functions.
 - [Profiling](./profiling.md) — JS CPU profiles and native profiling paths.

@@ -44,6 +44,8 @@ import 'fino:net/http/webtransport';
 import 'fino:ai/cache';
 import 'fino:data/dataset';
 import 'fino:data/frame';
+import 'fino:text/tokenizer';
+import 'fino:model/hub';
 import { DiskFileSystem } from 'fino:file';
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 describe('builtin module layout', () => {

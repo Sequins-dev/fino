@@ -16,6 +16,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/init` | not yet benchmarked |
 | `fino:commands/install` | not yet benchmarked |
 | `fino:commands/doc` | not yet benchmarked |
+| `fino:commands/doc/theme` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:commands/cluster` | not yet benchmarked |
@@ -34,6 +35,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui` | `benchmarks/ui.bench.ts` |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
+| `fino:ui/portable` | `benchmarks/ui.bench.ts` |
+| `fino:ui/realm` | not yet benchmarked |
 | `fino:ui/slides` | not yet benchmarked |
 | `fino:ui/web` | not yet benchmarked |
 | `fino:ui/web/flow` | not yet benchmarked |
@@ -99,7 +102,10 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:data/arrow/cdata` | `benchmarks/data/arrow.bench.ts` |
 | `fino:data/dataset` | not yet benchmarked |
 | `fino:data/frame` | not yet benchmarked |
+| `fino:text/tokenizer` | `benchmarks/text/tokenizer.bench.ts` |
+| `fino:model/hub` | not yet benchmarked |
 | `fino:data/parquet` | `benchmarks/data/parquet.bench.ts` |
+| `fino:ml/metrics` | `benchmarks/ml/metrics.bench.ts` |
 | `fino:format/csv` | `benchmarks/format/csv.bench.ts` |
 | `fino:format/flatbuffers` | `benchmarks/format/flatbuffers.bench.ts` |
 | `fino:format/protobuf` | `benchmarks/format/protobuf.bench.ts` |

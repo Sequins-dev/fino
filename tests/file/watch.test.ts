@@ -4,6 +4,7 @@
 import { describe, it, before, after } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { Watcher, type WatchEvent } from 'fino:file/watch';
+import * as loop from 'internal:runtime/loop';
 const TEST_DIR = '/tmp/fino-watch-test-' + Math.floor(Math.random() * 1e6);
 const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void> =>
   fs.writeFile(path, new TextEncoder().encode(text));
@@ -101,7 +102,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/modify-test.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     // Write to the file to trigger an event
     await writeText(fs, path, 'modified');
     const events = await collectEvents(watcher, 1);
@@ -115,7 +116,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/delete-test.txt';
     await writeText(fs, path, 'hello');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     await fs.unlink(path);
     const event = await waitForEvent(watcher, (event) => event.type === 'delete');
     watcher.close();
@@ -125,7 +126,7 @@ describe('Watcher', () => {
     const dir = TEST_DIR + '/dir-watch';
     await fs.mkdir(dir);
     const watcher = new Watcher();
-    watcher.watch(dir);
+    await watcher.watch(dir);
     // Create a file in the watched directory
     const newFile = dir + '/newfile.txt';
     await writeText(fs, newFile, 'content');
@@ -145,7 +146,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/close-test.txt';
     await writeText(fs, path, 'x');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     watcher.close();
     const iter = watcher[Symbol.asyncIterator]();
     const result = await iter.next();
@@ -169,8 +170,8 @@ describe('Watcher', () => {
     await writeText(fs, file1, 'a');
     await writeText(fs, file2, 'b');
     const watcher = new Watcher();
-    watcher.watch(file1);
-    watcher.watch(file2);
+    await watcher.watch(file1);
+    await watcher.watch(file2);
     await writeText(fs, file1, 'aa');
     const events = await collectEvents(watcher, 1);
     watcher.close();
@@ -192,7 +193,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/post-close-test.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     watcher.close();
     // Modify the file after the watcher was closed — should not receive events
     await writeText(fs, path, 'modified after close');
@@ -207,7 +208,7 @@ describe('Watcher', () => {
     await fs.mkdir(dir);
     await fs.mkdir(sub);
     const watcher = new Watcher({ recursive: true });
-    watcher.watch(dir);
+    await watcher.watch(dir);
     // Give watcher time to set up recursive watches
     await delay(50);
     // Write to a file in the subdirectory
@@ -226,7 +227,7 @@ describe('Watcher', () => {
     const renamed = TEST_DIR + '/rename-delete-target.txt';
     await writeText(fs, path, 'hello');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     await fs.rename(path, renamed);
     await fs.unlink(renamed);
     const events = await collectEvents(watcher, 2);
@@ -247,7 +248,7 @@ describe('Watcher', () => {
     const file = sub + '/later.txt';
     await fs.mkdir(dir);
     const watcher = new Watcher({ recursive: true });
-    watcher.watch(dir);
+    await watcher.watch(dir);
     await fs.mkdir(sub);
     await delay(100);
     await writeText(fs, file, 'later');
@@ -266,7 +267,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/pending-close.txt';
     await writeText(fs, path, 'x');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     const iter = watcher[Symbol.asyncIterator]();
     const pending = iter.next();
     watcher.close();
@@ -278,8 +279,8 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/duplicate-watch.txt';
     await writeText(fs, path, 'initial');
     const watcher = new Watcher();
-    watcher.watch(path);
-    watcher.watch(path);
+    await watcher.watch(path);
+    await watcher.watch(path);
     await writeText(fs, path, 'changed');
     const events = await collectEvents(watcher, 2, 250);
     watcher.close();
@@ -295,7 +296,7 @@ describe('Watcher', () => {
     const path = TEST_DIR + '/burst.txt';
     await writeText(fs, path, '0');
     const watcher = new Watcher();
-    watcher.watch(path);
+    await watcher.watch(path);
     for (let i = 1; i <= 8; i++) {
       await writeText(fs, path, String(i));
     }
@@ -321,7 +322,7 @@ describe('Watcher', () => {
       encoding: 'buffer',
       signal: AbortSignal.abort(),
     } as any);
-    watcher.watch(path);
+    await watcher.watch(path);
     const pending = watcher[Symbol.asyncIterator]().next();
     watcher.close();
     const result = await pending;
@@ -334,5 +335,39 @@ describe('Watcher', () => {
     );
     pathWatcher.close();
     await fs.unlink(path);
+  });
+  it('settles a pending watch() when the watcher closes before it is armed', async (t) => {
+    const watcher = new Watcher({ recursive: true });
+    // No await: close() lands while the arming acknowledgement is still in
+    // flight, which is the ordering Presentation.close() hits in practice.
+    const arming = watcher.watch(TEST_DIR);
+    watcher.close();
+    const outcome = await Promise.race([
+      arming.then(() => 'settled'),
+      loop.timeout(2e3).then(() => 'hung'),
+    ]);
+    t.equal(outcome, 'settled', 'watch() does not strand its caller when the watch is torn down');
+  });
+  it('stops arming watches once closed, so a recursive scan cannot leak handles', async (t) => {
+    const root = TEST_DIR + '/scan-after-close';
+    await fs.mkdir(root);
+    for (let i = 0; i < 24; i++) await fs.mkdir(`${root}/dir-${i}`);
+    const baseline = loop._activeHandleCounts();
+    const watcher = new Watcher({ recursive: true });
+    void watcher.watch(root);
+    watcher.close();
+    // The recursive scan resolves a tick or two after close(), so watch for
+    // registrations *appearing* over a window rather than sampling once: a
+    // single early read sees the pre-scan counts and proves nothing.
+    let peakVnodes = 0;
+    let peakInstalls = 0;
+    for (let i = 0; i < 20; i++) {
+      await loop.timeout(50);
+      const counts = loop._activeHandleCounts();
+      peakVnodes = Math.max(peakVnodes, counts.vnodes - baseline.vnodes);
+      peakInstalls = Math.max(peakInstalls, counts.pendingInstalls - baseline.pendingInstalls);
+    }
+    t.equal(peakVnodes, 0, 'a closed watcher arms no further vnode watches');
+    t.equal(peakInstalls, 0, 'and leaves no unacknowledged installs behind');
   });
 });

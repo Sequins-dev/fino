@@ -7,7 +7,7 @@ interface PortReport {
   selfPort: boolean;
   realmPort: boolean;
   samePort: boolean;
-  constructorName: string | null;
+  transport: string | null;
 }
 async function readFirstMessage(realm: Realm, timeoutMs = 5e3): Promise<unknown> {
   return await new Promise((resolve, reject) => {
@@ -49,8 +49,8 @@ describe('Realm messaging', () => {
   it('realm.port uses the scheduled transport', async (t) => {
     const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
     t.equal(
-      realm.port.constructor.name,
-      'ScheduledPort',
+      (realm.port as { transport?: string }).transport,
+      'scheduled',
       'realm.port is backed by the process scheduler',
     );
     realm.terminate();
@@ -65,7 +65,7 @@ describe('Realm messaging', () => {
     t.equal(report.selfPort, true, 'scheduled child exposes fino:realm/self.port');
     t.equal(report.realmPort, true, 'scheduled child also exposes bootstrap realmPort');
     t.equal(report.samePort, true, 'scheduled child self port and realmPort are the same object');
-    t.equal(report.constructorName, 'ThreadPort', 'scheduled child uses a transport port');
+    t.equal(report.transport, 'parent', 'scheduled child talks back over its parent link');
     realm.terminate();
     await run;
   });
@@ -82,11 +82,7 @@ describe('Realm messaging', () => {
     t.equal(report.selfPort, false, 'process child does not expose fino:realm/self.port');
     t.equal(report.realmPort, true, 'process child exposes bootstrap realmPort');
     t.equal(report.samePort, false, 'process child has no self port to compare');
-    t.equal(
-      report.constructorName,
-      'ThreadPort',
-      'process child active port uses the transport-backed ThreadPort wrapper',
-    );
+    t.equal(report.transport, 'parent', 'process child talks back over its parent link');
     realm.terminate();
     await run;
   });

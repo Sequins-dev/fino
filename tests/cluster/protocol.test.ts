@@ -2,7 +2,13 @@
  * Tests for internal:cluster/protocol — encode/decode + helpers.
  */
 import { describe, it } from 'fino:test/test';
-import { encode, decode, nodeIdFromId, type ClusterMessage } from 'internal:cluster/protocol';
+import {
+  encode,
+  decode,
+  nodeIdFromId,
+  PayloadFormat,
+  type ClusterMessage,
+} from 'internal:cluster/protocol';
 describe('ClusterMessage encode/decode', () => {
   const roundTrip = (msg: ClusterMessage): ClusterMessage => decode(encode(msg));
   it('HELLO round-trips', (t) => {
@@ -410,5 +416,43 @@ describe('deployment query and rollback messages', () => {
     );
     if (rollback.t !== 'ROLLBACK') throw new Error('wrong kind');
     t.equal(rollback.name, 'web', 'rollback target survives');
+  });
+});
+
+describe('PORT_MSG payload encoding', () => {
+  it('round-trips the payload format descriptor', (t) => {
+    const frame = encode({
+      t: 'PORT_MSG',
+      fromPort: 'a/p-1',
+      toPort: 'b/p-2',
+      payload: [new Uint8Array([1, 2]), new Uint8Array([0xff, 15, 42])],
+      seq: 1,
+      payloadFormat: PayloadFormat.V8StructuredClone,
+    });
+    const decoded = decode(frame);
+    t.equal(decoded.t, 'PORT_MSG', 'frame type survives');
+    if (decoded.t !== 'PORT_MSG') return;
+    t.equal(
+      decoded.payloadFormat,
+      PayloadFormat.V8StructuredClone,
+      'the receiver learns how the payload was encoded rather than assuming',
+    );
+  });
+  it('treats a frame without the descriptor as unspecified', (t) => {
+    const frame = encode({
+      t: 'PORT_MSG',
+      fromPort: 'a/p-1',
+      toPort: 'b/p-2',
+      payload: [new Uint8Array([1])],
+      seq: 1,
+    });
+    const decoded = decode(frame);
+    t.equal(decoded.t, 'PORT_MSG', 'frame type survives');
+    if (decoded.t !== 'PORT_MSG') return;
+    t.equal(
+      decoded.payloadFormat ?? PayloadFormat.Unspecified,
+      PayloadFormat.Unspecified,
+      'a peer predating the descriptor stays decodable',
+    );
   });
 });

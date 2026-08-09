@@ -2,20 +2,29 @@
  * Tests for signal handling via fino:process signal() Topic API.
  */
 import { describe, it } from 'fino:test/test';
-import { signal, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:process';
-/** Wrap a one-shot topic delivery in a Promise. */
-function nextSignal(name: string): Promise<unknown> {
-  return new Promise((resolve) => {
+import { signal, signalArmed, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:process';
+/**
+ * Subscribe to `name` and resolve once the watch is armed.
+ *
+ * The watch is installed by the realm that owns the process event loop, so a
+ * signal raised before `signalArmed()` resolves would race the installation and
+ * be dropped. The one-shot delivery promise is returned inside an object so
+ * awaiting the arming does not also await the delivery.
+ */
+async function armSignal(name: string): Promise<{ received: Promise<unknown> }> {
+  const received = new Promise((resolve) => {
     const t = signal(name);
     const handle = t.subscribe((evt) => {
       handle.dispose();
       resolve(evt);
     });
   });
+  await signalArmed(name);
+  return { received };
 }
 describe('Signal handling', () => {
   it('SIGUSR1 topic fires on signal delivery', async (t) => {
-    const received = nextSignal('SIGUSR1');
+    const { received } = await armSignal('SIGUSR1');
     kill(pid, SIGUSR1);
     const evt = (await received) as {
       signal: string;
@@ -25,7 +34,7 @@ describe('Signal handling', () => {
     t.equal(evt.signo, SIGUSR1, 'event.signo matches constant');
   });
   it('SIGUSR2 topic fires on signal delivery', async (t) => {
-    const received = nextSignal('SIGUSR2');
+    const { received } = await armSignal('SIGUSR2');
     kill(pid, SIGUSR2);
     const evt = (await received) as {
       signal: string;
@@ -50,8 +59,8 @@ describe('Signal handling', () => {
     t.ok(!t1.hasSubscribers, 'topic has no subscribers after dispose');
   });
   it('multiple signals can be subscribed simultaneously', async (t) => {
-    const p1 = nextSignal('SIGUSR1');
-    const p2 = nextSignal('SIGUSR2');
+    const { received: p1 } = await armSignal('SIGUSR1');
+    const { received: p2 } = await armSignal('SIGUSR2');
     kill(pid, SIGUSR1);
     kill(pid, SIGUSR2);
     const [e1, e2] = (await Promise.all([p1, p2])) as [

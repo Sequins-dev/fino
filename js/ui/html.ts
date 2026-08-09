@@ -22,7 +22,7 @@
  * ```
  */
 import { escapeHtml } from 'fino:template';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, Props, Sink, VNode } from 'fino:ui';
 
 const VOID_ELEMENTS = new Set([
   'area',
@@ -41,22 +41,24 @@ const VOID_ELEMENTS = new Set([
   'wbr',
 ]);
 
-const RAW_HTML = Symbol('fino.ui.html.raw');
-
-export interface RawHtml {
-  /**
-   * Trusted markup payload consumed by `renderToHtml()`.
-   *
-   * The symbol key keeps this payload out of ordinary object enumeration.
-   */
-  readonly [RAW_HTML]: string;
-}
+/**
+ * Element type carrying pre-rendered markup.
+ *
+ * The name is namespaced so it cannot collide with an HTML tag, and a host that
+ * does not trust its trees can refuse this type by name.
+ */
+export const RAW_HTML_TYPE = 'ui:raw';
 
 /**
  * Mark a trusted string as raw HTML.
  *
  * Raw HTML is inserted without escaping. Only pass strings produced by trusted
  * code or an HTML sanitizer.
+ *
+ * The result is an ordinary VNode holding plain JSON props, so pre-rendered
+ * markup survives serialization the same as any other node: it can cross a
+ * realm boundary, ride the portable protocol, and be rejected by name on a host
+ * that will not inline markup.
  *
  * ```ts no_run
  * import { h } from 'fino:ui';
@@ -65,12 +67,13 @@ export interface RawHtml {
  * const html = renderToHtml(h('div', null, rawHtml('<span>ok</span>')));
  * ```
  */
-export function rawHtml(html: string): RawHtml {
-  return { [RAW_HTML]: String(html) };
-}
-
-function isRawHtml(value: unknown): value is RawHtml {
-  return typeof value === 'object' && value !== null && RAW_HTML in value;
+export function rawHtml(html: string): VNode {
+  return {
+    type: RAW_HTML_TYPE,
+    props: { html: String(html) },
+    children: [],
+    key: null,
+  };
 }
 
 function kebab(name: string): string {
@@ -108,8 +111,7 @@ function renderAttrs(props: Props): string {
   return out;
 }
 
-function renderChild(child: NormalizedChild | RawHtml): string {
-  if (isRawHtml(child)) return child[RAW_HTML];
+function renderChild(child: NormalizedChild): string {
   if (typeof child === 'string') return escapeHtml(child);
   return renderToHtml(child);
 }
@@ -132,10 +134,31 @@ function renderChild(child: NormalizedChild | RawHtml): string {
  * const html = renderToHtml(h('input', { name: 'q', value: 'a&b' }));
  * ```
  */
-export function renderToHtml(vnode: VNode | RawHtml): string {
-  if (isRawHtml(vnode)) return vnode[RAW_HTML];
+export function renderToHtml(vnode: VNode): string {
+  if (vnode.type === RAW_HTML_TYPE) return String(vnode.props.html ?? '');
   if (vnode.type === 'fragment') return vnode.children.map(renderChild).join('');
   const attrs = renderAttrs(vnode.props);
   if (VOID_ELEMENTS.has(vnode.type)) return `<${vnode.type}${attrs}>`;
   return `<${vnode.type}${attrs}>${vnode.children.map(renderChild).join('')}</${vnode.type}>`;
+}
+
+/**
+ * Sink that serializes each committed tree to an HTML string.
+ *
+ * Pair it with `renderStatic()` for a page built once, or with `createRoot()`
+ * when a caller wants fresh markup on every state change.
+ *
+ * ```ts no_run
+ * import { h, renderStatic } from 'fino:ui';
+ * import { htmlSink } from 'fino:ui/html';
+ *
+ * const html = renderStatic(() => h('main', null, 'Ready'), htmlSink());
+ * ```
+ */
+export function htmlSink(): Sink<string> {
+  return {
+    commit(tree: VNode): string {
+      return renderToHtml(tree);
+    },
+  };
 }

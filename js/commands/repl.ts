@@ -42,6 +42,7 @@
  * ```
  */
 import { Task } from '../task.ts';
+import { EnvelopeKind } from 'internal:realm/envelope';
 import { Realm } from '../realm/index.ts';
 import { stdin, stdout } from '../process.ts';
 import { stdinIsTTY, stdoutIsTTY } from '../tty.ts';
@@ -376,7 +377,11 @@ async function runReplCommand(): Promise<void> {
   } finally {
     restoreRaw?.();
   }
-  port.postMessage({ __terminate: true });
+  (port as unknown as { _postControl(k: number, c: number, m: unknown): void })._postControl(
+    EnvelopeKind.Terminate,
+    0,
+    null,
+  );
   port.close();
   await runPromise;
 }

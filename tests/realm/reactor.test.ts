@@ -7,6 +7,15 @@
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import * as schedulerNative from 'internal:scheduler-native';
+import { onlineProcessors } from 'internal:runtime/libc';
+import { Process, env, execPath } from 'fino:process';
+
+async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
+  const chunks: string[] = [];
+  const decoder = new TextDecoder();
+  for await (const chunk of reader) chunks.push(decoder.decode(chunk, { stream: true }));
+  return chunks.join('');
+}
 // Import fixture types so the Realm<F> generic can connect call() args/return.
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
@@ -24,16 +33,36 @@ describe('Reactor scheduler native surface', () => {
       'addReactorWorkload',
       'signalReactorWorkload',
       'routeSharedLoopEvent',
+      // Persistent watches acknowledge installation through an ordinary routed
+      // completion instead of blocking the registering thread.
+      'registerProcessPersistentReadiness',
+      'acknowledgeProcessReadiness',
     ]) {
       t.equal(name in schedulerNative, false, `${name} is not exported`);
     }
   });
-  it('exposes explicit workload submission for an initially empty pool', (t) => {
-    t.equal(
-      'submitReactorWorkload' in schedulerNative,
-      true,
-      'workloads are submitted separately from queue construction',
-    );
+  it('separates creating a workload from submitting it', (t) => {
+    // Creation and submission were briefly collapsed into one call, which is
+    // correct only while every workload is claimed by a local reactor. A spec
+    // that has no isolate yet is the unit the balancer moves between nodes, so
+    // there has to be a window in which it exists but is not yet claimable —
+    // that window is also what lets a caller arm its wake descriptor with no
+    // race against a reactor that has already started it.
+    for (const name of [
+      'startReactorPool',
+      'stopReactorPool',
+      'createWorkload',
+      'workloadOwner',
+      'workloadWakeFd',
+      'terminateWorkload',
+      'submitReactorWorkload',
+      // Queues are addressable so the balancer can operate on one explicitly,
+      // and so tests can run an isolated pool with its own watchdog thresholds.
+      'createReactorQueue',
+      'closeReactorQueue',
+    ]) {
+      t.equal(name in schedulerNative, true, `${name} is exported`);
+    }
   });
 });
 
@@ -73,15 +102,98 @@ describe('Reactor-pooled Realm basics', () => {
       'all sibling realm timers resolve independently',
     );
   });
-  it('initializes a burst of pooled realms exactly once each under claim contention', async (t) => {
-    const entry = new URL('./fixtures/echo-fn.ts', import.meta.url).pathname;
-    const realms = Array.from({ length: 16 }, () => new Realm<typeof echoFn>({ entry }));
-    const results = await Promise.all(realms.map((realm, index) => realm.call(`burst-${index}`)));
+  it('keeps readiness watches distinct when realms recycle descriptor numbers', async (t) => {
+    // Each realm's pipes are closed when it settles, so the OS hands the same
+    // descriptor numbers to the next realm. Readiness watches are keyed by an
+    // owner-tagged token rather than the bare descriptor precisely so a stale
+    // registration cannot cancel or resolve its successor's watch. Realms that
+    // both sleep on a timer and answer over their port exercise every routed
+    // filter, and any aliasing strands one of them forever.
+    const entry = new URL('./fixtures/async-fn.ts', import.meta.url).pathname;
+    for (let round = 0; round < 6; round++) {
+      const realm = new Realm<typeof asyncFn>({ entry });
+      t.equal(await realm.call(round), round * 2, `sequential realm ${round} answered`);
+    }
+    const concurrent = Array.from({ length: 6 }, () => new Realm<typeof asyncFn>({ entry }));
     t.deepEqual(
-      results,
-      realms.map((_, index) => `burst-${index}`),
-      'every realm initialized on a claiming reactor and answered exactly once',
+      await Promise.all(concurrent.map((realm, index) => realm.call(index))),
+      [0, 2, 4, 6, 8, 10],
+      'every concurrent sibling resolved its own timer and port traffic',
     );
+  });
+  it('runs CPU-bound realms in parallel when the pool has threads to spare', async (t) => {
+    // The pool used to size itself from `navigator.hardwareConcurrency`, which
+    // this runtime does not define, so it silently ran one thread and no realm
+    // ever executed in parallel. The default is one thread again, but now
+    // deliberately, so scale the pool out in a child process and assert the
+    // observable consequence: realms burning CPU must overlap.
+    const processors = onlineProcessors();
+    if (processors < 2) {
+      t.ok(true, `single-processor host (${processors}); parallelism is not observable`);
+      return;
+    }
+    const fixture = new URL('./fixtures/cpu-parallel.ts', import.meta.url).pathname;
+    const childEnv: Record<string, string> = { FINO_REACTOR_THREADS: '4' };
+    for (const [key, value] of Object.entries(env)) {
+      if (value !== undefined) childEnv[key] = value as string;
+    }
+    childEnv.FINO_REACTOR_THREADS = '4';
+    const child = new Process(execPath, ['run', fixture], { env: childEnv });
+    // Close stdin or its pipe keeps this realm's loop alive after the child exits.
+    child.stdin.close();
+    const [stdout, stderr, result] = await Promise.all([
+      readAll(child.stdout),
+      readAll(child.stderr),
+      child.wait(),
+    ]);
+    t.equal(result.code, 0, `parallel fixture exits cleanly${stderr ? `: ${stderr}` : ''}`);
+    const match = /elapsed=(\d+) serial=(\d+)/.exec(stdout);
+    t.ok(match !== null, `fixture reported timings (got ${JSON.stringify(stdout)})`);
+    if (match === null) return;
+    const elapsed = Number(match[1]);
+    const serial = Number(match[2]);
+    // Fully serialized execution takes at least `serial`; anything comfortably
+    // under it proves overlap without being sensitive to host load.
+    t.ok(
+      elapsed < serial * 0.8,
+      `realms overlapped: ${elapsed}ms against a ${serial}ms serial floor`,
+    );
+  });
+  it('ignores control frames forged in the message payload', async (t) => {
+    // Runtime protocol used to ride as magic properties on the cloned payload,
+    // so any realm able to post a plain object could fabricate a termination
+    // request or an RPC response. The kind now lives in the envelope header,
+    // which application code has no way to set — a payload that merely looks
+    // like control traffic is delivered as the ordinary message it is.
+    const realm = new Realm<() => string>({
+      entry: new URL('./fixtures/forge-control.ts', import.meta.url).pathname,
+    });
+    const seen: unknown[] = [];
+    realm.port.addEventListener('message', (event) => {
+      seen.push((event as MessageEvent).data);
+    });
+    realm.port.start();
+    t.equal(await realm.call(), 'survived', 'forged terminate did not stop the realm');
+    t.equal(seen.length, 3, 'every forged frame arrived as an ordinary message');
+  });
+  it('terminate({ force: true }) stops a realm spinning in synchronous code', async (t) => {
+    // Cooperative termination is a message, and a realm that never returns to
+    // its loop never observes one — it holds its reactor thread indefinitely.
+    // Forcing interrupts execution so the thread is released.
+    const realm = new Realm<() => number>({
+      entry: new URL('./fixtures/runaway.ts', import.meta.url).pathname,
+    });
+    const call = realm.call();
+    // Let the realm actually enter its loop before interrupting it.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    realm.terminate({ force: true });
+    await t.rejects(() => call, /exited before returning/i, 'the pending call is settled');
+    // The pool must still be usable afterwards: a forced unwind releases the
+    // reactor thread rather than poisoning it.
+    const after = new Realm<typeof echoFn>({
+      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
+    });
+    t.equal(await after.call('still working'), 'still working', 'the pool survives a forced stop');
   });
   it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({

@@ -1206,6 +1206,100 @@ export function digest(algorithm: string, data: Uint8Array): Uint8Array {
     lib.symbols.EVP_MD_CTX_free(ctx);
   }
 }
+/**
+ * An incremental message digest.
+ *
+ * `digest()` hashes a buffer already in memory, which is the wrong shape for a
+ * multi-gigabyte file: this feeds chunks through one EVP context instead, so a
+ * download can be verified as it streams and a resumed transfer can replay the
+ * bytes already on disk without holding the whole file.
+ *
+ * The context is a native allocation, so `close()` must run — use `using`, or a
+ * `try`/`finally`. Calling `update` after `final` throws rather than producing a
+ * quietly wrong digest.
+ *
+ * ```js
+ * import { IncrementalDigest, cryptoAvailable } from 'internal:openssl';
+ * if (cryptoAvailable) {
+ *   using hasher = new IncrementalDigest('sha-256');
+ *   hasher.update(new TextEncoder().encode('hello'));
+ *   console.log(hasher.final().byteLength);
+ * }
+ * ```
+ *
+ * @internal
+ */
+export class IncrementalDigest {
+  #lib: CryptoLibrary;
+  #ctx: object | null;
+  #size: number;
+
+  constructor(algorithm: string) {
+    const lib = _requireCrypto();
+    const normalized = _normalizeDigestAlgorithm(algorithm);
+    const md = _getMd(normalized);
+    this.#lib = lib;
+    this.#size = _digestSize[normalized];
+    const ctx = lib.symbols.EVP_MD_CTX_new();
+    if (ctx === null) throw new Error('EVP_MD_CTX_new failed');
+    this.#ctx = ctx;
+    if (lib.symbols.EVP_DigestInit_ex(ctx, md, null) !== 1) {
+      this.close();
+      throw new Error('EVP_DigestInit_ex failed: ' + getErrorString());
+    }
+  }
+
+  /** Digest length in bytes. */
+  get size(): number {
+    return this.#size;
+  }
+
+  /** Feed the next chunk. */
+  update(data: Uint8Array): void {
+    const ctx = this.#ctx;
+    if (ctx === null) throw new Error('IncrementalDigest: already finalized');
+    if (data.byteLength === 0) return;
+    if (this.#lib.symbols.EVP_DigestUpdate(ctx, data, data.byteLength) !== 1) {
+      throw new Error('EVP_DigestUpdate failed');
+    }
+  }
+
+  /** Finish and return the raw digest bytes, releasing the context. */
+  final(): Uint8Array {
+    const ctx = this.#ctx;
+    if (ctx === null) throw new Error('IncrementalDigest: already finalized');
+    const outBuf = new ArrayBuffer(this.#size);
+    const outlenBuf = new ArrayBuffer(4);
+    const rc = this.#lib.symbols.EVP_DigestFinal_ex(ctx, outBuf, outlenBuf);
+    this.close();
+    if (rc !== 1) throw new Error('EVP_DigestFinal_ex failed');
+    return new Uint8Array(outBuf);
+  }
+
+  /** Finish and return the digest as lowercase hex. */
+  hex(): string {
+    return _toHex(this.final());
+  }
+
+  /** Release the native context; safe to call more than once. */
+  close(): void {
+    const ctx = this.#ctx;
+    if (ctx === null) return;
+    this.#ctx = null;
+    this.#lib.symbols.EVP_MD_CTX_free(ctx);
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
+}
+
+function _toHex(bytes: Uint8Array): string {
+  let out = '';
+  for (let i = 0; i < bytes.length; i++) out += bytes[i].toString(16).padStart(2, '0');
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // HMAC
 // ---------------------------------------------------------------------------

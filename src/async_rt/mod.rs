@@ -393,32 +393,15 @@ fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
     true
 }
 
-/// Drain pending_resolutions from the root realm and all embedded children.
+/// Drain pending_resolutions for the realm that owns this isolate.
+///
+/// Every realm is its own isolate under the reactor scheduler, so a realm's
+/// resolutions are always reachable from its own context slot.
 fn drain_pending_resolutions(
     scope: &mut v8::HandleScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
-    let mut progress = false;
-    progress |= drain_pending_for(scope, state_rc);
-    // Walk embedded child contexts.
-    let child_count = state_rc.borrow().child_contexts.len();
-    for i in 0..child_count {
-        let maybe_ctx = {
-            let st = state_rc.borrow();
-            match &st.child_contexts[i] {
-                crate::state::ChildRealmSlot::Active(child) => {
-                    Some(v8::Local::new(scope, &child.context))
-                }
-                _ => None,
-            }
-        };
-        if let Some(ctx) = maybe_ctx {
-            let child_scope = &mut v8::ContextScope::new(scope, ctx);
-            let child_state = crate::state::get_state(child_scope);
-            progress |= drain_pending_for(child_scope, &child_state);
-        }
-    }
-    progress
+    drain_pending_for(scope, state_rc)
 }
 
 /// Drain pending_resolutions from a single realm's FinoState.
