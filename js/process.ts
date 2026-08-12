@@ -1060,6 +1060,20 @@ export const SIGTERM = 15;
  * ```
  */
 export const SIGCHLD = isLinux ? 17 : 20;
+/**
+ * Terminal window-size-change signal number.
+ *
+ * Delivered by the terminal when the controlling window is resized. Both
+ * Linux and Darwin use 28. Terminal UIs subscribe to re-measure and
+ * re-layout; `fino:tty/tui` does this automatically for fullscreen apps.
+ *
+ * ```ts no_run
+ * import { SIGWINCH, signal } from 'fino:process';
+ *
+ * signal('SIGWINCH').subscribe(() => console.log('terminal resized'));
+ * ```
+ */
+export const SIGWINCH = 28;
 const _signalNumbers: Record<string, number> = {
   SIGHUP,
   SIGINT,
@@ -1071,6 +1085,7 @@ const _signalNumbers: Record<string, number> = {
   SIGALRM,
   SIGTERM,
   SIGCHLD,
+  SIGWINCH,
 };
 const _childDefaultSignals = Object.values(_signalNumbers).filter((signo) => signo !== SIGKILL);
 /** Set of signal names already registered with the event loop. */

@@ -60,23 +60,27 @@ accepted until it is decided, and concurrent requests queue.
 Every conversation is a registered session with a durable id and a title
 derived from its first prompt. `fino code sessions` lists them
 (`--archived` for the history list), `fino code --thread <id>` reopens one,
-and `--continue` resumes the most recent. Inside the TUI, `Ctrl+B` opens the
-collapsible session sidebar: active sessions ordered by recent activity with
-`⟳` working / `▲` waiting / `·` idle indicators, each expandable
-(`Ctrl+→`) into its nested sub-agent rows — active children bright, settled
+and `--continue` resumes the most recent. Inside the TUI, `Ctrl+B` or
+clicking the `≡` button in the status bar opens the collapsible session
+sidebar: a `+ new session` button, then active sessions ordered by recent
+activity with `⟳` working / `▲` waiting / `·` idle indicators, each
+expanding into its nested sub-agent rows — active children bright, settled
 ones dim — with archived sessions in a scrollable history list below.
-Several sessions can run turns at once; `Ctrl+↑`/`Ctrl+↓` (or clicking)
-switches focus, `/new` starts another session, `/archive` moves the current
-one to history, and `/title <name>` renames it.
+Several sessions can run turns at once; `Ctrl+N`/`Ctrl+P` (or clicking)
+switches focus, and right-clicking a session opens a context menu to
+rename, archive, or delete it (delete removes the thread and its sub-agent
+data from the store; JSONL transcripts remain on disk). `/new`, `/archive`,
+and `/title <name>` do the same from the keyboard. macOS reserves
+Ctrl+arrow combinations for Mission Control, so the TUI avoids them.
 
 ## Sub-agents
 
 The agent can fan work out to concurrent sub-agents (`fino:ai/subagents`),
 each a durable conversation between the parent agent and a child agent —
 mirroring how the main chat is a conversation between you and the parent.
-Every sub-agent gets its own read-only view (cycle with `Ctrl+←`/`Ctrl+→`
-when the sidebar is closed, or select it in the sidebar; sub-agents are
-agent-driven, so their views have no input box). Children default to the
+Every sub-agent gets its own read-only view (cycle with `Tab`, or select it
+in the sidebar; sub-agents are agent-driven, so their views have no input
+box). Children default to the
 parent's model and inherit the parent's mode: planning-mode parents spawn
 read-only children. When a child believes its task is done it reports a
 summary and waits; the parent reviews and either finalizes the child or

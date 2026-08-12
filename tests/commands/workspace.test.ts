@@ -176,3 +176,25 @@ describe('fino:commands/code — JSONL transcripts', () => {
     t.equal(child[0]!.text, 'child task', 'child file written');
   });
 });
+describe('fino:commands/code — session deletion', () => {
+  it('removes the registry entry, thread runs, child runs, and pool state', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const workspace = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('hello')]),
+      transcriptsDir: false,
+    });
+    const engine = await workspace.createSession();
+    await engine.runTurn('a prompt to persist');
+    const id = engine.threadId;
+    await workspace.store.putMeta(`subagents:${id}`, [{ id: 'sa_1' }]);
+    t.ok((await workspace.store.listRuns({ threadId: id })).length > 0, 'runs exist before delete');
+
+    await workspace.deleteSession(id);
+    t.equal(workspace.meta(id), undefined, 'registry entry removed');
+    t.equal((await workspace.store.listRuns({ threadId: id })).length, 0, 'thread runs deleted');
+    t.equal(await workspace.store.getMeta(`subagents:${id}`), null, 'pool state deleted');
+    await workspace.close();
+  });
+});

@@ -280,6 +280,31 @@ export class CodeWorkspace {
   }
 
   /**
+   * Delete a session permanently: its registry entry, every run checkpoint
+   * on its thread and its sub-agent threads, and the persisted sub-agent
+   * pool. JSONL transcript mirrors on disk are left in place as the audit
+   * trail of record.
+   */
+  async deleteSession(id: string): Promise<void> {
+    const engine = this.#engines.get(id);
+    if (engine) {
+      await engine.close();
+      this.#engines.delete(id);
+    }
+    this.#sessions = this.#sessions.filter((s) => s.id !== id);
+    this.#activity.delete(id);
+    const runs = await this.#store.listRuns();
+    for (const run of runs) {
+      if (run.threadId === id || run.threadId.startsWith(`${id}:`)) {
+        await this.#store.deleteRun(run.runId);
+      }
+    }
+    await this.#store.putMeta(`subagents:${id}`, undefined);
+    await this.#persist();
+    this.#notify();
+  }
+
+  /**
    * Close every open engine and the shared store.
    */
   async close(): Promise<void> {

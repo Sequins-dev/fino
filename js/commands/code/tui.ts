@@ -95,9 +95,16 @@ interface ApprovalItem {
 }
 
 type SidebarRow =
+  | { kind: 'action-new' }
   | { kind: 'session'; id: string; archived: boolean }
   | { kind: 'child'; sessionId: string; childId: string }
   | { kind: 'divider'; label: string };
+
+interface ContextMenuState {
+  sessionId: string;
+  selected: number;
+  confirmDelete: boolean;
+}
 
 const CHILD_GLYPHS: Record<SubagentState['status'], string> = {
   working: '⟳',
@@ -187,8 +194,8 @@ export async function runCodeTui(
   opts: CodeTuiOptions = {},
 ): Promise<void> {
   const terminal = await measureTerminalSize();
-  const width = terminal.width;
-  const height = terminal.height;
+  let width = terminal.width;
+  let height = terminal.height;
 
   const sessions = new Map<string, SessionUI>();
   let focusedSessionId = '';
@@ -208,6 +215,53 @@ export async function runCodeTui(
     [];
   let queueTop = 0;
   let sidebarRowsCache: SidebarRow[] = [];
+  let contextMenu: ContextMenuState | undefined;
+  let menuHitRows: Array<{ row: number; index: number }> = [];
+  let menuTop = 0;
+
+  function contextMenuItems(menu: ContextMenuState): string[] {
+    const meta = workspace.meta(menu.sessionId);
+    return [
+      'Rename',
+      meta?.archived ? 'Unarchive' : 'Archive',
+      menu.confirmDelete ? 'Delete — press again to confirm' : 'Delete',
+    ];
+  }
+
+  async function runContextMenuItem(menu: ContextMenuState, index: number): Promise<void> {
+    const meta = workspace.meta(menu.sessionId);
+    if (!meta) {
+      contextMenu = undefined;
+      redraw();
+      return;
+    }
+    if (index === 0) {
+      contextMenu = undefined;
+      await focusSession(menu.sessionId);
+      const session = focused();
+      if (session)
+        session.input = `/title ${meta.title === 'untitled' ? '' : meta.title}`.trimEnd() + ' ';
+    } else if (index === 1) {
+      contextMenu = undefined;
+      await workspace.archiveSession(menu.sessionId, !meta.archived);
+    } else if (index === 2) {
+      if (!menu.confirmDelete) {
+        menu.confirmDelete = true;
+        redraw();
+        return;
+      }
+      contextMenu = undefined;
+      sessions.delete(menu.sessionId);
+      await workspace.deleteSession(menu.sessionId);
+      if (focusedSessionId === menu.sessionId) {
+        focusedSessionId = workspace.list()[0]?.id ?? '';
+        if (focusedSessionId && !sessions.has(focusedSessionId)) {
+          await focusSession(focusedSessionId);
+        }
+      }
+    }
+    redraw();
+  }
 
   function contentWidth(): number {
     return Math.max(20, width - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0) - 2);
@@ -434,6 +488,7 @@ export async function runCodeTui(
 
   async function focusSession(id: string): Promise<void> {
     focusedSessionId = id;
+    expanded.add(id);
     if (!sessions.has(id)) {
       const engine = await workspace.openSession(id);
       attachSession(engine);
@@ -540,7 +595,7 @@ export async function runCodeTui(
   // --- sidebar ---------------------------------------------------------
 
   function sidebarRows(): SidebarRow[] {
-    const rows: SidebarRow[] = [];
+    const rows: SidebarRow[] = [{ kind: 'action-new' }];
     for (const meta of workspace.list()) {
       rows.push({ kind: 'session', id: meta.id, archived: false });
       if (expanded.has(meta.id)) {
@@ -567,6 +622,10 @@ export async function runCodeTui(
 
   function sidebarLine(row: SidebarRow, selected: boolean): string {
     const w = SIDEBAR_WIDTH;
+    if (row.kind === 'action-new') {
+      const label = padVisible(`${GREEN}+${RESET} new session`, w - 2) + `${DIM}«${RESET} `;
+      return selected ? `${INVERSE}${label}${RESET}` : label;
+    }
     if (row.kind === 'divider') {
       return `${DIM}${padVisible(`— ${row.label} —`, w)}${RESET}`;
     }
@@ -591,6 +650,14 @@ export async function runCodeTui(
 
   function focusSidebarRow(row: SidebarRow): void {
     if (row.kind === 'divider') return;
+    if (row.kind === 'action-new') {
+      void workspace.createSession().then((engine) => {
+        attachSession(engine);
+        focusedSessionId = engine.threadId;
+        redraw();
+      });
+      return;
+    }
     if (row.kind === 'session') {
       void focusSession(row.id);
       return;
@@ -634,9 +701,14 @@ export async function runCodeTui(
     const cw = contentWidth();
     const lines: string[] = [];
     if (!session) {
-      lines.push('', `${DIM}no session — Ctrl+B for the sidebar, /new to start one${RESET}`);
+      lines.push(
+        '',
+        `${DIM}no session — Ctrl+B or click ≡ for the sidebar, /new to start one${RESET}`,
+      );
       while (lines.length < height - 2) lines.push('');
-      lines.push(`${BLUE_BG}${padVisible(' fino code', cw + 2)}${RESET}`);
+      lines.push(
+        `${BLUE_BG}${padVisible(`${sidebarVisible ? '«' : '≡'} fino code`, cw + 2)}${RESET}`,
+      );
       return lines;
     }
     const queueLines: string[] = [];
@@ -667,6 +739,30 @@ export async function runCodeTui(
       const popover = popoverLines(cw);
       const padTop = Math.max(0, Math.floor((transcriptHeight - popover.length) / 2));
       rows = [...Array<string>(padTop).fill(''), ...popover];
+    } else if (contextMenu) {
+      const menu = contextMenu;
+      const title = clipVisible(sessionTitle(menu.sessionId), 40);
+      const items = contextMenuItems(menu);
+      const innerWidth = Math.max(24, Math.min(cw - 4, 48));
+      const top = `${YELLOW}┌${'─'.repeat(innerWidth - 2)}┐${RESET}`;
+      const bottom = `${YELLOW}└${'─'.repeat(innerWidth - 2)}┘${RESET}`;
+      const pad = (line: string): string =>
+        `${YELLOW}│${RESET} ${padVisible(line, innerWidth - 4)} ${YELLOW}│${RESET}`;
+      const body = [
+        `${BOLD}${title}${RESET}`,
+        '',
+        ...items.map((item, index) =>
+          index === menu.selected ? `${INVERSE} ${item} ${RESET}` : ` ${item} `,
+        ),
+        '',
+        `${DIM}↑/↓ select · Enter run · Esc close${RESET}`,
+      ];
+      const box = [top, ...body.map(pad), bottom];
+      const padTop = Math.max(0, Math.floor((transcriptHeight - box.length) / 2));
+      const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
+      rows = [...Array<string>(padTop).fill(''), ...box.map((line) => indent + line)];
+      menuTop = padTop + 3;
+      menuHitRows = items.map((_, index) => ({ row: menuTop + index, index }));
     } else {
       rows = transcriptRows(session);
       const limit = Math.max(0, rows.length - transcriptHeight);
@@ -705,7 +801,7 @@ export async function runCodeTui(
     const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
     const autoLabel = session.engine.auto ? ' · auto' : '';
     const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
-    const statusLine = ` ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · ${session.engine.modelId} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
+    const statusLine = `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · ${session.engine.modelId} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
     lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
     return lines;
   }
@@ -767,7 +863,8 @@ export async function runCodeTui(
             '/model <id> — switch model · /models — list models · /title <t> — rename session',
             '/plan · /code — switch mode (Shift+Tab) · /auto — toggle auto-approval',
             '/agents — sub-agent status · /new — new session · /archive — archive session',
-            'Ctrl+B — sidebar · Ctrl+↑/↓ — select session · Ctrl+←/→ — cycle views (or collapse/expand)',
+            'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
+            'Sidebar: click "+ new session", right-click a session to rename/archive/delete',
             'Esc — cancel turn (or child run in its view) · Enter queues during a turn; [steer now]/Ctrl+S steers',
           ].join('\n'),
         );
@@ -905,8 +1002,39 @@ export async function runCodeTui(
     const session = focused();
     if (event.type === 'mouse') {
       const inSidebar = sidebarVisible && event.x < SIDEBAR_WIDTH;
+      const contentX = event.x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
+      if (event.action === 'press' && event.button === 'right' && inSidebar) {
+        const row = sidebarRowsCache[sidebarScroll + event.y];
+        if (row?.kind === 'session') {
+          contextMenu = { sessionId: row.id, selected: 0, confirmDelete: false };
+          redraw();
+        }
+        return;
+      }
       if (event.action === 'press' && event.button === 'left') {
+        if (contextMenu) {
+          if (!inSidebar) {
+            const hit = menuHitRows.find((r) => r.row === event.y);
+            if (hit) {
+              void runContextMenuItem(contextMenu, hit.index);
+              return;
+            }
+          }
+          contextMenu = undefined;
+          redraw();
+          return;
+        }
+        if (event.y === height - 1 && contentX >= 0 && contentX <= 1) {
+          sidebarVisible = !sidebarVisible;
+          redraw();
+          return;
+        }
         if (inSidebar) {
+          if (event.y === 0 && event.x >= SIDEBAR_WIDTH - 2) {
+            sidebarVisible = false;
+            redraw();
+            return;
+          }
           const rowIndex = sidebarScroll + event.y;
           const row = sidebarRowsCache[rowIndex];
           if (row) {
@@ -921,7 +1049,6 @@ export async function runCodeTui(
           return;
         }
         if (session && approvalQueue.length === 0) {
-          const contentX = event.x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
           const queueRow = event.y - queueTop;
           const hit = queueHitRows.find(
             (r) => r.row === queueRow && contentX >= r.buttonStart && contentX <= r.buttonEnd,
@@ -968,37 +1095,54 @@ export async function runCodeTui(
       }
       return;
     }
+    if (contextMenu) {
+      const menu = contextMenu;
+      const items = contextMenuItems(menu);
+      if (event.key === 'escape') {
+        contextMenu = undefined;
+        redraw();
+      } else if (event.key === 'up') {
+        menu.selected = (menu.selected - 1 + items.length) % items.length;
+        menu.confirmDelete = false;
+        redraw();
+      } else if (event.key === 'down') {
+        menu.selected = (menu.selected + 1) % items.length;
+        menu.confirmDelete = false;
+        redraw();
+      } else if (event.key === 'enter') {
+        void runContextMenuItem(menu, menu.selected);
+      }
+      return;
+    }
     if (event.ctrl && event.key === 'b') {
       sidebarVisible = !sidebarVisible;
       redraw();
       return;
     }
-    if (event.ctrl && (event.key === 'up' || event.key === 'down')) {
-      if (!sidebarVisible) sidebarVisible = true;
+    // Ctrl+N / Ctrl+P instead of Ctrl+arrows: macOS reserves Ctrl+arrow
+    // combinations for Mission Control.
+    if (event.ctrl && (event.key === 'n' || event.key === 'p')) {
+      if (!sidebarVisible) {
+        sidebarVisible = true;
+        sidebarRowsCache = sidebarRows();
+      }
       const rows = sidebarRowsCache.length > 0 ? sidebarRowsCache : sidebarRows();
       sidebarRowsCache = rows;
-      let next = sidebarIndex + (event.key === 'up' ? -1 : 1);
+      let next = sidebarIndex + (event.key === 'p' ? -1 : 1);
       while (next >= 0 && next < rows.length && rows[next]!.kind === 'divider') {
-        next += event.key === 'up' ? -1 : 1;
+        next += event.key === 'p' ? -1 : 1;
       }
-      if (next >= 0 && next < rows.length) {
+      if (next >= 0 && next < rows.length && rows[next]!.kind !== 'action-new') {
         sidebarIndex = next;
         focusSidebarRow(rows[next]!);
+      } else if (next >= 0 && next < rows.length) {
+        sidebarIndex = next;
       }
       redraw();
       return;
     }
-    if (event.ctrl && (event.key === 'left' || event.key === 'right')) {
-      if (sidebarVisible) {
-        const row = sidebarRowsCache[sidebarIndex];
-        if (row?.kind === 'session' && !row.archived) {
-          if (event.key === 'right') expanded.add(row.id);
-          else expanded.delete(row.id);
-        }
-        redraw();
-        return;
-      }
-      if (session) cycleView(session, event.key === 'left' ? -1 : 1);
+    if (event.key === 'tab' && !event.shift) {
+      if (session) cycleView(session, 1);
       return;
     }
     if (!session) {
@@ -1096,7 +1240,7 @@ export async function runCodeTui(
     focusedSessionId = session.id;
     session.views.get('main')!.entries.unshift({
       kind: 'notice',
-      text: 'fino code — /help for commands, Ctrl+B for the session sidebar, Shift+Tab toggles plan mode.',
+      text: 'fino code — /help for commands, Ctrl+B or click ≡ for the session sidebar, Shift+Tab toggles plan mode.',
       done: true,
     });
     if (opts.recover) {
@@ -1112,12 +1256,21 @@ export async function runCodeTui(
   }
 
   app = render(composedView(), {
-    width,
-    height,
     input: true,
     mouse: true,
     onEvent: handleEvent,
+    onResize: (size) => {
+      width = size.width;
+      height = size.height;
+      redraw();
+    },
   });
+  const initial = app.size();
+  if (initial.width !== width || initial.height !== height) {
+    width = initial.width;
+    height = initial.height;
+    paint();
+  }
 
   try {
     await finished;

@@ -250,3 +250,24 @@ describe('fino:tty/tui input decoding', () => {
     );
   });
 });
+describe('fino:tty/tui terminal resize', () => {
+  it('onResize reports the current size immediately and again on SIGWINCH', async (t) => {
+    const { onResize } = await import('internal:tty/bindings');
+    const { kill, pid, SIGWINCH, signalArmed } = await import('fino:process');
+    const sizes: Array<{ width: number; height: number }> = [];
+    const stop = onResize((size) => sizes.push(size));
+    t.equal(sizes.length, 1, 'synchronous initial callback');
+    t.ok(sizes[0]!.width > 0 && sizes[0]!.height > 0, 'initial size is sane');
+    await signalArmed('SIGWINCH');
+    kill(pid, SIGWINCH);
+    for (let attempt = 0; attempt < 200 && sizes.length < 2; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    t.ok(sizes.length >= 2, 'SIGWINCH delivered a resize callback');
+    stop();
+    const settled = sizes.length;
+    kill(pid, SIGWINCH);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    t.equal(sizes.length, settled, 'disposer unsubscribes');
+  });
+});

@@ -45,6 +45,7 @@ import {
   exitAlternateScreen,
   exitMouseMode,
   hideCursor,
+  onResize,
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
@@ -134,12 +135,21 @@ export interface RenderOptions {
   input?: boolean;
   mouse?: boolean;
   onEvent?: (event: TuiEvent, app: TuiApp) => void | Promise<void>;
+  /**
+   * Called after the terminal is resized and the app has repainted at the
+   * new size. Only fires when neither `width` nor `height` was fixed in the
+   * options — explicit sizes opt out of live resizing. Use it to re-layout
+   * application state that depends on the viewport.
+   */
+  onResize?: (size: TerminalSize, app: TuiApp) => void;
 }
 /** Handle returned by `render()` for updating or stopping a fullscreen app. */
 export interface TuiApp {
   update(element: VNode): void;
   stop(): void;
   input?: TuiInput;
+  /** Current viewport size; tracks live terminal resizes. */
+  size(): TerminalSize;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -752,7 +762,11 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
  *
  * This enters the alternate screen, hides the cursor, writes the current frame,
  * and restores terminal state from `stop()`. Width and height default to the
- * current terminal size when available.
+ * current terminal size when available, and auto-measured apps track live
+ * terminal resizes: on `SIGWINCH` the screen clears and repaints at the new
+ * size, `options.onResize` fires so the app can re-layout its own state, and
+ * `app.size()` reports the current viewport. Passing explicit `width`/`height`
+ * fixes the viewport and disables resize tracking.
  *
  * Passing a function instead of a tree makes the app reactive: every signal read
  * while rendering becomes a dependency, and the screen repaints when one
@@ -772,11 +786,12 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
 export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
-  const width = options.width ?? size.width;
-  const height = options.height ?? size.height;
+  let width = options.width ?? size.width;
+  let height = options.height ?? size.height;
   const input =
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
   let frame = '';
+  let lastTree: VNode | null = null;
   function paint(): void {
     if (stopped) return;
     const lines = frame.split('\n');
@@ -787,6 +802,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   const sink: Sink<string> = {
     commit(tree: VNode): string {
+      lastTree = tree;
       frame = renderFrame(tree, { width, height });
       paint();
       return frame;
@@ -797,6 +813,9 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   let root: Root<string> | null = null;
   if (typeof element === 'function') root = createRoot(element, sink);
   else sink.commit(element);
+  // Explicit width/height fix the viewport (deterministic tests, embedding);
+  // auto-measured apps track SIGWINCH and repaint at the new size.
+  let stopResize: (() => void) | undefined;
   const app: TuiApp = {
     input,
     update(next: VNode): void {
@@ -804,8 +823,12 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       root = null;
       sink.commit(next);
     },
+    size(): TerminalSize {
+      return { width, height };
+    },
     stop(): void {
       if (stopped) return;
+      stopResize?.();
       root?.dispose();
       root = null;
       stopped = true;
@@ -813,6 +836,27 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
     },
   };
+  if (options.width === undefined && options.height === undefined) {
+    let first = true;
+    stopResize = onResize((next) => {
+      if (first) {
+        first = false;
+        return;
+      }
+      if (stopped || (next.width === width && next.height === height)) return;
+      width = next.width;
+      height = next.height;
+      void writeStdout('\x1B[2J');
+      if (root) {
+        root.dispose();
+        root = createRoot(element as () => VNode, sink);
+      } else if (lastTree) {
+        const tree = lastTree;
+        sink.commit(tree);
+      }
+      options.onResize?.({ width, height }, app);
+    });
+  }
   if (input && options.onEvent) {
     void (async () => {
       while (!stopped) {
