@@ -222,12 +222,27 @@ jobs:
         run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 snappy sqlite
 
       - name: Restore macOS build
+        id: restore-macos-build
         uses: actions/cache/restore@v4
         with:
           path: target/debug/fino
           key: fino-macos-debug-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: fino-macos-debug-${{ github.run_id }}-
-          fail-on-cache-miss: true
+
+      # The Blacksmith macOS cache backend is intermittently unreachable
+      # (ECONNREFUSED); rebuild instead of failing the job when the restore
+      # comes back empty.
+      - name: Install Rust (cache-miss fallback)
+        if: steps.restore-macos-build.outputs.cache-matched-key == ''
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies (cache-miss fallback)
+        if: steps.restore-macos-build.outputs.cache-matched-key == ''
+        uses: ./.github/actions/cache-cargo-deps
+
+      - name: Build (cache-miss fallback)
+        if: steps.restore-macos-build.outputs.cache-matched-key == ''
+        run: cargo build
 
       - name: Prepare binary
         run: chmod +x target/debug/fino
