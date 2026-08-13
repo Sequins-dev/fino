@@ -251,16 +251,24 @@ class Tui:
     def wait(self, sec=0.4):
         time.sleep(sec)
 
-    def wait_ready(self, timeout=10.0):
+    def wait_ready(self, timeout=10.0, marker=None):
         """Block until the app has painted its status bar.
 
         Sending input before raw mode is entered makes the terminal echo it
         onto the screen, which reads as a corrupted frame; waiting for real
         output instead of a fixed sleep removes that race.
+
+        An inline app's footer sits against its content rather than on the
+        last row, so any painted row counts; `marker` narrows that to a
+        string the status bar is known to carry.
         """
         end = time.time() + timeout
         while time.time() < end:
-            if self.screen.line(self.rows - 1).strip():
+            rows = [self.screen.line(i) for i in range(self.rows)]
+            if marker is not None:
+                if any(marker in row for row in rows):
+                    return True
+            elif any(row.strip() for row in rows):
                 return True
             time.sleep(0.05)
         raise AssertionError('app did not paint a status bar')

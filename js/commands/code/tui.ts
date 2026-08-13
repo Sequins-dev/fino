@@ -1026,6 +1026,7 @@ export async function runCodeTui(
         (s) => s.status === 'working' || s.status === 'awaiting_approval',
       ).length,
       tailLines: tail?.tailLines(TAIL_MAX_ROWS) ?? [],
+      transcriptEndsBlank: lastCommittedBlank,
       ...(runningTool !== undefined && busy ? { runningTool } : {}),
       queue: session?.queue ?? [],
       ...(approvalQueue.length > 0

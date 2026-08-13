@@ -91,6 +91,9 @@ export class ModelPickerView implements OverlayView {
     } else if (this.#error !== null) {
       body = [style(` failed to list models: ${this.#error}`, tk.red), style(' Ctrl+R retries', tk.dim)];
     } else {
+      // The picker owns the whole screen, so the list takes every row left
+      // between the header and the key hint.
+      this.#list.setMaxRows(Math.max(1, size.height - header.length - 1));
       const pane = this.#list.render(width - 2);
       body = pane.lines.map((line) => ` ${line}`);
       hits = pane.hits.map((hit) => ({

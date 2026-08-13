@@ -8,6 +8,7 @@
  * depend on later resizes.
  */
 import { MarkdownTerminalStream } from 'fino:format/markdown';
+import { stripAnsi } from 'fino:tty/tui';
 
 /**
  * Incremental settled/tail splitter for one streaming assistant message.
@@ -64,9 +65,23 @@ export class StreamTail {
   /**
    * The last rendered unsettled tail, capped to its final `max` lines for
    * footer display. The full tail still commits wholesale when it settles.
+   *
+   * A block's leading separator is produced the moment the previous block
+   * settles, which is before the new block has necessarily rendered any
+   * visible text — an opening fence, say. Displaying that state would show a
+   * blank row between the committed transcript and the live tail for as long
+   * as the gap lasts, so the tail is reported only once it has something to
+   * show, with its surrounding blank rows left off: the footer owns the one
+   * blank that separates it from the transcript.
    */
   tailLines(max: number): string[] {
-    return this.#tail.length > max ? this.#tail.slice(this.#tail.length - max) : this.#tail;
+    let end = this.#tail.length;
+    while (end > 0 && stripAnsi(this.#tail[end - 1]!).trim() === '') end -= 1;
+    let start = 0;
+    while (start < end && stripAnsi(this.#tail[start]!).trim() === '') start += 1;
+    if (start >= end) return [];
+    const visible = this.#tail.slice(start, end);
+    return visible.length > max ? visible.slice(visible.length - max) : visible;
   }
 
   /**

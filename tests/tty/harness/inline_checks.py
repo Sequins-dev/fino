@@ -36,12 +36,21 @@ def spawn(**envs):
     for key, value in envs.items():
         os.environ[key] = value
     t = Tui()
-    t.wait_ready(20)
+    t.wait_ready(20, marker='· harness-model ·')
     return t
 
 
 def alltext(t):
     return '\n'.join(t.screen.scrollback() + [t.screen.line(i) for i in range(24)])
+
+
+def status(t):
+    """The status-bar row, wherever the footer currently sits."""
+    for i in range(23, -1, -1):
+        row = t.screen.line(i)
+        if '\u2261 ' in row:
+            return row
+    return ''
 
 
 def quit_app(t):
@@ -109,12 +118,12 @@ def scenario_subagents():
     t.send('\r', settle=1.0)
     time.sleep(6.0)
     check('subagent_spawn' in alltext(t), 'spawn calls committed')
-    check('2 agents' in t.screen.line(23), 'agents segment in status bar')
+    check('2 agents' in status(t), 'agents segment in status bar')
     t.send('\x07', settle=0.5)
     check('worker-1' in t.screen.dump(), 'agent selector lists children')
     t.send('\x1b[B', settle=0.2)
     t.send('\r', settle=1.0)
-    check('agent: worker-1' in t.screen.line(23), 'child view focused')
+    check('agent: worker-1' in status(t), 'child view focused')
     check('research part 1' in alltext(t), 'child task replayed')
     check('ask, or /help' not in t.screen.dump(), 'composer hidden on child view')
     t.send('\t', settle=0.8)
@@ -158,7 +167,7 @@ def scenario_session_manager():
     t.send('\r', settle=0.5)
     t.send('\x1b[B', settle=0.3)
     t.send('\r', settle=1.2)
-    check('ARCHIVED' in t.screen.line(23), 'archived view is read-only')
+    check('ARCHIVED' in status(t), 'archived view is read-only')
     quit_app(t)
 
 
@@ -173,12 +182,12 @@ def scenario_attention_dots():
     t.send('hi b', settle=0.2)
     t.send('\r', settle=0.6)
     t.send('\x0e', settle=1.2)
-    check('● · · ·' in t.screen.line(23), 'busy dot lit while background session works')
+    check('\u25cf \u00b7 \u00b7 \u00b7' in status(t), 'busy dot lit while background session works')
     time.sleep(12.0)
-    check('· · · ●' in t.screen.line(23), 'done dot lit for unseen result')
+    check('\u00b7 \u00b7 \u00b7 \u25cf' in status(t), 'done dot lit for unseen result')
     t.send('\x0e', settle=1.5)
     time.sleep(0.5)
-    check('●' not in t.screen.line(23), 'dots clear when the session is seen')
+    check('\u25cf' not in status(t), 'dots clear when the session is seen')
     quit_app(t)
 
 

@@ -51,6 +51,19 @@ export class SelectList {
     this.#maxRows = Math.max(1, opts.maxRows);
     this.#marker = opts.marker ?? '▸';
   }
+  /**
+   * Resize the visible window.
+   *
+   * Views that fill a viewport call this before rendering so the list uses
+   * whatever height the terminal currently offers rather than a fixed one.
+   */
+  setMaxRows(rows: number): void {
+    this.#maxRows = Math.max(1, Math.floor(rows));
+  }
+  /** Rows the list will show at most, including any overflow hint. */
+  get maxRows(): number {
+    return this.#maxRows;
+  }
   #selectable(index: number): boolean {
     const item = this.#items[index];
     return item !== undefined && item.kind === 'item' && item.disabled !== true;

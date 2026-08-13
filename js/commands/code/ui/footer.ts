@@ -30,6 +30,12 @@ export interface FooterState {
   subagentsActive: number;
   /** Unsettled streaming tail, already rendered at commit width. */
   tailLines: string[];
+  /**
+   * Whether the committed transcript already ends with a blank row. The
+   * footer supplies its own separator only when it does not, so the gap
+   * above the footer is exactly one row either way.
+   */
+  transcriptEndsBlank?: boolean;
   /** The tool currently running, shown in footer detail only. */
   runningTool?: { name: string; args?: unknown; output?: string };
   /** Queued message previews, oldest first. */
@@ -121,10 +127,14 @@ export function composeFooter(state: FooterState): InlineFrame {
   // frame fits the budget: tail rows beyond one, running-tool detail, queue
   // rows, the blank separators — never the composer/approval or status bar.
   const build = (tailRows: string[], activity: string[], queue: string[]): string[] => {
-    const lines: string[] = [];
+    // Exactly one blank row separates the footer from the committed
+    // transcript above it, whichever band happens to come first.
+    const lines: string[] = state.transcriptEndsBlank === true ? [] : [''];
     if (tailRows.length > 0) lines.push(...tailRows);
     if (activity.length > 0) {
-      if (lines.length > 0) lines.push('');
+      // The indicator keeps a blank row on either side, whether it follows
+      // the live tail or the committed transcript directly.
+      lines.push('');
       lines.push(...activity);
     }
     if (state.busy || queue.length > 0) lines.push('');

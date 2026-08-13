@@ -52,21 +52,42 @@ describe('fino:tty/tui composeInlineFrame', () => {
     t.equal(absorbed.state.footerRows, 4, 'footer grew in place');
   });
 
-  it('shrinks by clearing the vacated rows so no junk can scroll back', (t) => {
+  it('clears the rows a shrinking footer leaves behind', (t) => {
     const start = state({
       footerRows: 4,
       historyBottom: 6,
       lastLines: ['a', 'b', 'c', 'd'],
     });
     const { out, state: next } = composeInlineFrame(start, { frame: { lines: ['a', 'b'] } });
-    t.ok(out.includes('\x1B[7;1H\x1B[2K'), 'first vacated row cleared');
-    t.ok(out.includes('\x1B[8;1H\x1B[2K'), 'second vacated row cleared');
+    // The footer hugs history at row 7, so shrinking frees its last two rows.
+    t.ok(out.includes('\x1B[9;1H\x1B[2K'), 'first freed row cleared');
+    t.ok(out.includes('\x1B[10;1H\x1B[2K'), 'second freed row cleared');
     t.equal(next.footerRows, 2, 'footer shrank');
     t.equal(next.historyBottom, 6, 'history untouched by shrink');
   });
 
+  it('keeps the footer against the history with no blank row between', (t) => {
+    // A footer pinned to the bottom of a half-empty screen would leave the
+    // rows between the transcript and itself blank; it follows the content
+    // instead, and only stops once history reaches the pinned position.
+    for (const historyBottom of [0, 1, 4, 7]) {
+      const { out } = composeInlineFrame(state({ historyBottom }), {
+        frame: { lines: ['input', 'status'] },
+      });
+      const rows = [...out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+      const firstFooterRow = Math.min(...rows.filter((r) => r > historyBottom));
+      t.equal(firstFooterRow, historyBottom + 1, `footer hugs history at ${historyBottom}`);
+    }
+    const full = composeInlineFrame(state({ historyBottom: 8 }), {
+      frame: { lines: ['input', 'status'] },
+    });
+    const rows = [...full.out.matchAll(/\x1b\[(\d+);1H/g)].map((m) => Number(m[1]));
+    t.equal(Math.min(...rows.filter((r) => r > 8)), 9, 'pins at the bottom once history fills');
+  });
+
   it('repaints only changed footer rows when geometry is stable', (t) => {
-    const first = composeInlineFrame(state(), { frame: { lines: ['input', 'status'] } });
+    const base = state({ historyBottom: 8 });
+    const first = composeInlineFrame(base, { frame: { lines: ['input', 'status'] } });
     const second = composeInlineFrame(first.state, { frame: { lines: ['input!', 'status'] } });
     t.ok(second.out.includes('\x1B[9;1H'), 'changed row repainted');
     t.ok(!second.out.includes('\x1B[10;1H'), 'unchanged row skipped');
@@ -75,7 +96,8 @@ describe('fino:tty/tui composeInlineFrame', () => {
   });
 
   it('parks and shows the cursor at the frame cell, absolutely', (t) => {
-    const { out, state: next } = composeInlineFrame(state(), {
+    const base = state({ historyBottom: 8 });
+    const { out, state: next } = composeInlineFrame(base, {
       frame: { lines: ['prompt', 'bar'], cursor: { row: 0, column: 3 } },
     });
     t.ok(out.endsWith('\x1B[9;4H\x1B[?25h'), 'absolute park then show');

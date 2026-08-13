@@ -175,75 +175,86 @@ function sameCursor(
 }
 
 /**
+ * Row the footer starts on: directly below the committed history, or pinned
+ * to the bottom of the screen once history has grown to meet it.
+ *
+ * Keeping the footer against the content is what stops a blank row from
+ * opening up between the transcript and the composer while the screen is
+ * still filling — the footer follows the conversation down, the way a shell
+ * prompt follows its output, and only stops when there is nowhere left to go.
+ */
+export function footerTop(height: number, footerRows: number, historyBottom: number): number {
+  return Math.min(height - footerRows + 1, historyBottom + 1);
+}
+
+/**
  * Compose one inline paint into a single escape-sequence string.
  *
  * Pure: returns the output and the successor state without touching the
- * terminal, so the exact sequence of region pushes, footer growth and
- * shrinkage, repaints, and cursor parking is unit-testable. Order within the
- * write matters and is fixed: history lines are pushed at the old geometry
- * first, then the footer grows (evicting recent history into scrollback —
- * the rows above the footer are visible history that must never be painted
- * over) or shrinks (clearing vacated rows so stale footer pixels can never
- * scroll into scrollback), then changed footer rows repaint, and finally the
- * cursor is parked absolutely — DECSTBM homes the cursor as a side effect, so
- * nothing may assume its position.
+ * terminal, so the exact sequence of region pushes, footer movement, repaints,
+ * and cursor parking is unit-testable. Order within the write is fixed: a
+ * taller footer first evicts the history rows it is about to claim (those
+ * rows are visible history and must reach scrollback rather than be painted
+ * over), then history lines are pushed, then rows the footer has vacated are
+ * cleared, then footer rows repaint, and finally the cursor is parked
+ * absolutely — DECSTBM homes the cursor as a side effect, so nothing may
+ * assume its position.
  */
 export function composeInlineFrame(
   state: InlineComposeState,
   ops: InlineComposeOps,
 ): { out: string; state: InlineComposeState } {
   const { width, height } = state;
-  let footerRows = state.footerRows;
+  const oldRows = state.footerRows;
+  const oldTop = footerTop(height, oldRows, state.historyBottom);
   let historyBottom = state.historyBottom;
-  let top = height - footerRows + 1;
   let out = '';
-  let geometryChanged = false;
+
+  const frame = ops.frame;
+  const footerRows = frame
+    ? Math.max(1, Math.min(frame.lines.length, height - 1))
+    : oldRows;
+  // The lowest row history may ever occupy: one above the footer's pinned
+  // position, whatever the footer's current position happens to be.
+  const regionBottom = Math.max(1, height - footerRows);
+
+  if (historyBottom > regionBottom) {
+    const need = historyBottom - regionBottom;
+    const oldRegionBottom = Math.max(regionBottom, height - oldRows);
+    out +=
+      setScrollRegion(1, oldRegionBottom) +
+      cursorTo(oldRegionBottom, 1) +
+      '\n'.repeat(need) +
+      resetScrollRegion();
+    historyBottom -= need;
+  }
 
   const history = ops.history ?? [];
-  if (history.length > 0 && top - 1 >= 1) {
-    const regionBottom = top - 1;
+  if (history.length > 0) {
     out += setScrollRegion(1, regionBottom);
-    let first: string | null = null;
+    let rest = history;
     if (historyBottom === 0) {
-      first = history[0] ?? '';
-      out += cursorTo(1, 1) + first + eraseToLineEnd();
+      out += cursorTo(1, 1) + (history[0] ?? '') + eraseToLineEnd();
       historyBottom = 1;
+      rest = history.slice(1);
     } else {
       out += cursorTo(Math.min(historyBottom, regionBottom), 1);
     }
-    for (const line of first === null ? history : history.slice(1)) {
+    for (const line of rest) {
       out += `\r\n${line}` + eraseToLineEnd();
       historyBottom = Math.min(historyBottom + 1, regionBottom);
     }
     out += resetScrollRegion();
   }
 
-  const frame = ops.frame;
-  if (frame) {
-    const targetRows = Math.max(1, Math.min(frame.lines.length, height - 1));
-    if (targetRows > footerRows) {
-      const grow = targetRows - footerRows;
-      const regionBottom = top - 1;
-      const vacated = Math.max(0, regionBottom - historyBottom);
-      const need = grow - Math.min(grow, vacated);
-      if (need > 0 && regionBottom >= 1) {
-        out +=
-          setScrollRegion(1, regionBottom) +
-          cursorTo(regionBottom, 1) +
-          '\n'.repeat(need) +
-          resetScrollRegion();
-        historyBottom = Math.max(0, historyBottom - need);
-      }
-      footerRows = targetRows;
-      top = height - footerRows + 1;
-      geometryChanged = true;
-    } else if (targetRows < footerRows) {
-      for (let row = top; row < top + (footerRows - targetRows); row++) {
-        out += cursorTo(row, 1) + eraseLine();
-      }
-      footerRows = targetRows;
-      top = height - footerRows + 1;
-      geometryChanged = true;
+  const top = footerTop(height, footerRows, historyBottom);
+  const geometryChanged = top !== oldTop || footerRows !== oldRows;
+  if (geometryChanged) {
+    // Rows the footer has left behind still show its last paint; clear the
+    // ones history did not just overwrite so nothing stale can scroll away.
+    for (let row = oldTop; row < oldTop + oldRows && row <= height; row++) {
+      const covered = row >= top && row < top + footerRows;
+      if (!covered && row > historyBottom) out += cursorTo(row, 1) + eraseLine();
     }
   }
 
@@ -372,17 +383,23 @@ class InlineAppImpl implements InlineApp {
     this.#state.height = size.height;
     const frame = this.#clampFrame(this.#pendingFrame ?? this.#lastFrame);
     const rows = Math.max(1, Math.min(frame.lines.length, size.height - 1));
-    const top = size.height - rows + 1;
+    const regionBottom = Math.max(1, size.height - rows);
     let init = '';
     if (row !== null) {
-      const scroll = Math.max(0, row - (top - 1));
-      if (scroll > 0) init += cursorTo(size.height, 1) + '\n'.repeat(scroll);
-      this.#state.historyBottom = Math.max(0, row - 1 - scroll);
+      // The reported row holds the cursor, so committed history ends above
+      // it; the footer then opens exactly where the shell left off.
+      const occupied = Math.max(0, row - 1);
+      if (occupied > regionBottom) {
+        init += cursorTo(size.height, 1) + '\n'.repeat(occupied - regionBottom);
+        this.#state.historyBottom = regionBottom;
+      } else {
+        this.#state.historyBottom = occupied;
+      }
     } else {
       // No cursor report: scroll a full footer's worth so whatever the shell
       // left on the bottom rows is preserved above the viewport.
       init += cursorTo(size.height, 1) + '\n'.repeat(rows);
-      this.#state.historyBottom = Math.max(0, top - 1);
+      this.#state.historyBottom = regionBottom;
     }
     if (init !== '') this.#write(hideCursor() + init);
     this.#ready = true;
@@ -485,11 +502,14 @@ class InlineAppImpl implements InlineApp {
     this.#state.height = next.height;
     const rows = Math.max(1, Math.min(this.#state.footerRows, next.height - 1));
     this.#state.footerRows = rows;
-    const top = next.height - rows + 1;
+    const regionBottom = Math.max(1, next.height - rows);
     // The terminal may have reflowed the primary buffer arbitrarily; when it
     // shrank, assume the history region is full so new lines scroll rather
     // than overpaint whatever landed there.
-    this.#state.historyBottom = shrank ? top - 1 : Math.min(this.#state.historyBottom, top - 1);
+    this.#state.historyBottom = shrank
+      ? regionBottom
+      : Math.min(this.#state.historyBottom, regionBottom);
+    const top = footerTop(next.height, rows, this.#state.historyBottom);
     this.#state.lastLines = [];
     this.#write(hideCursor() + resetScrollRegion() + cursorTo(top, 1) + eraseBelow());
     this.#forceRepaint = true;
@@ -669,7 +689,7 @@ class InlineAppImpl implements InlineApp {
       this.#state = state;
       if (out !== '') this.#write(out);
     }
-    const top = this.#state.height - this.#state.footerRows + 1;
+    const top = footerTop(this.#state.height, this.#state.footerRows, this.#state.historyBottom);
     const park = Math.min(this.#state.historyBottom + 1, this.#state.height);
     this.#write(
       resetScrollRegion() +
