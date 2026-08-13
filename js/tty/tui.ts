@@ -465,7 +465,26 @@ function fit(text: string, width: number): string {
 }
 function fitAnsi(text: string, width: number): string {
   if (!hasAnsi(text)) return fit(text, width);
-  return text + spaces(width - visibleLength(text));
+  // Clip by visible width, preserving escape sequences, and always close with
+  // a reset: a styled line truncated mid-run must never leak its SGR state
+  // into the rows painted after it.
+  let out = '';
+  let seen = 0;
+  let index = 0;
+  while (index < text.length && seen < width) {
+    ANSI_RE.lastIndex = index;
+    const match = ANSI_RE.exec(text);
+    if (match && match.index === index) {
+      out += match[0];
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(text.codePointAt(index)!);
+    out += ch;
+    seen += 1;
+    index += ch.length;
+  }
+  return out + '\x1b[0m' + spaces(width - seen);
 }
 function backgroundCode(background: unknown): string | null {
   switch (background) {
@@ -524,7 +543,7 @@ function textContent(node: VNode): string {
 }
 function wrapText(text: string, width: number, wrap: boolean): string[] {
   if (width <= 0) return [];
-  if (!wrap) return [fit(text, width)];
+  if (!wrap) return [hasAnsi(text) ? fitAnsi(text, width) : fit(text, width)];
   const chars = Array.from(text);
   const lines: string[] = [];
   for (let index = 0; index < chars.length; index += width) {
@@ -792,6 +811,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
   let frame = '';
   let lastTree: VNode | null = null;
+  let commitCount = 0;
   function paint(): void {
     if (stopped) return;
     const lines = frame.split('\n');
@@ -803,6 +823,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   const sink: Sink<string> = {
     commit(tree: VNode): string {
       lastTree = tree;
+      commitCount += 1;
       frame = renderFrame(tree, { width, height });
       paint();
       return frame;
@@ -837,12 +858,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     },
   };
   if (options.width === undefined && options.height === undefined) {
-    let first = true;
-    stopResize = onResize((next) => {
-      if (first) {
-        first = false;
-        return;
-      }
+    const applyResize = (next: TerminalSize): void => {
       if (stopped || (next.width === width && next.height === height)) return;
       width = next.width;
       height = next.height;
@@ -850,12 +866,30 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       if (root) {
         root.dispose();
         root = createRoot(element as () => VNode, sink);
-      } else if (lastTree) {
-        const tree = lastTree;
-        sink.commit(tree);
+        options.onResize?.({ width, height }, app);
+        return;
       }
+      // Let the app re-layout first; only repaint the stale tree when the
+      // resize callback did not already commit a fresh one.
+      const before = commitCount;
       options.onResize?.({ width, height }, app);
+      if (commitCount === before && lastTree) sink.commit(lastTree);
+    };
+    let first = true;
+    const disposeSignal = onResize((next) => {
+      if (first) {
+        first = false;
+        return;
+      }
+      applyResize(next);
     });
+    // SIGWINCH delivery can be unreliable depending on the host; a cheap
+    // ioctl poll guarantees the viewport eventually converges.
+    const pollTimer = setInterval(() => applyResize(queryTerminalSize()), 750);
+    stopResize = () => {
+      clearInterval(pollTimer);
+      disposeSignal();
+    };
   }
   if (input && options.onEvent) {
     void (async () => {

@@ -198,3 +198,34 @@ describe('fino:commands/code — session deletion', () => {
     await workspace.close();
   });
 });
+describe('fino:commands/code — per-session model memory', () => {
+  it('persists model choices and restores them when the session reopens', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const { env } = await import('fino:process');
+    const hadKey = env.ANTHROPIC_API_KEY;
+    env.ANTHROPIC_API_KEY = hadKey ?? 'test-key';
+    try {
+      const open1 = await CodeWorkspace.open({
+        cwd: dir,
+        chatModel: scriptModel([endTurn('ok')]),
+        transcriptsDir: false,
+      });
+      const engine = await open1.createSession();
+      const id = engine.threadId;
+      await engine.setModel('claude-test-model');
+      t.equal(open1.meta(id)?.model, 'claude-test-model', 'model recorded in the registry');
+      await open1.close();
+
+      const open2 = await CodeWorkspace.open({
+        cwd: dir,
+        chatModel: scriptModel([endTurn('ok')]),
+        transcriptsDir: false,
+      });
+      t.equal(open2.meta(id)?.model, 'claude-test-model', 'model survives reopen');
+      await open2.close();
+    } finally {
+      if (hadKey === undefined) delete env.ANTHROPIC_API_KEY;
+    }
+  });
+});

@@ -31,7 +31,7 @@ interface McpCommandInput {
 const MCP_INSTRUCTIONS = [
   'Fino platform development tools. Fino is a JS/TS runtime with a thin native core;',
   'its standard library lives in fino:* modules. Use docs_search first to discover which',
-  'module serves a use case, docs_show for exact symbol reference, and read_doc for full',
+  'module serves a use case, docs_show for exact symbol reference, and read_file for full',
   'guides. File and shell tools operate relative to the server process working directory.',
 ].join(' ');
 

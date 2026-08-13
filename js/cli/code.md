@@ -5,8 +5,8 @@ weight: 41
 
 `fino code` starts the Fino coding agent: an interactive terminal assistant
 tuned for building applications with Fino and for developing Fino itself. It
-discovers modules through the documentation index (`docs_search`, `docs_show`,
-`read_doc`), reads and edits project files, runs shell commands behind
+discovers modules through the documentation index (`docs_search`,
+`docs_show`), reads and edits project files, runs shell commands behind
 approval gates, and persists conversation threads in a SQLite store under
 `.fino/code/`. With a positional prompt it runs one non-interactive turn and
 prints the streamed answer instead of opening the TUI.
@@ -40,10 +40,14 @@ default model id.
 
 ## Interactive Commands
 
-Inside the TUI, plain text runs a turn; slash commands control the harness:
+Inside the TUI, plain text runs a turn; typing `/` opens a scrollable
+autocomplete overlay of the available slash commands above the input
+(↑/↓ select, Tab completes, Enter runs). Slash commands control the harness:
 
-- `/model <id>` switches the model for subsequent turns; `/models` lists
-  models discovered across configured providers.
+- `/model` opens a model picker grouped by provider (chat-capable models
+  only), as does clicking the model name in the status bar; `/model <id>`
+  switches directly. Each session remembers its model choice and restores
+  it when reopened.
 - `/plan` and `/code` switch between planning mode (read-only tools, produces
   a plan) and code mode; `Shift+Tab` toggles the same.
 - `/auto` toggles auto-approval of gated tools.

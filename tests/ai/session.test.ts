@@ -1425,3 +1425,34 @@ describe('SessionStore metadata', () => {
     }
   });
 });
+describe('Session streaming — tool event payloads', () => {
+  it('delivers tool args on tool_start and content on tool_result', async (t) => {
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo a value.',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+      execute: async (args: unknown) => `echo:${(args as { value: string }).value}`,
+    });
+    const bot = agent({
+      model: scriptModel([
+        toolCallTurn('call_1', 'echo', JSON.stringify({ value: 'payload' })),
+        endTurn('done'),
+      ]),
+      tools: [echo],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => events.push(ev as unknown as Record<string, unknown>),
+    });
+    await sess.start('run echo');
+    const start = events.find((ev) => ev.type === 'tool_start');
+    const result = events.find((ev) => ev.type === 'tool_result');
+    t.deepEqual(start?.args, { value: 'payload' }, 'tool_start carries parsed args');
+    t.equal(result?.content, 'echo:payload', 'tool_result carries the tool output');
+  });
+});

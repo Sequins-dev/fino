@@ -111,6 +111,11 @@ export interface CodeEngineOptions {
    * `CodeWorkspace` to derive session titles and activity timestamps.
    */
   onTurn?: (input: string) => void;
+  /**
+   * Called whenever the model changes via `setModel()` — used by
+   * `CodeWorkspace` to remember each session's model choice durably.
+   */
+  onModelChange?: (modelId: string) => void;
 }
 
 /**
@@ -138,6 +143,8 @@ export interface TurnResult {
 }
 
 const MAX_TURN_CONTINUATIONS = 25;
+const NON_CHAT_MODEL_ID =
+  /dall-e|whisper|\btts\b|tts-|embed|moderation|audio|realtime|image|sora|transcribe|codex-embed/i;
 
 function isApprovalPayload(payload: unknown): payload is ToolApprovalRequest {
   return (
@@ -428,10 +435,19 @@ export class CodeEngine {
   }
 
   /**
-   * List models discovered across the configured providers.
+   * List chat-usable models discovered across the configured providers.
+   *
+   * Image, audio, embedding, and other non-text models are filtered out:
+   * the agent can only drive models that hold a text conversation and call
+   * tools, so listing anything else is noise.
    */
-  listModels(opts: { refresh?: boolean } = {}): Promise<ModelInfo[]> {
-    return this.#registry.list(opts);
+  async listModels(opts: { refresh?: boolean } = {}): Promise<ModelInfo[]> {
+    const models = await this.#registry.list(opts);
+    return models.filter((info) => {
+      if (info.capabilities?.toolCalling === false) return false;
+      if (info.capabilities?.input && info.capabilities.input.text === false) return false;
+      return !NON_CHAT_MODEL_ID.test(info.id);
+    });
   }
 
   /**
@@ -441,7 +457,32 @@ export class CodeEngine {
    * unavailable the id falls back to direct provider construction by prefix.
    */
   async setModel(id: string, opts: { provider?: string } = {}): Promise<void> {
-    this.#model = await this.#resolveModel(id, opts);
+    let resolved: Model;
+    try {
+      resolved = await this.#registry.create(id, opts);
+    } catch (_) {
+      let catalog: ModelInfo[] = [];
+      try {
+        catalog = await this.#registry.list();
+      } catch (_) {
+        catalog = [];
+      }
+      if (catalog.length > 0) {
+        throw new Error(`Model "${id}" not found across configured providers`);
+      }
+      // No live catalog to validate against (offline, or listing
+      // unsupported): fall back to direct construction by id.
+      resolved = createModelDirect(id, opts.provider, {
+        hasAnthropic: Boolean(env.ANTHROPIC_API_KEY),
+        hasOpenAI: Boolean(env.OPENAI_API_KEY ?? env.OPENAI_BASE_URL),
+      });
+    }
+    this.#model = resolved;
+    try {
+      this.#opts.onModelChange?.(this.modelId);
+    } catch (_) {
+      // observer errors must not fail model switches
+    }
   }
 
   /**

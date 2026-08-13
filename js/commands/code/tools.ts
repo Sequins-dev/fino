@@ -14,7 +14,7 @@
  *
  * const tools = createCodeTools({ cwd: '/repo', writes: true });
  * const names = tools.map((t) => t.name);
- * // ['docs_search', 'docs_show', 'read_doc', 'list_files', 'read_file',
+ * // ['docs_search', 'docs_show', 'list_files', 'read_file',
  * //  'search_files', 'write_file', 'edit_file', 'shell']
  * ```
  */
@@ -34,8 +34,8 @@ export interface CodeToolsOptions {
    */
   cwd: string;
   /**
-   * Directory holding a `fino doc build` output tree, used by `read_doc` to
-   * resolve guide paths. Defaults to `<cwd>/docs`.
+   * Directory holding a `fino doc build` output tree, surfaced to the model
+   * so it can `read_file` guides directly. Defaults to `<cwd>/docs`.
    */
   docsDir?: string;
   /**
@@ -162,37 +162,6 @@ function docsShowTool(): Tool {
         }
         return { content: `docs_show failed: ${message}`, isError: true };
       }
-    },
-  });
-}
-
-function readDocTool(fs: DiskFileSystem, cwd: string, docsDir: string): Tool {
-  return tool({
-    name: 'read_doc',
-    description:
-      'Read an authored Fino guide by its markdown path, e.g. "ai.md", "realm/facades.md", ' +
-      'or "cli/test.md". Guides are resolved against the docs build directory, then the ' +
-      'repository js/ tree. Read-only.',
-    parameters: v.object({
-      path: v.string().describe('Guide path ending in .md, relative to the docs root'),
-    }),
-    execute: async ({ path }: { path: string }) => {
-      if (!path.endsWith('.md') || path.includes('..') || isAbsolute(path)) {
-        return { content: 'path must be a relative .md guide path', isError: true };
-      }
-      const candidates = [join(docsDir, path).toString(), join(cwd, 'js', path).toString()];
-      for (const candidate of candidates) {
-        try {
-          const bytes = await fs.readFile(candidate);
-          return truncate(new TextDecoder().decode(bytes));
-        } catch (_) {
-          continue;
-        }
-      }
-      return {
-        content: `Guide not found: ${path} (looked in ${candidates.join(', ')})`,
-        isError: true,
-      };
     },
   });
 }
@@ -528,7 +497,7 @@ function shellTool(cwd: string, auto: boolean): Tool {
  * Build the Fino coding tool set.
  *
  * Always includes the read-only tools (`docs_search`, `docs_show`,
- * `read_doc`, `list_files`, `read_file`, `search_files`). When
+ * `list_files`, `read_file`, `search_files`). When
  * `writes` is enabled (the default) the mutating tools (`write_file`,
  * `edit_file`, `shell`) are appended; they declare `requiresApproval` unless
  * `auto` is set, so an interactive session suspends for a decision before
@@ -544,11 +513,9 @@ function shellTool(cwd: string, auto: boolean): Tool {
 export function createCodeTools(opts: CodeToolsOptions): Tool[] {
   const fs = new DiskFileSystem();
   const cwd = opts.cwd;
-  const docsDir = opts.docsDir ?? join(cwd, 'docs').toString();
   const tools = [
     docsSearchTool(),
     docsShowTool(),
-    readDocTool(fs, cwd, docsDir),
     listFilesTool(fs, cwd),
     readFileTool(fs, cwd),
     searchFilesTool(fs, cwd),

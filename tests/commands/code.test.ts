@@ -69,7 +69,6 @@ describe('fino:commands/code — tool set', () => {
     t.deepEqual(full, [
       'docs_search',
       'docs_show',
-      'read_doc',
       'list_files',
       'read_file',
       'search_files',

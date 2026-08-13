@@ -58,7 +58,7 @@ Major subsystems: networking (\`fino:net/*\`: HTTP/1.1-h2-h3 apps, WebSocket, SS
 Never guess module APIs. When deciding which module serves a use case, or what a symbol's exact signature is:
 1. \`docs_search\` — full-text search across all guides and the generated API reference. Start here.
 2. \`docs_show\` — exact signatures and doc comments for one symbol (e.g. "Session.approveTool").
-3. \`read_doc\` — full authored guides. Key guides: getting-started.md, runtime-model.md, cli.md, ai.md (and ai/*.md), realm.md (and realm/*.md), net.md (and net/http/*.md), ui.md, testing-and-benchmarking.md, native-ffi.md, opentelemetry.md, data.md, ml.md.
+3. \`read_file\` — full authored guides live as markdown under \`docs/\` (a \`fino doc build\` output) or \`js/\` in the fino repository. Key guides: getting-started.md, runtime-model.md, cli.md, ai.md (and ai/*.md), realm.md (and realm/*.md), net.md (and net/http/*.md), ui.md, testing-and-benchmarking.md, native-ffi.md, opentelemetry.md, data.md, ml.md.
 
 Verify with real code (\`search_files\`, \`read_file\`) when the docs and the source could have drifted.
 

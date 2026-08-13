@@ -175,13 +175,19 @@ export function foldEventsToTranscript(writer: TranscriptWriter): {
         buffer += ev.event.text;
       } else if (ev.type === 'tool_start') {
         flush();
-        writer.append({ type: 'tool_start', id: ev.id, name: ev.name });
+        writer.append({
+          type: 'tool_start',
+          id: ev.id,
+          name: ev.name,
+          ...(ev.args !== undefined ? { args: previewText(JSON.stringify(ev.args)) } : {}),
+        });
       } else if (ev.type === 'tool_result') {
         writer.append({
           type: 'tool_result',
           id: ev.id,
           name: ev.name,
           ...(ev.isError ? { isError: true } : {}),
+          ...(ev.content !== undefined ? { output: previewText(contentText(ev.content)) } : {}),
         });
       } else if (ev.type === 'step_end') {
         flush();
@@ -191,4 +197,24 @@ export function foldEventsToTranscript(writer: TranscriptWriter): {
     },
     flush,
   };
+}
+
+const PREVIEW_MAX = 4_000;
+
+/**
+ * Flatten a tool result's content parts into plain text.
+ */
+export function contentText(content: string | Array<{ type: string; text?: string }>): string {
+  if (typeof content === 'string') return content;
+  return content
+    .map((part) => (part.type === 'text' ? (part.text ?? '') : `[${part.type}]`))
+    .join('\n');
+}
+
+/**
+ * Truncate transcript payload previews so mirrors stay readable.
+ */
+export function previewText(text: string, limit = PREVIEW_MAX): string {
+  if (text.length <= limit) return text;
+  return `${text.slice(0, limit)}… [truncated ${text.length - limit} chars]`;
 }

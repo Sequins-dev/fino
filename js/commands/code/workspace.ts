@@ -38,6 +38,8 @@ export interface CodeSessionMeta {
   updatedAt: number;
   /** Archived sessions drop into the history list. */
   archived: boolean;
+  /** Model id chosen for this session; restored when the session reopens. */
+  model?: string;
 }
 
 /** Coarse activity of a session for list indicators. */
@@ -193,10 +195,19 @@ export class CodeWorkspace {
   async #openEngine(id: string): Promise<CodeEngine> {
     const cached = this.#engines.get(id);
     if (cached) return cached;
+    const stored = this.#sessions.find((s) => s.id === id);
     const engine = await CodeEngine.create({
       ...this.#opts,
+      ...(stored?.model && !this.#opts.chatModel ? { model: stored.model } : {}),
       store: this.#store,
       threadId: id,
+      onModelChange: (modelId) => {
+        const meta = this.#sessions.find((s) => s.id === id);
+        if (meta) {
+          meta.model = modelId;
+          void this.#persist();
+        }
+      },
       onActivity: (status) => {
         this.#activity.set(id, status);
         this.#touch(id);

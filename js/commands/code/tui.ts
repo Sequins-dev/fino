@@ -2,13 +2,16 @@
  * fino:commands/code/tui — multi-session terminal interface for `fino code`.
  *
  * A workspace TUI over `fino:tty/tui`. A collapsible sidebar (hidden by
- * default for a clean single-session experience, `Ctrl+B` to toggle) lists
- * open sessions ordered by recent activity with working/waiting/idle
- * indicators, expands each session into its nested sub-agent rows — active
- * children bright, settled ones dim — and keeps archived sessions in a
- * history list below. Several sessions can run turns concurrently; the
- * focused one renders as a transcript with markdown-rendered assistant
- * messages, a message queue with clickable `[steer now]` actions, an input
+ * default for a clean single-session experience; `Ctrl+B` or the `≡` button
+ * toggles it) lists open sessions ordered by recent activity with
+ * working/waiting/idle indicators and word-wrapped titles, expands each
+ * session into its nested sub-agent rows — active children bright, settled
+ * ones dim — and keeps archived sessions in a history list below.
+ * Right-clicking a session opens a context menu (rename, archive, delete).
+ * Several sessions can run turns concurrently; the focused one renders as a
+ * transcript with markdown-rendered assistant messages and
+ * expandable/collapsible tool calls, a message queue with clickable
+ * `[steer now]` actions, a slash-command autocomplete overlay, an input
  * line, and a status bar. Sub-agent views are read-only parent↔child
  * conversations. Tool approvals from every session and sub-agent surface in
  * one global blocking popover answered with `y`/`n`.
@@ -34,6 +37,7 @@ import { h } from 'fino:ui';
 import { Box, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } from 'fino:tty/tui';
 import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
+import { contentText, previewText } from 'fino:commands/code/transcript';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -49,6 +53,9 @@ const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const REDRAW_INTERVAL_MS = 33;
 const QUEUE_PANE_MAX = 3;
 const SIDEBAR_WIDTH = 28;
+const SESSION_TITLE_LINES = 3;
+const TOOL_PREVIEW_LINES = 8;
+const SLASH_MAX_ROWS = 6;
 
 interface TranscriptEntry {
   kind: 'user' | 'assistant' | 'tool' | 'notice';
@@ -56,6 +63,9 @@ interface TranscriptEntry {
   done: boolean;
   toolState?: 'running' | 'ok' | 'error';
   toolId?: string;
+  argsText?: string;
+  outputText?: string;
+  expanded?: boolean;
   cachedLines?: string[];
   cachedKey?: string;
 }
@@ -100,11 +110,57 @@ type SidebarRow =
   | { kind: 'child'; sessionId: string; childId: string }
   | { kind: 'divider'; label: string };
 
+interface SidebarDisplay {
+  rows: SidebarRow[];
+  lines: string[];
+  lineMap: Array<{ rowIndex: number; first: boolean }>;
+}
+
 interface ContextMenuState {
   sessionId: string;
   selected: number;
   confirmDelete: boolean;
 }
+
+type ModelMenuEntry =
+  | { kind: 'header'; label: string }
+  | { kind: 'model'; provider: string; id: string };
+
+interface ModelMenuState {
+  loading: boolean;
+  error?: string;
+  entries: ModelMenuEntry[];
+  selected: number;
+  scroll: number;
+  /** Snap the scroll window to the selection on the next paint (keyboard). */
+  snap: boolean;
+}
+
+interface SlashCommand {
+  name: string;
+  args: string;
+  description: string;
+  submits: boolean;
+}
+
+const SLASH_COMMANDS: SlashCommand[] = [
+  { name: 'help', args: '', description: 'Show commands and keys', submits: true },
+  {
+    name: 'model',
+    args: '[id]',
+    description: 'Pick a model, or switch directly by id',
+    submits: true,
+  },
+  { name: 'plan', args: '', description: 'Planning mode (read-only tools)', submits: true },
+  { name: 'code', args: '', description: 'Code mode (full tool set)', submits: true },
+  { name: 'auto', args: '', description: 'Toggle auto-approval of gated tools', submits: true },
+  { name: 'agents', args: '', description: 'Sub-agent status for this session', submits: true },
+  { name: 'sessions', args: '', description: 'Toggle the session sidebar', submits: true },
+  { name: 'title', args: '<name>', description: 'Rename this session', submits: false },
+  { name: 'archive', args: '', description: 'Archive/unarchive this session', submits: true },
+  { name: 'new', args: '', description: 'Start a new session', submits: true },
+  { name: 'exit', args: '', description: 'Quit fino code', submits: true },
+];
 
 const CHILD_GLYPHS: Record<SubagentState['status'], string> = {
   working: '⟳',
@@ -117,6 +173,10 @@ const CHILD_GLYPHS: Record<SubagentState['status'], string> = {
 
 function visibleWidth(text: string): number {
   return Array.from(text.replace(ANSI_RE, '')).length;
+}
+
+function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
 }
 
 function padVisible(text: string, width: number): string {
@@ -169,6 +229,13 @@ function wrapPlain(text: string, width: number): string[] {
   return lines.length > 0 ? lines : [''];
 }
 
+function rowKey(row: SidebarRow): string {
+  if (row.kind === 'action-new') return 'new';
+  if (row.kind === 'divider') return `div:${row.label}`;
+  if (row.kind === 'session') return `s:${row.id}`;
+  return `c:${row.sessionId}:${row.childId}`;
+}
+
 /**
  * Options for `runCodeTui()`.
  */
@@ -200,7 +267,7 @@ export async function runCodeTui(
   const sessions = new Map<string, SessionUI>();
   let focusedSessionId = '';
   let sidebarVisible = false;
-  let sidebarIndex = 0;
+  let selectedKey = '';
   let sidebarScroll = 0;
   const expanded = new Set<string>();
   const approvalQueue: ApprovalItem[] = [];
@@ -214,10 +281,165 @@ export async function runCodeTui(
   let queueHitRows: Array<{ row: number; buttonStart: number; buttonEnd: number; index: number }> =
     [];
   let queueTop = 0;
-  let sidebarRowsCache: SidebarRow[] = [];
+  let sidebarDisplayCache: SidebarDisplay = { rows: [], lines: [], lineMap: [] };
   let contextMenu: ContextMenuState | undefined;
   let menuHitRows: Array<{ row: number; index: number }> = [];
-  let menuTop = 0;
+  let modelMenu: ModelMenuState | undefined;
+  let modelMenuHitRows: Array<{ row: number; index: number }> = [];
+  let modelHitRange: { start: number; end: number } | undefined;
+  let transcriptHitRows: Array<{ row: number; entryIndex: number }> = [];
+  let slashHitRows: Array<{ row: number; index: number }> = [];
+  let slashTop = 0;
+  let slashSelected = 0;
+  let lastSlashFilter = '';
+
+  function contentWidth(): number {
+    return Math.max(20, width - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0) - 2);
+  }
+
+  function focused(): SessionUI | undefined {
+    return sessions.get(focusedSessionId);
+  }
+
+  function paneRows(session: SessionUI): { queue: number; slash: number } {
+    const queue =
+      session.queue.length > 0
+        ? Math.min(session.queue.length, QUEUE_PANE_MAX) +
+          (session.queue.length > QUEUE_PANE_MAX ? 1 : 0)
+        : 0;
+    const matches = slashFilter(session);
+    const slash =
+      matches.length > 0
+        ? Math.min(matches.length, SLASH_MAX_ROWS) + (matches.length > SLASH_MAX_ROWS ? 1 : 0)
+        : 0;
+    return { queue, slash };
+  }
+
+  function transcriptHeightFor(session: SessionUI): number {
+    const panes = paneRows(session);
+    return Math.max(1, height - panes.queue - panes.slash - 2);
+  }
+
+  function scrollBy(session: SessionUI, delta: number): void {
+    const tab = view(session, session.focusedView);
+    const rows = tabRows(session).rows;
+    const limit = Math.max(0, rows.length - transcriptHeightFor(session));
+    if (delta < 0) {
+      tab.scrollOffset = Math.max(0, tab.scrollOffset + delta);
+      tab.stickToBottom = false;
+    } else {
+      tab.scrollOffset = Math.min(limit, tab.scrollOffset + delta);
+      if (tab.scrollOffset >= limit) tab.stickToBottom = true;
+    }
+    redraw();
+  }
+
+  function view(session: SessionUI, id: string): TabView {
+    let v = session.views.get(id);
+    if (!v) {
+      v = { entries: [], scrollOffset: 0, stickToBottom: true };
+      session.views.set(id, v);
+      session.viewOrder.push(id);
+    }
+    return v;
+  }
+
+  // --- slash command overlay -------------------------------------------
+
+  function slashFilter(session: SessionUI | undefined): SlashCommand[] {
+    if (!session || session.focusedView !== 'main') return [];
+    if (approvalQueue.length > 0 || contextMenu || modelMenu) return [];
+    const input = session.input;
+    if (!input.startsWith('/') || input.includes(' ')) return [];
+    const prefix = input.slice(1).toLowerCase();
+    const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix));
+    if (matches.length === 1 && matches[0]!.name === prefix) return [];
+    return matches;
+  }
+
+  function applySlashCommand(session: SessionUI, command: SlashCommand): void {
+    if (command.submits) {
+      session.input = `/${command.name}`;
+      submit(session);
+    } else {
+      session.input = `/${command.name} `;
+    }
+    redraw();
+  }
+
+  // --- model picker ----------------------------------------------------
+
+  function openModelMenu(session: SessionUI): void {
+    modelMenu = { loading: true, entries: [], selected: 0, scroll: 0, snap: true };
+    redraw();
+    void session.engine
+      .listModels()
+      .then((models) => {
+        if (!modelMenu) return;
+        const byProvider = new Map<string, string[]>();
+        for (const info of models) {
+          const list = byProvider.get(info.provider) ?? [];
+          list.push(info.id);
+          byProvider.set(info.provider, list);
+        }
+        const entries: ModelMenuEntry[] = [];
+        for (const [provider, ids] of [...byProvider.entries()].sort(([a], [b]) =>
+          a.localeCompare(b),
+        )) {
+          entries.push({ kind: 'header', label: provider });
+          for (const id of ids.sort()) entries.push({ kind: 'model', provider, id });
+        }
+        const current = entries.findIndex(
+          (entry) => entry.kind === 'model' && entry.id === session.engine.modelId,
+        );
+        const firstModel = entries.findIndex((entry) => entry.kind === 'model');
+        modelMenu = {
+          loading: false,
+          entries,
+          selected: current >= 0 ? current : Math.max(0, firstModel),
+          scroll: 0,
+          snap: true,
+        };
+        redraw();
+      })
+      .catch((err: unknown) => {
+        if (!modelMenu) return;
+        modelMenu = {
+          loading: false,
+          error: err instanceof Error ? err.message : String(err),
+          entries: [],
+          selected: 0,
+          scroll: 0,
+          snap: true,
+        };
+        redraw();
+      });
+  }
+
+  function moveModelSelection(menu: ModelMenuState, delta: number): void {
+    let next = menu.selected + delta;
+    while (next >= 0 && next < menu.entries.length && menu.entries[next]!.kind === 'header') {
+      next += delta;
+    }
+    if (next >= 0 && next < menu.entries.length) {
+      menu.selected = next;
+      menu.snap = true;
+    }
+    redraw();
+  }
+
+  function chooseModel(session: SessionUI, menu: ModelMenuState, index: number): void {
+    const entry = menu.entries[index];
+    if (!entry || entry.kind !== 'model') return;
+    modelMenu = undefined;
+    void session.engine.setModel(entry.id, { provider: entry.provider }).then(() => {
+      notice(session, `model → ${session.engine.modelId}`);
+      redraw();
+    });
+    redraw();
+  }
+
+  // --- context menu ----------------------------------------------------
 
   function contextMenuItems(menu: ContextMenuState): string[] {
     const meta = workspace.meta(menu.sessionId);
@@ -239,8 +461,9 @@ export async function runCodeTui(
       contextMenu = undefined;
       await focusSession(menu.sessionId);
       const session = focused();
-      if (session)
+      if (session) {
         session.input = `/title ${meta.title === 'untitled' ? '' : meta.title}`.trimEnd() + ' ';
+      }
     } else if (index === 1) {
       contextMenu = undefined;
       await workspace.archiveSession(menu.sessionId, !meta.archived);
@@ -263,26 +486,19 @@ export async function runCodeTui(
     redraw();
   }
 
-  function contentWidth(): number {
-    return Math.max(20, width - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0) - 2);
-  }
-
-  function focused(): SessionUI | undefined {
-    return sessions.get(focusedSessionId);
-  }
-
-  function view(session: SessionUI, id: string): TabView {
-    let v = session.views.get(id);
-    if (!v) {
-      v = { entries: [], scrollOffset: 0, stickToBottom: true };
-      session.views.set(id, v);
-      session.viewOrder.push(id);
-    }
-    return v;
-  }
+  // --- transcript ------------------------------------------------------
 
   function entryLines(entry: TranscriptEntry, cw: number): string[] {
-    const key = `${entry.kind}:${entry.done}:${entry.toolState ?? ''}:${entry.text.length}:${cw}`;
+    const key = [
+      entry.kind,
+      entry.done,
+      entry.toolState ?? '',
+      entry.expanded ?? false,
+      entry.text.length,
+      entry.argsText?.length ?? 0,
+      entry.outputText?.length ?? 0,
+      cw,
+    ].join(':');
     if (entry.cachedKey === key && entry.cachedLines) return entry.cachedLines;
     let lines: string[];
     if (entry.kind === 'user') {
@@ -300,7 +516,23 @@ export async function runCodeTui(
           : entry.toolState === 'ok'
             ? `${GREEN}●${RESET}`
             : `${RED}●${RESET}`;
-      lines = [`${mark} ${DIM}${entry.text}${RESET}`];
+      const disclosure = entry.expanded ? '▾' : '▸';
+      lines = [`${mark} ${DIM}${entry.text} ${disclosure}${RESET}`];
+      if (entry.expanded) {
+        const detail = (label: string, value: string | undefined): string[] => {
+          if (!value) return [];
+          const wrapped = wrapPlain(`${label}: ${value}`, cw - 4);
+          const shown = wrapped.slice(0, TOOL_PREVIEW_LINES);
+          if (wrapped.length > shown.length) {
+            shown.push(`… (+${wrapped.length - shown.length} more lines)`);
+          }
+          return shown.map((line) => `    ${DIM}${line}${RESET}`);
+        };
+        lines.push(...detail('args', entry.argsText), ...detail('output', entry.outputText));
+        if (!entry.argsText && !entry.outputText) {
+          lines.push(`    ${DIM}(no captured input/output)${RESET}`);
+        }
+      }
     } else {
       lines = wrapPlain(entry.text, cw).map((line) => `${DIM}${line}${RESET}`);
     }
@@ -309,15 +541,18 @@ export async function runCodeTui(
     return lines;
   }
 
-  function transcriptRows(session: SessionUI): string[] {
+  function tabRows(session: SessionUI): { rows: string[]; toolRows: Map<number, number> } {
     const cw = contentWidth();
     const tab = view(session, session.focusedView);
     const rows: string[] = [];
-    for (const entry of tab.entries) {
+    const toolRows = new Map<number, number>();
+    for (let index = 0; index < tab.entries.length; index++) {
+      const entry = tab.entries[index]!;
       if (rows.length > 0) rows.push('');
+      if (entry.kind === 'tool') toolRows.set(rows.length, index);
       rows.push(...entryLines(entry, cw));
     }
-    return rows;
+    return { rows, toolRows };
   }
 
   function notice(session: SessionUI, text: string, viewId = 'main'): void {
@@ -352,6 +587,7 @@ export async function runCodeTui(
         done: true,
         toolState: 'running',
         toolId: ev.id,
+        ...(ev.args !== undefined ? { argsText: previewText(JSON.stringify(ev.args)) } : {}),
       });
     } else if (ev.type === 'tool_result' || ev.type === 'tool_error') {
       for (let index = tab.entries.length - 1; index >= 0; index--) {
@@ -359,6 +595,12 @@ export async function runCodeTui(
         if (entry.kind === 'tool' && entry.toolId === ev.id) {
           entry.toolState =
             ev.type === 'tool_error' || (ev.type === 'tool_result' && ev.isError) ? 'error' : 'ok';
+          if (ev.type === 'tool_result' && ev.content !== undefined) {
+            entry.outputText = previewText(contentText(ev.content));
+          } else if (ev.type === 'tool_error') {
+            entry.outputText = previewText(ev.message);
+          }
+          entry.cachedKey = undefined;
           break;
         }
       }
@@ -368,6 +610,7 @@ export async function runCodeTui(
 
   function seedFromHistory(tab: TabView, messages: ModelMessage[]): void {
     tab.entries = [];
+    const toolEntries = new Map<string, TranscriptEntry>();
     for (const message of messages) {
       if (message.role === 'user' && typeof message.content === 'string') {
         const synthetic = message.content.startsWith('[subagent settlement]');
@@ -376,6 +619,16 @@ export async function runCodeTui(
           text: message.content,
           done: true,
         });
+      } else if (message.role === 'user' && Array.isArray(message.content)) {
+        for (const part of message.content) {
+          if (part.type === 'tool_result') {
+            const entry = toolEntries.get(part.toolCallId);
+            if (entry) {
+              entry.outputText = previewText(contentText(part.content));
+              if (part.isError) entry.toolState = 'error';
+            }
+          }
+        }
       } else if (message.role === 'assistant') {
         if (typeof message.content === 'string') {
           tab.entries.push({ kind: 'assistant', text: message.content, done: true });
@@ -384,13 +637,16 @@ export async function runCodeTui(
             if (part.type === 'text' && part.text.trim().length > 0) {
               tab.entries.push({ kind: 'assistant', text: part.text, done: true });
             } else if (part.type === 'tool_use') {
-              tab.entries.push({
+              const entry: TranscriptEntry = {
                 kind: 'tool',
                 text: part.name,
                 done: true,
                 toolState: 'ok',
                 toolId: part.id,
-              });
+                argsText: previewText(JSON.stringify(part.args ?? {})),
+              };
+              toolEntries.set(part.id, entry);
+              tab.entries.push(entry);
             }
           }
         }
@@ -486,12 +742,17 @@ export async function runCodeTui(
     return workspace.meta(id)?.title ?? id;
   }
 
-  async function focusSession(id: string): Promise<void> {
+  async function focusSession(id: string, viewId = 'main'): Promise<void> {
     focusedSessionId = id;
-    expanded.add(id);
+    selectedKey = viewId === 'main' ? `s:${id}` : selectedKey;
     if (!sessions.has(id)) {
       const engine = await workspace.openSession(id);
       attachSession(engine);
+    }
+    const session = sessions.get(id);
+    if (session) {
+      view(session, viewId);
+      session.focusedView = viewId;
     }
     redraw();
   }
@@ -531,7 +792,6 @@ export async function runCodeTui(
     session.busy = true;
     session.status = session.engine.planMode ? 'Planning…' : 'Working…';
     session.abort = new AbortController();
-    redraw();
     const main = view(session, 'main');
     const onEvent = (ev: AgentEvent): void => {
       if (ev.type === 'retry') session.status = `Retrying (${ev.attempt})…`;
@@ -539,6 +799,7 @@ export async function runCodeTui(
       applyAgentEvent(main, ev);
     };
     try {
+      redraw();
       let result = await start({ onEvent, signal: session.abort.signal });
       while (result.status === 'suspended') {
         if (!result.approval) {
@@ -620,55 +881,100 @@ export async function runCodeTui(
     return `${DIM}·${RESET}`;
   }
 
-  function sidebarLine(row: SidebarRow, selected: boolean): string {
+  function buildSidebarDisplay(): SidebarDisplay {
     const w = SIDEBAR_WIDTH;
-    if (row.kind === 'action-new') {
-      const label = padVisible(`${GREEN}+${RESET} new session`, w - 2) + `${DIM}«${RESET} `;
-      return selected ? `${INVERSE}${label}${RESET}` : label;
+    const rows = sidebarRows();
+    const lines: string[] = [];
+    const lineMap: Array<{ rowIndex: number; first: boolean }> = [];
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex]!;
+      const selected = rowKey(row) === selectedKey;
+      const emit = (line: string, first: boolean): void => {
+        lines.push(selected ? `${INVERSE}${padVisible(line, w)}${RESET}` : padVisible(line, w));
+        lineMap.push({ rowIndex, first });
+      };
+      if (row.kind === 'action-new') {
+        const label = padVisible(`${selected ? '+' : `${GREEN}+${RESET}`} new session`, w - 2);
+        emit(`${label}${selected ? '«' : `${DIM}«${RESET}`} `, true);
+        continue;
+      }
+      if (row.kind === 'divider') {
+        lines.push(`${DIM}${padVisible(`— ${row.label} —`, w)}${RESET}`);
+        lineMap.push({ rowIndex, first: true });
+        continue;
+      }
+      if (row.kind === 'session') {
+        const arrow = row.archived ? ' ' : expanded.has(row.id) ? '▾' : '▸';
+        const indicator = selected ? '' : sessionIndicator(row.id);
+        const plainIndicator =
+          sessions.get(row.id)?.engine.activity === 'working'
+            ? '⟳'
+            : sessions.get(row.id)?.engine.activity === 'waiting'
+              ? '▲'
+              : '·';
+        const titleLines = wrapPlain(sessionTitle(row.id), w - 5).slice(0, SESSION_TITLE_LINES);
+        for (let i = 0; i < titleLines.length; i++) {
+          const prefix = i === 0 ? `${arrow} ${selected ? plainIndicator : indicator} ` : '    ';
+          const line = `${prefix}${titleLines[i]}`;
+          if (row.archived && !selected) {
+            lines.push(`${DIM}${padVisible(line, w)}${RESET}`);
+            lineMap.push({ rowIndex, first: i === 0 });
+          } else {
+            emit(line, i === 0);
+          }
+        }
+        continue;
+      }
+      const session = sessions.get(row.sessionId);
+      const state = session?.engine.subagentStates().find((s) => s.id === row.childId);
+      const glyph = state ? CHILD_GLYPHS[state.status] : '·';
+      const name = clipVisible(session?.viewNames.get(row.childId) ?? row.childId, w - 7);
+      const active = state && (state.status === 'working' || state.status === 'awaiting_approval');
+      const line = `   ${glyph} ${name}`;
+      if (!selected && !active) {
+        lines.push(`${DIM}${padVisible(line, w)}${RESET}`);
+        lineMap.push({ rowIndex, first: true });
+      } else {
+        emit(line, true);
+      }
     }
-    if (row.kind === 'divider') {
-      return `${DIM}${padVisible(`— ${row.label} —`, w)}${RESET}`;
-    }
-    if (row.kind === 'session') {
-      const arrow = row.archived ? ' ' : expanded.has(row.id) ? '▾' : '▸';
-      const title = clipVisible(sessionTitle(row.id), w - 5);
-      const base = `${arrow} ${sessionIndicator(row.id)} ${title}`;
-      const padded = padVisible(base, w);
-      if (selected) return `${INVERSE}${padded}${RESET}`;
-      return row.archived ? `${DIM}${padded}${RESET}` : padded;
-    }
-    const session = sessions.get(row.sessionId);
-    const state = session?.engine.subagentStates().find((s) => s.id === row.childId);
-    const glyph = state ? CHILD_GLYPHS[state.status] : '·';
-    const name = clipVisible(session?.viewNames.get(row.childId) ?? row.childId, w - 7);
-    const active = state && (state.status === 'working' || state.status === 'awaiting_approval');
-    const base = `   ${glyph} ${name}`;
-    const padded = padVisible(base, w);
-    if (selected) return `${INVERSE}${padded}${RESET}`;
-    return active ? padded : `${DIM}${padded}${RESET}`;
+    return { rows, lines, lineMap };
+  }
+
+  function selectedRowIndex(display: SidebarDisplay): number {
+    return display.rows.findIndex((row) => rowKey(row) === selectedKey);
+  }
+
+  function ensureSelectedVisible(display: SidebarDisplay): void {
+    const rowIndex = selectedRowIndex(display);
+    if (rowIndex < 0) return;
+    const firstLine = display.lineMap.findIndex(
+      (entry) => entry.rowIndex === rowIndex && entry.first,
+    );
+    if (firstLine < 0) return;
+    if (firstLine < sidebarScroll) sidebarScroll = firstLine;
+    if (firstLine >= sidebarScroll + height) sidebarScroll = firstLine - height + 1;
   }
 
   function focusSidebarRow(row: SidebarRow): void {
+    selectedKey = rowKey(row);
     if (row.kind === 'divider') return;
     if (row.kind === 'action-new') {
       void workspace.createSession().then((engine) => {
         attachSession(engine);
         focusedSessionId = engine.threadId;
+        selectedKey = `s:${engine.threadId}`;
         redraw();
       });
       return;
     }
     if (row.kind === 'session') {
-      void focusSession(row.id);
+      void focusSession(row.id, 'main');
       return;
     }
-    void focusSession(row.sessionId).then(() => {
-      const session = sessions.get(row.sessionId);
-      if (session) {
-        view(session, row.childId);
-        session.focusedView = row.childId;
-        redraw();
-      }
+    void focusSession(row.sessionId, row.childId).then(() => {
+      selectedKey = rowKey(row);
+      redraw();
     });
   }
 
@@ -700,6 +1006,8 @@ export async function runCodeTui(
   function contentLines(session: SessionUI | undefined): string[] {
     const cw = contentWidth();
     const lines: string[] = [];
+    transcriptHitRows = [];
+    slashHitRows = [];
     if (!session) {
       lines.push(
         '',
@@ -732,13 +1040,97 @@ export async function runCodeTui(
         queueLines.push(`${DIM}… ${session.queue.length - shown.length} more queued${RESET}`);
       }
     }
-    const transcriptHeight = Math.max(1, height - queueLines.length - 2);
+    const slashMatches = slashFilter(session);
+    const filterKey = session.input;
+    if (filterKey !== lastSlashFilter) {
+      lastSlashFilter = filterKey;
+      slashSelected = 0;
+    }
+    slashSelected = Math.max(0, Math.min(slashSelected, Math.max(0, slashMatches.length - 1)));
+    const slashLines: string[] = [];
+    if (slashMatches.length > 0) {
+      const start = Math.max(
+        0,
+        Math.min(slashSelected - SLASH_MAX_ROWS + 1, slashMatches.length - SLASH_MAX_ROWS),
+      );
+      const visible = slashMatches.slice(start, start + SLASH_MAX_ROWS);
+      for (let i = 0; i < visible.length; i++) {
+        const command = visible[i]!;
+        const index = start + i;
+        const label = ` /${command.name}${command.args ? ` ${command.args}` : ''}`;
+        const line = `${label}  ${DIM}${command.description}${RESET}`;
+        slashLines.push(
+          index === slashSelected
+            ? `${INVERSE}${padVisible(clipVisible(stripAnsi(line), cw + 1), cw + 2)}${RESET}`
+            : clipVisible(line, cw + 2),
+        );
+      }
+      if (slashMatches.length > SLASH_MAX_ROWS) {
+        slashLines.push(`${DIM} … ${slashMatches.length} commands — ↑/↓ to browse${RESET}`);
+      }
+    }
+    const transcriptHeight = Math.max(1, height - queueLines.length - slashLines.length - 2);
     let rows: string[];
     const tab = view(session, session.focusedView);
     if (approvalQueue.length > 0) {
       const popover = popoverLines(cw);
       const padTop = Math.max(0, Math.floor((transcriptHeight - popover.length) / 2));
       rows = [...Array<string>(padTop).fill(''), ...popover];
+    } else if (modelMenu) {
+      const menu = modelMenu;
+      const innerWidth = Math.max(30, Math.min(cw - 4, 56));
+      const maxRows = Math.max(4, Math.min(menu.entries.length, transcriptHeight - 6));
+      if (menu.snap) {
+        if (menu.selected < menu.scroll) menu.scroll = menu.selected;
+        if (menu.selected >= menu.scroll + maxRows) menu.scroll = menu.selected - maxRows + 1;
+        menu.snap = false;
+      }
+      menu.scroll = Math.max(0, Math.min(menu.scroll, Math.max(0, menu.entries.length - maxRows)));
+      const top = `${YELLOW}┌${'─'.repeat(innerWidth - 2)}┐${RESET}`;
+      const bottom = `${YELLOW}└${'─'.repeat(innerWidth - 2)}┘${RESET}`;
+      const pad = (line: string): string =>
+        `${YELLOW}│${RESET} ${padVisible(clipVisible(line, innerWidth - 4), innerWidth - 4)} ${YELLOW}│${RESET}`;
+      const body: string[] = [`${BOLD}select model${RESET}`, ''];
+      const listTop = body.length + 1;
+      modelMenuHitRows = [];
+      if (menu.loading) {
+        body.push(`${DIM}loading models…${RESET}`);
+      } else if (menu.error) {
+        body.push(...wrapPlain(`model listing failed: ${menu.error}`, innerWidth - 4));
+      } else if (menu.entries.length === 0) {
+        body.push(`${DIM}no models discovered${RESET}`);
+      } else {
+        const visible = menu.entries.slice(menu.scroll, menu.scroll + maxRows);
+        for (let i = 0; i < visible.length; i++) {
+          const entry = visible[i]!;
+          const index = menu.scroll + i;
+          if (entry.kind === 'header') {
+            body.push(`${DIM}${BOLD}${entry.label}${RESET}`);
+          } else {
+            const marker = entry.id === session.engine.modelId ? '●' : ' ';
+            const line = ` ${marker} ${entry.id}`;
+            body.push(index === menu.selected ? `${INVERSE}${line}${RESET}` : line);
+            modelMenuHitRows.push({ row: 0, index });
+          }
+        }
+        if (menu.entries.length > maxRows) {
+          body.push(`${DIM}↑/↓ scroll · ${menu.entries.length} entries${RESET}`);
+        }
+      }
+      body.push('', `${DIM}Enter select · Esc close${RESET}`);
+      const box = [top, ...body.map(pad), bottom];
+      const padTop = Math.max(0, Math.floor((transcriptHeight - box.length) / 2));
+      const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
+      rows = [...Array<string>(padTop).fill(''), ...box.map((line) => indent + line)];
+      if (!menu.loading && !menu.error) {
+        const visible = menu.entries.slice(menu.scroll, menu.scroll + maxRows);
+        modelMenuHitRows = [];
+        for (let i = 0; i < visible.length; i++) {
+          if (visible[i]!.kind === 'model') {
+            modelMenuHitRows.push({ row: padTop + listTop + i, index: menu.scroll + i });
+          }
+        }
+      }
     } else if (contextMenu) {
       const menu = contextMenu;
       const title = clipVisible(sessionTitle(menu.sessionId), 40);
@@ -752,7 +1144,9 @@ export async function runCodeTui(
         `${BOLD}${title}${RESET}`,
         '',
         ...items.map((item, index) =>
-          index === menu.selected ? `${INVERSE} ${item} ${RESET}` : ` ${item} `,
+          index === menu.selected
+            ? `${INVERSE}${padVisible(` ${item} `, innerWidth - 4)}${RESET}`
+            : ` ${item} `,
         ),
         '',
         `${DIM}↑/↓ select · Enter run · Esc close${RESET}`,
@@ -761,18 +1155,30 @@ export async function runCodeTui(
       const padTop = Math.max(0, Math.floor((transcriptHeight - box.length) / 2));
       const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
       rows = [...Array<string>(padTop).fill(''), ...box.map((line) => indent + line)];
-      menuTop = padTop + 3;
+      const menuTop = padTop + 3;
       menuHitRows = items.map((_, index) => ({ row: menuTop + index, index }));
     } else {
-      rows = transcriptRows(session);
+      const built = tabRows(session);
+      rows = built.rows;
       const limit = Math.max(0, rows.length - transcriptHeight);
       if (tab.stickToBottom) tab.scrollOffset = limit;
       else tab.scrollOffset = Math.max(0, Math.min(tab.scrollOffset, limit));
+      for (const [rowIndex, entryIndex] of built.toolRows) {
+        const screenRow = rowIndex - tab.scrollOffset;
+        if (screenRow >= 0 && screenRow < transcriptHeight) {
+          transcriptHitRows.push({ row: screenRow, entryIndex });
+        }
+      }
       rows = rows.slice(tab.scrollOffset, tab.scrollOffset + transcriptHeight);
     }
     for (let i = 0; i < transcriptHeight; i++) lines.push(rows[i] ?? '');
     queueTop = transcriptHeight;
     lines.push(...queueLines);
+    slashTop = transcriptHeight + queueLines.length;
+    for (let i = 0; i < slashLines.length; i++) {
+      slashHitRows.push({ row: slashTop + i, index: i });
+    }
+    lines.push(...slashLines);
     const isMain = session.focusedView === 'main';
     const placeholder =
       approvalQueue.length > 0
@@ -801,7 +1207,13 @@ export async function runCodeTui(
     const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
     const autoLabel = session.engine.auto ? ' · auto' : '';
     const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
-    const statusLine = `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · ${session.engine.modelId} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
+    const beforeModel = `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · `;
+    const modelSegment = session.engine.modelId;
+    modelHitRange = {
+      start: visibleWidth(beforeModel),
+      end: visibleWidth(beforeModel) + visibleWidth(modelSegment) - 1,
+    };
+    const statusLine = `${beforeModel}${modelSegment} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
     lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
     return lines;
   }
@@ -812,22 +1224,19 @@ export async function runCodeTui(
     if (!sidebarVisible) {
       return h(Box, { direction: 'column', gap: 0 }, ...content.map((line) => h(Text, null, line)));
     }
-    sidebarRowsCache = sidebarRows();
-    const rows = sidebarRowsCache;
-    sidebarIndex = Math.max(0, Math.min(sidebarIndex, rows.length - 1));
-    if (sidebarIndex < sidebarScroll) sidebarScroll = sidebarIndex;
-    if (sidebarIndex >= sidebarScroll + height) sidebarScroll = sidebarIndex - height + 1;
+    sidebarDisplayCache = buildSidebarDisplay();
+    ensureSelectedVisible(sidebarDisplayCache);
     const lines: string[] = [];
     for (let i = 0; i < height; i++) {
-      const rowIndex = sidebarScroll + i;
-      const row = rows[rowIndex];
-      const cell = row ? sidebarLine(row, rowIndex === sidebarIndex) : ' '.repeat(SIDEBAR_WIDTH);
+      const lineIndex = sidebarScroll + i;
+      const cell = sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
       lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
     }
     return h(Box, { direction: 'column', gap: 0 }, ...lines.map((line) => h(Text, null, line)));
   }
 
   function paint(): void {
+    if (!app) return;
     lastPaint = Date.now();
     app.update(composedView());
   }
@@ -860,42 +1269,27 @@ export async function runCodeTui(
         notice(
           session,
           [
-            '/model <id> — switch model · /models — list models · /title <t> — rename session',
+            '/model — model picker (or /model <id>, or click the model name in the status bar) · /title <t> — rename session',
             '/plan · /code — switch mode (Shift+Tab) · /auto — toggle auto-approval',
             '/agents — sub-agent status · /new — new session · /archive — archive session',
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
-            'Sidebar: click "+ new session", right-click a session to rename/archive/delete',
-            'Esc — cancel turn (or child run in its view) · Enter queues during a turn; [steer now]/Ctrl+S steers',
+            'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
+            'Transcript: click a tool line to expand its input/output',
+            'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
           ].join('\n'),
         );
         break;
-      case 'models': {
-        session.status = 'Listing models…';
-        redraw();
-        try {
-          const models = await session.engine.listModels();
-          notice(
-            session,
-            models.length > 0
-              ? models.map((m) => `${m.provider}: ${m.id}`).join('\n')
-              : 'No models discovered.',
-          );
-        } catch (err) {
-          notice(
-            session,
-            `model listing failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
-        }
-        session.status = 'Ready';
-        break;
-      }
       case 'model':
         if (arg.length === 0) {
-          notice(session, `current model: ${session.engine.modelId}`);
+          openModelMenu(session);
           break;
         }
-        await session.engine.setModel(arg);
-        notice(session, `model → ${session.engine.modelId}`);
+        try {
+          await session.engine.setModel(arg);
+          notice(session, `model → ${session.engine.modelId}`);
+        } catch (err) {
+          notice(session, err instanceof Error ? err.message : String(err));
+        }
         break;
       case 'title':
         if (arg.length === 0) {
@@ -945,6 +1339,7 @@ export async function runCodeTui(
         const engine = await workspace.createSession();
         attachSession(engine);
         focusedSessionId = engine.threadId;
+        selectedKey = `s:${engine.threadId}`;
         break;
       }
       case 'exit':
@@ -1000,11 +1395,13 @@ export async function runCodeTui(
 
   async function handleEvent(event: TuiEvent): Promise<void> {
     const session = focused();
+    const slashMatches = slashFilter(session);
     if (event.type === 'mouse') {
       const inSidebar = sidebarVisible && event.x < SIDEBAR_WIDTH;
       const contentX = event.x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
       if (event.action === 'press' && event.button === 'right' && inSidebar) {
-        const row = sidebarRowsCache[sidebarScroll + event.y];
+        const entry = sidebarDisplayCache.lineMap[sidebarScroll + event.y];
+        const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
         if (row?.kind === 'session') {
           contextMenu = { sessionId: row.id, selected: 0, confirmDelete: false };
           redraw();
@@ -1012,6 +1409,18 @@ export async function runCodeTui(
         return;
       }
       if (event.action === 'press' && event.button === 'left') {
+        if (modelMenu) {
+          if (!inSidebar && session) {
+            const hit = modelMenuHitRows.find((r) => r.row === event.y);
+            if (hit) {
+              chooseModel(session, modelMenu, hit.index);
+              return;
+            }
+          }
+          modelMenu = undefined;
+          redraw();
+          return;
+        }
         if (contextMenu) {
           if (!inSidebar) {
             const hit = menuHitRows.find((r) => r.row === event.y);
@@ -1029,54 +1438,91 @@ export async function runCodeTui(
           redraw();
           return;
         }
+        if (
+          session &&
+          event.y === height - 1 &&
+          modelHitRange &&
+          contentX >= modelHitRange.start &&
+          contentX <= modelHitRange.end
+        ) {
+          openModelMenu(session);
+          return;
+        }
         if (inSidebar) {
-          if (event.y === 0 && event.x >= SIDEBAR_WIDTH - 2) {
+          const entry = sidebarDisplayCache.lineMap[sidebarScroll + event.y];
+          const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
+          if (!row) return;
+          if (row.kind === 'action-new' && event.x >= SIDEBAR_WIDTH - 2) {
             sidebarVisible = false;
             redraw();
             return;
           }
-          const rowIndex = sidebarScroll + event.y;
-          const row = sidebarRowsCache[rowIndex];
-          if (row) {
-            if (row.kind === 'session' && rowIndex === sidebarIndex && !row.archived) {
-              if (expanded.has(row.id)) expanded.delete(row.id);
-              else expanded.add(row.id);
-            }
-            sidebarIndex = rowIndex;
-            focusSidebarRow(row);
+          if (row.kind === 'session' && !row.archived && entry!.first && event.x < 2) {
+            if (expanded.has(row.id)) expanded.delete(row.id);
+            else expanded.add(row.id);
+            redraw();
+            return;
           }
+          focusSidebarRow(row);
           redraw();
           return;
         }
-        if (session && approvalQueue.length === 0) {
+        if (session && approvalQueue.length === 0 && !contextMenu) {
+          const slashHit = slashHitRows.find((r) => r.row === event.y);
+          if (slashHit && slashMatches.length > 0) {
+            const start = Math.max(
+              0,
+              Math.min(slashSelected - SLASH_MAX_ROWS + 1, slashMatches.length - SLASH_MAX_ROWS),
+            );
+            const command = slashMatches[start + slashHit.index];
+            if (command) applySlashCommand(session, command);
+            return;
+          }
           const queueRow = event.y - queueTop;
-          const hit = queueHitRows.find(
+          const queueHit = queueHitRows.find(
             (r) => r.row === queueRow && contentX >= r.buttonStart && contentX <= r.buttonEnd,
           );
-          if (hit) {
-            steerMessage(session, hit.index);
+          if (queueHit) {
+            steerMessage(session, queueHit.index);
+            return;
+          }
+          const toolHit = transcriptHitRows.find((r) => r.row === event.y);
+          if (toolHit) {
+            const tab = view(session, session.focusedView);
+            const entry = tab.entries[toolHit.entryIndex];
+            if (entry?.kind === 'tool') {
+              entry.expanded = !entry.expanded;
+              redraw();
+            }
             return;
           }
         }
       }
       if (event.action === 'wheel') {
+        if (slashMatches.length > 0 && session && !inSidebar) {
+          const delta = event.button === 'wheel-up' ? -1 : 1;
+          slashSelected = Math.max(0, Math.min(slashMatches.length - 1, slashSelected + delta));
+          redraw();
+          return;
+        }
+        if (modelMenu && !inSidebar) {
+          const menu = modelMenu;
+          const delta = event.button === 'wheel-up' ? -3 : 3;
+          menu.scroll = Math.max(0, menu.scroll + delta);
+          redraw();
+          return;
+        }
         if (inSidebar) {
-          sidebarScroll = Math.max(0, sidebarScroll + (event.button === 'wheel-up' ? -3 : 3));
+          const max = Math.max(0, sidebarDisplayCache.lines.length - height);
+          sidebarScroll = Math.max(
+            0,
+            Math.min(max, sidebarScroll + (event.button === 'wheel-up' ? -3 : 3)),
+          );
           redraw();
           return;
         }
         if (!session) return;
-        const tab = view(session, session.focusedView);
-        const rows = transcriptRows(session);
-        const limit = Math.max(0, rows.length - Math.max(1, height - 2));
-        if (event.button === 'wheel-up') {
-          tab.scrollOffset = Math.max(0, tab.scrollOffset - 3);
-          tab.stickToBottom = false;
-        } else if (event.button === 'wheel-down') {
-          tab.scrollOffset = Math.min(limit, tab.scrollOffset + 3);
-          if (tab.scrollOffset >= limit) tab.stickToBottom = true;
-        }
-        redraw();
+        scrollBy(session, event.button === 'wheel-up' ? -3 : 3);
       }
       return;
     }
@@ -1092,6 +1538,20 @@ export async function runCodeTui(
       if (!event.ctrl && !event.alt) {
         if (event.text === 'y' || event.text === 'Y') decideApproval(true);
         else if (event.text === 'n' || event.text === 'N') decideApproval(false);
+      }
+      return;
+    }
+    if (modelMenu && session) {
+      const menu = modelMenu;
+      if (event.key === 'escape') {
+        modelMenu = undefined;
+        redraw();
+      } else if (event.key === 'up') {
+        moveModelSelection(menu, -1);
+      } else if (event.key === 'down') {
+        moveModelSelection(menu, 1);
+      } else if (event.key === 'enter') {
+        chooseModel(session, menu, menu.selected);
       }
       return;
     }
@@ -1122,24 +1582,51 @@ export async function runCodeTui(
     // Ctrl+N / Ctrl+P instead of Ctrl+arrows: macOS reserves Ctrl+arrow
     // combinations for Mission Control.
     if (event.ctrl && (event.key === 'n' || event.key === 'p')) {
-      if (!sidebarVisible) {
-        sidebarVisible = true;
-        sidebarRowsCache = sidebarRows();
-      }
-      const rows = sidebarRowsCache.length > 0 ? sidebarRowsCache : sidebarRows();
-      sidebarRowsCache = rows;
-      let next = sidebarIndex + (event.key === 'p' ? -1 : 1);
+      if (!sidebarVisible) sidebarVisible = true;
+      const display = buildSidebarDisplay();
+      sidebarDisplayCache = display;
+      const rows = display.rows;
+      let index = selectedRowIndex(display);
+      if (index < 0) index = 0;
+      let next = index + (event.key === 'p' ? -1 : 1);
       while (next >= 0 && next < rows.length && rows[next]!.kind === 'divider') {
         next += event.key === 'p' ? -1 : 1;
       }
-      if (next >= 0 && next < rows.length && rows[next]!.kind !== 'action-new') {
-        sidebarIndex = next;
-        focusSidebarRow(rows[next]!);
-      } else if (next >= 0 && next < rows.length) {
-        sidebarIndex = next;
+      if (next >= 0 && next < rows.length) {
+        const row = rows[next]!;
+        selectedKey = rowKey(row);
+        if (row.kind !== 'action-new') focusSidebarRow(row);
       }
       redraw();
       return;
+    }
+    if (slashMatches.length > 0 && session) {
+      if (event.key === 'up') {
+        slashSelected = (slashSelected - 1 + slashMatches.length) % slashMatches.length;
+        redraw();
+        return;
+      }
+      if (event.key === 'down') {
+        slashSelected = (slashSelected + 1) % slashMatches.length;
+        redraw();
+        return;
+      }
+      if (event.key === 'tab' && !event.shift) {
+        const command = slashMatches[slashSelected];
+        if (command) session.input = `/${command.name}${command.submits ? '' : ' '}`;
+        redraw();
+        return;
+      }
+      if (event.key === 'enter') {
+        const command = slashMatches[slashSelected];
+        if (command) applySlashCommand(session, command);
+        return;
+      }
+      if (event.key === 'escape') {
+        session.input = '';
+        redraw();
+        return;
+      }
     }
     if (event.key === 'tab' && !event.shift) {
       if (session) cycleView(session, 1);
@@ -1150,6 +1637,7 @@ export async function runCodeTui(
         const engine = await workspace.createSession();
         attachSession(engine);
         focusedSessionId = engine.threadId;
+        selectedKey = `s:${engine.threadId}`;
         redraw();
       }
       return;
@@ -1173,18 +1661,8 @@ export async function runCodeTui(
       return;
     }
     if (event.key === 'pageup' || event.key === 'pagedown') {
-      const tab = view(session, session.focusedView);
-      const rows = transcriptRows(session);
-      const pageSize = Math.max(1, height - 3);
-      const limit = Math.max(0, rows.length - pageSize);
-      if (event.key === 'pageup') {
-        tab.scrollOffset = Math.max(0, tab.scrollOffset - pageSize);
-        tab.stickToBottom = false;
-      } else {
-        tab.scrollOffset = Math.min(limit, tab.scrollOffset + pageSize);
-        if (tab.scrollOffset >= limit) tab.stickToBottom = true;
-      }
-      redraw();
+      const pageSize = Math.max(1, transcriptHeightFor(session) - 1);
+      scrollBy(session, event.key === 'pageup' ? -pageSize : pageSize);
       return;
     }
     if (session.focusedView !== 'main') return;
@@ -1234,25 +1712,17 @@ export async function runCodeTui(
   workspace.onChange(() => redraw());
 
   const initialId = opts.sessionId ?? workspace.list()[0]?.id;
+  let initialSession: SessionUI | undefined;
   if (initialId) {
     const engine = workspace.engineFor(initialId) ?? (await workspace.openSession(initialId));
-    const session = attachSession(engine);
-    focusedSessionId = session.id;
-    session.views.get('main')!.entries.unshift({
+    initialSession = attachSession(engine);
+    focusedSessionId = initialSession.id;
+    selectedKey = `s:${initialSession.id}`;
+    initialSession.views.get('main')!.entries.unshift({
       kind: 'notice',
       text: 'fino code — /help for commands, Ctrl+B or click ≡ for the session sidebar, Shift+Tab toggles plan mode.',
       done: true,
     });
-    if (opts.recover) {
-      void driveTurn(session, async (hooks) => {
-        const recovered = await engine.recoverTurn(hooks);
-        if (recovered) {
-          notice(session, '[resumed interrupted turn]');
-          return recovered;
-        }
-        return { status: 'done' } as TurnResult;
-      });
-    }
   }
 
   app = render(composedView(), {
@@ -1270,6 +1740,19 @@ export async function runCodeTui(
     width = initial.width;
     height = initial.height;
     paint();
+  }
+  // Recovery must start only after `app` exists: driveTurn repaints
+  // synchronously, and an early throw would leave the session stuck busy.
+  if (opts.recover && initialSession) {
+    const session = initialSession;
+    void driveTurn(session, async (hooks) => {
+      const recovered = await session.engine.recoverTurn(hooks);
+      if (recovered) {
+        notice(session, '[resumed interrupted turn]');
+        return recovered;
+      }
+      return { status: 'done' } as TurnResult;
+    });
   }
 
   try {

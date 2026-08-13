@@ -394,6 +394,7 @@ export type AgentEvent =
       stepIndex: number;
       id: string;
       name: string;
+      args?: unknown;
     }
   | {
       type: 'tool_result';
@@ -401,6 +402,7 @@ export type AgentEvent =
       id: string;
       name: string;
       isError?: boolean;
+      content?: string | ContentPart[];
     }
   | {
       type: 'tool_error';
@@ -1634,6 +1636,7 @@ export class AgentRuntime {
           stepIndex: state.stepIndex,
           id: part.id,
           name: part.name,
+          args: part.args,
         });
         if (t.requiresApproval) {
           throw new SuspendSignal(`Approval required for tool: ${part.name}`, {
@@ -1685,6 +1688,7 @@ export class AgentRuntime {
             id: part.id,
             name: part.name,
             ...(result.isError ? { isError: true } : {}),
+            content: result.content,
           });
           return {
             part,
@@ -2221,6 +2225,7 @@ export class AgentRuntime {
         stepIndex: state.stepIndex,
         id: request.toolCallId,
         name: request.toolName,
+        args: request.args,
       });
       const { part, result } = await this.#invokeApprovedTool(
         request,
@@ -2238,6 +2243,7 @@ export class AgentRuntime {
         id: part.id,
         name: part.name,
         ...(result.isError ? { isError: true } : {}),
+        content: result.content,
       });
       const toolResultMessage: ModelMessage = {
         role: 'user',

@@ -179,7 +179,10 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
   const enc = new TextEncoder();
   return {
     async send(message: string): Promise<void> {
+      // Flush per message: fd writers coalesce small writes, and a JSON-RPC
+      // request must not sit in the buffer while we wait for its response.
       await proc.stdin.write(enc.encode(message + '\n'));
+      await proc.stdin.flush();
     },
     receive(): AsyncIterable<string> {
       return splitLines(proc.stdout);
@@ -200,7 +203,9 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
  * protocol stream.
  *
  * `close()` is a no-op: the host owns the pipe lifetime, and `serve()`
- * resolves when stdin reaches end-of-file.
+ * resolves when stdin reaches end-of-file. Each `send()` flushes its complete
+ * newline-delimited frame immediately so a long-lived server never leaves a
+ * protocol response in the stdout writer's coalescing buffer.
  *
  * ```ts no_run
  * import { mcpServer, stdioServerTransport } from 'fino:ai/mcp';
@@ -213,7 +218,9 @@ export function stdioServerTransport(): Transport {
   const enc = new TextEncoder();
   return {
     async send(message: string): Promise<void> {
-      await stdout().write(enc.encode(message + '\n'));
+      const writer = stdout();
+      await writer.write(enc.encode(message + '\n'));
+      await writer.flush();
     },
     receive(): AsyncIterable<string> {
       return splitLines(stdin());

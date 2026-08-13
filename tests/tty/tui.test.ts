@@ -271,3 +271,23 @@ describe('fino:tty/tui terminal resize', () => {
     t.equal(sizes.length, settled, 'disposer unsubscribes');
   });
 });
+describe('fino:tty/tui ANSI clipping', () => {
+  it('clips over-wide styled rows without leaking SGR state', (t) => {
+    const styled = '\x1b[44mthis line is far too wide for the frame\x1b[0m';
+    const frame = renderFrame(h(Text, null, styled), { width: 10, height: 1 });
+    t.ok(frame.endsWith('\x1b[0m'), 'clipped styled line closes with a reset');
+    t.equal(
+      frame.replace(/\x1b\[[0-9;]*m/g, '').length,
+      10,
+      'visible width matches the frame width',
+    );
+    t.ok(frame.startsWith('\x1b[44m'), 'leading style preserved');
+  });
+
+  it('pads short styled rows and still terminates with a reset', (t) => {
+    const frame = renderFrame(h(Text, null, '\x1b[31mhi\x1b[0m'), { width: 6, height: 1 });
+    t.equal(frame.replace(/\x1b\[[0-9;]*m/g, ''), 'hi    ', 'padded to width');
+    const lastReset = frame.lastIndexOf('\x1b[0m');
+    t.ok(frame.slice(lastReset + 4).trim() === '', 'nothing styled after the final reset');
+  });
+});
