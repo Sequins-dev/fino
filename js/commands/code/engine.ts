@@ -144,6 +144,35 @@ export interface CodeTurnRecord {
   messages: number;
 }
 
+/** Store key holding a thread's turn records. */
+function turnsKey(threadId: string): string {
+  return `code:turns:${threadId}`;
+}
+
+/**
+ * Read a thread's conversation straight from a store.
+ *
+ * Standalone so a session can be displayed without an engine behind it —
+ * an archived session is frozen and has no live agent to ask.
+ */
+export async function readThreadHistory(
+  store: SessionStore,
+  threadId: string,
+): Promise<ModelMessage[]> {
+  const thread = await store.loadThread(threadId);
+  if (!thread?.historyRevisionId) return [];
+  const history = await store.loadHistory(thread.historyRevisionId);
+  return history?.render() ?? [];
+}
+
+/** Read a thread's per-turn records straight from a store. */
+export async function readThreadTurns(
+  store: SessionStore,
+  threadId: string,
+): Promise<CodeTurnRecord[]> {
+  return ((await store.getMeta(turnsKey(threadId))) as CodeTurnRecord[] | null) ?? [];
+}
+
 /**
  * A pending approval request surfaced by a suspended turn.
  */
@@ -555,10 +584,7 @@ export class CodeEngine {
 
   /** Render this session's durable main-thread history. */
   async history(): Promise<ModelMessage[]> {
-    const thread = await this.#store.loadThread(this.#threadId);
-    if (!thread?.historyRevisionId) return [];
-    const history = await this.#store.loadHistory(thread.historyRevisionId);
-    return history?.render() ?? [];
+    return readThreadHistory(this.#store, this.#threadId);
   }
 
   /**
@@ -570,12 +596,11 @@ export class CodeEngine {
    * a mirror precisely so nothing depends on it.
    */
   async turns(): Promise<CodeTurnRecord[]> {
-    const stored = (await this.#store.getMeta(this.#turnsKey())) as CodeTurnRecord[] | null;
-    return stored ?? [];
+    return readThreadTurns(this.#store, this.#threadId);
   }
 
   #turnsKey(): string {
-    return `code:turns:${this.#threadId}`;
+    return turnsKey(this.#threadId);
   }
 
   async #recordTurn(durationMs: number, status: RunResult['status']): Promise<void> {

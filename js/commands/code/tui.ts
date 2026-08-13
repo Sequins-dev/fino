@@ -172,12 +172,18 @@ interface ApprovalItem {
 
 type SidebarRow =
   | { kind: 'action-new' }
+  | { kind: 'archive-header'; count: number }
   | { kind: 'session'; id: string; archived: boolean };
 
 interface SidebarDisplay {
   rows: SidebarRow[];
   lines: string[];
   lineMap: Array<{ rowIndex: number; first: boolean }>;
+}
+
+interface ContextMenuItem {
+  label: string;
+  action: 'rename' | 'archive' | 'unarchive' | 'delete';
 }
 
 interface ContextMenuState {
@@ -297,7 +303,9 @@ function wrapPlain(text: string, width: number): string[] {
 }
 
 function rowKey(row: SidebarRow): string {
-  return row.kind === 'action-new' ? 'new' : `s:${row.id}`;
+  if (row.kind === 'action-new') return 'new';
+  if (row.kind === 'archive-header') return 'archive';
+  return `s:${row.id}`;
 }
 
 /**
@@ -336,8 +344,10 @@ export async function runCodeTui(
   let sidebarVisible = false;
   let selectedKey = '';
   let sidebarScroll = 0;
-  let sidebarTab: 'active' | 'archived' = 'active';
-  let sidebarTabHits: Array<{ start: number; end: number; key: string }> = [];
+  /** Whether the archived list below the active sessions is open. */
+  let archiveExpanded = false;
+  /** A frozen archived session on screen: transcript only, no engine. */
+  let archivedView: { id: string; tab: TabView } | undefined;
   /** Session created but not yet registered: the blank chat behind `+`. */
   let draftId: string | undefined;
   const approvalQueue: ApprovalItem[] = [];
@@ -403,9 +413,6 @@ export async function runCodeTui(
       return hit ? `model:${hit.index}` : undefined;
     }
     if (inSidebar) {
-      if (y === height - 1) {
-        return sidebarTabHits.find((hit) => x >= hit.start && x <= hit.end)?.key;
-      }
       const entry = sidebarDisplayCache.lineMap[sidebarScroll + y];
       const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
       if (!row) return undefined;
@@ -887,33 +894,48 @@ export async function runCodeTui(
 
   // --- context menu ----------------------------------------------------
 
-  function contextMenuItems(menu: ContextMenuState): string[] {
+  /**
+   * Actions for one session row.
+   *
+   * An archived session is frozen, so it offers only the two actions that do
+   * not touch its contents: bring it back, or remove it. Renaming waits until
+   * it is unarchived rather than quietly thawing it.
+   */
+  function contextMenuItems(menu: ContextMenuState): ContextMenuItem[] {
     const meta = workspace.meta(menu.sessionId);
+    const remove: ContextMenuItem = {
+      label: menu.confirmDelete ? 'Delete — press again to confirm' : 'Delete',
+      action: 'delete',
+    };
+    if (meta?.archived) return [{ label: 'Unarchive', action: 'unarchive' }, remove];
     return [
-      'Rename',
-      meta?.archived ? 'Unarchive' : 'Archive',
-      menu.confirmDelete ? 'Delete — press again to confirm' : 'Delete',
+      { label: 'Rename', action: 'rename' },
+      { label: 'Archive', action: 'archive' },
+      remove,
     ];
   }
 
   async function runContextMenuItem(menu: ContextMenuState, index: number): Promise<void> {
     const meta = workspace.meta(menu.sessionId);
-    if (!meta) {
+    const item = contextMenuItems(menu)[index];
+    if (!meta || !item) {
       contextMenu = undefined;
       redraw();
       return;
     }
-    if (index === 0) {
+    if (item.action === 'rename') {
       contextMenu = undefined;
       await focusSession(menu.sessionId);
       const session = focused();
       if (session) {
         session.input.setText(`/title ${meta.title === 'untitled' ? '' : meta.title}`.trimEnd() + ' ');
       }
-    } else if (index === 1) {
+    } else if (item.action === 'archive' || item.action === 'unarchive') {
       contextMenu = undefined;
-      await workspace.archiveSession(menu.sessionId, !meta.archived);
-    } else if (index === 2) {
+      const archiving = item.action === 'archive';
+      await workspace.archiveSession(menu.sessionId, archiving);
+      if (!archiving) await focusSession(menu.sessionId);
+    } else {
       if (!menu.confirmDelete) {
         menu.confirmDelete = true;
         redraw();
@@ -921,8 +943,9 @@ export async function runCodeTui(
       }
       contextMenu = undefined;
       sessions.delete(menu.sessionId);
+      if (archivedView?.id === menu.sessionId) archivedView = undefined;
       await workspace.deleteSession(menu.sessionId);
-      if (focusedSessionId === menu.sessionId) {
+      if (focusedSessionId === menu.sessionId || !focusedSessionId) {
         const next = workspace.list()[0]?.id;
         if (next) await focusSession(next);
         else await focusDraft();
@@ -1014,9 +1037,8 @@ export async function runCodeTui(
     return lines;
   }
 
-  function tabRows(session: SessionUI): { rows: string[]; toolRows: Map<number, number> } {
+  function tabRows(tab: TabView): { rows: string[]; toolRows: Map<number, number> } {
     const cw = contentWidth();
-    const tab = view(session, session.focusedView);
     const rows: string[] = [];
     const toolRows = new Map<number, number>();
     for (let index = 0; index < tab.entries.length; index++) {
@@ -1088,29 +1110,17 @@ export async function runCodeTui(
     redraw();
   }
 
-  function seedFromHistory(
-    session: SessionUI,
+  /**
+   * Rebuild transcript entries from a stored conversation.
+   *
+   * Pure: an archived session has no engine and no live view, so its
+   * transcript is built from store data alone.
+   */
+  function entriesFromHistory(
     messages: ModelMessage[],
     turns: CodeTurnRecord[],
-  ): void {
-    const tab = view(session, 'main');
-    // Everything the user typed on this thread, so up-arrow recall survives
-    // the process that typed it.
-    session.inputHistory = messages
-      .filter(
-        (message): message is ModelMessage & { content: string } =>
-          message.role === 'user' &&
-          typeof message.content === 'string' &&
-          !message.content.startsWith('[subagent settlement]'),
-      )
-      .map((message) => message.content);
-    session.historyIndex = -1;
-    // Durable history replaces the conversation, but harness-generated
-    // notices (the intro banner, sub-agent status notes) are not in it and
-    // must survive the reseed.
-    const pinnedTop = tab.entries.filter((entry) => entry.pin === 'top');
-    const pinnedBottom = tab.entries.filter((entry) => entry.pin === 'bottom');
-    tab.entries = [];
+  ): TranscriptEntry[] {
+    const entries: TranscriptEntry[] = [];
     const toolEntries = new Map<string, TranscriptEntry>();
     // Turn records carry the history length they ended at, so the markers
     // land between the same messages they did when the turns ran.
@@ -1121,7 +1131,7 @@ export async function runCodeTui(
     }
     const flushMarks = (index: number): void => {
       for (const turn of marks.get(index) ?? []) {
-        tab.entries.push({ kind: 'turn', text: turnMarkerText(turn), done: true });
+        entries.push({ kind: 'turn', text: turnMarkerText(turn), done: true });
       }
     };
     for (let index = 0; index < messages.length; index++) {
@@ -1129,7 +1139,7 @@ export async function runCodeTui(
       const message = messages[index]!;
       if (message.role === 'user' && typeof message.content === 'string') {
         const synthetic = message.content.startsWith('[subagent settlement]');
-        tab.entries.push({
+        entries.push({
           kind: synthetic ? 'notice' : 'user',
           text: message.content,
           done: true,
@@ -1146,11 +1156,11 @@ export async function runCodeTui(
         }
       } else if (message.role === 'assistant') {
         if (typeof message.content === 'string') {
-          tab.entries.push({ kind: 'assistant', text: message.content, done: true });
+          entries.push({ kind: 'assistant', text: message.content, done: true });
         } else {
           for (const part of message.content) {
             if (part.type === 'text' && part.text.trim().length > 0) {
-              tab.entries.push({ kind: 'assistant', text: part.text, done: true });
+              entries.push({ kind: 'assistant', text: part.text, done: true });
             } else if (part.type === 'tool_use') {
               const entry: TranscriptEntry = {
                 kind: 'tool',
@@ -1162,22 +1172,47 @@ export async function runCodeTui(
                 argsKey: previewText(JSON.stringify(part.args ?? {}), 200),
               };
               toolEntries.set(part.id, entry);
-              tab.entries.push(entry);
+              entries.push(entry);
             }
           }
         }
       }
     }
     flushMarks(messages.length);
-    tab.entries = [...pinnedTop, ...tab.entries, ...pinnedBottom];
-    tab.seeded = true;
-    redraw();
+    return entries;
   }
 
   /** One line of turn bookkeeping: the outcome and how long it took. */
   function turnMarkerText(turn: CodeTurnRecord): string {
-    const mark = turn.status === 'done' ? '✔' : '✗';
+    const mark = turn.status === 'done' ? '\u2714' : '\u2717';
     return `${mark} ${formatDuration(turn.durationMs)}`;
+  }
+
+  function seedFromHistory(
+    session: SessionUI,
+    messages: ModelMessage[],
+    turns: CodeTurnRecord[],
+  ): void {
+    // Durable history replaces the conversation, but harness-generated
+    // notices (the intro banner, sub-agent status notes) are not in it and
+    // must survive the reseed.
+    const tab = view(session, 'main');
+    const pinnedTop = tab.entries.filter((entry) => entry.pin === 'top');
+    const pinnedBottom = tab.entries.filter((entry) => entry.pin === 'bottom');
+    tab.entries = [...pinnedTop, ...entriesFromHistory(messages, turns), ...pinnedBottom];
+    tab.seeded = true;
+    // Everything the user typed on this thread, so up-arrow recall survives
+    // the process that typed it.
+    session.inputHistory = messages
+      .filter(
+        (message): message is ModelMessage & { content: string } =>
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          !message.content.startsWith('[subagent settlement]'),
+      )
+      .map((message) => message.content);
+    session.historyIndex = -1;
+    redraw();
   }
 
   function attachSession(engine: CodeEngine): SessionUI {
@@ -1283,6 +1318,7 @@ export async function runCodeTui(
   }
 
   async function focusSession(id: string, viewId = 'main'): Promise<void> {
+    archivedView = undefined;
     focusedSessionId = id;
     selectedKey = viewId === 'main' ? (isDraft(id) ? 'new' : `s:${id}`) : selectedKey;
     if (!sessions.has(id)) {
@@ -1425,10 +1461,16 @@ export async function runCodeTui(
   // --- sidebar ---------------------------------------------------------
 
   function sidebarRows(): SidebarRow[] {
-    const rows: SidebarRow[] = [];
-    if (sidebarTab === 'active') rows.push({ kind: 'action-new' });
-    for (const meta of workspace.list({ archived: sidebarTab === 'archived' })) {
-      rows.push({ kind: 'session', id: meta.id, archived: sidebarTab === 'archived' });
+    const rows: SidebarRow[] = [{ kind: 'action-new' }];
+    for (const meta of workspace.list()) {
+      rows.push({ kind: 'session', id: meta.id, archived: false });
+    }
+    const archived = workspace.list({ archived: true });
+    if (archived.length > 0) {
+      rows.push({ kind: 'archive-header', count: archived.length });
+      if (archiveExpanded) {
+        for (const meta of archived) rows.push({ kind: 'session', id: meta.id, archived: true });
+      }
     }
     return rows;
   }
@@ -1453,6 +1495,16 @@ export async function runCodeTui(
         lines.push(line);
         lineMap.push({ rowIndex, first });
       };
+      if (row.kind === 'archive-header') {
+        const label = `${archiveExpanded ? '▾' : '▸'} archived (${row.count})`;
+        push(
+          hovered
+            ? `${BOLD}${WHITE}${padVisible(` ${label}`, w)}${RESET}`
+            : `${DIM}${padVisible(` ${label}`, w)}${RESET}`,
+          true,
+        );
+        continue;
+      }
       // The border alone carries state: absent at rest, grey under the
       // pointer, white for the focused session. Drawing it as blanks rather
       // than dropping it keeps every entry the same height, so rows do not
@@ -1496,7 +1548,7 @@ export async function runCodeTui(
     const lines = [
       `${YELLOW}┌${'─'.repeat(w - 2)}┐${RESET}`,
       ...items.map((item, index) => {
-        const row = menuRow(item, {
+        const row = menuRow(item.label, {
           selected: index === menu.selected,
           hovered: hover === `menu:${index}`,
           width: w - 3,
@@ -1511,31 +1563,54 @@ export async function runCodeTui(
     return { top, lines };
   }
 
-  /**
-   * The sidebar's bottom row: which list is showing, level with the status
-   * bar so the two read as one footer.
-   */
-  function sidebarTabLine(): string {
-    const counts = {
-      active: workspace.list().length,
-      archived: workspace.list({ archived: true }).length,
-    };
-    sidebarTabHits = [];
-    let line = '';
-    let column = 0;
-    const tab = (name: 'active' | 'archived'): void => {
-      const text = ` ${name} ${counts[name]} `;
-      sidebarTabHits.push({ start: column, end: column + text.length - 1, key: `tab:${name}` });
-      const style =
-        sidebarTab === name ? INVERSE : hover === `tab:${name}` ? `${WHITE}${UNDERLINE}` : DIM;
-      line += `${style}${text}${RESET}`;
-      column += text.length;
-    };
-    tab('active');
-    line += `${DIM}│${RESET}`;
-    column += 1;
-    tab('archived');
-    return padVisible(line, SIDEBAR_WIDTH);
+  function buildSidebarDisplay(): SidebarDisplay {
+    const w = SIDEBAR_WIDTH;
+    const rows = sidebarRows();
+    const lines: string[] = [];
+    const lineMap: Array<{ rowIndex: number; first: boolean }> = [];
+    for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+      const row = rows[rowIndex]!;
+      const selected = rowKey(row) === selectedKey;
+      const hovered = hover === `sidebar:${rowIndex}`;
+      const push = (line: string, first = false): void => {
+        lines.push(line);
+        lineMap.push({ rowIndex, first });
+      };
+      if (row.kind === 'archive-header') {
+        const label = `${archiveExpanded ? '▾' : '▸'} archived (${row.count})`;
+        push(
+          hovered
+            ? `${BOLD}${WHITE}${padVisible(` ${label}`, w)}${RESET}`
+            : `${DIM}${padVisible(` ${label}`, w)}${RESET}`,
+          true,
+        );
+        continue;
+      }
+      // The border alone carries state: absent at rest, grey under the
+      // pointer, white for the focused session. Drawing it as blanks rather
+      // than dropping it keeps every entry the same height, so rows do not
+      // jump as the pointer crosses them.
+      const edge = selected ? WHITE : hovered ? DIM : '';
+      const dim = row.archived && !selected;
+      const rule = (left: string, right: string): string =>
+        edge ? `${edge}${left}${'─'.repeat(w - 2)}${right}${RESET}` : ' '.repeat(w);
+      const inner = (line: string): string => {
+        const body = padVisible(line, w - 4);
+        const bar = edge ? `${edge}│${RESET}` : ' ';
+        return `${bar}${dim ? DIM : ''} ${body} ${RESET}${bar}`;
+      };
+      const titleLines =
+        row.kind === 'action-new'
+          ? ['new session']
+          : wrapPlain(sessionTitle(row.id), w - 6).slice(0, SESSION_TITLE_LINES);
+      const indicator = row.kind === 'action-new' ? `${GREEN}+${RESET}` : sessionIndicator(row.id);
+      push(rule('┌', '┐'), true);
+      for (let i = 0; i < titleLines.length; i++) {
+        push(inner(`${i === 0 ? `${indicator} ` : '  '}${titleLines[i]}`));
+      }
+      push(rule('└', '┘'));
+    }
+    return { rows, lines, lineMap };
   }
 
   function selectedRowIndex(display: SidebarDisplay): number {
@@ -1549,18 +1624,54 @@ export async function runCodeTui(
       (entry) => entry.rowIndex === rowIndex && entry.first,
     );
     if (firstLine < 0) return;
-    const listRows = Math.max(1, height - 1);
     if (firstLine < sidebarScroll) sidebarScroll = firstLine;
-    if (firstLine >= sidebarScroll + listRows) sidebarScroll = firstLine - listRows + 1;
+    if (firstLine >= sidebarScroll + height) sidebarScroll = firstLine - height + 1;
   }
 
   function focusSidebarRow(row: SidebarRow): void {
+    if (row.kind === 'archive-header') {
+      archiveExpanded = !archiveExpanded;
+      redraw();
+      return;
+    }
     selectedKey = rowKey(row);
     if (row.kind === 'action-new') {
       void focusDraft();
       return;
     }
+    if (row.archived) {
+      void showArchived(row.id);
+      return;
+    }
     void focusSession(row.id, 'main');
+  }
+
+  /**
+   * Show an archived session's transcript without giving it an engine.
+   *
+   * Archived means frozen: no agent behind it, no input, nothing that could
+   * append to the thread until it is unarchived.
+   */
+  async function showArchived(id: string): Promise<void> {
+    // The engine is gone with the archive, so the live view must go too.
+    sessions.delete(id);
+    archivedView = { id, tab: { entries: [], scrollOffset: 0, stickToBottom: true } };
+    focusedSessionId = '';
+    selectedKey = `s:${id}`;
+    archiveExpanded = true;
+    redraw();
+    try {
+      const { messages, turns } = await workspace.readSession(id);
+      if (archivedView?.id !== id) return;
+      archivedView.tab.entries = entriesFromHistory(messages, turns);
+    } catch (_) {
+      if (archivedView?.id === id) {
+        archivedView.tab.entries = [
+          { kind: 'notice', text: 'could not read this archived session', done: true },
+        ];
+      }
+    }
+    redraw();
   }
 
   /**
@@ -1607,12 +1718,50 @@ export async function runCodeTui(
     return box.map((line) => indent + line);
   }
 
+  /**
+   * A frozen archived session: its transcript, and a status bar that says so.
+   *
+   * There is no input line — nothing can be sent to a session with no agent
+   * behind it — which leaves the whole column for the conversation.
+   */
+  function archivedLines(archived: { id: string; tab: TabView }, cw: number): string[] {
+    const lines: string[] = [];
+    const rows = tabRows(archived.tab).rows;
+    const viewport = Math.max(1, height - 1);
+    const limit = Math.max(0, rows.length - viewport);
+    if (archived.tab.stickToBottom) archived.tab.scrollOffset = limit;
+    else archived.tab.scrollOffset = Math.max(0, Math.min(archived.tab.scrollOffset, limit));
+    const visible = rows.slice(archived.tab.scrollOffset, archived.tab.scrollOffset + viewport);
+    for (let i = 0; i < viewport; i++) lines.push(visible[i] ?? '');
+    statusHits = [];
+    let statusLine = '';
+    let column = 0;
+    const segment = (text: string, key?: string, style = ''): void => {
+      const width = visibleWidth(text);
+      if (key) {
+        statusHits.push({ start: column, end: column + width - 1, key });
+        statusLine += hover === key ? `${BOLD}${WHITE}${text}${RESET}` : `${style}${text}${RESET}`;
+      } else {
+        statusLine += `${style}${text}${RESET}`;
+      }
+      column += width;
+    };
+    segment(`${sidebarVisible ? '«' : '≡'} ${clipVisible(projectName(), 24)}`, 'status:sidebar', BOLD);
+    segment(' · ', undefined, DIM);
+    segment(clipVisible(sessionTitle(archived.id), 32));
+    segment(' · ARCHIVED', undefined, DIM);
+    segment(' · read-only — unarchive from the sidebar to continue', undefined, DIM);
+    lines.push(padVisible(clipVisible(statusLine, cw + 1), cw + 2));
+    return lines;
+  }
+
   function contentLines(session: SessionUI | undefined): string[] {
     const cw = contentWidth();
     const lines: string[] = [];
     transcriptHitRows = [];
     slashHitRows = [];
     if (!session) {
+      if (archivedView) return archivedLines(archivedView, cw);
       lines.push(
         '',
         `${DIM}no session — Ctrl+B or click ≡ for the sidebar, /new to start one${RESET}`,
@@ -1752,7 +1901,7 @@ export async function runCodeTui(
         }
       }
     } else {
-      const built = tabRows(session);
+      const built = tabRows(view(session, session.focusedView));
       rows = built.rows;
       const limit = Math.max(0, rows.length - transcriptHeight);
       if (tab.stickToBottom) tab.scrollOffset = limit;
@@ -1851,16 +2000,13 @@ export async function runCodeTui(
     sidebarDisplayCache = buildSidebarDisplay();
     ensureSelectedVisible(sidebarDisplayCache);
     const lines: string[] = [];
-    // The last sidebar row is the list switcher, level with the status bar.
-    const listRows = Math.max(1, height - 1);
-    const overlay = contextMenuOverlay(listRows);
-    for (let i = 0; i < listRows; i++) {
+    const overlay = contextMenuOverlay(height);
+    for (let i = 0; i < height; i++) {
       const lineIndex = sidebarScroll + i;
       const overlaid = overlay?.lines[i - overlay.top];
       const cell = overlaid ?? sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
       lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
     }
-    lines.push(`${sidebarTabLine()}${DIM}│${RESET}${content[listRows] ?? ''}`);
     lastFrameLines = lines;
     const painted = selection ? highlightSelection(lines, selection) : lines;
     return h(Box, { direction: 'column', gap: 0 }, ...painted.map((line) => h(Text, null, line)));
@@ -2119,15 +2265,6 @@ export async function runCodeTui(
           return;
         }
         if (inSidebar) {
-          if (event.y === height - 1) {
-            const hit = sidebarTabHits.find((h) => event.x >= h.start && event.x <= h.end);
-            if (hit) {
-              sidebarTab = hit.key === 'tab:archived' ? 'archived' : 'active';
-              sidebarScroll = 0;
-              redraw();
-            }
-            return;
-          }
           const entry = sidebarDisplayCache.lineMap[sidebarScroll + event.y];
           const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
           if (!row) return;
@@ -2201,7 +2338,7 @@ export async function runCodeTui(
           return;
         }
         if (inSidebar) {
-          const max = Math.max(0, sidebarDisplayCache.lines.length - Math.max(1, height - 1));
+          const max = Math.max(0, sidebarDisplayCache.lines.length - height);
           sidebarScroll = Math.max(
             0,
             Math.min(max, sidebarScroll + (event.button === 'wheel-up' ? -3 : 3)),
@@ -2337,6 +2474,19 @@ export async function runCodeTui(
       return;
     }
     if (!session) {
+      if (archivedView) {
+        // Frozen: only scrolling and leaving are available.
+        if (event.key === 'pageup' || event.key === 'pagedown') {
+          const view = archivedView.tab;
+          view.stickToBottom = false;
+          view.scrollOffset = Math.max(
+            0,
+            view.scrollOffset + (event.key === 'pageup' ? -(height - 2) : height - 2),
+          );
+          redraw();
+        }
+        return;
+      }
       if (event.text === '/' || event.key === 'enter') await focusDraft();
       return;
     }
@@ -2478,6 +2628,13 @@ export async function runCodeTui(
     if (draftId !== undefined && !isDraft(draftId)) {
       if (selectedKey === 'new' && focusedSessionId === draftId) selectedKey = `s:${draftId}`;
       draftId = undefined;
+    }
+    // Archiving releases the engine, so a live view of that session would be
+    // holding a closed one; it becomes the frozen view instead.
+    for (const id of [...sessions.keys()]) {
+      if (!workspace.meta(id)?.archived) continue;
+      if (focusedSessionId === id) void showArchived(id);
+      else sessions.delete(id);
     }
     redraw();
   });

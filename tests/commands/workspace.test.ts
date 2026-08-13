@@ -181,6 +181,33 @@ describe('fino:commands/code — JSONL transcripts', () => {
     t.equal(child[0]!.text, 'child task', 'child file written');
   });
 });
+describe('fino:commands/code — archived sessions', () => {
+  it('releases the engine and stays readable while frozen', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const workspace = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('archived reply')]),
+      transcriptsDir: false,
+    });
+    const engine = await workspace.createSession();
+    const id = engine.threadId;
+    await engine.runTurn('a prompt worth keeping');
+    await workspace.archiveSession(id);
+    t.equal(workspace.engineFor(id), undefined, 'no live agent backs an archived session');
+    t.equal(workspace.meta(id)?.archived, true, 'registry records the frozen state');
+
+    const { messages, turns } = await workspace.readSession(id);
+    t.equal(messages.length, 2, 'conversation readable without an engine');
+    t.equal(messages[0]!.content, 'a prompt worth keeping', 'prompt preserved');
+    t.equal(turns.length, 1, 'turn records readable too');
+
+    const revived = await workspace.openSession(id);
+    t.equal(workspace.meta(id)?.archived, false, 'opening it thaws the session');
+    t.equal(revived.threadId, id, 'same thread continues');
+    await workspace.close();
+  });
+});
 describe('fino:commands/code — session deletion', () => {
   it('removes the registry entry, thread runs, child runs, and pool state', async (t) => {
     const dir = tempDir();

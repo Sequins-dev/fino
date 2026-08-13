@@ -22,7 +22,14 @@
 import { InMemorySessionStore, SqliteSessionStore, type SessionStore } from 'fino:ai/session';
 import { DiskFileSystem } from 'fino:file';
 import { dirname, join } from 'fino:file/path';
-import { CodeEngine, type CodeEngineOptions } from 'fino:commands/code/engine';
+import {
+  CodeEngine,
+  readThreadHistory,
+  readThreadTurns,
+  type CodeEngineOptions,
+  type CodeTurnRecord,
+} from 'fino:commands/code/engine';
+import type { ModelMessage } from 'fino:ai/model';
 
 /**
  * Registry entry for one user-level session.
@@ -270,6 +277,14 @@ export class CodeWorkspace {
    * the registry.
    */
   async openSession(id: string): Promise<CodeEngine> {
+    // Opening an archived session is a request to work on it again, and a
+    // live engine and the frozen state cannot coexist.
+    const stored = this.#sessions.find((s) => s.id === id);
+    if (stored?.archived) {
+      stored.archived = false;
+      await this.#persist();
+      this.#notify();
+    }
     if (!this.#sessions.some((s) => s.id === id)) {
       const now = Date.now();
       this.#sessions.push({
@@ -314,8 +329,31 @@ export class CodeWorkspace {
     const meta = this.#sessions.find((s) => s.id === id);
     if (!meta) throw new Error(`Unknown session: ${id}`);
     meta.archived = archived;
+    // An archived session is frozen: nothing should be able to run a turn on
+    // it, so its engine is released and only re-created on unarchive.
+    if (archived) {
+      const engine = this.#engines.get(id);
+      if (engine) {
+        this.#engines.delete(id);
+        this.#activity.delete(id);
+        await engine.close();
+      }
+    }
     await this.#persist();
     this.#notify();
+  }
+
+  /**
+   * Read an archived session's conversation without opening an engine.
+   *
+   * Archived sessions have no live agent behind them, so their transcript is
+   * loaded straight from the store for display.
+   */
+  async readSession(id: string): Promise<{ messages: ModelMessage[]; turns: CodeTurnRecord[] }> {
+    return {
+      messages: await readThreadHistory(this.#store, id),
+      turns: await readThreadTurns(this.#store, id),
+    };
   }
 
   /**

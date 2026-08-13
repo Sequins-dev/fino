@@ -135,8 +135,15 @@ sessions as bordered cards ordered by recent activity with `⟳` working /
 attention. Cards are borderless at rest, gain a grey border under the
 pointer, and a white one when focused. `+ new session` opens a blank chat
 rather than creating a session — it becomes one when you send its first
-message. A switcher along the bottom of the sidebar, level with the status
-bar, moves between the active and archived lists.
+message. Below the active list, a collapsible `archived (n)` section expands
+in place to show archived sessions.
+
+Archiving freezes a session: its engine is released, so nothing is running
+behind it, and selecting it shows the conversation read-only with no input
+line — the whole column goes to the transcript. Its context menu offers only
+`Unarchive` and `Delete`, since renaming would mean thawing it. Unarchiving,
+or opening it with `--thread`, brings the agent back and continues the same
+thread.
 Several sessions can run turns at once; `Ctrl+N`/`Ctrl+P` (or clicking)
 switches focus, and right-clicking a session opens a context menu over the
 row itself to rename, archive, or delete it (delete removes the thread and its sub-agent
