@@ -44,10 +44,12 @@ import {
   render,
   selectionIsEmpty,
   selectionText,
+  TextBuffer,
   type Selection,
   type SelectionRegion,
   type TuiApp,
   type TuiEvent,
+  type TuiKeyEvent,
 } from 'fino:tty/tui';
 import { writeStdout } from 'fino:tty';
 import { env } from 'fino:process';
@@ -139,7 +141,8 @@ interface SessionUI {
   viewOrder: string[];
   viewNames: Map<string, string>;
   focusedView: string;
-  input: string;
+  /** Editable input line: cursor, selection, and wrapping live here. */
+  input: TextBuffer;
   inputHistory: string[];
   historyIndex: number;
   queue: QueuedMessage[];
@@ -179,6 +182,8 @@ interface ContextMenuState {
   sessionId: string;
   selected: number;
   confirmDelete: boolean;
+  /** Sidebar row the menu was opened on, so it renders in place. */
+  anchorY: number;
 }
 
 type ModelMenuEntry =
@@ -468,6 +473,36 @@ export async function runCodeTui(
     return session.busy ? 3 : 1;
   }
 
+  /** Columns the input text itself gets, after the `❯ ` gutter. */
+  function inputWidth(cw: number): number {
+    return Math.max(8, cw);
+  }
+
+  /**
+   * The input, wrapped to as many rows as it needs, with the cursor drawn as
+   * a reversed cell and any selection reversed alongside it.
+   */
+  function inputLines(session: SessionUI, cw: number, placeholder: string): string[] {
+    const buffer = session.input;
+    if (buffer.isEmpty) return [`${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`];
+    const { lines, row, column } = buffer.layout(inputWidth(cw));
+    const range = buffer.selection;
+    return lines.map((line, index) => {
+      const gutter = index === 0 ? `${CYAN}❯${RESET} ` : '  ';
+      let out = '';
+      const cells = Array.from(line.text);
+      for (let i = 0; i <= cells.length; i++) {
+        const offset = line.start + i;
+        const selected = range !== null && offset >= range.start && offset < range.end;
+        const atCursor = index === row && i === column;
+        const ch = cells[i] ?? (atCursor ? ' ' : '');
+        if (ch === '') continue;
+        out += atCursor || selected ? `${INVERSE}${ch}${RESET}` : ch;
+      }
+      return `${gutter}${out}`;
+    });
+  }
+
   /** Track the hovered target, repainting only when it actually changes. */
   function updateHover(x: number, y: number): void {
     const next = hoverKeyAt(x, y);
@@ -606,14 +641,19 @@ export async function runCodeTui(
 
   /**
    * Rows the transcript viewport occupies: everything the panes, activity
-   * band, input line, and status bar leave over.
+   * band, input, separator, and status bar leave over.
    */
   function transcriptHeightFor(session: SessionUI): number {
     const panes = paneRows(session);
-    const input = session.focusedView === 'main' ? 1 : 0;
+    const input =
+      session.focusedView === 'main'
+        ? session.input.isEmpty
+          ? 1
+          : session.input.layout(inputWidth(contentWidth())).lines.length
+        : 0;
     return Math.max(
       1,
-      height - panes.queue - panes.slash - panes.agents - activityRows(session) - input - 1,
+      height - panes.queue - panes.slash - panes.agents - activityRows(session) - input - 2,
     );
   }
 
@@ -666,7 +706,7 @@ export async function runCodeTui(
   function slashFilter(session: SessionUI | undefined): SlashCommand[] {
     if (!session || session.focusedView !== 'main') return [];
     if (approvalQueue.length > 0 || contextMenu || modelMenu) return [];
-    const input = session.input;
+    const input = session.input.text;
     if (!input.startsWith('/') || input.includes(' ')) return [];
     const prefix = input.slice(1).toLowerCase();
     const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(prefix));
@@ -676,10 +716,10 @@ export async function runCodeTui(
 
   function applySlashCommand(session: SessionUI, command: SlashCommand): void {
     if (command.submits) {
-      session.input = `/${command.name}`;
+      session.input.setText(`/${command.name}`);
       submit(session);
     } else {
-      session.input = `/${command.name} `;
+      session.input.setText(`/${command.name} `);
     }
     redraw();
   }
@@ -821,7 +861,7 @@ export async function runCodeTui(
       await focusSession(menu.sessionId);
       const session = focused();
       if (session) {
-        session.input = `/title ${meta.title === 'untitled' ? '' : meta.title}`.trimEnd() + ' ';
+        session.input.setText(`/title ${meta.title === 'untitled' ? '' : meta.title}`.trimEnd() + ' ');
       }
     } else if (index === 1) {
       contextMenu = undefined;
@@ -1001,7 +1041,23 @@ export async function runCodeTui(
     redraw();
   }
 
-  function seedFromHistory(tab: TabView, messages: ModelMessage[], turns: CodeTurnRecord[]): void {
+  function seedFromHistory(
+    session: SessionUI,
+    messages: ModelMessage[],
+    turns: CodeTurnRecord[],
+  ): void {
+    const tab = view(session, 'main');
+    // Everything the user typed on this thread, so up-arrow recall survives
+    // the process that typed it.
+    session.inputHistory = messages
+      .filter(
+        (message): message is ModelMessage & { content: string } =>
+          message.role === 'user' &&
+          typeof message.content === 'string' &&
+          !message.content.startsWith('[subagent settlement]'),
+      )
+      .map((message) => message.content);
+    session.historyIndex = -1;
     // Durable history replaces the conversation, but harness-generated
     // notices (the intro banner, sub-agent status notes) are not in it and
     // must survive the reseed.
@@ -1088,7 +1144,7 @@ export async function runCodeTui(
       viewOrder: [],
       viewNames: new Map([['main', 'main']]),
       focusedView: 'main',
-      input: '',
+      input: new TextBuffer(),
       inputHistory: [],
       historyIndex: -1,
       queue: [],
@@ -1104,7 +1160,7 @@ export async function runCodeTui(
       .then(([messages, turns]) => {
         const tab = view(session, 'main');
         const live = tab.entries.some((entry) => entry.pin === undefined);
-        if (messages.length > 0 && !tab.seeded && !live) seedFromHistory(tab, messages, turns);
+        if (messages.length > 0 && !tab.seeded && !live) seedFromHistory(session, messages, turns);
       })
       .catch(() => {});
     engine.onSubagentEvent((childId, ev) => {
@@ -1330,13 +1386,6 @@ export async function runCodeTui(
     return rows;
   }
 
-  function sessionGlyph(id: string): string {
-    const activity = sessions.get(id)?.engine.activity ?? workspace.activity(id);
-    return activity === 'working' ? '⟳' : activity === 'waiting' ? '▲' : '·';
-  }
-
-  // Colors reset the surrounding inverse styling, so a selected row uses the
-  // bare glyph from sessionGlyph() instead.
   function sessionIndicator(id: string): string {
     const activity = sessions.get(id)?.engine.activity ?? workspace.activity(id);
     if (activity === 'working') return `${YELLOW}⟳${RESET}`;
@@ -1357,35 +1406,58 @@ export async function runCodeTui(
         lines.push(line);
         lineMap.push({ rowIndex, first });
       };
-      // Every entry is a bordered card, so the list reads as separated items
-      // and hover has a target the size of the whole entry. Hover recolors
-      // the border rather than restyling the card, which would fight with the
-      // selection highlight.
-      const border = selected || hovered ? WHITE : DIM;
+      // The border alone carries state: absent at rest, grey under the
+      // pointer, white for the focused session. Drawing it as blanks rather
+      // than dropping it keeps every entry the same height, so rows do not
+      // jump as the pointer crosses them.
+      const edge = selected ? WHITE : hovered ? DIM : '';
       const dim = row.archived && !selected;
+      const rule = (left: string, right: string): string =>
+        edge ? `${edge}${left}${'─'.repeat(w - 2)}${right}${RESET}` : ' '.repeat(w);
       const inner = (line: string): string => {
         const body = padVisible(line, w - 4);
-        return `${border}│${RESET}${selected ? INVERSE : dim ? DIM : ''} ${body} ${RESET}${border}│${RESET}`;
+        const bar = edge ? `${edge}│${RESET}` : ' ';
+        return `${bar}${dim ? DIM : ''} ${body} ${RESET}${bar}`;
       };
       const titleLines =
         row.kind === 'action-new'
           ? ['new session']
           : wrapPlain(sessionTitle(row.id), w - 6).slice(0, SESSION_TITLE_LINES);
-      const indicator =
-        row.kind === 'action-new'
-          ? selected
-            ? '+'
-            : `${GREEN}+${RESET}`
-          : selected
-            ? sessionGlyph(row.id)
-            : sessionIndicator(row.id);
-      push(`${border}┌${'─'.repeat(w - 2)}┐${RESET}`, true);
+      const indicator = row.kind === 'action-new' ? `${GREEN}+${RESET}` : sessionIndicator(row.id);
+      push(rule('┌', '┐'), true);
       for (let i = 0; i < titleLines.length; i++) {
         push(inner(`${i === 0 ? `${indicator} ` : '  '}${titleLines[i]}`));
       }
-      push(`${border}└${'─'.repeat(w - 2)}┘${RESET}`);
+      push(rule('└', '┘'));
     }
     return { rows, lines, lineMap };
+  }
+
+  /**
+   * The session context menu, drawn over the sidebar at the row it was
+   * opened on.
+   *
+   * A menu that appears where the pointer is belongs to the thing it acts
+   * on; the centered popover this replaces read as unrelated to the row that
+   * summoned it.
+   */
+  function contextMenuOverlay(listRows: number): { top: number; lines: string[] } | undefined {
+    const menu = contextMenu;
+    if (!menu) return undefined;
+    const items = contextMenuItems(menu);
+    const w = SIDEBAR_WIDTH;
+    const lines = [
+      `${YELLOW}┌${'─'.repeat(w - 2)}┐${RESET}`,
+      ...items.map((item, index) => {
+        const body = padVisible(` ${item}`, w - 2);
+        return `${YELLOW}│${RESET}${index === menu.selected ? `${INVERSE}${body}${RESET}` : body}${YELLOW}│${RESET}`;
+      }),
+      `${YELLOW}└${'─'.repeat(w - 2)}┘${RESET}`,
+    ];
+    // Anchor at the row that opened it, lifted just enough to stay on screen.
+    const top = Math.max(0, Math.min(menu.anchorY, listRows - lines.length));
+    menuHitRows = items.map((_, index) => ({ row: top + 1 + index, index }));
+    return { top, lines };
   }
 
   /**
@@ -1522,7 +1594,7 @@ export async function runCodeTui(
       }
     }
     const slashMatches = slashFilter(session);
-    const filterKey = session.input;
+    const filterKey = session.input.text;
     if (filterKey !== lastSlashFilter) {
       lastSlashFilter = filterKey;
       slashSelected = 0;
@@ -1620,32 +1692,6 @@ export async function runCodeTui(
           }
         }
       }
-    } else if (contextMenu) {
-      const menu = contextMenu;
-      const title = clipVisible(sessionTitle(menu.sessionId), 40);
-      const items = contextMenuItems(menu);
-      const innerWidth = Math.max(24, Math.min(cw - 4, 48));
-      const top = `${YELLOW}┌${'─'.repeat(innerWidth - 2)}┐${RESET}`;
-      const bottom = `${YELLOW}└${'─'.repeat(innerWidth - 2)}┘${RESET}`;
-      const pad = (line: string): string =>
-        `${YELLOW}│${RESET} ${padVisible(line, innerWidth - 4)} ${YELLOW}│${RESET}`;
-      const body = [
-        `${BOLD}${title}${RESET}`,
-        '',
-        ...items.map((item, index) =>
-          index === menu.selected
-            ? `${INVERSE}${padVisible(` ${item} `, innerWidth - 4)}${RESET}`
-            : ` ${item} `,
-        ),
-        '',
-        `${DIM}↑/↓ select · Enter run · Esc close${RESET}`,
-      ];
-      const box = [top, ...body.map(pad), bottom];
-      const padTop = Math.max(0, Math.floor((transcriptHeight - box.length) / 2));
-      const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
-      rows = [...Array<string>(padTop).fill(''), ...box.map((line) => indent + line)];
-      const menuTop = padTop + 3;
-      menuHitRows = items.map((_, index) => ({ row: menuTop + index, index }));
     } else {
       const built = tabRows(session);
       rows = built.rows;
@@ -1680,15 +1726,13 @@ export async function runCodeTui(
             : session.engine.planMode
               ? 'describe what to plan…'
               : 'ask, or /help';
-      const inputLine =
-        session.input.length > 0
-          ? `${CYAN}❯${RESET} ${session.input}▏`
-          : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
       lines.push(...activityLines(session, cw));
-      lines.push(clipVisible(inputLine, cw + 2));
+      lines.push(...inputLines(session, cw, placeholder));
     } else {
       lines.push(...activityLines(session, cw));
     }
+    // A blank row keeps the input clear of the status bar.
+    lines.push('');
     agentMenuTop = lines.length;
     lines.push(...agentMenuLines(session, cw));
     const states = session.engine.subagentStates();
@@ -1713,7 +1757,7 @@ export async function runCodeTui(
       const width = visibleWidth(text);
       if (key) {
         statusHits.push({ start: column, end: column + width - 1, key });
-        statusLine += hover === key ? `${INVERSE}${text}${RESET}` : `${style}${text}${RESET}`;
+        statusLine += hover === key ? `${BOLD}${WHITE}${text}${RESET}` : `${style}${text}${RESET}`;
       } else {
         statusLine += `${style}${text}${RESET}`;
       }
@@ -1750,9 +1794,11 @@ export async function runCodeTui(
     const lines: string[] = [];
     // The last sidebar row is the list switcher, level with the status bar.
     const listRows = Math.max(1, height - 1);
+    const overlay = contextMenuOverlay(listRows);
     for (let i = 0; i < listRows; i++) {
       const lineIndex = sidebarScroll + i;
-      const cell = sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
+      const overlaid = overlay?.lines[i - overlay.top];
+      const cell = overlaid ?? sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
       lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
     }
     lines.push(`${sidebarTabLine()}${DIM}│${RESET}${content[listRows] ?? ''}`);
@@ -1891,11 +1937,11 @@ export async function runCodeTui(
   }
 
   function submit(session: SessionUI): void {
-    const line = session.input.trim();
+    const line = session.input.text.trim();
     if (line.length === 0) return;
     session.inputHistory.push(line);
     session.historyIndex = -1;
-    session.input = '';
+    session.input.clear();
     if (line.startsWith('/')) {
       void handleCommand(session, line);
       return;
@@ -1940,7 +1986,7 @@ export async function runCodeTui(
         const entry = sidebarDisplayCache.lineMap[sidebarScroll + event.y];
         const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
         if (row?.kind === 'session') {
-          contextMenu = { sessionId: row.id, selected: 0, confirmDelete: false };
+          contextMenu = { sessionId: row.id, selected: 0, confirmDelete: false, anchorY: event.y };
           redraw();
         }
         return;
@@ -1971,7 +2017,9 @@ export async function runCodeTui(
           return;
         }
         if (contextMenu) {
-          if (!inSidebar) {
+          // The menu lives in the sidebar column now, so that is where its
+          // clicks come from.
+          if (inSidebar) {
             const hit = menuHitRows.find((r) => r.row === event.y);
             if (hit) {
               void runContextMenuItem(contextMenu, hit.index);
@@ -2214,7 +2262,7 @@ export async function runCodeTui(
       }
       if (event.key === 'tab' && !event.shift) {
         const command = slashMatches[slashSelected];
-        if (command) session.input = `/${command.name}${command.submits ? '' : ' '}`;
+        if (command) session.input.setText(`/${command.name}${command.submits ? '' : ' '}`);
         redraw();
         return;
       }
@@ -2224,7 +2272,7 @@ export async function runCodeTui(
         return;
       }
       if (event.key === 'escape') {
-        session.input = '';
+        session.input.clear();
         redraw();
         return;
       }
@@ -2266,47 +2314,107 @@ export async function runCodeTui(
       return;
     }
     if (session.focusedView !== 'main') return;
+    editInput(session, event);
+  }
+
+  /**
+   * Edit the input line.
+   *
+   * Movement keys work in place: arrows step a character, `alt` makes them
+   * step a word, `shift` makes them extend the selection, and up/down walk
+   * the wrapped lines — falling through to input history only at the top and
+   * bottom edges, where there is no line left to move to.
+   */
+  function editInput(session: SessionUI, event: TuiKeyEvent): void {
+    const buffer = session.input;
+    const width = inputWidth(contentWidth());
+    const select = event.shift === true;
+    const word = event.alt === true;
     if (event.ctrl && event.key === 'u') {
-      session.input = '';
+      buffer.clear();
+      redraw();
+      return;
+    }
+    if (event.ctrl && event.key === 'a') {
+      buffer.selectAll();
       redraw();
       return;
     }
     if (event.key === 'backspace') {
-      session.input = session.input.slice(0, -1);
+      buffer.backspace();
+      redraw();
+      return;
+    }
+    if (event.key === 'delete') {
+      buffer.deleteForward();
+      redraw();
+      return;
+    }
+    if (event.key === 'left' || event.key === 'right') {
+      buffer.moveBy(event.key === 'left' ? -1 : 1, { word, select });
+      redraw();
+      return;
+    }
+    // Terminals that send Option as a meta prefix report word jumps as alt+b
+    // and alt+f rather than modified arrows.
+    if (event.alt && (event.key === 'b' || event.key === 'f')) {
+      buffer.moveBy(event.key === 'b' ? -1 : 1, { word: true, select });
+      redraw();
+      return;
+    }
+    if (event.key === 'home' || event.key === 'end') {
+      if (event.key === 'home') buffer.moveLineStart(width, select);
+      else buffer.moveLineEnd(width, select);
       redraw();
       return;
     }
     if (event.key === 'enter') {
+      if (event.shift || event.alt) {
+        buffer.insert('\n');
+        redraw();
+        return;
+      }
       submit(session);
       redraw();
       return;
     }
-    if (event.key === 'up' && !session.busy) {
-      if (session.inputHistory.length === 0) return;
+    if (event.key === 'up' || event.key === 'down') {
+      const delta = event.key === 'up' ? -1 : 1;
+      if (!buffer.isEmpty && buffer.moveVertical(delta, width, select)) {
+        redraw();
+        return;
+      }
+      if (session.busy) return;
+      recallHistory(session, delta);
+      return;
+    }
+    if (event.text && !event.ctrl && !event.alt) {
+      buffer.insert(event.text);
+      redraw();
+    }
+  }
+
+  /** Step through previously sent messages, oldest-first behind `up`. */
+  function recallHistory(session: SessionUI, delta: number): void {
+    if (session.inputHistory.length === 0) return;
+    if (delta < 0) {
       session.historyIndex =
         session.historyIndex === -1
           ? session.inputHistory.length - 1
           : Math.max(0, session.historyIndex - 1);
-      session.input = session.inputHistory[session.historyIndex] ?? '';
+      session.input.setText(session.inputHistory[session.historyIndex] ?? '');
       redraw();
       return;
     }
-    if (event.key === 'down' && !session.busy) {
-      if (session.historyIndex === -1) return;
-      session.historyIndex += 1;
-      if (session.historyIndex >= session.inputHistory.length) {
-        session.historyIndex = -1;
-        session.input = '';
-      } else {
-        session.input = session.inputHistory[session.historyIndex] ?? '';
-      }
-      redraw();
-      return;
+    if (session.historyIndex === -1) return;
+    session.historyIndex += 1;
+    if (session.historyIndex >= session.inputHistory.length) {
+      session.historyIndex = -1;
+      session.input.clear();
+    } else {
+      session.input.setText(session.inputHistory[session.historyIndex] ?? '');
     }
-    if (event.text && !event.ctrl && !event.alt) {
-      session.input += event.text;
-      redraw();
-    }
+    redraw();
   }
 
   workspace.onChange(() => {

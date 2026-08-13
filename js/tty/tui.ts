@@ -959,6 +959,236 @@ export function highlightSelection(lines: string[], selection: Selection): strin
  * await writeStdout(copyToClipboard(selected));
  * ```
  */
+/** One visual line of a wrapped buffer, with its offset into the text. */
+export interface TextBufferLine {
+  /** Line contents, without a trailing newline. */
+  text: string;
+  /** Index in the buffer where this line starts. */
+  start: number;
+}
+/** Wrapped layout of a buffer plus where the cursor sits inside it. */
+export interface TextBufferLayout {
+  lines: TextBufferLine[];
+  /** Cursor's visual line. */
+  row: number;
+  /** Cursor's column within that line. */
+  column: number;
+}
+/** A selected range of a buffer, ordered. */
+export interface TextBufferRange {
+  start: number;
+  end: number;
+}
+function isWordChar(ch: string): boolean {
+  return /[\p{L}\p{N}_]/u.test(ch);
+}
+/**
+ * Editable text with a cursor, selection, and word-wrapped layout.
+ *
+ * The model behind a terminal input that is more than a one-line string: the
+ * cursor can sit anywhere, edits happen in place, movement can extend a
+ * selection, and the text wraps to as many visual lines as it needs. Callers
+ * own the styling — `layout()` hands back the wrapped lines and the cursor's
+ * position in them, and the app decides how to paint them.
+ *
+ * ```ts no_run
+ * import { TextBuffer } from 'fino:tty/tui';
+ *
+ * const buffer = new TextBuffer('hello world');
+ * buffer.moveBy(-1, { word: true, select: true });
+ * buffer.insert('there');
+ * buffer.text; // 'hello there'
+ * ```
+ */
+export class TextBuffer {
+  #text: string;
+  #cursor: number;
+  #anchor?: number;
+  constructor(text = '') {
+    this.#text = text;
+    this.#cursor = text.length;
+  }
+  /** Current contents. */
+  get text(): string {
+    return this.#text;
+  }
+  /** Cursor offset, between 0 and `text.length`. */
+  get cursor(): number {
+    return this.#cursor;
+  }
+  /** Whether the buffer holds nothing. */
+  get isEmpty(): boolean {
+    return this.#text.length === 0;
+  }
+  /** The selected range, or `null` when nothing is selected. */
+  get selection(): TextBufferRange | null {
+    if (this.#anchor === undefined || this.#anchor === this.#cursor) return null;
+    return this.#anchor < this.#cursor
+      ? { start: this.#anchor, end: this.#cursor }
+      : { start: this.#cursor, end: this.#anchor };
+  }
+  /** Text covered by the selection, or `''`. */
+  selectedText(): string {
+    const range = this.selection;
+    return range ? this.#text.slice(range.start, range.end) : '';
+  }
+  /** Replace the contents, dropping any selection. */
+  setText(text: string, cursor = text.length): void {
+    this.#text = text;
+    this.#cursor = Math.max(0, Math.min(text.length, cursor));
+    this.#anchor = undefined;
+  }
+  /** Empty the buffer. */
+  clear(): void {
+    this.setText('');
+  }
+  /** Drop the selection, keeping the cursor. */
+  collapse(): void {
+    this.#anchor = undefined;
+  }
+  /** Select everything. */
+  selectAll(): void {
+    this.#anchor = 0;
+    this.#cursor = this.#text.length;
+  }
+  /** Insert text at the cursor, replacing the selection when there is one. */
+  insert(text: string): void {
+    const range = this.selection;
+    if (range) {
+      this.#text = this.#text.slice(0, range.start) + text + this.#text.slice(range.end);
+      this.#cursor = range.start + text.length;
+      this.#anchor = undefined;
+      return;
+    }
+    this.#text = this.#text.slice(0, this.#cursor) + text + this.#text.slice(this.#cursor);
+    this.#cursor += text.length;
+  }
+  /** Delete the selection, or the character before the cursor. */
+  backspace(): void {
+    if (this.#deleteSelection()) return;
+    if (this.#cursor === 0) return;
+    this.#text = this.#text.slice(0, this.#cursor - 1) + this.#text.slice(this.#cursor);
+    this.#cursor -= 1;
+  }
+  /** Delete the selection, or the character after the cursor. */
+  deleteForward(): void {
+    if (this.#deleteSelection()) return;
+    if (this.#cursor >= this.#text.length) return;
+    this.#text = this.#text.slice(0, this.#cursor) + this.#text.slice(this.#cursor + 1);
+  }
+  #deleteSelection(): boolean {
+    const range = this.selection;
+    if (!range) return false;
+    this.#text = this.#text.slice(0, range.start) + this.#text.slice(range.end);
+    this.#cursor = range.start;
+    this.#anchor = undefined;
+    return true;
+  }
+  /**
+   * Move the cursor to an absolute offset.
+   *
+   * With `select`, the selection extends from wherever it was anchored;
+   * without it, any selection collapses.
+   */
+  moveTo(index: number, select = false): void {
+    const next = Math.max(0, Math.min(this.#text.length, index));
+    if (select) this.#anchor ??= this.#cursor;
+    else this.#anchor = undefined;
+    this.#cursor = next;
+  }
+  /**
+   * Move one character, or one word with `word`.
+   *
+   * Without `select`, moving out of a selection lands on the edge the
+   * movement points at rather than one character past it, which is what
+   * every editor does.
+   */
+  moveBy(delta: number, opts: { word?: boolean; select?: boolean } = {}): void {
+    const range = this.selection;
+    if (range && !opts.select && !opts.word) {
+      this.moveTo(delta < 0 ? range.start : range.end);
+      return;
+    }
+    const target = opts.word
+      ? delta < 0
+        ? this.#wordLeft()
+        : this.#wordRight()
+      : this.#cursor + (delta < 0 ? -1 : 1);
+    this.moveTo(target, opts.select === true);
+  }
+  #wordLeft(): number {
+    let index = this.#cursor;
+    while (index > 0 && !isWordChar(this.#text[index - 1]!)) index -= 1;
+    while (index > 0 && isWordChar(this.#text[index - 1]!)) index -= 1;
+    return index;
+  }
+  #wordRight(): number {
+    let index = this.#cursor;
+    const end = this.#text.length;
+    while (index < end && !isWordChar(this.#text[index]!)) index += 1;
+    while (index < end && isWordChar(this.#text[index]!)) index += 1;
+    return index;
+  }
+  /**
+   * Wrap the text to `width` and report where the cursor lands.
+   *
+   * Wrapping breaks on spaces where it can and mid-word when a word is longer
+   * than the width. Explicit newlines always start a new line.
+   */
+  layout(width: number): TextBufferLayout {
+    const limit = Math.max(1, Math.floor(width));
+    const lines: TextBufferLine[] = [];
+    let offset = 0;
+    for (const paragraph of this.#text.split('\n')) {
+      let rest = paragraph;
+      let start = offset;
+      for (;;) {
+        if (rest.length <= limit) {
+          lines.push({ text: rest, start });
+          break;
+        }
+        const window = rest.slice(0, limit + 1);
+        const space = window.lastIndexOf(' ');
+        const cut = space > 0 ? space + 1 : limit;
+        lines.push({ text: rest.slice(0, cut), start });
+        rest = rest.slice(cut);
+        start += cut;
+      }
+      // +1 for the newline that separated this paragraph from the next.
+      offset += paragraph.length + 1;
+    }
+    let row = 0;
+    for (let index = 0; index < lines.length; index++) {
+      if (lines[index]!.start <= this.#cursor) row = index;
+    }
+    return { lines, row, column: this.#cursor - lines[row]!.start };
+  }
+  /**
+   * Move the cursor one visual line up or down.
+   *
+   * Returns `false` when there is no such line — the caller decides what a
+   * press at the top or bottom edge means.
+   */
+  moveVertical(delta: number, width: number, select = false): boolean {
+    const { lines, row, column } = this.layout(width);
+    const target = row + (delta < 0 ? -1 : 1);
+    if (target < 0 || target >= lines.length) return false;
+    const line = lines[target]!;
+    this.moveTo(line.start + Math.min(column, line.text.length), select);
+    return true;
+  }
+  /** Move to the start of the cursor's visual line. */
+  moveLineStart(width: number, select = false): void {
+    const { lines, row } = this.layout(width);
+    this.moveTo(lines[row]!.start, select);
+  }
+  /** Move to the end of the cursor's visual line. */
+  moveLineEnd(width: number, select = false): void {
+    const { lines, row } = this.layout(width);
+    const line = lines[row]!;
+    this.moveTo(line.start + line.text.length, select);
+  }
+}
 export function copyToClipboard(text: string): string {
   return setClipboard(text);
 }

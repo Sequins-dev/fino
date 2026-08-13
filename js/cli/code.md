@@ -60,6 +60,14 @@ autocomplete overlay of the available slash commands above the input
   since a `move` count that stays at zero means the terminal does not report
   pointer motion (mode 1003) and hover cannot light up.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
+- The input is a full editor line: the cursor moves with `←`/`→`, jumps words
+  with `Alt`+arrow, and selects with `Shift` held — including `Shift`+`Alt`,
+  which extends the selection a word at a time. Typing replaces a selection.
+  Long input wraps to as many rows as it needs, `↑`/`↓` walk those rows, and
+  `Shift`+`Enter` inserts a line break. At the top or bottom row, where there
+  is no line left to move to, `↑`/`↓` recall previously sent messages
+  instead; that history is rebuilt from the thread when a session is
+  reopened, so it survives restarts.
 - Drag over the transcript to select text. The selection highlights as you
   drag and is copied to the system clipboard as soon as you release, via
   OSC 52 — so it works over SSH and inside multiplexers. The terminal
@@ -89,7 +97,7 @@ plan, cyan for build, red for auto. Per-session state lives in the sidebar
 rather than here, where it would only describe the session already on
 screen. Clickable controls — the `≡ <project>` sidebar button, the model, the
 mode, the agent count, `[steer now]`, tool calls, and sidebar rows —
-highlight on hover.
+highlight on hover, brightening rather than filling in.
 
 Tool activity renders as a call signature with named parameters —
 `read_file(path: "js/ai/agent.ts", offset: 10)` — and clicking one expands
@@ -115,14 +123,14 @@ Inside the TUI, `Ctrl+B` or clicking the `≡ <project>` button in the status
 bar opens the collapsible session sidebar: a `+ new session` card, then
 sessions as bordered cards ordered by recent activity with `⟳` working /
 `▲` waiting / `·` idle indicators — the signal for which conversation wants
-attention. Card borders
-are grey and turn white under the pointer. `+ new session` opens a blank
-chat rather than creating a session — it becomes one when you send its first
+attention. Cards are borderless at rest, gain a grey border under the
+pointer, and a white one when focused. `+ new session` opens a blank chat
+rather than creating a session — it becomes one when you send its first
 message. A switcher along the bottom of the sidebar, level with the status
 bar, moves between the active and archived lists.
 Several sessions can run turns at once; `Ctrl+N`/`Ctrl+P` (or clicking)
-switches focus, and right-clicking a session opens a context menu to
-rename, archive, or delete it (delete removes the thread and its sub-agent
+switches focus, and right-clicking a session opens a context menu over the
+row itself to rename, archive, or delete it (delete removes the thread and its sub-agent
 data from the store; JSONL transcripts remain on disk). `/new`, `/archive`,
 and `/title <name>` do the same from the keyboard. macOS reserves
 Ctrl+arrow combinations for Mission Control, so the TUI avoids them.

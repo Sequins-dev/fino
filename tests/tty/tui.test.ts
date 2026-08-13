@@ -405,6 +405,101 @@ describe('fino:tty/tui selection', () => {
     t.equal(sequence, `\x1B]52;c;${btoa('hi')}\x07`, 'base64 OSC 52 payload');
   });
 });
+describe('fino:tty/tui TextBuffer', () => {
+  it('edits in place at the cursor', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('hello world');
+    buffer.moveTo(5);
+    buffer.insert(',');
+    t.equal(buffer.text, 'hello, world', 'inserted at the cursor, not the end');
+    t.equal(buffer.cursor, 6, 'cursor follows the insertion');
+    buffer.backspace();
+    t.equal(buffer.text, 'hello world', 'backspace removes the character before the cursor');
+    buffer.deleteForward();
+    t.equal(buffer.text, 'helloworld', 'delete removes the character after it');
+  });
+
+  it('moves and selects by word', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('alpha beta gamma');
+    buffer.moveBy(-1, { word: true });
+    t.equal(buffer.cursor, 11, 'jumped to the start of the last word');
+    buffer.moveBy(-1, { word: true, select: true });
+    t.deepEqual(buffer.selection, { start: 6, end: 11 }, 'jumping while selecting extends');
+    t.equal(buffer.selectedText(), 'beta ', 'selection covers the jumped range');
+    buffer.insert('BETA ');
+    t.equal(buffer.text, 'alpha BETA gamma', 'typing replaces the selection');
+    t.equal(buffer.selection, null, 'selection clears after the edit');
+  });
+
+  it('collapses a selection to the side movement points at', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('abcdef');
+    buffer.moveTo(2);
+    buffer.moveBy(1, { select: true });
+    buffer.moveBy(1, { select: true });
+    t.deepEqual(buffer.selection, { start: 2, end: 4 }, 'shift+right selects forward');
+    buffer.moveBy(-1);
+    t.equal(buffer.cursor, 2, 'left collapses to the start');
+    t.equal(buffer.selection, null, 'and drops the selection');
+  });
+
+  it('wraps to visual lines and maps the cursor into them', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('the quick brown fox jumps');
+    const layout = buffer.layout(10);
+    t.deepEqual(
+      layout.lines.map((line) => line.text),
+      ['the quick ', 'brown fox ', 'jumps'],
+      'wrapped on spaces',
+    );
+    t.equal(layout.row, 2, 'cursor at the end sits on the last line');
+    t.equal(layout.column, 5, 'and at its end');
+    buffer.moveTo(0);
+    t.equal(buffer.layout(10).row, 0, 'cursor at the start sits on the first line');
+  });
+
+  it('breaks words longer than the width', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('supercalifragilistic');
+    t.deepEqual(
+      buffer.layout(8).lines.map((line) => line.text),
+      ['supercal', 'ifragili', 'stic'],
+      'hard-wrapped when there is nowhere to break',
+    );
+  });
+
+  it('reports when vertical movement leaves the buffer', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('first line\nsecond line');
+    buffer.moveTo(0);
+    t.equal(buffer.moveVertical(-1, 40), false, 'up from the first line has nowhere to go');
+    t.equal(buffer.moveVertical(1, 40), true, 'down moves to the next line');
+    t.equal(buffer.cursor, 11, 'landing at the same column');
+    t.equal(buffer.moveVertical(1, 40), false, 'down from the last line has nowhere to go');
+  });
+
+  it('moves to the ends of the visual line', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('the quick brown fox jumps');
+    buffer.moveTo(12);
+    buffer.moveLineStart(10);
+    t.equal(buffer.cursor, 10, 'start of the wrapped line, not the buffer');
+    buffer.moveLineEnd(10);
+    t.equal(buffer.cursor, 20, 'end of the wrapped line, not the buffer');
+  });
+
+  it('keeps explicit newlines as line breaks', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('one\n\nthree');
+    t.deepEqual(
+      buffer.layout(20).lines.map((line) => line.text),
+      ['one', '', 'three'],
+      'blank line preserved',
+    );
+    t.equal(buffer.layout(20).lines[2]!.start, 5, 'offsets account for the newlines');
+  });
+});
 describe('fino:tty/tui signal-driven rendering', () => {
   it('re-commits frames when an observed signal changes', async (t) => {
     const { createRoot, createSignal } = await import('fino:ui');
