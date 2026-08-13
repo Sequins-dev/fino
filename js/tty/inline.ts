@@ -513,21 +513,25 @@ class InlineAppImpl implements InlineApp {
       return;
     }
     if (next.width === this.#state.width && next.height === this.#state.height) return;
-    const shrank = next.height < this.#state.height;
+    const oldTop = footerTop(this.#state.height, this.#state.footerRows, this.#state.historyBottom);
+    // A terminal that loses rows moves its content up to keep the cursor on
+    // screen, but how far is emulator-specific and cannot be read back
+    // cheaply mid-drag. Assume the most it could have moved — the whole
+    // height difference — and clear from there: anything less would leave the
+    // previous footer stranded above the new one, reading as a second copy of
+    // the composer. Over-clearing only costs history rows the caller is
+    // expected to re-emit anyway, which is what `onResize` is for.
+    const shed = Math.max(0, this.#state.height - next.height);
     this.#state.width = next.width;
     this.#state.height = next.height;
     const rows = Math.max(1, Math.min(this.#state.footerRows, next.height - 1));
     this.#state.footerRows = rows;
     const regionBottom = Math.max(1, next.height - rows);
-    // The terminal may have reflowed the primary buffer arbitrarily; when it
-    // shrank, assume the history region is full so new lines scroll rather
-    // than overpaint whatever landed there.
-    this.#state.historyBottom = shrank
-      ? regionBottom
-      : Math.min(this.#state.historyBottom, regionBottom);
-    const top = footerTop(next.height, rows, this.#state.historyBottom);
+    const top = footerTop(next.height, rows, Math.max(0, this.#state.historyBottom - shed));
+    const clearFrom = Math.max(1, Math.min(top, oldTop - shed));
+    this.#state.historyBottom = Math.min(clearFrom - 1, regionBottom);
     this.#state.lastLines = [];
-    this.#write(hideCursor() + resetScrollRegion() + cursorTo(top, 1) + eraseBelow());
+    this.#write(hideCursor() + resetScrollRegion() + cursorTo(clearFrom, 1) + eraseBelow());
     this.#forceRepaint = true;
     this.#pendingFrame = this.#pendingFrame ?? this.#lastFrame;
     this.#schedule();

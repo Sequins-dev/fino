@@ -81,6 +81,8 @@ const AGENT_MENU_MAX_ROWS = 8;
 const REPLAY_MAX = 200;
 /** Quiet period after the last resize before rebuilding the transcript. */
 const RESIZE_REFLOW_MS = 75;
+/** Longest a continuous drag may go without a rebuild. */
+const RESIZE_REFLOW_MAX_MS = 250;
 /** Ceiling on the footer, above what the terminal height allows. */
 const MAX_FOOTER_ROWS = 32;
 
@@ -173,6 +175,8 @@ export async function runCodeTui(
   let archived: { id: string; title: string; entries: TranscriptEntry[] } | undefined;
   /** Pending width rebuild, coalesced across a resize drag. */
   let reflowTimer: ReturnType<typeof setTimeout> | undefined;
+  /** When the in-progress drag must be rebuilt by, however long it runs. */
+  let reflowDeadline = 0;
   /** Streaming tail of the visible view's open assistant message. */
   let tail: StreamTail | undefined;
   /** The tool currently running in the visible view, for footer detail. */
@@ -481,13 +485,22 @@ export async function runCodeTui(
   }
 
   function scheduleReflow(): void {
+    // Terminals report a size for every step of a drag, and rebuilding on
+    // each one would clear the screen dozens of times — so a rebuild waits
+    // for the drag to pause. Waiting only for the pause, though, leaves the
+    // text visibly wrapped for the old width for as long as the drag lasts,
+    // so a long drag is also rebuilt at a steady interval as it goes.
+    const now = Date.now();
+    if (reflowDeadline === 0) reflowDeadline = now + RESIZE_REFLOW_MAX_MS;
     if (reflowTimer !== undefined) clearTimeout(reflowTimer);
-    // Terminals report intermediate sizes throughout a drag; rebuilding on
-    // each one would clear the screen dozens of times.
-    reflowTimer = setTimeout(() => {
-      reflowTimer = undefined;
-      reflowTranscript();
-    }, RESIZE_REFLOW_MS);
+    reflowTimer = setTimeout(
+      () => {
+        reflowTimer = undefined;
+        reflowDeadline = 0;
+        reflowTranscript();
+      },
+      Math.max(0, Math.min(RESIZE_REFLOW_MS, reflowDeadline - now)),
+    );
   }
 
   async function switchView(sessionId: string, viewId = 'main'): Promise<void> {
@@ -958,6 +971,7 @@ export async function runCodeTui(
     quitting = true;
     if (paintTimer !== undefined) clearTimeout(paintTimer);
     if (reflowTimer !== undefined) clearTimeout(reflowTimer);
+    reflowDeadline = 0;
     if (spinnerTimer !== undefined) clearInterval(spinnerTimer);
     spinnerTimer = undefined;
     finish?.();
@@ -1243,13 +1257,12 @@ export async function runCodeTui(
     maxFooterRows: MAX_FOOTER_ROWS,
     onEvent: handleEvent,
     onResize: (size) => {
-      // Only the width decides how text wraps; a taller or shorter terminal
-      // just re-lays the footer out, and rebuilding for it would throw away
-      // scrollback for nothing.
-      const rewrapped = size.width !== width;
+      // Width decides how the text wraps, and height decides how much of the
+      // screen the renderer had to clear to keep its own footer from being
+      // stranded — either way the transcript is re-emitted from source.
       width = size.width;
       height = size.height;
-      if (rewrapped) scheduleReflow();
+      scheduleReflow();
       redraw();
     },
   });

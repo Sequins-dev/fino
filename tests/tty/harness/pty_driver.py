@@ -170,8 +170,28 @@ class Screen:
         self.top, self.bottom = 0, self.rows - 1
         self.wrap_pending = False
 
-    def resize(self, cols, rows):
-        """Top-left anchored resize: crop or pad, never reflow."""
+    def resize(self, cols, rows, anchor='cursor'):
+        """Resize without reflow, anchored the way a terminal anchors.
+
+        Shrinking the height scrolls content up rather than dropping the
+        bottom rows, so rows that fall off the top enter scrollback -- which
+        is what real emulators do, and what moves an app's bottom-pinned
+        viewport up into its own history. How far they scroll varies, so both
+        ends of the range are available: 'cursor' scrolls only far enough to
+        keep the cursor on screen, 'bottom' always scrolls by the full height
+        difference.
+        """
+        shed = 0
+        if rows < self.rows:
+            if anchor == 'bottom':
+                shed = min(self.rows - rows, self.rows)
+            elif self.cy > rows - 1:
+                shed = min(self.cy - (rows - 1), self.rows)
+            for y in range(shed):
+                if not self.alt:
+                    self.scrolled.append(''.join(self.cells[y]).rstrip())
+            self.cells = self.cells[shed:]
+            self.styles = self.styles[shed:]
         self.cols, self.rows = cols, rows
         self.cells = self._fit(self.cells, ' ')
         self.styles = self._fit(self.styles, '')
@@ -179,7 +199,7 @@ class Screen:
             cells, styles, cx, cy = self.primary
             self.primary = (self._fit(cells, ' '), self._fit(styles, ''),
                             min(cx, cols - 1), min(cy, rows - 1))
-        self.cx, self.cy = min(self.cx, cols - 1), min(self.cy, rows - 1)
+        self.cx, self.cy = min(self.cx, cols - 1), min(self.cy - shed, rows - 1)
         self.top = min(self.top, rows - 1)
         self.bottom = min(self.bottom, rows - 1)
         if self.bottom < self.top:
@@ -274,12 +294,12 @@ class Tui:
         raise AssertionError('app did not paint a status bar')
     def send(self, data, settle=0.35):
         os.write(self.master, data.encode()); self.wait(settle)
-    def resize(self, cols, rows, settle=0.35):
+    def resize(self, cols, rows, settle=0.35, anchor='cursor'):
         """Resize the pty; the kernel raises SIGWINCH in the app itself."""
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         with self.lock:
             self.cols, self.rows = cols, rows
-            self.screen.resize(cols, rows)
+            self.screen.resize(cols, rows, anchor)
         self.wait(settle)
     def mouse(self, code, x, y, release=False, settle=0.2):
         self.send(f'\x1b[<{code};{x + 1};{y + 1}{"m" if release else "M"}', settle)
@@ -374,15 +394,24 @@ if __name__ == '__main__':
     ok('wrap at bottom margin scrolls region',
        s.scrollback() == [''] and s.line(1) == 'wxyz' and s.line(2) == 'q')
 
-    # 6. Resize: top-left anchored, no reflow.
+    # 6. Resize: no reflow, and shrinking keeps the cursor on screen.
     s = Screen(6, 3)
-    s.feed('abcdef\r\nghijkl\r\nmnopqr\x1b[3;5H')
+    s.feed('abcdef\r\nghijkl\r\nmnopqr\x1b[1;5H')  # cursor on the first row
     s.resize(4, 2)
-    ok('resize crops', [s.line(r) for r in range(2)] == ['abcd', 'ghij'])
+    ok('resize crops when the cursor survives', [s.line(r) for r in range(2)] == ['abcd', 'ghij'])
+    s = Screen(6, 3)
+    s.feed('abcdef\r\nghijkl\r\nmnopqr\x1b[1;5H')
+    s.resize(4, 2, anchor='bottom')
+    ok('bottom anchor always scrolls', [s.line(r) for r in range(2)] == ['ghij', 'mnop'])
+    s = Screen(6, 3)
+    s.feed('abcdef\r\nghijkl\r\nmnopqr\x1b[3;5H')  # cursor on the row being cut
+    s.resize(4, 2)
+    ok('resize scrolls to keep the cursor', [s.line(r) for r in range(2)] == ['ghij', 'mnop'])
+    ok('rows shed on resize enter scrollback', s.scrollback() == ['abcdef'])
     ok('resize clamps cursor and margins',
        (s.cx, s.cy) == (3, 1) and (s.top, s.bottom) == (0, 1))
     s.resize(6, 4)
-    ok('resize pads', [s.line(r) for r in range(4)] == ['abcd', 'ghij', '', ''])
+    ok('resize pads', [s.line(r) for r in range(4)] == ['ghij', 'mnop', '', ''])
     s.feed('\x1b[4;1HZZ')
     ok('grid usable after resize', s.line(3) == 'ZZ')
     try:

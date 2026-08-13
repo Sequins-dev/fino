@@ -191,6 +191,50 @@ def scenario_attention_dots():
     quit_app(t)
 
 
+def scenario_resize():
+    print('--- resize drags ---')
+    t = spawn(HARNESS_DELAY_MS='5')
+    t.send('resize me', settle=0.2)
+    t.send('\r', settle=0.5)
+    time.sleep(2.5)
+
+    def footers(height):
+        rows = [t.screen.line(i) for i in range(height)]
+        return (
+            sum(1 for r in rows if 'ask, or /help' in r),
+            sum(1 for r in rows if '≡ ' in r),
+        )
+
+    check(footers(24) == (1, 1), 'one composer and one status bar to begin with')
+    # Emulators differ in how far they scroll content when the window loses
+    # rows, so the drag is run against both ends of that range.
+    for anchor in ('cursor', 'bottom'):
+        t.resize(80, 24, settle=0.4)
+        worst = (0, 0)
+        for height in range(23, 11, -1):
+            t.resize(80, height, settle=0.05, anchor=anchor)
+            seen = footers(height)
+            worst = (max(worst[0], seen[0]), max(worst[1], seen[1]))
+        check(worst == (1, 1), f'shrinking never duplicates the footer, {anchor}-anchored (worst {worst})')
+    worst = (0, 0)
+    for height in range(13, 25):
+        t.resize(80, height, settle=0.05)
+        seen = footers(height)
+        worst = (max(worst[0], seen[0]), max(worst[1], seen[1]))
+    check(worst == (1, 1), f'growing never duplicates the footer (worst {worst})')
+    time.sleep(0.5)
+    check('resize me' in alltext(t), 'the conversation survives the drags')
+
+    # A narrower terminal rebuilds the transcript at the new width.
+    t.resize(48, 24, settle=0.6)
+    time.sleep(0.5)
+    rows = [t.screen.line(i).rstrip() for i in range(24)]
+    prose = next((r for r in rows if 'A paragraph with' in r), '')
+    check(prose != '' and len(prose) <= 48, f'prose re-wrapped to the new width ({len(prose)})')
+    check(footers(24) == (1, 1), 'the rebuild leaves one footer')
+    quit_app(t)
+
+
 SCENARIOS = [
     scenario_chat_basics,
     scenario_model_picker,
@@ -199,6 +243,7 @@ SCENARIOS = [
     scenario_steer,
     scenario_session_manager,
     scenario_attention_dots,
+    scenario_resize,
 ]
 
 if __name__ == '__main__':

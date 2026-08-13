@@ -82,14 +82,16 @@ the transcript with the terminal's find, and keep the whole conversation in
 scrollback after the app exits. The cost is that committed lines are
 immutable: tool output shows its detail only while the tool runs.
 
-Immutable rows also cannot be re-wrapped, so changing the terminal's *width*
-rebuilds the conversation instead. Once the resize settles, the screen and
-scrollback are cleared and the transcript is rendered again from the messages
-it came from, now wrapped to the new width. Anything past the replay limit —
-and anything you had scrolled back to — is discarded by that rebuild, so a
-long conversation loses its older scrollback the first time the window is
-resized; the durable record is still in the session store and the JSONL
-transcripts. Changing only the height leaves the transcript untouched.
+Immutable rows also cannot be re-wrapped, so resizing the terminal rebuilds
+the conversation instead: the screen and scrollback are cleared and the
+transcript is rendered again from the messages it came from, wrapped to the
+new width. Rebuilds are coalesced across a drag — shortly after you pause,
+and at a steady interval while you keep dragging — so the text follows the
+window without the screen being rebuilt on every intermediate size. Anything
+past the replay limit, and anything you had scrolled back to, is discarded by
+the rebuild, so a long conversation loses its older scrollback the first time
+the window is resized; the durable record is still in the session store and
+the JSONL transcripts.
 
 While a turn runs, the footer shows the streaming tail of the assistant's
 message — markdown blocks commit to scrollback as they settle, so what is
