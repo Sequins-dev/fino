@@ -325,6 +325,27 @@ export function eraseBelow(): string {
   return '\x1B[0J';
 }
 /**
+ * Return the sequences that clear the screen and purge the scrollback.
+ *
+ * Resets any scroll region and SGR state, homes the cursor, clears the
+ * visible screen (ED 2) and then the scrollback buffer (ED 3), and homes
+ * again — some terminals only honour the erase when the cursor is home.
+ * Inline renderers use this to rebuild a transcript at a new width: rows
+ * already written cannot be re-wrapped, so they are discarded and re-emitted
+ * from source. Everything scrolled off is lost, which is the price of the
+ * rebuild.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseScrollback } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseScrollback());
+ * ```
+ */
+export function eraseScrollback(): string {
+  return '\x1B[r\x1B[0m\x1B[H\x1B[2J\x1B[3J\x1B[H';
+}
+/**
  * Return the DSR 6 sequence that asks the terminal to report the cursor position.
  *
  * The terminal replies on stdin with `CSI row;column R` (1-based). Emit this

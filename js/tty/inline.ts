@@ -37,6 +37,7 @@ import {
   enterAlternateScreen,
   eraseBelow,
   eraseLine,
+  eraseScrollback,
   eraseToLineEnd,
   exitAlternateScreen,
   exitMouseMode,
@@ -115,6 +116,17 @@ export interface InlineApp {
    * row per wrap.
    */
   printAbove(lines: string[]): void;
+  /**
+   * Clear the screen and the terminal's scrollback, and start committing
+   * again from the top.
+   *
+   * Rows already written cannot be re-wrapped, so an app that wants its
+   * transcript to follow a new terminal width has to discard what it emitted
+   * and re-emit it from its own source. Everything the user had scrolled
+   * back to is lost, so this is for deliberate rebuilds, not routine
+   * repainting.
+   */
+  resetHistory(): void;
   /** Repaint the footer. Takes over from a reactive footer thunk. */
   update(frame: InlineFrame): void;
   /** Current terminal size. */
@@ -233,15 +245,19 @@ export function composeInlineFrame(
   if (history.length > 0) {
     out += setScrollRegion(1, regionBottom);
     let rest = history;
+    // The row is cleared before the text, never after: a line exactly as wide
+    // as the terminal leaves the cursor in the pending-wrap state, still on
+    // the last column, and an erase-to-end there would delete the character
+    // just written.
     if (historyBottom === 0) {
-      out += cursorTo(1, 1) + (history[0] ?? '') + eraseToLineEnd();
+      out += cursorTo(1, 1) + eraseToLineEnd() + (history[0] ?? '');
       historyBottom = 1;
       rest = history.slice(1);
     } else {
       out += cursorTo(Math.min(historyBottom, regionBottom), 1);
     }
     for (const line of rest) {
-      out += `\r\n${line}` + eraseToLineEnd();
+      out += `\r\n` + eraseToLineEnd() + line;
       historyBottom = Math.min(historyBottom + 1, regionBottom);
     }
     out += resetScrollRegion();
@@ -573,6 +589,17 @@ class InlineAppImpl implements InlineApp {
       if (line.includes('\n')) this.#pendingHistory.push(...line.split('\n'));
       else this.#pendingHistory.push(line);
     }
+    this.#schedule();
+  }
+
+  resetHistory(): void {
+    if (this.#stopped) return;
+    this.#pendingHistory = [];
+    this.#write(eraseScrollback());
+    this.#state.historyBottom = 0;
+    this.#state.lastLines = [];
+    this.#forceRepaint = true;
+    this.#pendingFrame = this.#pendingFrame ?? this.#lastFrame;
     this.#schedule();
   }
 

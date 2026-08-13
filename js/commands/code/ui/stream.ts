@@ -4,8 +4,9 @@
  * Bridges a streaming assistant message onto the inline commit pipeline:
  * settled markdown blocks flow out through {@link StreamTail.takeSettled}
  * into scrollback, while the still-unsettled tail renders fresh each paint
- * for the footer. Width is frozen at construction — committed lines never
- * depend on later resizes.
+ * for the footer. Committed lines keep the width they were written at; a
+ * terminal resize is handled by rebuilding the transcript from source, not
+ * by rewriting what is already in scrollback.
  */
 import { MarkdownTerminalStream } from 'fino:format/markdown';
 import { stripAnsi } from 'fino:tty/tui';

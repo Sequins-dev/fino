@@ -18,8 +18,8 @@ describe('fino:tty/tui composeInlineFrame', () => {
     const { out, state: next } = composeInlineFrame(state(), { history: ['alpha', 'beta'] });
     t.ok(out.startsWith('\x1B[?25l'), 'hides the cursor during mutation');
     t.ok(out.includes('\x1B[1;8r'), 'region confined above the footer');
-    t.ok(out.includes('\x1B[1;1Halpha\x1B[K'), 'first line lands on row 1 directly');
-    t.ok(out.includes('\r\nbeta\x1B[K'), 'subsequent lines pushed with CR LF');
+    t.ok(out.includes('\x1B[1;1H\x1B[Kalpha'), 'first line lands on row 1 directly');
+    t.ok(out.includes('\r\n\x1B[Kbeta'), 'subsequent lines pushed with CR LF');
     t.ok(out.includes('\x1B[r'), 'region released');
     t.equal(next.historyBottom, 2, 'history bottom advanced');
     t.ok(!out.includes('\x1b7') && !out.includes('\x1B[s'), 'no cursor save/restore anywhere');
@@ -28,8 +28,24 @@ describe('fino:tty/tui composeInlineFrame', () => {
   it('fills vacated rows before evicting into scrollback', (t) => {
     const start = state({ historyBottom: 4 });
     const { out, state: next } = composeInlineFrame(start, { history: ['one', 'two'] });
-    t.ok(out.includes('\x1B[4;1H\r\none\x1B[K\r\ntwo\x1B[K'), 'parks at historyBottom, not the region bottom');
+    t.ok(
+      out.includes('\x1B[4;1H\r\n\x1B[Kone\r\n\x1B[Ktwo'),
+      'parks at historyBottom, not the region bottom',
+    );
     t.equal(next.historyBottom, 6, 'vacated rows consumed');
+  });
+
+  it('clears each row before writing so a full-width line survives', (t) => {
+    // Writing the last column leaves the cursor in the pending-wrap state,
+    // still on that column: an erase-to-end there would delete the character
+    // just written, silently dropping one character per committed line.
+    const line = 'x'.repeat(10);
+    const { out } = composeInlineFrame(state({ historyBottom: 2 }), { history: [line] });
+    const erase = out.indexOf('\x1B[K');
+    const text = out.indexOf(line);
+    t.ok(erase >= 0 && text >= 0, 'both the erase and the text are emitted');
+    t.ok(erase < text, 'the row is cleared before the text, not after');
+    t.ok(!out.includes(`${line}\x1B[K`), 'no erase trails a full-width line');
   });
 
   it('caps historyBottom at the region bottom once full', (t) => {

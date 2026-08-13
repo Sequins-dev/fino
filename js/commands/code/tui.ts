@@ -77,8 +77,10 @@ const REDRAW_INTERVAL_MS = 33;
 const SPINNER_INTERVAL_MS = 100;
 const SLASH_MAX_ROWS = 6;
 const AGENT_MENU_MAX_ROWS = 8;
-/** Entries replayed into scrollback on a view switch. */
+/** Entries replayed into scrollback on a view switch or a width rebuild. */
 const REPLAY_MAX = 200;
+/** Quiet period after the last resize before rebuilding the transcript. */
+const RESIZE_REFLOW_MS = 75;
 /** Ceiling on the footer, above what the terminal height allows. */
 const MAX_FOOTER_ROWS = 32;
 
@@ -168,7 +170,9 @@ export async function runCodeTui(
   /** The one live view whose blocks commit to scrollback. */
   let visible: { sessionId: string; viewId: string } | undefined;
   /** A frozen archived session on screen: replayed transcript, no engine. */
-  let archived: { id: string; title: string } | undefined;
+  let archived: { id: string; title: string; entries: TranscriptEntry[] } | undefined;
+  /** Pending width rebuild, coalesced across a resize drag. */
+  let reflowTimer: ReturnType<typeof setTimeout> | undefined;
   /** Streaming tail of the visible view's open assistant message. */
   let tail: StreamTail | undefined;
   /** The tool currently running in the visible view, for footer detail. */
@@ -181,6 +185,8 @@ export async function runCodeTui(
   let lastPaint = 0;
   /** Whether the last committed scrollback line was blank (block spacing). */
   let lastCommittedBlank = true;
+  /** A reflowed tail restarts its block, so its next commit needs a separator. */
+  let tailReflowed = false;
   let catalog: Promise<ModelInfo[]> | undefined;
   let quitting = false;
   let finish: (() => void) | undefined;
@@ -229,12 +235,10 @@ export async function runCodeTui(
       paintTimer = undefined;
       lastPaint = Date.now();
       if (tail !== undefined) {
-        const settled = tail.takeSettled();
-        if (settled.length > 0) commitRaw(settled);
+        commitTail(tail.takeSettled());
         // A block taller than the footer streams its stable head into
         // scrollback so its top is never scrolled out of view unseen.
-        const overflow = tail.takeOverflow(currentTailAllowance());
-        if (overflow.length > 0) commitRaw(overflow);
+        commitTail(tail.takeOverflow(currentTailAllowance()));
       }
       revision.set(revision.get() + 1);
       overlay.refresh();
@@ -261,6 +265,21 @@ export async function runCodeTui(
     if (lines.length === 0) return;
     app.printAbove(lines);
     lastCommittedBlank = lines[lines.length - 1] === '';
+  }
+
+  /**
+   * Commit streamed lines. They continue a block already on screen, so they
+   * follow the transcript directly — unless a resize restarted the block
+   * mid-message, which needs the usual blank between blocks re-stated.
+   */
+  function commitTail(lines: string[]): void {
+    if (lines.length === 0) return;
+    if (tailReflowed) {
+      tailReflowed = false;
+      commitBlock(lines);
+      return;
+    }
+    commitRaw(lines);
   }
 
   /** Commit a discrete block, separated from the previous one by a blank. */
@@ -305,8 +324,7 @@ export async function runCodeTui(
 
   function flushTail(): void {
     if (tail === undefined) return;
-    const rest = tail.finish();
-    if (rest.length > 0) commitRaw(rest);
+    commitTail(tail.finish());
     tail = undefined;
   }
 
@@ -414,6 +432,64 @@ export async function runCodeTui(
     }
   }
 
+  function replayArchived(frozen: { id: string; title: string; entries: TranscriptEntry[] }): void {
+    commitRaw(
+      renderSessionHeader(
+        {
+          title: frozen.title,
+          kind: 'archived',
+          subtitle: 'archived · read-only — unarchive from the session manager to continue',
+        },
+        width,
+      ),
+    );
+    const shown = frozen.entries.slice(-REPLAY_MAX);
+    if (frozen.entries.length > shown.length) {
+      commitBlock([
+        style(`… ${frozen.entries.length - shown.length} earlier entries omitted`, tk.dim),
+      ]);
+    }
+    for (const entry of shown) commitBlock(renderEntry(entry, width));
+  }
+
+  /**
+   * Re-emit the visible transcript at the current width.
+   *
+   * Rows already in scrollback carry the width they were written at and the
+   * terminal will not re-wrap them, so following a resize means discarding
+   * them and rendering the conversation again from the entries it came from.
+   * Everything past the replay cap — and anything the user had scrolled back
+   * to — is lost in the process, which is why this only runs when the width
+   * actually changed and only once the drag has settled.
+   */
+  function reflowTranscript(): void {
+    if (overlay.active !== null) return;
+    // The message in flight is re-rendered from its entry, so the tail it was
+    // building at the old width is dropped rather than committed.
+    tail = undefined;
+    runningTool = undefined;
+    tailReflowed = false;
+    app.resetHistory();
+    lastCommittedBlank = true;
+    if (archived !== undefined) {
+      replayArchived(archived);
+    } else if (visible !== undefined) {
+      const session = sessions.get(visible.sessionId);
+      if (session !== undefined) replayView(session, visible.viewId);
+    }
+    redraw();
+  }
+
+  function scheduleReflow(): void {
+    if (reflowTimer !== undefined) clearTimeout(reflowTimer);
+    // Terminals report intermediate sizes throughout a drag; rebuilding on
+    // each one would clear the screen dozens of times.
+    reflowTimer = setTimeout(() => {
+      reflowTimer = undefined;
+      reflowTranscript();
+    }, RESIZE_REFLOW_MS);
+  }
+
   async function switchView(sessionId: string, viewId = 'main'): Promise<void> {
     flushTail();
     runningTool = undefined;
@@ -438,17 +514,9 @@ export async function runCodeTui(
     runningTool = undefined;
     agentMenu = undefined;
     visible = undefined;
-    archived = { id, title: sessionTitle(id) };
     const { messages, turns } = await workspace.readSession(id);
-    commitRaw(
-      renderSessionHeader(
-        { title: sessionTitle(id), kind: 'archived', subtitle: 'archived · read-only — unarchive from the session manager to continue' },
-        width,
-      ),
-    );
-    for (const entry of entriesFromHistory(messages, turns).slice(-REPLAY_MAX)) {
-      commitBlock(renderEntry(entry, width));
-    }
+    archived = { id, title: sessionTitle(id), entries: entriesFromHistory(messages, turns) };
+    replayArchived(archived);
     workspace.markSeen(id);
     redraw();
   }
@@ -889,6 +957,7 @@ export async function runCodeTui(
     if (quitting) return;
     quitting = true;
     if (paintTimer !== undefined) clearTimeout(paintTimer);
+    if (reflowTimer !== undefined) clearTimeout(reflowTimer);
     if (spinnerTimer !== undefined) clearInterval(spinnerTimer);
     spinnerTimer = undefined;
     finish?.();
@@ -1174,8 +1243,13 @@ export async function runCodeTui(
     maxFooterRows: MAX_FOOTER_ROWS,
     onEvent: handleEvent,
     onResize: (size) => {
+      // Only the width decides how text wraps; a taller or shorter terminal
+      // just re-lays the footer out, and rebuilding for it would throw away
+      // scrollback for nothing.
+      const rewrapped = size.width !== width;
       width = size.width;
       height = size.height;
+      if (rewrapped) scheduleReflow();
       redraw();
     },
   });
