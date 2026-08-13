@@ -10,7 +10,8 @@
  * Right-clicking a session opens a context menu (rename, archive, delete).
  * Several sessions can run turns concurrently; the focused one renders as a
  * transcript with markdown-rendered assistant messages and
- * expandable/collapsible tool calls, a message queue with clickable
+ * tool calls rendered as call signatures that expand to a format-aware
+ * view of their input and output, a message queue with clickable
  * `[steer now]` actions, a slash-command autocomplete overlay, an input
  * line, and a status bar. Sub-agent views are read-only parent↔child
  * conversations. Tool approvals from every session and sub-agent surface in
@@ -38,6 +39,11 @@ import { Box, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } fr
 import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
+import {
+  formatToolArgLines,
+  formatToolOutputLines,
+  formatToolSignature,
+} from 'fino:commands/code/toolview';
 
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
@@ -54,7 +60,7 @@ const REDRAW_INTERVAL_MS = 33;
 const QUEUE_PANE_MAX = 3;
 const SIDEBAR_WIDTH = 28;
 const SESSION_TITLE_LINES = 3;
-const TOOL_PREVIEW_LINES = 8;
+const TOOL_DETAIL_LINES = 60;
 const SLASH_MAX_ROWS = 6;
 
 interface TranscriptEntry {
@@ -63,7 +69,8 @@ interface TranscriptEntry {
   done: boolean;
   toolState?: 'running' | 'ok' | 'error';
   toolId?: string;
-  argsText?: string;
+  argsValue?: unknown;
+  argsKey?: string;
   outputText?: string;
   expanded?: boolean;
   cachedLines?: string[];
@@ -495,7 +502,7 @@ export async function runCodeTui(
       entry.toolState ?? '',
       entry.expanded ?? false,
       entry.text.length,
-      entry.argsText?.length ?? 0,
+      entry.argsKey ?? '',
       entry.outputText?.length ?? 0,
       cw,
     ].join(':');
@@ -517,19 +524,36 @@ export async function runCodeTui(
             ? `${GREEN}●${RESET}`
             : `${RED}●${RESET}`;
       const disclosure = entry.expanded ? '▾' : '▸';
-      lines = [`${mark} ${DIM}${entry.text} ${disclosure}${RESET}`];
+      const signature = formatToolSignature(entry.text, entry.argsValue, {
+        maxValue: Math.max(12, Math.floor(cw / 3)),
+      });
+      lines = [`${mark} ${clipVisible(signature, cw - 4)} ${DIM}${disclosure}${RESET}`];
       if (entry.expanded) {
-        const detail = (label: string, value: string | undefined): string[] => {
-          if (!value) return [];
-          const wrapped = wrapPlain(`${label}: ${value}`, cw - 4);
-          const shown = wrapped.slice(0, TOOL_PREVIEW_LINES);
-          if (wrapped.length > shown.length) {
-            shown.push(`… (+${wrapped.length - shown.length} more lines)`);
+        const section = (label: string, body: string[]): string[] => {
+          if (body.length === 0) return [];
+          const shown = body.slice(0, TOOL_DETAIL_LINES);
+          if (body.length > shown.length) {
+            shown.push(`${DIM}… (+${body.length - shown.length} more lines)${RESET}`);
           }
-          return shown.map((line) => `    ${DIM}${line}${RESET}`);
+          return [
+            `  ${DIM}${label}${RESET}`,
+            ...shown.map((line) => `    ${clipVisible(line, cw - 4)}`),
+          ];
         };
-        lines.push(...detail('args', entry.argsText), ...detail('output', entry.outputText));
-        if (!entry.argsText && !entry.outputText) {
+        const argLines =
+          entry.argsValue === undefined
+            ? []
+            : formatToolArgLines(entry.text, entry.argsValue, { width: cw - 6 });
+        const outputLines = entry.outputText
+          ? formatToolOutputLines({
+              name: entry.text,
+              args: entry.argsValue,
+              output: entry.outputText,
+              width: cw - 6,
+            })
+          : [];
+        lines.push(...section('input', argLines), ...section('output', outputLines));
+        if (argLines.length === 0 && outputLines.length === 0) {
           lines.push(`    ${DIM}(no captured input/output)${RESET}`);
         }
       }
@@ -587,7 +611,9 @@ export async function runCodeTui(
         done: true,
         toolState: 'running',
         toolId: ev.id,
-        ...(ev.args !== undefined ? { argsText: previewText(JSON.stringify(ev.args)) } : {}),
+        ...(ev.args !== undefined
+          ? { argsValue: ev.args, argsKey: previewText(JSON.stringify(ev.args), 200) }
+          : {}),
       });
     } else if (ev.type === 'tool_result' || ev.type === 'tool_error') {
       for (let index = tab.entries.length - 1; index >= 0; index--) {
@@ -643,7 +669,8 @@ export async function runCodeTui(
                 done: true,
                 toolState: 'ok',
                 toolId: part.id,
-                argsText: previewText(JSON.stringify(part.args ?? {})),
+                argsValue: part.args ?? {},
+                argsKey: previewText(JSON.stringify(part.args ?? {}), 200),
               };
               toolEntries.set(part.id, entry);
               tab.entries.push(entry);
@@ -1274,7 +1301,7 @@ export async function runCodeTui(
             '/agents — sub-agent status · /new — new session · /archive — archive session',
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
             'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
-            'Transcript: click a tool line to expand its input/output',
+            'Transcript: click a tool call to expand its input/output (source and Markdown are formatted)',
             'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
           ].join('\n'),
         );

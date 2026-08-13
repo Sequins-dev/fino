@@ -54,6 +54,12 @@ autocomplete overlay of the available slash commands above the input
 - `/new` starts a fresh thread; `/exit` quits.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
 
+Tool activity renders as a call signature with named parameters —
+`read_file(path: "js/ai/agent.ts", offset: 10)` — and clicking one expands
+it into a format-aware view of its input and output: TypeScript and
+JavaScript are syntax-highlighted, Markdown renders as prose, JSON is
+pretty-printed, and file reads keep their line numbers beside the source.
+
 When a gated tool (`write_file`, `edit_file`, `shell`) needs approval — the
 main agent's or any sub-agent's — the request appears in a blocking popover
 over the transcript regardless of the active tab; `y`/`n` are the only inputs

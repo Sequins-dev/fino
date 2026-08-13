@@ -32,6 +32,7 @@ import 'fino:commands/code/prompt';
 import 'fino:commands/code/engine';
 import 'fino:commands/code/tui';
 import 'fino:commands/code/transcript';
+import 'fino:commands/code/toolview';
 import 'fino:commands/code/workspace';
 import 'fino:commands/mcp';
 import 'fino:ai/subagents';
