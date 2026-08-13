@@ -101,7 +101,7 @@ const PLAN_ADDENDUM = `
 
 # Planning mode
 
-You are in planning mode. Your tool set is read-only: research the codebase and docs, then produce a concrete plan. Do not attempt to change files or run mutating commands. A good plan states: the goal, the files to create or modify (with paths), the APIs to use (verified via docs tools), the order of work, and how to verify the result. End with open questions if any decision genuinely needs the user. When the user switches back to code mode, execute the agreed plan.`;
+You are in planning mode. Your tool set is read-only: research the codebase and docs, then produce a concrete plan. Do not attempt to change files or run mutating commands. A good plan states: the goal, the files to create or modify (with paths), the APIs to use (verified via docs tools), the order of work, and how to verify the result. End with open questions if any decision genuinely needs the user. When the user switches to build mode, execute the agreed plan.`;
 
 /**
  * Render the `fino code` system prompt.

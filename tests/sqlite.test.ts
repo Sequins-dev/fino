@@ -417,6 +417,44 @@ describe('fino:database/sqlite — transactions', () => {
     t.equal(rows!['n'], 0n, 'rolled back');
     await db.close();
   });
+  it('queues concurrent transactions instead of nesting them', async (t) => {
+    const db = await Database.open(':memory:');
+    await db.exec('CREATE TABLE t (v INTEGER)');
+    // Independent tasks sharing one connection — a session store writing a
+    // parent agent's checkpoint while a sub-agent writes its own.
+    await Promise.all(
+      [1, 2, 3, 4].map((value) =>
+        db.transaction(async () => {
+          await db.exec(`INSERT INTO t VALUES (${value})`);
+          await db.exec(`INSERT INTO t VALUES (${value * 10})`);
+        }),
+      ),
+    );
+    const rows = await db.prepare('SELECT COUNT(*) AS n FROM t').get();
+    t.equal(rows!['n'], 8n, 'every overlapping transaction committed');
+    await db.close();
+  });
+  it('keeps a failing transaction from rolling back a concurrent one', async (t) => {
+    const db = await Database.open(':memory:');
+    await db.exec('CREATE TABLE t (v INTEGER)');
+    const failing = db
+      .transaction(async () => {
+        await db.exec('INSERT INTO t VALUES (1)');
+        throw new Error('intentional rollback');
+      })
+      .catch(() => undefined);
+    const succeeding = db.transaction(async () => {
+      await db.exec('INSERT INTO t VALUES (2)');
+    });
+    await Promise.all([failing, succeeding]);
+    const rows = await db.prepare('SELECT v FROM t').all();
+    t.deepEqual(
+      rows.map((row) => row['v']),
+      [2n],
+      'only the failed transaction was rolled back',
+    );
+    await db.close();
+  });
 });
 describe('fino:database/sqlite — Statement finalize', () => {
   it('Statement supports using disposal', async (t) => {

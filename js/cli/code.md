@@ -13,7 +13,7 @@ prints the streamed answer instead of opening the TUI.
 
 ```sh
 fino code                          # interactive TUI
-fino code --plan                   # start in planning mode
+fino code --plan                   # start in plan mode
 fino code --continue               # resume the latest thread
 fino code 'what serves HTTP?'      # one streamed turn, then exit
 ```
@@ -30,8 +30,8 @@ default model id.
 | `prompt...` | string | Run one non-interactive turn with this prompt |
 | `--model` | string | Initial model id, e.g. `claude-opus-4-8` |
 | `--provider` | string | Provider for `--model` (`anthropic` or `openai`) |
-| `--plan` | boolean | Start in planning mode (read-only tools) |
-| `--auto` | boolean | Run gated tools without approval prompts |
+| `--plan` | boolean | Start in plan mode (read-only tools) |
+| `--auto` | boolean | Start in auto mode (gated tools run unprompted) |
 | `--continue` | boolean | Continue the most recently updated thread |
 | `--thread` | string | Continue a specific thread id |
 | `--max-cost` | number | Abort once estimated spend exceeds this many USD |
@@ -46,11 +46,14 @@ autocomplete overlay of the available slash commands above the input
 
 - `/model` opens a model picker grouped by provider (chat-capable models
   only), as does clicking the model name in the status bar; `/model <id>`
-  switches directly. Each session remembers its model choice and restores
-  it when reopened.
-- `/plan` and `/code` switch between planning mode (read-only tools, produces
-  a plan) and code mode; `Shift+Tab` toggles the same.
-- `/auto` toggles auto-approval of gated tools.
+  switches directly. The catalog is fetched once in the background at
+  startup and reused, so the picker opens populated; `Ctrl+R` inside it
+  re-fetches. Each session remembers its model choice and restores it when
+  reopened.
+- `/plan`, `/build`, and `/auto` set the mode. `Shift+Tab` and clicking the
+  mode in the status bar cycle through them.
+- `/agents` opens the agent selector; so does clicking the agent count in the
+  status bar.
 - `/new` starts a fresh thread; `/exit` quits.
 - `/debug` reports the viewport size, terminal identity, and a count of the
   input events received so far — useful when mouse affordances misbehave,
@@ -69,13 +72,17 @@ autocomplete overlay of the available slash commands above the input
 
 While a turn runs, a spinner sits above the input showing what the agent is
 doing — the running tool, elapsed time, active sub-agents, queued messages —
-until the turn ends, so a long pause reads as work rather than a freeze.
-Assistant messages are highlighted as they stream: markdown blocks render as
-they settle, and code inside a fence is syntax-highlighted before the closing
-fence arrives.
+so a long pause reads as work rather than a freeze; when the turn ends it
+greys out and reports how long the turn took. Assistant messages are
+highlighted as they stream: markdown blocks render as they settle, and code
+inside a fence is syntax-highlighted before the closing fence arrives. A
+horizontal rule marks the start of each prose answer.
 
-Clickable controls — the sidebar toggle and model name in the status bar,
-`[steer now]`, tool calls, and sidebar rows — highlight on hover.
+The status bar carries the session state as a glyph — `●` idle, `⟳` working,
+`▲` waiting on approval, `✗` failed — plus transient notes like a copy
+confirmation. Clickable controls — the `≡ <title>` sidebar button, the model,
+the mode, the agent count, `[steer now]`, tool calls, and sidebar rows —
+highlight on hover.
 
 Tool activity renders as a call signature with named parameters —
 `read_file(path: "js/ai/agent.ts", offset: 10)` — and clicking one expands
@@ -94,11 +101,11 @@ Every conversation is a registered session with a durable id and a title
 derived from its first prompt. `fino code sessions` lists them
 (`--archived` for the history list), `fino code --thread <id>` reopens one,
 and `--continue` resumes the most recent. Inside the TUI, `Ctrl+B` or
-clicking the `≡` button in the status bar opens the collapsible session
-sidebar: a `+ new session` button, then active sessions ordered by recent
-activity with `⟳` working / `▲` waiting / `·` idle indicators, each
-expanding into its nested sub-agent rows — active children bright, settled
-ones dim — with archived sessions in a scrollable history list below.
+clicking the `≡ <title>` button in the status bar opens the collapsible
+session sidebar: the project directory name, a `+ new session` button, then
+active sessions as bordered cards ordered by recent activity with `⟳`
+working / `▲` waiting / `·` idle indicators, and archived sessions in a
+scrollable history list below.
 Several sessions can run turns at once; `Ctrl+N`/`Ctrl+P` (or clicking)
 switches focus, and right-clicking a session opens a context menu to
 rename, archive, or delete it (delete removes the thread and its sub-agent
@@ -111,10 +118,12 @@ Ctrl+arrow combinations for Mission Control, so the TUI avoids them.
 The agent can fan work out to concurrent sub-agents (`fino:ai/subagents`),
 each a durable conversation between the parent agent and a child agent —
 mirroring how the main chat is a conversation between you and the parent.
-Every sub-agent gets its own read-only view (cycle with `Tab`, or select it
-in the sidebar; sub-agents are agent-driven, so their views have no input
-box). Children default to the
-parent's model and inherit the parent's mode: planning-mode parents spawn
+Every sub-agent gets its own read-only view. The agent count in the status
+bar (or `/agents`) opens a selector listing the session and its sub-agents
+with their statuses; picking one switches the transcript to that
+conversation. Sub-agents are agent-driven, so their views have no input box —
+the row it would occupy goes to the transcript instead. Children default to
+the parent's model and inherit the parent's mode: plan-mode parents spawn
 read-only children. When a child believes its task is done it reports a
 summary and waits; the parent reviews and either finalizes the child or
 keeps iterating with follow-up messages.

@@ -3,7 +3,7 @@
  *
  * `CodeEngine` owns everything about the coding agent except presentation:
  * provider discovery through the `fino:ai` model registry, per-turn agent
- * construction (so the model and the plan/code mode can change between turns
+ * construction (so the model and the mode can change between turns
  * while the durable SQLite thread keeps the conversation), streamed turn
  * execution through `Session` with `onEvent`, the approval loop for gated
  * tools, mid-turn steering, and a `fino:ai/subagents` pool for concurrent
@@ -58,6 +58,16 @@ import { codeSystemPrompt } from 'fino:commands/code/prompt';
 import { foldEventsToTranscript, SessionTranscript } from 'fino:commands/code/transcript';
 
 /**
+ * How much a session is allowed to do without asking.
+ *
+ * The three levels are one dial rather than independent switches: `plan`
+ * withholds the write tools entirely, `build` offers them but suspends for
+ * approval, and `auto` runs them unattended. A session's mode also sets the
+ * default for the sub-agents it spawns.
+ */
+export type CodeMode = 'plan' | 'build' | 'auto';
+
+/**
  * Options for `CodeEngine.create()`.
  */
 export interface CodeEngineOptions {
@@ -73,10 +83,8 @@ export interface CodeEngineOptions {
    * providers; `setModel()` still switches through the registry afterwards.
    */
   chatModel?: Model;
-  /** Start in planning mode (read-only tools, planning instructions). */
-  planMode?: boolean;
-  /** Execute gated tools without approval suspensions. */
-  auto?: boolean;
+  /** Permission level to start in; defaults to `build`. */
+  mode?: CodeMode;
   /** Cross-turn USD spend cap enforced through `fino:ai/budget`. */
   maxCostUsd?: number;
   /** Docs build directory for the docs tools. Defaults to `<cwd>/docs`. */
@@ -161,7 +169,7 @@ interface TurnHooks {
 
 /**
  * Engine behind `fino code`: registry-backed models, durable streamed turns,
- * plan/code modes, tool approval, steering, and sub-agent fan-out.
+ * plan/build/auto modes, tool approval, steering, and sub-agent fan-out.
  *
  * Construction never touches the network; provider listings load lazily on
  * `listModels()`. The model and mode can change freely between turns — each
@@ -176,7 +184,7 @@ export class CodeEngine {
   #store: SessionStore;
   #storeCloser?: () => Promise<void>;
   #model: Model;
-  #planMode: boolean;
+  #mode: CodeMode;
   #budget?: Budget;
   #threadId: string;
   #active?: Session;
@@ -203,7 +211,7 @@ export class CodeEngine {
     this.#registry = registry;
     this.#store = store;
     this.#model = model;
-    this.#planMode = opts.planMode ?? false;
+    this.#mode = opts.mode ?? 'build';
     this.#threadId = threadId;
     this.#storeCloser = storeCloser;
     if (opts.maxCostUsd !== undefined) this.#budget = new Budget({ usd: opts.maxCostUsd });
@@ -349,7 +357,7 @@ export class CodeEngine {
     // Mutating the spec records the spawn-time default durably: the pool
     // persists this same object, so a restore rebuilds identical powers even
     // if the parent's mode changed since.
-    spec.readOnly ??= this.#planMode;
+    spec.readOnly ??= this.planMode;
     const model = spec.model ? await this.#resolveModel(spec.model) : this.#model;
     return {
       agent: agent({
@@ -361,7 +369,7 @@ export class CodeEngine {
             cwd: this.#opts.cwd,
             docsDir: this.#opts.docsDir,
             writes: !spec.readOnly,
-            auto: this.#opts.auto ?? false,
+            auto: this.auto,
           }),
           ctx.completeTool,
         ],
@@ -386,9 +394,14 @@ export class CodeEngine {
     return this.#model.id ?? this.#model.name;
   }
 
-  /** Whether planning mode is active for the next turn. */
+  /** The permission level in effect for the next turn. */
+  get mode(): CodeMode {
+    return this.#mode;
+  }
+
+  /** Whether the current mode withholds write tools. */
   get planMode(): boolean {
-    return this.#planMode;
+    return this.#mode === 'plan';
   }
 
   /** Current durable thread id. */
@@ -396,19 +409,14 @@ export class CodeEngine {
     return this.#threadId;
   }
 
-  /** Whether gated tools execute without approval. */
+  /** Whether the current mode runs gated tools without approval. */
   get auto(): boolean {
-    return this.#opts.auto ?? false;
+    return this.#mode === 'auto';
   }
 
-  /** Toggle auto-approval for gated tools on subsequent turns. */
-  setAuto(auto: boolean): void {
-    this.#opts = { ...this.#opts, auto };
-  }
-
-  /** Switch planning mode for subsequent turns; history is preserved. */
-  setPlanMode(planMode: boolean): void {
-    this.#planMode = planMode;
+  /** Switch the permission level for subsequent turns; history is preserved. */
+  setMode(mode: CodeMode): void {
+    this.#mode = mode;
   }
 
   /** Start a fresh thread; the old thread and its sub-agents stay stored. */
@@ -554,15 +562,15 @@ export class CodeEngine {
       model: this.#model,
       instructions: codeSystemPrompt({
         cwd: this.#opts.cwd,
-        planMode: this.#planMode,
+        planMode: this.planMode,
         subagents: true,
       }),
       tools: [
         ...createCodeTools({
           cwd: this.#opts.cwd,
           docsDir: this.#opts.docsDir,
-          writes: !this.#planMode,
-          auto: this.#opts.auto ?? false,
+          writes: !this.planMode,
+          auto: this.auto,
         }),
         ...subagentTools(pool),
       ],

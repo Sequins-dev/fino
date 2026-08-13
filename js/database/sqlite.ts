@@ -752,6 +752,7 @@ export class Database {
    * @internal
    */
   #opQueue: Promise<unknown> = Promise.resolve();
+  #txQueue: Promise<unknown> = Promise.resolve();
   /**
    * Wrap an already-open `sqlite3*` handle and its VFS registration. Private:
    * connections are only created through `Database.open()`, which performs the
@@ -925,6 +926,12 @@ export class Database {
    * is whatever `fn` returned. Nested transaction behavior depends on SQLite
    * and the SQL executed by `fn`; this helper does not create savepoints.
    *
+   * Concurrent callers queue: a connection has exactly one transaction, so
+   * overlapping them would fail the second `BEGIN` — and worse, one caller's
+   * rollback would discard the other's writes. Callers that share a
+   * connection across independent tasks therefore serialize here rather than
+   * racing.
+   *
    * ```ts no_run
    * import { Database } from 'fino:database/sqlite';
    *
@@ -937,6 +944,20 @@ export class Database {
    * ```
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
+    this.#checkOpen();
+    // Queued on #txQueue rather than the statement queue: the body issues
+    // statements of its own, which would deadlock against their own gate.
+    const run = this.#txQueue.then(
+      () => this.#runTransaction(fn),
+      () => this.#runTransaction(fn),
+    );
+    this.#txQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+  async #runTransaction<T>(fn: () => Promise<T>): Promise<T> {
     this.#checkOpen();
     await this.exec('BEGIN');
     try {

@@ -236,6 +236,25 @@ describe('fino:commands/code — engine', () => {
     await engine.close();
   });
 
+  it('runs gated tools without suspending in auto mode', async (t) => {
+    const dir = tempDir();
+    const model = scriptModel([
+      toolCallTurn('call_1', 'write_file', JSON.stringify({ path: 'auto.txt', content: 'ok\n' })),
+      endTurn('written'),
+    ]);
+    const engine = await CodeEngine.create({
+      cwd: dir,
+      chatModel: model,
+      sessionDb: false,
+      mode: 'auto',
+    });
+    const result = await engine.runTurn('write it');
+    t.equal(result.status, 'done', 'auto mode skips the approval suspension');
+    const written = new TextDecoder().decode(await new DiskFileSystem().readFile(`${dir}/auto.txt`));
+    t.equal(written, 'ok\n', 'gated tool ran');
+    await engine.close();
+  });
+
   it('switches modes between turns while keeping the thread', async (t) => {
     const dir = tempDir();
     const model = scriptModel([endTurn('first'), endTurn('second')]);
@@ -243,12 +262,14 @@ describe('fino:commands/code — engine', () => {
       cwd: dir,
       chatModel: model,
       sessionDb: false,
-      planMode: true,
+      mode: 'plan',
     });
     t.equal(engine.planMode, true, 'starts in plan mode');
     const first = await engine.runTurn('plan something');
     t.equal(first.status, 'done', 'plan turn completes');
-    engine.setPlanMode(false);
+    engine.setMode('build');
+    t.equal(engine.planMode, false, 'build mode restores write tools');
+    t.equal(engine.auto, false, 'build mode still asks before gated tools');
     const thread = engine.threadId;
     const second = await engine.runTurn('now do it');
     t.equal(second.status, 'done', 'code turn completes');
@@ -378,7 +399,7 @@ describe('fino:commands/code — sub-agents', () => {
       cwd: dir,
       chatModel: model,
       sessionDb: false,
-      planMode: true,
+      mode: 'plan',
     });
     const result = await engine.runTurn('plan the work');
     t.equal(result.status, 'done', 'plan turn completed');

@@ -133,6 +133,11 @@ export class CodeWorkspace {
     return this.#store;
   }
 
+  /** Project root every session in this workspace works in. */
+  get cwd(): string {
+    return this.#opts.cwd;
+  }
+
   /**
    * Registry snapshot: active sessions by default (most recent first), or
    * archived ones with `archived: true`.

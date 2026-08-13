@@ -5,6 +5,7 @@
  *   HARNESS_REPLY       markdown the model streams back (default: a sample doc)
  *   HARNESS_CHUNK       characters per streamed delta (default: 24)
  *   HARNESS_DELAY_MS    pause between deltas, to exercise streaming UI
+ *   HARNESS_SUBAGENTS   number of sub-agents the first turn fans out to
  */
 import { CodeWorkspace } from 'fino:commands/code/workspace';
 import { runCodeTui } from 'fino:commands/code/tui';
@@ -38,13 +39,13 @@ function chunks(text: string, size: number): string[] {
   return out;
 }
 
-function makeStream(): ModelStream {
+function makeStream(scripted?: StreamEvent[]): ModelStream {
   const state = createSignal({
     text: '',
     usage: { inputTokens: 0, outputTokens: 0 },
     stopReason: 'end_turn' as const,
   });
-  const events: StreamEvent[] = [
+  const events: StreamEvent[] = scripted ?? [
     ...chunks(reply, Math.max(1, chunkSize)).map(
       (text): StreamEvent => ({ type: 'text_delta', index: 0, text }),
     ),
@@ -68,12 +69,48 @@ function makeStream(): ModelStream {
   };
 }
 
+function toolCall(id: string, name: string, args: unknown): StreamEvent[] {
+  return [
+    { type: 'tool_call_start', index: 0, id, name },
+    { type: 'tool_call_delta', index: 0, json: JSON.stringify(args) },
+    { type: 'tool_call_end', index: 0 },
+    { type: 'usage', usage: { inputTokens: 8, outputTokens: 4 } },
+    { type: 'stop', reason: 'tool_use' },
+  ];
+}
+
+const fanOut = Number(env.HARNESS_SUBAGENTS ?? '0');
+// The parent spawns N children, waits for them, then answers; each child
+// reports a summary and stops. Roles are told apart by the system prompt,
+// exactly as the delegation tests do.
+const parentTurns: StreamEvent[][] = [
+  ...Array.from({ length: fanOut }, (_, index) =>
+    toolCall(`p${index}`, 'subagent_spawn', {
+      task: `research part ${index + 1}`,
+      name: `worker-${index + 1}`,
+    }),
+  ),
+  ...(fanOut > 0 ? [toolCall('pw', 'subagent_wait', {})] : []),
+];
+let parentIndex = 0;
+let childIndex = 0;
+
 const model: Model = {
   id: 'harness-model',
   name: 'harness-model',
   provider: 'test',
-  stream() {
-    return makeStream();
+  stream(request) {
+    const system = typeof request.system === 'string' ? request.system : '';
+    if (system.includes('You are a sub-agent')) {
+      const turn = childIndex++;
+      return makeStream(
+        turn < fanOut
+          ? toolCall(`c${turn}`, 'subagent_complete', { summary: `part ${turn + 1} done` })
+          : undefined,
+      );
+    }
+    const turn = parentTurns[parentIndex++];
+    return makeStream(turn);
   },
   async generate(): Promise<never> {
     throw new Error('use stream');
@@ -88,4 +125,14 @@ const workspace = await CodeWorkspace.open({
   transcriptsDir: false,
 });
 const engine = await workspace.createSession();
+// A scripted catalog: the harness has no provider credentials, and the model
+// picker's layout is the thing under test.
+const catalogSize = Number(env.HARNESS_MODELS ?? '0');
+if (catalogSize > 0) {
+  engine.listModels = async () =>
+    Array.from({ length: catalogSize }, (_, index) => ({
+      id: `model-${String(index).padStart(2, '0')}`,
+      provider: index % 2 === 0 ? 'anthropic' : 'openai',
+    }));
+}
 await runCodeTui(workspace, { sessionId: engine.threadId });

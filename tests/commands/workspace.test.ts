@@ -144,7 +144,7 @@ describe('fino:commands/code — JSONL transcripts', () => {
     await new DiskFileSystem().mkdir(dir);
     const workspace = await CodeWorkspace.open({
       cwd: dir,
-      auto: true,
+      mode: 'auto',
       chatModel: scriptModel([
         toolCallTurn('c1', 'write_file', JSON.stringify({ path: 'x.txt', content: 'hello\n' })),
         endTurn('wrote the file'),

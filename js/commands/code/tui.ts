@@ -32,7 +32,7 @@
  */
 import type { AgentEvent, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { SubagentState } from 'fino:ai/subagents';
-import type { ModelMessage } from 'fino:ai/model';
+import type { ModelInfo, ModelMessage } from 'fino:ai/model';
 import { MarkdownTerminalStream } from 'fino:format/markdown';
 import { createSignal, h } from 'fino:ui';
 import {
@@ -51,7 +51,8 @@ import {
 } from 'fino:tty/tui';
 import { writeStdout } from 'fino:tty';
 import { env } from 'fino:process';
-import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
+import { basename } from 'fino:file/path';
+import type { CodeEngine, CodeMode, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
 import {
@@ -68,8 +69,6 @@ const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
 const YELLOW = '\x1b[33m';
-const BLUE_BG = '\x1b[44m';
-const MAGENTA_BG = '\x1b[45m';
 const RESET = '\x1b[0m';
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const REDRAW_INTERVAL_MS = 33;
@@ -80,6 +79,21 @@ const TOOL_DETAIL_LINES = 60;
 const SLASH_MAX_ROWS = 6;
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_INTERVAL_MS = 100;
+const AGENT_MENU_MAX_ROWS = 8;
+/** Rows kept clear above and below a centred popover. */
+const MENU_MARGIN_ROWS = 2;
+/** The status bar carries the mode, so each level gets its own color. */
+const MODE_BACKGROUNDS: Record<CodeMode, string> = {
+  plan: '\x1b[45m',
+  build: '\x1b[44m',
+  auto: '\x1b[41m',
+};
+const MODE_ORDER: CodeMode[] = ['plan', 'build', 'auto'];
+const MODE_HELP: Record<CodeMode, string> = {
+  plan: 'plan mode: read-only tools (sub-agents inherit read-only)',
+  build: 'build mode: full tool set, gated tools ask first',
+  auto: 'auto mode: full tool set, gated tools run without asking',
+};
 
 interface TranscriptEntry {
   kind: 'user' | 'assistant' | 'tool' | 'notice';
@@ -130,9 +144,14 @@ interface SessionUI {
   queue: QueuedMessage[];
   busy: boolean;
   abort?: AbortController;
-  status: string;
+  /** Coarse session state, shown as a glyph in the status bar. */
+  state: 'idle' | 'working' | 'waiting' | 'error';
+  /** Transient status-bar message: a copy confirmation, a retry, an error. */
+  flash?: string;
   /** Wall-clock start of the running turn, for the activity indicator. */
   turnStartedAt?: number;
+  /** How long the last completed turn took, kept on screen after it ends. */
+  lastTurnMs?: number;
   /** What the agent is doing right now, shown beside the spinner. */
   activity: string;
   seenChildApprovals: Set<string>;
@@ -149,8 +168,8 @@ interface ApprovalItem {
 
 type SidebarRow =
   | { kind: 'action-new' }
+  | { kind: 'project'; label: string }
   | { kind: 'session'; id: string; archived: boolean }
-  | { kind: 'child'; sessionId: string; childId: string }
   | { kind: 'divider'; label: string };
 
 interface SidebarDisplay {
@@ -194,10 +213,10 @@ const SLASH_COMMANDS: SlashCommand[] = [
     description: 'Pick a model, or switch directly by id',
     submits: true,
   },
-  { name: 'plan', args: '', description: 'Planning mode (read-only tools)', submits: true },
-  { name: 'code', args: '', description: 'Code mode (full tool set)', submits: true },
-  { name: 'auto', args: '', description: 'Toggle auto-approval of gated tools', submits: true },
-  { name: 'agents', args: '', description: 'Sub-agent status for this session', submits: true },
+  { name: 'plan', args: '', description: 'Plan mode — read-only tools', submits: true },
+  { name: 'build', args: '', description: 'Build mode — tools ask before writing', submits: true },
+  { name: 'auto', args: '', description: 'Auto mode — tools run without asking', submits: true },
+  { name: 'agents', args: '', description: 'Switch between this session and its sub-agents', submits: true },
   { name: 'sessions', args: '', description: 'Toggle the session sidebar', submits: true },
   { name: 'title', args: '<name>', description: 'Rename this session', submits: false },
   { name: 'archive', args: '', description: 'Archive/unarchive this session', submits: true },
@@ -275,9 +294,9 @@ function wrapPlain(text: string, width: number): string[] {
 
 function rowKey(row: SidebarRow): string {
   if (row.kind === 'action-new') return 'new';
+  if (row.kind === 'project') return 'project';
   if (row.kind === 'divider') return `div:${row.label}`;
-  if (row.kind === 'session') return `s:${row.id}`;
-  return `c:${row.sessionId}:${row.childId}`;
+  return `s:${row.id}`;
 }
 
 /**
@@ -316,7 +335,6 @@ export async function runCodeTui(
   let sidebarVisible = false;
   let selectedKey = '';
   let sidebarScroll = 0;
-  const expanded = new Set<string>();
   const approvalQueue: ApprovalItem[] = [];
   let app: TuiApp;
   let lastPaint = 0;
@@ -346,12 +364,17 @@ export async function runCodeTui(
   let menuHitRows: Array<{ row: number; index: number }> = [];
   let modelMenu: ModelMenuState | undefined;
   let modelMenuHitRows: Array<{ row: number; index: number }> = [];
-  let modelHitRange: { start: number; end: number; key: string } | undefined;
   let transcriptHitRows: Array<{ row: number; entryIndex: number }> = [];
   let slashHitRows: Array<{ row: number; index: number }> = [];
   let slashTop = 0;
   let slashSelected = 0;
   let lastSlashFilter = '';
+  /** Open agent selector: the view ids it offers and the highlighted one. */
+  let agentMenu: { views: string[]; selected: number; scroll: number } | undefined;
+  let agentMenuTop = 0;
+  let agentMenuHitRows: Array<{ row: number; index: number }> = [];
+  /** Provider catalog, fetched once in the background and reused. */
+  let catalog: Promise<ModelMenuEntry[]> | undefined;
 
   /**
    * Resolve a pointer position to a hoverable target key, reusing the hit
@@ -364,13 +387,15 @@ export async function runCodeTui(
     if (inSidebar) {
       const entry = sidebarDisplayCache.lineMap[sidebarScroll + y];
       const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
-      if (!row || row.kind === 'divider') return undefined;
+      if (!row || row.kind === 'divider' || row.kind === 'project') return undefined;
       return `sidebar:${entry!.rowIndex}`;
     }
     if (y === height - 1) {
       const hit = statusHits.find((h) => contentX >= h.start && contentX <= h.end);
       return hit?.key;
     }
+    const agentHit = agentMenuHitRows.find((r) => r.row === y);
+    if (agentHit) return `agent:${agentHit.index}`;
     const slashHit = slashHitRows.find((r) => r.row === y);
     if (slashHit) return `slash:${slashHit.index}`;
     const queueRow = y - queueTop;
@@ -404,27 +429,41 @@ export async function runCodeTui(
     spinnerTimer = undefined;
   }
 
+  function formatDuration(ms: number): string {
+    const seconds = Math.max(0, Math.round(ms / 1000));
+    return seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`;
+  }
+
   /**
-   * The line above the input: a live indicator while a turn runs, blank
-   * otherwise so the input stays visually separated from the transcript.
+   * The band between the transcript and the input: a live indicator while a
+   * turn runs, the finished turn's duration afterwards, blank before the
+   * first turn. Blank rows on either side keep it off both neighbours.
    */
-  function activityLine(session: SessionUI, cw: number): string {
-    if (!session.busy) return '';
-    const spinner = SPINNER_FRAMES[spinnerFrame]!;
-    const elapsed = session.turnStartedAt
-      ? Math.max(0, Math.round((Date.now() - session.turnStartedAt) / 1000))
-      : 0;
-    const states = session.engine.subagentStates();
-    const active = states.filter(
-      (state) => state.status === 'working' || state.status === 'awaiting_approval',
-    ).length;
-    const parts = [session.engine.planMode ? 'Planning' : 'Working'];
-    if (session.activity) parts.push(session.activity);
-    parts.push(elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`);
-    if (active > 0) parts.push(`${active} sub-agent${active === 1 ? '' : 's'}`);
-    if (session.queue.length > 0) parts.push(`${session.queue.length} queued`);
-    parts.push('Ctrl+C interrupts');
-    return clipVisible(`${YELLOW}${spinner}${RESET} ${DIM}${parts.join(' · ')}${RESET}`, cw + 2);
+  function activityLines(session: SessionUI, cw: number): string[] {
+    if (session.busy) {
+      const spinner = SPINNER_FRAMES[spinnerFrame]!;
+      const states = session.engine.subagentStates();
+      const active = states.filter(
+        (state) => state.status === 'working' || state.status === 'awaiting_approval',
+      ).length;
+      const parts = [session.engine.planMode ? 'Planning' : 'Working'];
+      if (session.activity) parts.push(session.activity);
+      parts.push(formatDuration(Date.now() - (session.turnStartedAt ?? Date.now())));
+      if (active > 0) parts.push(`${active} sub-agent${active === 1 ? '' : 's'}`);
+      if (session.queue.length > 0) parts.push(`${session.queue.length} queued`);
+      parts.push('Ctrl+C interrupts');
+      return [
+        '',
+        clipVisible(`${YELLOW}${spinner}${RESET} ${DIM}${parts.join(' · ')}${RESET}`, cw + 2),
+        '',
+      ];
+    }
+    if (session.lastTurnMs === undefined) return [''];
+    return ['', `${DIM}✔ ${formatDuration(session.lastTurnMs)}${RESET}`, ''];
+  }
+
+  function activityRows(session: SessionUI): number {
+    return session.busy || session.lastTurnMs !== undefined ? 3 : 1;
   }
 
   /** Track the hovered target, repainting only when it actually changes. */
@@ -450,7 +489,7 @@ export async function runCodeTui(
     if (text.length === 0) return false;
     void writeStdout(copyToClipboard(text));
     const session = focused();
-    if (session) session.status = `Copied ${text.length} characters.`;
+    if (session) session.flash = `copied ${text.length} chars`;
     redraw();
     return true;
   }
@@ -463,7 +502,90 @@ export async function runCodeTui(
     return sessions.get(focusedSessionId);
   }
 
-  function paneRows(session: SessionUI): { queue: number; slash: number } {
+  /**
+   * Views the agent selector offers: the session itself, then its sub-agents
+   * in spawn order.
+   */
+  function agentViews(session: SessionUI): string[] {
+    return ['main', ...session.viewOrder.filter((id) => id !== 'main')];
+  }
+
+  function openAgentMenu(session: SessionUI): void {
+    const views = agentViews(session);
+    const selected = Math.max(0, views.indexOf(session.focusedView));
+    agentMenu = {
+      views,
+      selected,
+      scroll: Math.max(0, Math.min(selected, views.length - AGENT_MENU_MAX_ROWS)),
+    };
+    redraw();
+  }
+
+  /**
+   * The agent selector, rendered under the input so it reads as an extension
+   * of the status bar segment that opens it.
+   */
+  function agentMenuLines(session: SessionUI, cw: number): string[] {
+    agentMenuHitRows = [];
+    const menu = agentMenu;
+    if (!menu) return [];
+    const states = new Map(session.engine.subagentStates().map((state) => [state.id, state]));
+    const window = menu.views.slice(menu.scroll, menu.scroll + AGENT_MENU_MAX_ROWS);
+    const lines = window.map((id, offset) => {
+      const index = menu.scroll + offset;
+      agentMenuHitRows.push({ row: agentMenuTop + offset, index });
+      const state = states.get(id);
+      const label =
+        id === 'main'
+          ? ` ❯ ${sessionTitle(session.id)}`
+          : ` ${state ? CHILD_GLYPHS[state.status] : '·'} ${session.viewNames.get(id) ?? id}${
+              state ? ` ${DIM}${state.status}${RESET}` : ''
+            }`;
+      const marked = id === session.focusedView ? `${label}  ${DIM}(viewing)${RESET}` : label;
+      return index === menu.selected
+        ? `${INVERSE}${padVisible(clipVisible(stripAnsi(marked), cw + 1), cw + 2)}${RESET}`
+        : clipVisible(marked, cw + 2);
+    });
+    if (menu.views.length > AGENT_MENU_MAX_ROWS) {
+      lines.push(`${DIM} … ${menu.views.length} agents — ↑/↓ to browse${RESET}`);
+    }
+    return lines;
+  }
+
+  function setMode(session: SessionUI, mode: CodeMode): void {
+    session.engine.setMode(mode);
+    notice(session, MODE_HELP[mode]);
+  }
+
+  /** Step through the permission levels: plan → build → auto → plan. */
+  function cycleMode(session: SessionUI): void {
+    const next = MODE_ORDER[(MODE_ORDER.indexOf(session.engine.mode) + 1) % MODE_ORDER.length]!;
+    setMode(session, next);
+  }
+
+  function chooseAgentView(session: SessionUI, index: number): void {
+    const menu = agentMenu;
+    const id = menu?.views[index];
+    agentMenu = undefined;
+    if (!id) {
+      redraw();
+      return;
+    }
+    void focusSession(session.id, id);
+  }
+
+  function moveAgentSelection(delta: number): void {
+    const menu = agentMenu;
+    if (!menu) return;
+    menu.selected = Math.max(0, Math.min(menu.views.length - 1, menu.selected + delta));
+    if (menu.selected < menu.scroll) menu.scroll = menu.selected;
+    if (menu.selected >= menu.scroll + AGENT_MENU_MAX_ROWS) {
+      menu.scroll = menu.selected - AGENT_MENU_MAX_ROWS + 1;
+    }
+    redraw();
+  }
+
+  function paneRows(session: SessionUI): { queue: number; slash: number; agents: number } {
     const queue =
       session.queue.length > 0
         ? Math.min(session.queue.length, QUEUE_PANE_MAX) +
@@ -474,18 +596,23 @@ export async function runCodeTui(
       matches.length > 0
         ? Math.min(matches.length, SLASH_MAX_ROWS) + (matches.length > SLASH_MAX_ROWS ? 1 : 0)
         : 0;
-    return { queue, slash };
+    const views = agentMenu ? agentMenu.views.length : 0;
+    const agents =
+      views > 0 ? Math.min(views, AGENT_MENU_MAX_ROWS) + (views > AGENT_MENU_MAX_ROWS ? 1 : 0) : 0;
+    return { queue, slash, agents };
   }
 
   /**
-   * Rows the transcript viewport occupies, above the queue and slash panes.
-   *
-   * The trailing 3 rows are the blank separator, the input line, and the
-   * status bar.
+   * Rows the transcript viewport occupies: everything the panes, activity
+   * band, input line, and status bar leave over.
    */
   function transcriptHeightFor(session: SessionUI): number {
     const panes = paneRows(session);
-    return Math.max(1, height - panes.queue - panes.slash - 3);
+    const input = session.focusedView === 'main' ? 1 : 0;
+    return Math.max(
+      1,
+      height - panes.queue - panes.slash - panes.agents - activityRows(session) - input - 1,
+    );
   }
 
   /**
@@ -557,51 +684,93 @@ export async function runCodeTui(
 
   // --- model picker ----------------------------------------------------
 
+  /**
+   * Group a provider listing into the picker's header/model rows.
+   */
+  function modelEntries(models: ModelInfo[]): ModelMenuEntry[] {
+    const byProvider = new Map<string, string[]>();
+    for (const info of models) {
+      const list = byProvider.get(info.provider) ?? [];
+      list.push(info.id);
+      byProvider.set(info.provider, list);
+    }
+    const entries: ModelMenuEntry[] = [];
+    // Plain codepoint order: this V8 build has no ICU collation, so
+    // localeCompare() throws rather than sorting.
+    for (const [provider, ids] of [...byProvider.entries()].sort(([a], [b]) =>
+      a < b ? -1 : a > b ? 1 : 0,
+    )) {
+      entries.push({ kind: 'header', label: provider });
+      for (const id of ids.sort()) entries.push({ kind: 'model', provider, id });
+    }
+    return entries;
+  }
+
+  /**
+   * Fetch the provider catalog once and keep it for the life of the app.
+   *
+   * Listing hits every configured provider's API, which is far too slow to do
+   * while the user waits on an open picker, so it starts in the background at
+   * launch. `force` re-fetches for the picker's refresh action.
+   */
+  function modelCatalog(session: SessionUI, force = false): Promise<ModelMenuEntry[]> {
+    if (force) catalog = undefined;
+    catalog ??= session.engine
+      .listModels()
+      .then(modelEntries)
+      .catch((err: unknown) => {
+        catalog = undefined;
+        throw err;
+      });
+    return catalog;
+  }
+
+  function applyCatalog(session: SessionUI, entries: ModelMenuEntry[]): void {
+    if (!modelMenu) return;
+    const current = entries.findIndex(
+      (entry) => entry.kind === 'model' && entry.id === session.engine.modelId,
+    );
+    const firstModel = entries.findIndex((entry) => entry.kind === 'model');
+    modelMenu = {
+      loading: false,
+      entries,
+      selected: current >= 0 ? current : Math.max(0, firstModel),
+      scroll: 0,
+      snap: true,
+    };
+    redraw();
+  }
+
+  function failCatalog(err: unknown): void {
+    if (!modelMenu) return;
+    modelMenu = {
+      loading: false,
+      error: err instanceof Error ? err.message : String(err),
+      entries: [],
+      selected: 0,
+      scroll: 0,
+      snap: true,
+    };
+    redraw();
+  }
+
   function openModelMenu(session: SessionUI): void {
     modelMenu = { loading: true, entries: [], selected: 0, scroll: 0, snap: true };
     redraw();
-    void session.engine
-      .listModels()
-      .then((models) => {
-        if (!modelMenu) return;
-        const byProvider = new Map<string, string[]>();
-        for (const info of models) {
-          const list = byProvider.get(info.provider) ?? [];
-          list.push(info.id);
-          byProvider.set(info.provider, list);
-        }
-        const entries: ModelMenuEntry[] = [];
-        for (const [provider, ids] of [...byProvider.entries()].sort(([a], [b]) =>
-          a.localeCompare(b),
-        )) {
-          entries.push({ kind: 'header', label: provider });
-          for (const id of ids.sort()) entries.push({ kind: 'model', provider, id });
-        }
-        const current = entries.findIndex(
-          (entry) => entry.kind === 'model' && entry.id === session.engine.modelId,
-        );
-        const firstModel = entries.findIndex((entry) => entry.kind === 'model');
-        modelMenu = {
-          loading: false,
-          entries,
-          selected: current >= 0 ? current : Math.max(0, firstModel),
-          scroll: 0,
-          snap: true,
-        };
-        redraw();
-      })
-      .catch((err: unknown) => {
-        if (!modelMenu) return;
-        modelMenu = {
-          loading: false,
-          error: err instanceof Error ? err.message : String(err),
-          entries: [],
-          selected: 0,
-          scroll: 0,
-          snap: true,
-        };
-        redraw();
-      });
+    modelCatalog(session)
+      .then((entries) => applyCatalog(session, entries))
+      .catch(failCatalog);
+  }
+
+  function refreshModelCatalog(menu: ModelMenuState): void {
+    const session = focused();
+    if (!session) return;
+    menu.loading = true;
+    menu.error = undefined;
+    redraw();
+    modelCatalog(session, true)
+      .then((entries) => applyCatalog(session, entries))
+      .catch(failCatalog);
   }
 
   function moveModelSelection(menu: ModelMenuState, delta: number): void {
@@ -763,6 +932,9 @@ export async function runCodeTui(
     for (let index = 0; index < tab.entries.length; index++) {
       const entry = tab.entries[index]!;
       if (rows.length > 0) rows.push('');
+      // A rule ahead of each prose answer marks where the agent starts
+      // talking again after a run of tool calls.
+      if (entry.kind === 'assistant') rows.push(`${DIM}${'─'.repeat(Math.max(1, cw))}${RESET}`);
       if (entry.kind === 'tool') toolRows.set(rows.length, index);
       rows.push(...entryLines(entry, cw, hover === `tool:${index}`));
     }
@@ -895,7 +1067,7 @@ export async function runCodeTui(
       historyIndex: -1,
       queue: [],
       busy: false,
-      status: 'Ready',
+      state: 'idle',
       activity: '',
       seenChildApprovals: new Set(),
       historyReady: Promise.resolve(),
@@ -1020,15 +1192,17 @@ export async function runCodeTui(
     }) => Promise<TurnResult>,
   ): Promise<void> {
     session.busy = true;
-    session.status = session.engine.planMode ? 'Planning…' : 'Working…';
+    session.state = 'working';
+    session.flash = undefined;
     session.turnStartedAt = Date.now();
+    session.lastTurnMs = undefined;
     session.activity = 'thinking';
     session.abort = new AbortController();
     syncSpinner();
     const main = view(session, 'main');
     const onEvent = (ev: AgentEvent): void => {
-      if (ev.type === 'retry') session.status = `Retrying (${ev.attempt})…`;
-      else if (ev.type === 'fallback') session.status = `Fallback to ${ev.model}…`;
+      if (ev.type === 'retry') session.flash = `retry ${ev.attempt}`;
+      else if (ev.type === 'fallback') session.flash = `fallback → ${ev.model}`;
       if (ev.type === 'tool_start') session.activity = ev.name;
       else if (ev.type === 'tool_result') session.activity = 'thinking';
       else if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
@@ -1044,12 +1218,12 @@ export async function runCodeTui(
           notice(session, `suspended: ${result.suspendReason ?? 'external input required'}`);
           break;
         }
-        session.status = 'Waiting for approval…';
+        session.state = 'waiting';
         session.activity = 'waiting for approval';
         redraw();
         const token = result.approval.token;
         const approved = await requestParentDecision(session, result.approval.request);
-        session.status = 'Working…';
+        session.state = 'working';
         session.activity = 'thinking';
         redraw();
         result = approved
@@ -1060,21 +1234,27 @@ export async function runCodeTui(
             });
       }
       finalizeAssistant(main);
-      if (result.status === 'done') session.status = 'Ready';
-      else if (result.status !== 'suspended') session.status = `Turn ${result.status}`;
+      if (result.status === 'done') session.state = 'idle';
+      else if (result.status !== 'suspended') {
+        session.state = 'error';
+        session.flash = `turn ${result.status}`;
+      }
     } catch (err) {
       finalizeAssistant(main);
       const message = err instanceof Error ? err.message : String(err);
       if (message.toLowerCase().includes('abort')) {
         notice(session, '[turn cancelled]');
-        session.status = 'Cancelled';
+        session.state = 'idle';
+        session.flash = 'cancelled';
       } else {
         notice(session, `error: ${message}`);
-        session.status = 'Error';
+        session.state = 'error';
+        session.flash = 'error';
       }
     } finally {
       session.busy = false;
       session.abort = undefined;
+      session.lastTurnMs = Date.now() - (session.turnStartedAt ?? Date.now());
       session.turnStartedAt = undefined;
       session.activity = '';
       syncSpinner();
@@ -1099,15 +1279,12 @@ export async function runCodeTui(
   // --- sidebar ---------------------------------------------------------
 
   function sidebarRows(): SidebarRow[] {
-    const rows: SidebarRow[] = [{ kind: 'action-new' }];
+    const rows: SidebarRow[] = [
+      { kind: 'project', label: basename(workspace.cwd).toString() || workspace.cwd },
+      { kind: 'action-new' },
+    ];
     for (const meta of workspace.list()) {
       rows.push({ kind: 'session', id: meta.id, archived: false });
-      if (expanded.has(meta.id)) {
-        const session = sessions.get(meta.id);
-        for (const state of session?.engine.subagentStates() ?? []) {
-          rows.push({ kind: 'child', sessionId: meta.id, childId: state.id });
-        }
-      }
     }
     const archived = workspace.list({ archived: true });
     if (archived.length > 0) {
@@ -1117,6 +1294,13 @@ export async function runCodeTui(
     return rows;
   }
 
+  function sessionGlyph(id: string): string {
+    const activity = sessions.get(id)?.engine.activity ?? workspace.activity(id);
+    return activity === 'working' ? '⟳' : activity === 'waiting' ? '▲' : '·';
+  }
+
+  // Colors reset the surrounding inverse styling, so a selected row uses the
+  // bare glyph from sessionGlyph() instead.
   function sessionIndicator(id: string): string {
     const activity = sessions.get(id)?.engine.activity ?? workspace.activity(id);
     if (activity === 'working') return `${YELLOW}⟳${RESET}`;
@@ -1146,6 +1330,11 @@ export async function runCodeTui(
         );
         lineMap.push({ rowIndex, first });
       };
+      if (row.kind === 'project') {
+        lines.push(`${BOLD}${padVisible(` ${clipVisible(row.label, w - 2)}`, w)}${RESET}`);
+        lineMap.push({ rowIndex, first: true });
+        continue;
+      }
       if (row.kind === 'action-new') {
         const label = padVisible(`${selected ? '+' : `${GREEN}+${RESET}`} new session`, w - 2);
         emit(`${label}${selected ? '«' : `${DIM}«${RESET}`} `, true);
@@ -1156,28 +1345,17 @@ export async function runCodeTui(
         lineMap.push({ rowIndex, first: true });
         continue;
       }
-      if (row.kind === 'session') {
-        const arrow = row.archived ? ' ' : expanded.has(row.id) ? '▾' : '▸';
-        const indicator = selected ? '' : sessionIndicator(row.id);
-        const plainIndicator =
-          sessions.get(row.id)?.engine.activity === 'working'
-            ? '⟳'
-            : sessions.get(row.id)?.engine.activity === 'waiting'
-              ? '▲'
-              : '·';
-        const titleLines = wrapPlain(sessionTitle(row.id), w - 5).slice(0, SESSION_TITLE_LINES);
-        for (let i = 0; i < titleLines.length; i++) {
-          const prefix = i === 0 ? `${arrow} ${selected ? plainIndicator : indicator} ` : '    ';
-          emit(`${prefix}${titleLines[i]}`, i === 0, row.archived && !selected);
-        }
-        continue;
+      // Each session is a bordered card: the border separates neighbours and
+      // gives hover and selection a target the size of the whole entry.
+      const indicator = selected ? sessionGlyph(row.id) : sessionIndicator(row.id);
+      const titleLines = wrapPlain(sessionTitle(row.id), w - 6).slice(0, SESSION_TITLE_LINES);
+      const dim = row.archived && !selected;
+      emit(`┌${'─'.repeat(w - 2)}┐`, true, dim);
+      for (let i = 0; i < titleLines.length; i++) {
+        const prefix = i === 0 ? `${indicator} ` : '  ';
+        emit(`│ ${padVisible(`${prefix}${titleLines[i]}`, w - 4)} │`, false, dim);
       }
-      const session = sessions.get(row.sessionId);
-      const state = session?.engine.subagentStates().find((s) => s.id === row.childId);
-      const glyph = state ? CHILD_GLYPHS[state.status] : '·';
-      const name = clipVisible(session?.viewNames.get(row.childId) ?? row.childId, w - 7);
-      const active = state && (state.status === 'working' || state.status === 'awaiting_approval');
-      emit(`   ${glyph} ${name}`, true, !selected && !active);
+      emit(`└${'─'.repeat(w - 2)}┘`, false, dim);
     }
     return { rows, lines, lineMap };
   }
@@ -1198,8 +1376,8 @@ export async function runCodeTui(
   }
 
   function focusSidebarRow(row: SidebarRow): void {
+    if (row.kind === 'divider' || row.kind === 'project') return;
     selectedKey = rowKey(row);
-    if (row.kind === 'divider') return;
     if (row.kind === 'action-new') {
       void workspace.createSession().then((engine) => {
         attachSession(engine);
@@ -1209,14 +1387,7 @@ export async function runCodeTui(
       });
       return;
     }
-    if (row.kind === 'session') {
-      void focusSession(row.id, 'main');
-      return;
-    }
-    void focusSession(row.sessionId, row.childId).then(() => {
-      selectedKey = rowKey(row);
-      redraw();
-    });
+    void focusSession(row.id, 'main');
   }
 
   // --- rendering -------------------------------------------------------
@@ -1256,7 +1427,7 @@ export async function runCodeTui(
       );
       while (lines.length < height - 2) lines.push('');
       lines.push(
-        `${BLUE_BG}${padVisible(`${sidebarVisible ? '«' : '≡'} fino code`, cw + 2)}${RESET}`,
+        `${MODE_BACKGROUNDS.build}${padVisible(`${sidebarVisible ? '«' : '≡'} fino code`, cw + 2)}${RESET}`,
       );
       return lines;
     }
@@ -1322,7 +1493,13 @@ export async function runCodeTui(
     } else if (modelMenu) {
       const menu = modelMenu;
       const innerWidth = Math.max(30, Math.min(cw - 4, 56));
-      const maxRows = Math.max(4, Math.min(menu.entries.length, transcriptHeight - 6));
+      // The box is the list plus its border, title, blank rows, and footer;
+      // subtract that and a margin so it never runs past the transcript.
+      const chrome = 8;
+      const maxRows = Math.max(
+        1,
+        Math.min(menu.entries.length, transcriptHeight - chrome - 2 * MENU_MARGIN_ROWS),
+      );
       if (menu.snap) {
         if (menu.selected < menu.scroll) menu.scroll = menu.selected;
         if (menu.selected >= menu.scroll + maxRows) menu.scroll = menu.selected - maxRows + 1;
@@ -1360,8 +1537,10 @@ export async function runCodeTui(
           body.push(`${DIM}↑/↓ scroll · ${menu.entries.length} entries${RESET}`);
         }
       }
-      body.push('', `${DIM}Enter select · Esc close${RESET}`);
+      body.push('', `${DIM}Enter select · Ctrl+R refresh · Esc close${RESET}`);
       const box = [top, ...body.map(pad), bottom];
+      // maxRows already reserves the margin, so centring what is left keeps
+      // the box clear of both edges without pushing it off the bottom.
       const padTop = Math.max(0, Math.floor((transcriptHeight - box.length) / 2));
       const indent = ' '.repeat(Math.max(0, Math.floor((cw - innerWidth) / 2)));
       rows = [...Array<string>(padTop).fill(''), ...box.map((line) => indent + line)];
@@ -1423,35 +1602,42 @@ export async function runCodeTui(
     }
     lines.push(...slashLines);
     const isMain = session.focusedView === 'main';
-    const placeholder =
-      approvalQueue.length > 0
-        ? 'decide the approval above (y/n)'
-        : !isMain
-          ? 'sub-agent view — agent-driven, Esc cancels its run'
+    // A sub-agent view is a parent↔child conversation the user watches rather
+    // than joins, so it gets the transcript row the input would have taken.
+    if (isMain) {
+      const placeholder =
+        approvalQueue.length > 0
+          ? 'decide the approval above (y/n)'
           : session.busy
             ? 'type to queue; Enter queues, [steer now] steers'
             : session.engine.planMode
               ? 'describe what to plan…'
               : 'ask, or /help';
-    const inputLine =
-      isMain && session.input.length > 0
-        ? `${CYAN}❯${RESET} ${session.input}▏`
-        : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
-    lines.push(activityLine(session, cw));
-    lines.push(clipVisible(inputLine, cw + 2));
+      const inputLine =
+        session.input.length > 0
+          ? `${CYAN}❯${RESET} ${session.input}▏`
+          : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
+      lines.push(...activityLines(session, cw));
+      lines.push(clipVisible(inputLine, cw + 2));
+    } else {
+      lines.push(...activityLines(session, cw));
+    }
+    agentMenuTop = lines.length;
+    lines.push(...agentMenuLines(session, cw));
     const states = session.engine.subagentStates();
     const activeCount = states.filter(
       (s) => s.status === 'working' || s.status === 'awaiting_approval',
     ).length;
-    const agentSegment =
-      states.length > 0
-        ? ` · ${states.length} agents${activeCount > 0 ? ` (${activeCount} active)` : ''}`
-        : '';
-    const viewLabel = isMain ? '' : ` · ${session.viewNames.get(session.focusedView) ?? ''}`;
-    const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
-    const autoLabel = session.engine.auto ? ' · auto' : '';
+    const agentLabel = isMain
+      ? states.length > 0
+        ? `${states.length} agent${states.length === 1 ? '' : 's'}${
+            activeCount > 0 ? ` (${activeCount} active)` : ''
+          }`
+        : ''
+      : (session.viewNames.get(session.focusedView) ?? 'sub-agent');
+    const modeLabel = session.engine.mode.toUpperCase();
     const selectLabel = selection ? ' · SELECTION (Ctrl+E copies)' : '';
-    const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
+    const bg = MODE_BACKGROUNDS[session.engine.mode];
     // Build the bar from segments so clickable ones get hit ranges and a
     // hover highlight; inverse reads as a pressable control over the bar's
     // own background.
@@ -1468,13 +1654,29 @@ export async function runCodeTui(
       }
       column += width;
     };
-    segment(sidebarVisible ? '«' : '≡', 'status:sidebar');
-    segment(` ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · `);
+    segment(
+      `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}`,
+      'status:sidebar',
+    );
+    segment(' · ');
     segment(session.engine.modelId, 'status:model');
-    segment(` · ${modeLabel}${autoLabel}${selectLabel}${agentSegment} · ${session.status}`);
-    modelHitRange = statusHits.find((hit) => hit.key === 'status:model');
+    segment(' · ');
+    segment(modeLabel, 'status:mode');
+    if (agentLabel) {
+      segment(' · ');
+      segment(agentLabel, 'status:agents');
+    }
+    segment(`${selectLabel} ${stateGlyph(session)}${session.flash ? ` ${session.flash}` : ''}`);
     lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
     return lines;
+  }
+
+  /** Symbolic session state: what the old `Ready`/`Working…` text said. */
+  function stateGlyph(session: SessionUI): string {
+    if (session.state === 'working') return `${YELLOW}⟳${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
+    if (session.state === 'waiting') return `${RED}▲${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
+    if (session.state === 'error') return `${RED}✗${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
+    return `${GREEN}●${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
   }
 
   function composedView() {
@@ -1537,10 +1739,11 @@ export async function runCodeTui(
           session,
           [
             '/model — model picker (or /model <id>, or click the model name in the status bar) · /title <t> — rename session',
-            '/plan · /code — switch mode (Shift+Tab) · /auto — toggle auto-approval',
-            '/agents — sub-agent status · /new — new session · /archive — archive session',
+            '/plan · /build · /auto — permission level (Shift+Tab or click the mode to cycle)',
+            '/agents — switch between this session and its sub-agents (or click the agent count)',
+            '/new — new session · /archive — archive session',
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
-            'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
+            'Sidebar: click "+ new session", right-click a session for rename/archive/delete',
             'Transcript: click a tool call to expand its input/output (source and Markdown are formatted)',
             'Drag over the transcript to select text — it copies to the clipboard on release; Ctrl+E re-copies',
             'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
@@ -1568,32 +1771,13 @@ export async function runCodeTui(
         notice(session, `title → ${sessionTitle(session.id)}`);
         break;
       case 'plan':
-        session.engine.setPlanMode(true);
-        notice(session, 'planning mode: read-only tools (sub-agents inherit read-only)');
-        break;
-      case 'code':
-        session.engine.setPlanMode(false);
-        notice(session, 'code mode: full tool set');
-        break;
+      case 'build':
       case 'auto':
-        session.engine.setAuto(!session.engine.auto);
-        notice(session, `auto-approval ${session.engine.auto ? 'on' : 'off'}`);
+        setMode(session, command);
         break;
-      case 'agents': {
-        const states = session.engine.subagentStates();
-        notice(
-          session,
-          states.length === 0
-            ? 'No sub-agents in this session.'
-            : states
-                .map(
-                  (s) =>
-                    `${s.id} (${s.name}) [${s.status}]${s.doneReport ? ` — ${s.doneReport}` : ''}`,
-                )
-                .join('\n'),
-        );
+      case 'agents':
+        openAgentMenu(session);
         break;
-      }
       case 'sessions':
         sidebarVisible = !sidebarVisible;
         break;
@@ -1741,19 +1925,33 @@ export async function runCodeTui(
           redraw();
           return;
         }
-        if (event.y === height - 1 && contentX >= 0 && contentX <= 1) {
-          sidebarVisible = !sidebarVisible;
-          redraw();
+        if (event.y === height - 1) {
+          const hit = statusHits.find((h) => contentX >= h.start && contentX <= h.end);
+          if (hit?.key === 'status:sidebar') {
+            sidebarVisible = !sidebarVisible;
+            redraw();
+          } else if (session && hit?.key === 'status:model') {
+            openModelMenu(session);
+          } else if (session && hit?.key === 'status:mode') {
+            cycleMode(session);
+          } else if (session && hit?.key === 'status:agents') {
+            if (agentMenu) {
+              agentMenu = undefined;
+              redraw();
+            } else {
+              openAgentMenu(session);
+            }
+          }
           return;
         }
-        if (
-          session &&
-          event.y === height - 1 &&
-          modelHitRange &&
-          contentX >= modelHitRange.start &&
-          contentX <= modelHitRange.end
-        ) {
-          openModelMenu(session);
+        if (session && agentMenu && !inSidebar) {
+          const hit = agentMenuHitRows.find((r) => r.row === event.y);
+          if (hit) {
+            chooseAgentView(session, hit.index);
+            return;
+          }
+          agentMenu = undefined;
+          redraw();
           return;
         }
         if (inSidebar) {
@@ -1762,12 +1960,6 @@ export async function runCodeTui(
           if (!row) return;
           if (row.kind === 'action-new' && event.x >= SIDEBAR_WIDTH - 2) {
             sidebarVisible = false;
-            redraw();
-            return;
-          }
-          if (row.kind === 'session' && !row.archived && entry!.first && event.x < 2) {
-            if (expanded.has(row.id)) expanded.delete(row.id);
-            else expanded.add(row.id);
             redraw();
             return;
           }
@@ -1885,6 +2077,21 @@ export async function runCodeTui(
         moveModelSelection(menu, 1);
       } else if (event.key === 'enter') {
         chooseModel(session, menu, menu.selected);
+      } else if (event.key === 'r' && event.ctrl) {
+        void refreshModelCatalog(menu);
+      }
+      return;
+    }
+    if (agentMenu && session) {
+      if (event.key === 'escape') {
+        agentMenu = undefined;
+        redraw();
+      } else if (event.key === 'up') {
+        moveAgentSelection(-1);
+      } else if (event.key === 'down') {
+        moveAgentSelection(1);
+      } else if (event.key === 'enter') {
+        chooseAgentView(session, agentMenu.selected);
       }
       return;
     }
@@ -1909,7 +2116,7 @@ export async function runCodeTui(
     }
     if (event.ctrl && event.key === 'e') {
       if (!copySelection() && session) {
-        session.status = 'Nothing selected — drag over the transcript first.';
+        session.flash = 'nothing selected';
         redraw();
       }
       return;
@@ -1998,8 +2205,7 @@ export async function runCodeTui(
       return;
     }
     if (event.key === 'tab' && event.shift) {
-      session.engine.setPlanMode(!session.engine.planMode);
-      redraw();
+      cycleMode(session);
       return;
     }
     if (event.ctrl && event.key === 's') {
@@ -2069,10 +2275,13 @@ export async function runCodeTui(
     await initialSession.historyReady;
     initialSession.views.get('main')!.entries.unshift({
       kind: 'notice',
-      text: 'fino code — /help for commands, Ctrl+B or click ≡ for the session sidebar, Shift+Tab toggles plan mode.',
+      text: 'fino code — /help for commands, Ctrl+B or click ≡ for the session sidebar, Shift+Tab cycles mode.',
       done: true,
       pin: 'top',
     });
+    // Warm the provider catalog now so the model picker opens populated;
+    // a failure here is not worth reporting until the picker is opened.
+    void modelCatalog(initialSession).catch(() => {});
   }
 
   app = render(

@@ -103,7 +103,7 @@ async function runDelegationScenario(chunkCount: number): Promise<DelegationRun>
     cwd: dir,
     chatModel: model,
     sessionDb: false,
-    auto: true,
+    mode: 'auto',
   });
   const result = await engine.runTurn('research the loader with a sub-agent');
   await engine.close();
@@ -197,8 +197,7 @@ if (env.ANTHROPIC_API_KEY && env.FINO_CODE_LIVE_EVALS) {
         cwd: dir,
         model: 'claude-haiku-4-5-20251001',
         sessionDb: false,
-        auto: true,
-        planMode: true,
+        mode: 'plan',
       });
       const result = await engine.runTurn(input.prompt);
       const spawns = engine

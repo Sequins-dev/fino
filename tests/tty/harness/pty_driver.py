@@ -4,13 +4,21 @@ APP = os.environ.get('FINO_APP', 'tests/tty/harness/sample-app.ts')
 COLS, ROWS = int(os.environ.get('COLS', 100)), int(os.environ.get('ROWS', 24))
 
 class Screen:
+    """Cursor addressing, erase, and SGR tracking over a fixed-size grid."""
+
     def __init__(self, cols, rows):
         self.cols, self.rows = cols, rows
         self.cells = [[' '] * cols for _ in range(rows)]
         self.styles = [[''] * cols for _ in range(rows)]
         self.cx = self.cy = 0
         self.sgr = ''
+        self.pending = ''
+
     def feed(self, data):
+        # A read can split an escape sequence; hold the tail until it completes
+        # or it would be painted to the screen as literal text.
+        data = self.pending + data
+        self.pending = ''
         i = 0
         while i < len(data):
             ch = data[i]
@@ -23,10 +31,14 @@ class Screen:
                     elif end != -1:
                         i = end + 1
                     else:
-                        i = len(data)
+                        self.pending = data[i:]
+                        return
                     continue
                 m = re.match(r'\x1b\[([0-9;?]*)([A-Za-z])', data[i:])
                 if not m:
+                    if re.fullmatch(r'\x1b\[?[0-9;?]*', data[i:]):
+                        self.pending = data[i:]
+                        return
                     i += 1
                     continue
                 params, cmd = m.group(1), m.group(2)
@@ -38,7 +50,12 @@ class Screen:
                     self.cells = [[' '] * self.cols for _ in range(self.rows)]
                     self.styles = [[''] * self.cols for _ in range(self.rows)]
                 elif cmd == 'm':
-                    self.sgr = '' if params in ('', '0') else params
+                    # Attributes accumulate until a reset, so a row painted
+                    # inverse-then-underline reports both.
+                    if params in ('', '0'):
+                        self.sgr = ''
+                    else:
+                        self.sgr = ';'.join(filter(None, [self.sgr, params]))
                 i += m.end()
                 continue
             if ch == '\r':
@@ -93,6 +110,20 @@ class Tui:
                     self.screen.feed(c.decode('utf-8', 'replace'))
     def wait(self, sec=0.4):
         time.sleep(sec)
+
+    def wait_ready(self, timeout=10.0):
+        """Block until the app has painted its status bar.
+
+        Sending input before raw mode is entered makes the terminal echo it
+        onto the screen, which reads as a corrupted frame; waiting for real
+        output instead of a fixed sleep removes that race.
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.screen.line(self.rows - 1).strip():
+                return True
+            time.sleep(0.05)
+        raise AssertionError('app did not paint a status bar')
     def send(self, data, settle=0.35):
         os.write(self.master, data.encode()); self.wait(settle)
     def mouse(self, code, x, y, release=False, settle=0.2):
