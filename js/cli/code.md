@@ -52,6 +52,10 @@ autocomplete overlay of the available slash commands above the input
   a plan) and code mode; `Shift+Tab` toggles the same.
 - `/auto` toggles auto-approval of gated tools.
 - `/new` starts a fresh thread; `/exit` quits.
+- `/debug` reports the viewport size, terminal identity, and a count of the
+  input events received so far — useful when mouse affordances misbehave,
+  since a `move` count that stays at zero means the terminal does not report
+  pointer motion (mode 1003) and hover cannot light up.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
 - Drag over the transcript to select text. The selection highlights as you
   drag and is copied to the system clipboard as soon as you release, via
@@ -59,7 +63,16 @@ autocomplete overlay of the available slash commands above the input
   intercepts the platform copy chord (`Cmd+C` on macOS) before the app sees
   it and copies the terminal's own selection, which is why the copy happens
   on release rather than on a keypress; `Ctrl+E` re-copies the current
-  selection. `Esc` or a click clears it.
+  selection. `Esc` or a click clears it. A selection stays inside the pane it
+  started in, the way a scroll container bounds one in a browser, so dragging
+  across the transcript never picks up the sidebar beside it.
+
+While a turn runs, a spinner sits above the input showing what the agent is
+doing — the running tool, elapsed time, active sub-agents, queued messages —
+until the turn ends, so a long pause reads as work rather than a freeze.
+Assistant messages are highlighted as they stream: markdown blocks render as
+they settle, and code inside a fence is syntax-highlighted before the closing
+fence arrives.
 
 Clickable controls — the sidebar toggle and model name in the status bar,
 `[steer now]`, tool calls, and sidebar rows — highlight on hover.

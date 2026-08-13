@@ -1,5 +1,6 @@
 import { describe, it } from 'fino:test/test';
 import {
+  MarkdownTerminalStream,
   highlightCodeTerminal,
   renderMarkdownInlineTerminal,
   renderMarkdownTerminal,
@@ -167,8 +168,77 @@ describe('fino:format/markdown — highlightCodeTerminal', () => {
     t.ok(lines[1]!.startsWith(`${ESC}[90m`), 'second comment line reopens style');
   });
 
-  it('degrades to plain lines on parse failure', (t) => {
-    const lines = highlightCodeTerminal('const = = =', 'ts');
-    t.deepEqual(lines, ['const = = ='], 'unparseable source returned verbatim');
+  it('highlights unparseable source lexically', (t) => {
+    const lines = highlightCodeTerminal('export function add(a: num', 'ts');
+    t.ok(lines[0]!.includes(`${ESC}[35mexport${ESC}[0m`), 'keyword colored without a parse');
+    t.equal(stripAnsi(lines[0]!), 'export function add(a: num', 'source preserved exactly');
+  });
+
+  it('colors strings, comments, and numbers in half-written code', (t) => {
+    const lines = highlightCodeTerminal('const s = "hi"; // note\nconst n = 42;\nif (', 'ts');
+    t.ok(lines[0]!.includes(`${ESC}[32m"hi"${ESC}[0m`), 'string colored');
+    t.ok(lines[0]!.includes(`${ESC}[90m// note${ESC}[0m`), 'comment dimmed');
+    t.ok(lines[1]!.includes(`${ESC}[33m42${ESC}[0m`), 'number colored');
+    t.equal(stripAnsi(lines[2]!), 'if (', 'unterminated line kept verbatim');
+  });
+});
+
+describe('fino:format/markdown — MarkdownTerminalStream', () => {
+  const DOC = [
+    '# Heading',
+    '',
+    'A paragraph with **bold** text.',
+    '',
+    '```ts',
+    'export function add(a: number, b: number): number {',
+    '  return a + b;',
+    '}',
+    '```',
+    '',
+    'Closing prose.',
+  ].join('\n');
+
+  it('matches a whole-text render once the text is complete', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    for (let end = 1; end <= DOC.length; end++) stream.render(DOC.slice(0, end));
+    t.deepEqual(
+      stream.render(DOC),
+      renderMarkdownTerminal(DOC, { width: 60 }).split('\n'),
+      'incremental output equals a single render of the same text',
+    );
+  });
+
+  it('renders every prefix the same as a whole-text render of that prefix', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    for (let end = 1; end <= DOC.length; end++) {
+      const prefix = DOC.slice(0, end);
+      const expected = renderMarkdownTerminal(prefix, { width: 60 });
+      t.deepEqual(
+        stream.render(prefix),
+        expected.length === 0 ? [] : expected.split('\n'),
+        `prefix of ${end} chars renders identically`,
+      );
+    }
+  });
+
+  it('highlights a fenced block before its closing fence arrives', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    const partial = '# Heading\n\n```ts\nexport function add(a: num';
+    const lines = stream.render(partial);
+    t.ok(
+      lines.some((line) => line.includes(`${ESC}[35mexport${ESC}[0m`)),
+      'open code block is syntax highlighted while streaming',
+    );
+    t.ok(lines[0]!.includes(`${ESC}[1;36m`), 'settled heading keeps its styling');
+  });
+
+  it('keeps a loose list together instead of splitting it at the blank line', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    const list = '1. one\n\n2. two\n\nAfter.';
+    t.deepEqual(
+      stream.render(list),
+      renderMarkdownTerminal(list, { width: 60 }).split('\n'),
+      'ordered list numbering survives incremental rendering',
+    );
   });
 });

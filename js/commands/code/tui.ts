@@ -33,7 +33,7 @@
 import type { AgentEvent, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { SubagentState } from 'fino:ai/subagents';
 import type { ModelMessage } from 'fino:ai/model';
-import { renderMarkdownTerminal } from 'fino:format/markdown';
+import { MarkdownTerminalStream } from 'fino:format/markdown';
 import { createSignal, h } from 'fino:ui';
 import {
   Box,
@@ -45,10 +45,12 @@ import {
   selectionIsEmpty,
   selectionText,
   type Selection,
+  type SelectionRegion,
   type TuiApp,
   type TuiEvent,
 } from 'fino:tty/tui';
 import { writeStdout } from 'fino:tty';
+import { env } from 'fino:process';
 import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
@@ -76,6 +78,8 @@ const SIDEBAR_WIDTH = 28;
 const SESSION_TITLE_LINES = 3;
 const TOOL_DETAIL_LINES = 60;
 const SLASH_MAX_ROWS = 6;
+const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER_INTERVAL_MS = 100;
 
 interface TranscriptEntry {
   kind: 'user' | 'assistant' | 'tool' | 'notice';
@@ -94,6 +98,11 @@ interface TranscriptEntry {
   pin?: 'top' | 'bottom';
   cachedLines?: string[];
   cachedKey?: string;
+  /**
+   * Incremental renderer for streaming assistant markdown, so each delta
+   * only re-renders the block still being written.
+   */
+  stream?: { width: number; renderer: MarkdownTerminalStream };
 }
 
 interface TabView {
@@ -122,6 +131,10 @@ interface SessionUI {
   busy: boolean;
   abort?: AbortController;
   status: string;
+  /** Wall-clock start of the running turn, for the activity indicator. */
+  turnStartedAt?: number;
+  /** What the agent is doing right now, shown beside the spinner. */
+  activity: string;
   seenChildApprovals: Set<string>;
   /** Resolves once durable history has been replayed into the main view. */
   historyReady: Promise<void>;
@@ -189,6 +202,7 @@ const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'title', args: '<name>', description: 'Rename this session', submits: false },
   { name: 'archive', args: '', description: 'Archive/unarchive this session', submits: true },
   { name: 'new', args: '', description: 'Start a new session', submits: true },
+  { name: 'debug', args: '', description: 'Terminal and input reporting diagnostics', submits: true },
   { name: 'exit', args: '', description: 'Quit fino code', submits: true },
 ];
 
@@ -323,6 +337,10 @@ export async function runCodeTui(
   let hover: string | undefined;
   let selection: Selection | undefined;
   let selectionAnchor: { x: number; y: number } | undefined;
+  let selectionRegion: SelectionRegion | undefined;
+  const inputStats = { move: 0, press: 0, drag: 0, release: 0, wheel: 0, key: 0 };
+  let spinnerFrame = 0;
+  let spinnerTimer: ReturnType<typeof setInterval> | undefined;
   let lastFrameLines: string[] = [];
   let statusHits: Array<{ start: number; end: number; key: string }> = [];
   let menuHitRows: Array<{ row: number; index: number }> = [];
@@ -363,6 +381,58 @@ export async function runCodeTui(
     const toolHit = transcriptHitRows.find((r) => r.row === y);
     if (toolHit) return `tool:${toolHit.entryIndex}`;
     return undefined;
+  }
+
+  /**
+   * Run the spinner clock exactly while some session has a turn in flight.
+   *
+   * The indicator has to keep moving even when the model produces nothing for
+   * seconds at a time — that stall is precisely when a still frame reads as a
+   * hang — so it is driven by a timer rather than by agent events.
+   */
+  function syncSpinner(): void {
+    const busy = [...sessions.values()].some((session) => session.busy);
+    if (busy === (spinnerTimer !== undefined)) return;
+    if (busy) {
+      spinnerTimer = setInterval(() => {
+        spinnerFrame = (spinnerFrame + 1) % SPINNER_FRAMES.length;
+        redraw();
+      }, SPINNER_INTERVAL_MS);
+      return;
+    }
+    clearInterval(spinnerTimer);
+    spinnerTimer = undefined;
+  }
+
+  /**
+   * The line above the input: a live indicator while a turn runs, blank
+   * otherwise so the input stays visually separated from the transcript.
+   */
+  function activityLine(session: SessionUI, cw: number): string {
+    if (!session.busy) return '';
+    const spinner = SPINNER_FRAMES[spinnerFrame]!;
+    const elapsed = session.turnStartedAt
+      ? Math.max(0, Math.round((Date.now() - session.turnStartedAt) / 1000))
+      : 0;
+    const states = session.engine.subagentStates();
+    const active = states.filter(
+      (state) => state.status === 'working' || state.status === 'awaiting_approval',
+    ).length;
+    const parts = [session.engine.planMode ? 'Planning' : 'Working'];
+    if (session.activity) parts.push(session.activity);
+    parts.push(elapsed >= 60 ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s` : `${elapsed}s`);
+    if (active > 0) parts.push(`${active} sub-agent${active === 1 ? '' : 's'}`);
+    if (session.queue.length > 0) parts.push(`${session.queue.length} queued`);
+    parts.push('Ctrl+C interrupts');
+    return clipVisible(`${YELLOW}${spinner}${RESET} ${DIM}${parts.join(' · ')}${RESET}`, cw + 2);
+  }
+
+  /** Track the hovered target, repainting only when it actually changes. */
+  function updateHover(x: number, y: number): void {
+    const next = hoverKeyAt(x, y);
+    if (next === hover) return;
+    hover = next;
+    redraw();
   }
 
   /**
@@ -407,9 +477,35 @@ export async function runCodeTui(
     return { queue, slash };
   }
 
+  /**
+   * Rows the transcript viewport occupies, above the queue and slash panes.
+   *
+   * The trailing 3 rows are the blank separator, the input line, and the
+   * status bar.
+   */
   function transcriptHeightFor(session: SessionUI): number {
     const panes = paneRows(session);
-    return Math.max(1, height - panes.queue - panes.slash - 2);
+    return Math.max(1, height - panes.queue - panes.slash - 3);
+  }
+
+  /**
+   * The pane a selection started in, or `undefined` where dragging selects
+   * nothing.
+   *
+   * Selections are bounded by their pane the way a scroll container bounds
+   * one in a browser: a drag begun in the transcript never picks up sidebar
+   * rows beside it, and vice versa.
+   */
+  function selectionRegionAt(x: number, y: number): SelectionRegion | undefined {
+    if (sidebarVisible && x < SIDEBAR_WIDTH) {
+      return { x: 0, y: 0, width: SIDEBAR_WIDTH, height };
+    }
+    const session = focused();
+    if (!session) return undefined;
+    const left = sidebarVisible ? SIDEBAR_WIDTH + 1 : 0;
+    const rows = transcriptHeightFor(session);
+    if (y >= rows) return undefined;
+    return { x: left, y: 0, width: Math.max(1, width - left), height: rows };
   }
 
   function scrollBy(session: SessionUI, delta: number): void {
@@ -580,6 +676,14 @@ export async function runCodeTui(
 
   // --- transcript ------------------------------------------------------
 
+  /** Render assistant markdown, highlighting it continuously as it streams. */
+  function assistantLines(entry: TranscriptEntry, cw: number): string[] {
+    if (entry.stream?.width !== cw) {
+      entry.stream = { width: cw, renderer: new MarkdownTerminalStream({ width: cw }) };
+    }
+    return entry.stream.renderer.render(entry.text);
+  }
+
   function entryLines(entry: TranscriptEntry, cw: number, hovered = false): string[] {
     const key = [
       hovered,
@@ -599,9 +703,7 @@ export async function runCodeTui(
         (line, index) => (index === 0 ? `${CYAN}❯${RESET} ` : '  ') + line,
       );
     } else if (entry.kind === 'assistant') {
-      lines = entry.done
-        ? renderMarkdownTerminal(entry.text, { width: cw }).split('\n')
-        : wrapPlain(entry.text, cw);
+      lines = assistantLines(entry, cw);
     } else if (entry.kind === 'tool') {
       const mark =
         entry.toolState === 'running'
@@ -794,6 +896,7 @@ export async function runCodeTui(
       queue: [],
       busy: false,
       status: 'Ready',
+      activity: '',
       seenChildApprovals: new Set(),
       historyReady: Promise.resolve(),
     };
@@ -918,11 +1021,19 @@ export async function runCodeTui(
   ): Promise<void> {
     session.busy = true;
     session.status = session.engine.planMode ? 'Planning…' : 'Working…';
+    session.turnStartedAt = Date.now();
+    session.activity = 'thinking';
     session.abort = new AbortController();
+    syncSpinner();
     const main = view(session, 'main');
     const onEvent = (ev: AgentEvent): void => {
       if (ev.type === 'retry') session.status = `Retrying (${ev.attempt})…`;
       else if (ev.type === 'fallback') session.status = `Fallback to ${ev.model}…`;
+      if (ev.type === 'tool_start') session.activity = ev.name;
+      else if (ev.type === 'tool_result') session.activity = 'thinking';
+      else if (ev.type === 'model_event' && ev.event.type === 'text_delta') {
+        session.activity = 'responding';
+      }
       applyAgentEvent(main, ev);
     };
     try {
@@ -934,10 +1045,12 @@ export async function runCodeTui(
           break;
         }
         session.status = 'Waiting for approval…';
+        session.activity = 'waiting for approval';
         redraw();
         const token = result.approval.token;
         const approved = await requestParentDecision(session, result.approval.request);
         session.status = 'Working…';
+        session.activity = 'thinking';
         redraw();
         result = approved
           ? await session.engine.approve(token, { onEvent, signal: session.abort.signal })
@@ -962,6 +1075,9 @@ export async function runCodeTui(
     } finally {
       session.busy = false;
       session.abort = undefined;
+      session.turnStartedAt = undefined;
+      session.activity = '';
+      syncSpinner();
       view(session, 'main').stickToBottom = true;
       redraw();
       flushQueueAsTurn(session);
@@ -1017,11 +1133,13 @@ export async function runCodeTui(
       const row = rows[rowIndex]!;
       const selected = rowKey(row) === selectedKey;
       const hovered = hover === `sidebar:${rowIndex}`;
-      const emit = (line: string, first: boolean): void => {
-        const padded = padVisible(line, w);
+      const emit = (line: string, first: boolean, dim = false): void => {
+        const padded = dim ? `${DIM}${padVisible(line, w)}${RESET}` : padVisible(line, w);
+        // The selected row is already inverse, so hover has to add the
+        // underline on top of it or it would read as no feedback at all.
         lines.push(
           selected
-            ? `${INVERSE}${padded}${RESET}`
+            ? `${INVERSE}${hovered ? UNDERLINE : ''}${padded}${RESET}`
             : hovered
               ? `${UNDERLINE}${padded}${RESET}`
               : padded,
@@ -1050,13 +1168,7 @@ export async function runCodeTui(
         const titleLines = wrapPlain(sessionTitle(row.id), w - 5).slice(0, SESSION_TITLE_LINES);
         for (let i = 0; i < titleLines.length; i++) {
           const prefix = i === 0 ? `${arrow} ${selected ? plainIndicator : indicator} ` : '    ';
-          const line = `${prefix}${titleLines[i]}`;
-          if (row.archived && !selected) {
-            lines.push(`${DIM}${padVisible(line, w)}${RESET}`);
-            lineMap.push({ rowIndex, first: i === 0 });
-          } else {
-            emit(line, i === 0);
-          }
+          emit(`${prefix}${titleLines[i]}`, i === 0, row.archived && !selected);
         }
         continue;
       }
@@ -1065,13 +1177,7 @@ export async function runCodeTui(
       const glyph = state ? CHILD_GLYPHS[state.status] : '·';
       const name = clipVisible(session?.viewNames.get(row.childId) ?? row.childId, w - 7);
       const active = state && (state.status === 'working' || state.status === 'awaiting_approval');
-      const line = `   ${glyph} ${name}`;
-      if (!selected && !active) {
-        lines.push(`${DIM}${padVisible(line, w)}${RESET}`);
-        lineMap.push({ rowIndex, first: true });
-      } else {
-        emit(line, true);
-      }
+      emit(`   ${glyph} ${name}`, true, !selected && !active);
     }
     return { rows, lines, lineMap };
   }
@@ -1206,8 +1312,7 @@ export async function runCodeTui(
         slashLines.push(`${DIM} … ${slashMatches.length} commands — ↑/↓ to browse${RESET}`);
       }
     }
-    // -3 reserves the blank separator, the input line, and the status bar.
-    const transcriptHeight = Math.max(1, height - queueLines.length - slashLines.length - 3);
+    const transcriptHeight = transcriptHeightFor(session);
     let rows: string[];
     const tab = view(session, session.focusedView);
     if (approvalQueue.length > 0) {
@@ -1332,7 +1437,7 @@ export async function runCodeTui(
       isMain && session.input.length > 0
         ? `${CYAN}❯${RESET} ${session.input}▏`
         : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
-    lines.push('');
+    lines.push(activityLine(session, cw));
     lines.push(clipVisible(inputLine, cw + 2));
     const states = session.engine.subagentStates();
     const activeCount = states.filter(
@@ -1505,6 +1610,27 @@ export async function runCodeTui(
         selectedKey = `s:${engine.threadId}`;
         break;
       }
+      case 'debug': {
+        // Hover, drag-selection and clicks each depend on a different mouse
+        // reporting mode, so the counts say which ones this terminal sends:
+        // no `move` events means it ignores any-motion tracking (mode 1003)
+        // and hover affordances cannot light up while the pointer just moves.
+        const counts = Object.entries(inputStats)
+          .map(([name, count]) => `${name} ${count}`)
+          .join(' · ');
+        notice(
+          session,
+          [
+            `terminal ${width}×${height} · TERM=${env.TERM ?? '?'}${
+              env.TERM_PROGRAM ? ` · ${env.TERM_PROGRAM}` : ''
+            }${env.TMUX ? ' · inside tmux' : ''}`,
+            `input events: ${counts}`,
+            'Move the pointer over the status bar and run /debug again: if `move`',
+            'stays at 0 the terminal is not reporting motion (mode 1003).',
+          ].join('\n'),
+        );
+        break;
+      }
       case 'exit':
       case 'quit':
         quit();
@@ -1517,6 +1643,8 @@ export async function runCodeTui(
 
   function quit(): void {
     if (paintTimer !== undefined) clearTimeout(paintTimer);
+    if (spinnerTimer !== undefined) clearInterval(spinnerTimer);
+    spinnerTimer = undefined;
     app.stop();
     finish?.();
   }
@@ -1560,6 +1688,11 @@ export async function runCodeTui(
     const session = focused();
     const slashMatches = slashFilter(session);
     if (event.type === 'mouse') {
+      inputStats[event.action] += 1;
+      // Terminals that do not report motion without a held button (mode 1003)
+      // still deliver clicks and wheel events; tracking hover from those keeps
+      // the affordances alive there instead of never lighting up at all.
+      if (event.action !== 'move') updateHover(event.x, event.y);
       const inSidebar = sidebarVisible && event.x < SIDEBAR_WIDTH;
       const contentX = event.x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
       if (event.action === 'press' && event.button === 'right' && inSidebar) {
@@ -1577,9 +1710,13 @@ export async function runCodeTui(
           redraw();
         }
         // Arm a selection anchor for cells with no click action of their own;
-        // the drag handler promotes it to a real selection.
-        selectionAnchor =
-          hoverKeyAt(event.x, event.y) === undefined ? { x: event.x, y: event.y } : undefined;
+        // the drag handler promotes it to a real selection, bounded by the
+        // pane the press landed in.
+        selectionRegion =
+          hoverKeyAt(event.x, event.y) === undefined
+            ? selectionRegionAt(event.x, event.y)
+            : undefined;
+        selectionAnchor = selectionRegion ? { x: event.x, y: event.y } : undefined;
         if (modelMenu) {
           if (!inSidebar && session) {
             const hit = modelMenuHitRows.find((r) => r.row === event.y);
@@ -1672,17 +1809,17 @@ export async function runCodeTui(
       if (event.action === 'drag') {
         // A drag that began on inert content is a text selection.
         if (selectionAnchor) {
-          selection = { anchor: selectionAnchor, focus: { x: event.x, y: event.y } };
+          selection = {
+            anchor: selectionAnchor,
+            focus: { x: event.x, y: event.y },
+            ...(selectionRegion ? { region: selectionRegion } : {}),
+          };
           redraw();
         }
         return;
       }
       if (event.action === 'move') {
-        const next = hoverKeyAt(event.x, event.y);
-        if (next !== hover) {
-          hover = next;
-          redraw();
-        }
+        updateHover(event.x, event.y);
         return;
       }
       if (event.action === 'release') {
@@ -1690,6 +1827,7 @@ export async function runCodeTui(
         if (selection && selectionIsEmpty(selection)) selection = undefined;
         else if (selection && selectionAnchor) copySelection();
         selectionAnchor = undefined;
+        selectionRegion = undefined;
         return;
       }
       if (event.action === 'wheel') {
@@ -1720,6 +1858,7 @@ export async function runCodeTui(
       }
       return;
     }
+    inputStats.key += 1;
     if (event.ctrl && event.key === 'c') {
       if (session?.busy && session.abort) {
         session.abort.abort();

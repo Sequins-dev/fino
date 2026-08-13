@@ -371,6 +371,34 @@ describe('fino:tty/tui selection', () => {
     t.deepEqual(highlightSelection(['abc'], empty), ['abc'], 'empty selection paints nothing');
   });
 
+  it('keeps a selection inside its region', async (t) => {
+    const { selectionText, highlightSelection, normalizeSelection } = await import('fino:tty/tui');
+    // Two panes side by side: a sidebar in columns 0-9, content from 11 on.
+    const rows = ['sidebar-a │content one   ', 'sidebar-b │content two   '];
+    const region = { x: 11, y: 0, width: 14, height: 2 };
+    const dragged = { anchor: { x: 12, y: 0 }, focus: { x: 2, y: 1 }, region };
+    t.deepEqual(
+      normalizeSelection(dragged).end,
+      { x: 11, y: 1 },
+      'an endpoint dragged out of the region clamps to its edge',
+    );
+    t.equal(
+      selectionText(rows, { anchor: { x: 11, y: 0 }, focus: { x: 24, y: 1 }, region }),
+      'content one\ncontent two',
+      'text stops at the region edge instead of running into the pane beside it',
+    );
+    const painted = highlightSelection(rows, {
+      anchor: { x: 0, y: 0 },
+      focus: { x: 25, y: 0 },
+      region,
+    });
+    t.equal(
+      painted[0],
+      'sidebar-a │\x1b[7mcontent one   \x1b[0m',
+      'the highlight never paints outside the region',
+    );
+  });
+
   it('encodes clipboard writes as OSC 52', async (t) => {
     const { copyToClipboard } = await import('fino:tty/tui');
     const sequence = copyToClipboard('hi');

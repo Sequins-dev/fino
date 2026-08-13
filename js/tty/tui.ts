@@ -795,21 +795,51 @@ export interface SelectionPoint {
   y: number;
 }
 /**
+ * A rectangular area of the frame that a selection may not leave.
+ *
+ * Coordinates are zero-based cell offsets into the frame, matching the
+ * `x`/`y` of mouse events.
+ */
+export interface SelectionRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+/**
  * A text selection over rendered frame rows.
  *
  * `anchor` is where the drag started and `focus` where it currently is;
  * either may come first on screen, so consumers should normalize with
  * `normalizeSelection()` rather than assuming an order.
+ *
+ * `region` scopes the selection to one pane, the way a scroll container
+ * bounds a selection in a browser: a drag that starts inside a list cannot
+ * pick up text from the pane beside it. Set it to the area the drag began
+ * in; leave it unset to select over the whole frame.
  */
 export interface Selection {
   anchor: SelectionPoint;
   focus: SelectionPoint;
+  region?: SelectionRegion;
+}
+function clampToRegion(point: SelectionPoint, region: SelectionRegion | undefined): SelectionPoint {
+  if (!region) return point;
+  // `x` is a column boundary — a selection may end one past the last cell —
+  // while `y` addresses a row, so their limits differ by one.
+  const maxX = region.x + Math.max(0, region.width);
+  const maxY = region.y + Math.max(0, region.height - 1);
+  return {
+    x: Math.min(Math.max(point.x, region.x), maxX),
+    y: Math.min(Math.max(point.y, region.y), Math.max(region.y, maxY)),
+  };
 }
 /**
  * Order a selection's endpoints top-to-bottom, left-to-right.
  *
  * Returns the pair as `{ start, end }` so rendering and extraction can walk
- * forward regardless of which direction the user dragged.
+ * forward regardless of which direction the user dragged. Endpoints are
+ * clamped into the selection's `region` when it has one.
  *
  * ```ts no_run
  * import { normalizeSelection } from 'fino:tty/tui';
@@ -822,13 +852,15 @@ export function normalizeSelection(selection: Selection): {
   start: SelectionPoint;
   end: SelectionPoint;
 } {
-  const { anchor, focus } = selection;
+  const anchor = clampToRegion(selection.anchor, selection.region);
+  const focus = clampToRegion(selection.focus, selection.region);
   const forward = focus.y > anchor.y || (focus.y === anchor.y && focus.x >= anchor.x);
   return forward ? { start: anchor, end: focus } : { start: focus, end: anchor };
 }
 /** Whether a selection covers at least one cell. */
 export function selectionIsEmpty(selection: Selection): boolean {
-  return selection.anchor.x === selection.focus.x && selection.anchor.y === selection.focus.y;
+  const { start, end } = normalizeSelection(selection);
+  return start.x === end.x && start.y === end.y;
 }
 function visibleCells(line: string): string[] {
   const cells: string[] = [];
@@ -851,10 +883,13 @@ function selectionSpan(
   start: SelectionPoint,
   end: SelectionPoint,
   width: number,
+  region?: SelectionRegion,
 ): { from: number; to: number } | null {
   if (row < start.y || row > end.y) return null;
-  const from = row === start.y ? start.x : 0;
-  const to = row === end.y ? end.x : width;
+  const left = region ? region.x : 0;
+  const right = region ? Math.min(width, region.x + region.width) : width;
+  const from = Math.max(left, row === start.y ? start.x : left);
+  const to = Math.min(right, row === end.y ? end.x : right);
   return to <= from ? null : { from, to };
 }
 /**
@@ -877,7 +912,7 @@ export function selectionText(lines: string[], selection: Selection): string {
     const line = lines[row];
     if (line === undefined) continue;
     const cells = visibleCells(line);
-    const span = selectionSpan(row, start, end, cells.length);
+    const span = selectionSpan(row, start, end, cells.length, selection.region);
     if (!span) continue;
     out.push(cells.slice(span.from, span.to).join('').replace(/\s+$/, ''));
   }
@@ -901,7 +936,7 @@ export function highlightSelection(lines: string[], selection: Selection): strin
   const { start, end } = normalizeSelection(selection);
   return lines.map((line, row) => {
     const cells = visibleCells(line);
-    const span = selectionSpan(row, start, end, cells.length);
+    const span = selectionSpan(row, start, end, cells.length, selection.region);
     if (!span) return line;
     const before = cells.slice(0, span.from).join('');
     const selected = cells.slice(span.from, span.to).join('');

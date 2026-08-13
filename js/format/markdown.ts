@@ -1393,9 +1393,14 @@ export function renderMarkdownInlineTerminal(
  *
  * Tokenizes the code with `fino:format/typescript` and colors keywords,
  * strings, numbers, regular expressions, and comments with ANSI sequences,
- * returning one string per source line. Unsupported languages, parse
- * failures, and `color: false` all degrade to the plain source lines, so the
- * result is always safe to print.
+ * returning one string per source line. Unsupported languages and
+ * `color: false` degrade to the plain source lines, so the result is always
+ * safe to print.
+ *
+ * Source that does not parse — a half-written snippet arriving from a model
+ * stream, say — falls back to lexical highlighting of comments, strings,
+ * numbers, and keywords, so partial code is colored as it is written rather
+ * than staying plain until its last brace closes.
  *
  * ```ts no_run
  * import { highlightCodeTerminal } from 'fino:format/markdown';
@@ -1421,37 +1426,71 @@ export function highlightCodeTerminal(
       tokens: true,
     });
   } catch (_) {
-    return plain;
+    parsed = undefined;
   }
-  const spans = [
-    ...parsed.comments.map((comment) => ({
-      start: comment.start,
-      end: comment.end,
-      kind: 'comment',
-    })),
-    ...parsed.tokens.map((token) => ({
-      start: token.start,
-      end: token.end,
-      kind: token.kind,
-    })),
-  ]
-    .filter((span) => span.end > span.start)
-    .sort((a, b) => a.start - b.start || b.end - a.end);
   const byteToIndex = byteOffsetMap(source);
+  const spans =
+    parsed && parsed.tokens.length > 0
+      ? [
+          ...parsed.comments.map((comment) => ({
+            start: comment.start,
+            end: comment.end,
+            kind: 'comment',
+          })),
+          ...parsed.tokens.map((token) => ({
+            start: token.start,
+            end: token.end,
+            kind: token.kind,
+          })),
+        ]
+          .filter((span) => span.end > span.start)
+          .sort((a, b) => a.start - b.start || b.end - a.end)
+          .map((span) => ({
+            start: byteToIndex[span.start] ?? source.length,
+            end: byteToIndex[span.end] ?? source.length,
+            codes: terminalTokenCodes(source.slice(span.start, span.end), span.kind),
+          }))
+      : lexicalSpans(source);
   let out = '';
   let cursor = 0;
   for (const span of spans) {
-    const start = byteToIndex[span.start] ?? source.length;
-    const end = byteToIndex[span.end] ?? source.length;
-    if (start < cursor || end <= start) continue;
-    out += source.slice(cursor, start);
-    const text = source.slice(start, end);
-    const codes = terminalTokenCodes(text, span.kind);
-    out += codes ? sgr([codes]) + text + ANSI_RESET : text;
-    cursor = end;
+    if (span.start < cursor || span.end <= span.start) continue;
+    out += source.slice(cursor, span.start);
+    const text = source.slice(span.start, span.end);
+    out += span.codes ? sgr([span.codes]) + text + ANSI_RESET : text;
+    cursor = span.end;
   }
   out += source.slice(cursor);
   return splitStyledLines(out);
+}
+/**
+ * Colorable spans found without parsing, for source the parser rejects.
+ *
+ * A single scan recognizes the constructs whose spelling alone identifies
+ * them — comments, quoted and template strings, numbers, and keywords —
+ * which is everything the token-based path colors apart from regular
+ * expressions, and unlike a parse it never fails on unfinished code.
+ */
+function lexicalSpans(source: string): Array<{ start: number; end: number; codes?: string }> {
+  const pattern =
+    /\/\*[\s\S]*?(?:\*\/|$)|\/\/[^\n]*|"(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|`(?:[^`\\]|\\.)*`?|\b\d[\w.]*|[A-Za-z_$][\w$]*/g;
+  const spans: Array<{ start: number; end: number; codes?: string }> = [];
+  for (const match of source.matchAll(pattern)) {
+    const text = match[0];
+    const head = text[0]!;
+    const codes =
+      head === '/'
+        ? '90'
+        : head === '"' || head === "'" || head === '`'
+          ? '32'
+          : head >= '0' && head <= '9'
+            ? '33'
+            : TERMINAL_KEYWORDS.has(text)
+              ? '35'
+              : undefined;
+    if (codes) spans.push({ start: match.index, end: match.index + text.length, codes });
+  }
+  return spans;
 }
 function byteOffsetMap(source: string): number[] {
   const map: number[] = [];
@@ -1634,4 +1673,87 @@ export function renderMarkdownTerminal(
     renderCode: options.renderCode,
   };
   return renderNodesTerminal(document.nodes, ctx, Math.max(1, options.width ?? 80)).join('\n');
+}
+/**
+ * Length of the leading run of `markdown` whose rendering can no longer
+ * change as more text arrives.
+ *
+ * Text is only settled at a blank line that closes a block outright: inside a
+ * fence more code is still coming, and a blank line followed by a list
+ * marker, quote, table row, or indented line may be a loose continuation of
+ * the block above it.
+ */
+function settledMarkdownLength(markdown: string): number {
+  const lines = markdown.split('\n');
+  let offset = 0;
+  let settled = 0;
+  let inFence = false;
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const next = offset + line.length + 1;
+    if (/^\s*```/.test(line)) inFence = !inFence;
+    else if (!inFence && line.trim() === '') {
+      const following = lines.slice(index + 1).find((candidate) => candidate.trim() !== '');
+      if (following !== undefined && /^(?![\s>|])(?!([-*+]|\d+[.)])\s)/.test(following)) {
+        settled = next;
+      }
+    }
+    offset = next;
+  }
+  return settled;
+}
+/**
+ * Incremental terminal renderer for markdown that is still arriving.
+ *
+ * Re-rendering a whole message on every delta costs milliseconds per frame
+ * once it grows past a few KB, which a live view cannot afford. This keeps
+ * the rendered lines of blocks that can no longer change and re-renders only
+ * the block currently being written, so output is highlighted continuously
+ * rather than staying plain until the message ends.
+ *
+ * One instance renders one message at one width; make a new one when either
+ * changes.
+ *
+ * ```ts no_run
+ * import { MarkdownTerminalStream } from 'fino:format/markdown';
+ *
+ * const stream = new MarkdownTerminalStream({ width: 80 });
+ * let text = '';
+ * for await (const delta of deltas) {
+ *   text += delta;
+ *   paint(stream.render(text));
+ * }
+ * ```
+ */
+export class MarkdownTerminalStream {
+  #options: MarkdownTerminalOptions;
+  #settled = 0;
+  #lines: string[] = [];
+  constructor(options: MarkdownTerminalOptions = {}) {
+    this.#options = options;
+  }
+  /**
+   * Render everything received so far, as terminal lines.
+   *
+   * `markdown` is the whole message, not just the newest delta.
+   */
+  render(markdown: string): string[] {
+    const settled = this.#settled + settledMarkdownLength(markdown.slice(this.#settled));
+    if (settled > this.#settled) {
+      this.#lines = this.#join(this.#lines, this.#block(markdown.slice(this.#settled, settled)));
+      this.#settled = settled;
+    }
+    return this.#join(this.#lines, this.#block(markdown.slice(this.#settled)));
+  }
+  #block(markdown: string): string[] {
+    const rendered = renderMarkdownTerminal(markdown, this.#options);
+    return rendered.length === 0 ? [] : rendered.split('\n');
+  }
+  // Blocks are separated by one blank line, matching what a single render of
+  // the whole text emits.
+  #join(head: string[], next: string[]): string[] {
+    if (head.length === 0) return next;
+    if (next.length === 0) return head;
+    return [...head, '', ...next];
+  }
 }
