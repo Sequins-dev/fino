@@ -67,7 +67,7 @@ import {
   seedEntries,
 } from 'fino:commands/code/ui/history';
 import { StreamTail } from 'fino:commands/code/ui/stream';
-import { composeFooter } from 'fino:commands/code/ui/footer';
+import { composeFooter, tailAllowance, type FooterState } from 'fino:commands/code/ui/footer';
 import type { ApprovalPrompt } from 'fino:commands/code/ui/approval';
 import { OverlayController } from 'fino:commands/code/ui/overlay';
 import { SessionManagerView } from 'fino:commands/code/ui/views/session-manager';
@@ -79,8 +79,8 @@ const SLASH_MAX_ROWS = 6;
 const AGENT_MENU_MAX_ROWS = 8;
 /** Entries replayed into scrollback on a view switch. */
 const REPLAY_MAX = 200;
-/** Streaming-tail rows offered to the footer (it may shed further). */
-const TAIL_MAX_ROWS = 8;
+/** Ceiling on the footer, above what the terminal height allows. */
+const MAX_FOOTER_ROWS = 32;
 
 interface SlashCommand {
   name: string;
@@ -231,6 +231,10 @@ export async function runCodeTui(
       if (tail !== undefined) {
         const settled = tail.takeSettled();
         if (settled.length > 0) commitRaw(settled);
+        // A block taller than the footer streams its stable head into
+        // scrollback so its top is never scrolled out of view unseen.
+        const overflow = tail.takeOverflow(currentTailAllowance());
+        if (overflow.length > 0) commitRaw(overflow);
       }
       revision.set(revision.get() + 1);
       overlay.refresh();
@@ -1009,12 +1013,12 @@ export async function runCodeTui(
     return 'ask, or /help';
   }
 
-  function footerFrame(): ReturnType<typeof composeFooter> {
+  function footerState(tailLines: string[]): FooterState {
     const session = focused();
     const editable = session !== undefined && visible?.viewId === 'main' && archived === undefined;
     const busy = session?.busy ?? false;
     const states = session?.engine.subagentStates() ?? [];
-    return composeFooter({
+    return {
       width,
       height,
       busy,
@@ -1025,7 +1029,7 @@ export async function runCodeTui(
       subagentsActive: states.filter(
         (s) => s.status === 'working' || s.status === 'awaiting_approval',
       ).length,
-      tailLines: tail?.tailLines(TAIL_MAX_ROWS) ?? [],
+      tailLines,
       transcriptEndsBlank: lastCommittedBlank,
       ...(runningTool !== undefined && busy ? { runningTool } : {}),
       queue: session?.queue ?? [],
@@ -1037,7 +1041,16 @@ export async function runCodeTui(
       composerPlaceholder: session !== undefined ? composerPlaceholder(session) : '',
       ...(agentMenu !== undefined ? { agentMenu } : {}),
       status: statusSegments(session),
-    });
+    };
+  }
+
+  /** Tail rows this footer can show — what must be committed, and what is drawn. */
+  function currentTailAllowance(): number {
+    return tailAllowance(footerState([]));
+  }
+
+  function footerFrame(): ReturnType<typeof composeFooter> {
+    return composeFooter(footerState(tail?.tailLines(currentTailAllowance()) ?? []));
   }
 
   // --- input ------------------------------------------------------------
@@ -1158,6 +1171,7 @@ export async function runCodeTui(
     input: true,
     mouse: false,
     motion: true,
+    maxFooterRows: MAX_FOOTER_ROWS,
     onEvent: handleEvent,
     onResize: (size) => {
       width = size.width;

@@ -23,6 +23,7 @@ export class StreamTail {
   #width: number;
   #text = '';
   #tail: string[] = [];
+  #flushed = 0;
   #finished = false;
 
   /** Create a tail for one message at the width it will commit at. */
@@ -59,7 +60,56 @@ export class StreamTail {
     if (this.#finished) return [];
     const { lines, tail } = this.#renderer.commit(this.#text);
     this.#tail = tail;
+    if (lines.length === 0) return [];
+    // Lines already committed by takeOverflow() are part of this settled
+    // render too; emitting them again would duplicate them in scrollback.
+    const skip = Math.min(this.#flushed, lines.length);
+    this.#flushed = 0;
+    return skip > 0 ? lines.slice(skip) : lines;
+  }
+
+  /**
+   * Commit the stable head of a block too tall for the footer.
+   *
+   * A block only settles once the next one begins, so a long block would
+   * otherwise have to be held whole — and anything past `capacity` rows would
+   * be cut off the top of the footer until it settled. Every rendered line
+   * except the last is already final (re-rendering a growing paragraph, list,
+   * or code fence never rewrites the lines above the one being written), so
+   * the overflow can be committed early and the footer keeps showing the end
+   * of the block as it grows. Tables are the exception — a new row can widen
+   * a column and rewrite every line above it — so they are held whole.
+   */
+  takeOverflow(capacity: number): string[] {
+    if (this.#finished) return [];
+    const { start, end } = this.#visible();
+    const shown = end - start;
+    if (shown <= capacity || !this.#flushable()) return [];
+    // Flush through the same window the footer displays, so no line can fall
+    // between what was committed and what is still on screen.
+    const drop = Math.min(shown - capacity, shown - 1);
+    const stop = start + drop;
+    const lines = this.#tail.slice(this.#flushed, stop);
+    this.#flushed = stop;
     return lines;
+  }
+
+  /** Range of `#tail` the footer shows: unflushed, minus surrounding blanks. */
+  #visible(): { start: number; end: number } {
+    let end = this.#tail.length;
+    while (end > this.#flushed && stripAnsi(this.#tail[end - 1]!).trim() === '') end -= 1;
+    let start = this.#flushed;
+    while (start < end && stripAnsi(this.#tail[start]!).trim() === '') start += 1;
+    return { start, end };
+  }
+
+  #flushable(): boolean {
+    // Inside a fence every completed line is final, blank lines and all.
+    const fences = (this.#text.match(/^```/gm) ?? []).length;
+    if (fences % 2 === 1) return true;
+    const boundary = this.#text.lastIndexOf('\n\n');
+    const block = boundary < 0 ? this.#text : this.#text.slice(boundary + 2);
+    return !block.split('\n').some((line) => line.trimStart().startsWith('|'));
   }
 
   /**
@@ -75,12 +125,11 @@ export class StreamTail {
    * blank that separates it from the transcript.
    */
   tailLines(max: number): string[] {
-    let end = this.#tail.length;
-    while (end > 0 && stripAnsi(this.#tail[end - 1]!).trim() === '') end -= 1;
-    let start = 0;
-    while (start < end && stripAnsi(this.#tail[start]!).trim() === '') start += 1;
+    const { start, end } = this.#visible();
     if (start >= end) return [];
     const visible = this.#tail.slice(start, end);
+    // takeOverflow() normally keeps this within `max`; a block it cannot
+    // flush (a table) still shows its end rather than overrunning the footer.
     return visible.length > max ? visible.slice(visible.length - max) : visible;
   }
 
@@ -92,6 +141,9 @@ export class StreamTail {
     if (this.#finished) return [];
     this.#finished = true;
     this.#tail = [];
-    return this.#renderer.finish(this.#text);
+    const rest = this.#renderer.finish(this.#text);
+    const skip = Math.min(this.#flushed, rest.length);
+    this.#flushed = 0;
+    return skip > 0 ? rest.slice(skip) : rest;
   }
 }

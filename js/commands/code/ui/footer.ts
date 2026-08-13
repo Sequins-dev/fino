@@ -51,12 +51,38 @@ export interface FooterState {
   status: { left: Segment[]; right: Segment[] };
 }
 
-/** Streaming-tail rows kept visible in the footer. */
-const TAIL_MAX_ROWS = 8;
 /** Queued previews kept visible before the overflow row. */
 const QUEUE_MAX_ROWS = 3;
 /** Hard footer ceiling, before the terminal-height clamp. */
-const FOOTER_MAX_ROWS = 20;
+const FOOTER_MAX_ROWS = 24;
+/** Most of the screen the streaming tail may claim. */
+const TAIL_SCREEN_SHARE = 3;
+/** Upper bound on the tail, however tall the terminal is. */
+const TAIL_MAX_ROWS = 12;
+
+/**
+ * Rows the streaming tail may occupy in this footer before its head has to
+ * be committed.
+ *
+ * Derived from what the rest of the footer actually needs right now, so the
+ * side that decides what to flush and the side that decides what to draw can
+ * never disagree — a tail row the renderer would have to drop is a line that
+ * was never committed anywhere, and would simply vanish. The share is also
+ * bounded: a footer that swallowed the terminal would leave no room for the
+ * transcript it is supposed to be growing.
+ */
+export function tailAllowance(state: FooterState): number {
+  const layout = footerLayout(state);
+  const chrome = layout.build([]).length;
+  return Math.max(
+    1,
+    Math.min(
+      TAIL_MAX_ROWS,
+      Math.floor(state.height / TAIL_SCREEN_SHARE),
+      layout.budget - chrome,
+    ),
+  );
+}
 
 /**
  * Compose the footer frame for one paint.
@@ -65,6 +91,33 @@ const FOOTER_MAX_ROWS = 20;
  * composer is visible and editable, or hidden otherwise.
  */
 export function composeFooter(state: FooterState): InlineFrame {
+  const layout = footerLayout(state);
+  const width = state.width;
+  const tail = state.busy ? capTail(state.tailLines, tailAllowance(state)) : [];
+  const lines = layout.build(tail);
+  let cursor: InlineFrame['cursor'] = null;
+  if (layout.composerLines.length > 0) {
+    const caret = state.composer!.cursor({ width });
+    const composerTop =
+      lines.length -
+      layout.statusLines.length -
+      1 -
+      layout.agentLines.length -
+      layout.composerLines.length;
+    if (composerTop >= 0) cursor = { row: composerTop + caret.row, column: caret.column };
+  }
+  return { lines, cursor };
+}
+
+interface FooterLayout {
+  budget: number;
+  statusLines: string[];
+  composerLines: string[];
+  agentLines: string[];
+  build(tailRows: string[]): string[];
+}
+
+function footerLayout(state: FooterState): FooterLayout {
   const width = state.width;
   const budget = Math.max(3, Math.min(FOOTER_MAX_ROWS, state.height - 4));
 
@@ -121,12 +174,11 @@ export function composeFooter(state: FooterState): InlineFrame {
     }
   }
 
-  const tail = state.busy ? capTail(state.tailLines, TAIL_MAX_ROWS) : [];
-
-  // Assemble top-down, then shed from the least important band until the
-  // frame fits the budget: tail rows beyond one, running-tool detail, queue
-  // rows, the blank separators — never the composer/approval or status bar.
-  const build = (tailRows: string[], activity: string[], queue: string[]): string[] => {
+  // Bands shed in reverse importance until the frame fits: the queue first,
+  // then running-tool detail. The tail is never shed here — it is sized by
+  // tailAllowance() instead, because a dropped tail row is an uncommitted
+  // line that would disappear from the transcript entirely.
+  const assemble = (tailRows: string[], activity: string[], queue: string[]): string[] => {
     // Exactly one blank row separates the footer from the committed
     // transcript above it, whichever band happens to come first.
     const lines: string[] = state.transcriptEndsBlank === true ? [] : [''];
@@ -148,36 +200,22 @@ export function composeFooter(state: FooterState): InlineFrame {
     return lines;
   };
 
-  let tailRows = tail;
-  let activity = activityLines;
-  let queue = queueLines;
-  let lines = build(tailRows, activity, queue);
-  if (lines.length > budget) {
-    queue = [];
-    lines = build(tailRows, activity, queue);
-  }
-  if (lines.length > budget && activity.length > 1) {
-    activity = activity.slice(0, 1);
-    lines = build(tailRows, activity, queue);
-  }
-  while (lines.length > budget && tailRows.length > 1) {
-    tailRows = tailRows.slice(1);
-    lines = build(tailRows, activity, queue);
-  }
-  if (lines.length > budget && tailRows.length > 0) {
-    tailRows = [];
-    lines = build(tailRows, activity, queue);
-  }
-
-  let cursor: InlineFrame['cursor'] = null;
-  if (showComposer) {
-    const caret = state.composer!.cursor({ width });
-    const composerTop = lines.length - statusLines.length - 1 - agentLines.length - composerLines.length;
-    if (composerTop >= 0 && composerLines.length > 0) {
-      cursor = { row: composerTop + caret.row, column: caret.column };
+  const build = (tailRows: string[]): string[] => {
+    let activity = activityLines;
+    let queue = queueLines;
+    let lines = assemble(tailRows, activity, queue);
+    if (lines.length > budget && queue.length > 0) {
+      queue = [];
+      lines = assemble(tailRows, activity, queue);
     }
-  }
-  return { lines, cursor };
+    if (lines.length > budget && activity.length > 1) {
+      activity = activity.slice(0, 1);
+      lines = assemble(tailRows, activity, queue);
+    }
+    return lines;
+  };
+
+  return { budget, statusLines, composerLines: showComposer ? composerLines : [], agentLines, build };
 }
 
 function capTail(tail: string[], max: number): string[] {

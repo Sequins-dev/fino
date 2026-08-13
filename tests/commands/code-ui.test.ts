@@ -178,6 +178,45 @@ describe('fino:commands/code/ui stream', () => {
     const flushed = tail.finish();
     t.ok(flushed.length > 10, 'full block still commits wholesale');
   });
+
+  it('streams a long block through the footer without losing a line', (t) => {
+    // A block only settles when the next one starts, so anything past the
+    // footer's capacity has to be committed as it goes or it would scroll
+    // out of the dynamic area unseen.
+    const code = Array.from({ length: 30 }, (_, i) => `const value${i} = ${i};`);
+    const source = 'Intro.\n\n```ts\n' + code.join('\n') + '\n```\n\nDone.';
+    const capacity = 5;
+    const tail = new StreamTail(60);
+    const committed: string[] = [];
+    for (let i = 0; i < source.length; i += 9) {
+      tail.push(source.slice(i, i + 9));
+      committed.push(...tail.takeSettled());
+      committed.push(...tail.takeOverflow(capacity));
+      const shown = tail.tailLines(capacity);
+      t.ok(shown.length <= capacity, 'tail stays within capacity');
+      const visible = [...committed, ...shown].join('\n');
+      const seen = code.map((_, n) => visible.includes(`value${n} =`));
+      const highest = seen.lastIndexOf(true);
+      for (let n = 0; n <= highest; n++) {
+        if (!seen[n]) t.ok(false, `value${n} vanished between commit and footer`);
+      }
+    }
+    committed.push(...tail.finish());
+    const all = committed.join('\n');
+    for (let n = 0; n < code.length; n++) {
+      const hits = all.split(`value${n} =`).length - 1;
+      t.equal(hits, 1, `value${n} committed exactly once`);
+    }
+  });
+
+  it('holds a table whole rather than committing rows it may rewrite', (t) => {
+    // Column widths change as rows arrive, so an early commit would leave
+    // mis-aligned rows frozen in scrollback.
+    const tail = new StreamTail(40);
+    tail.push('Intro.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| much longer | x |');
+    tail.takeSettled();
+    t.deepEqual(tail.takeOverflow(1), [], 'no partial table commit');
+  });
 });
 
 describe('fino:commands/code/ui activity', () => {
