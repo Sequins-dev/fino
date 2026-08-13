@@ -265,4 +265,43 @@ describe('fino:commands/code — resumed session history', () => {
     t.equal(messages[1]!.content, 'the assistant reply', 'reply preserved');
     await second.close();
   });
+
+  it('restores per-turn records alongside the conversation', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const first = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('one'), endTurn('two')]),
+      transcriptsDir: false,
+    });
+    const engine = await first.createSession();
+    const id = engine.threadId;
+    await engine.runTurn('first prompt');
+    await engine.runTurn('second prompt');
+    await first.close();
+
+    const second = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('unused')]),
+      transcriptsDir: false,
+    });
+    const reopened = await second.openSession(id);
+    const turns = await reopened.turns();
+    t.equal(turns.length, 2, 'both turns recorded in the store');
+    t.deepEqual(
+      turns.map((turn) => turn.status),
+      ['done', 'done'],
+      'outcomes preserved',
+    );
+    t.deepEqual(
+      turns.map((turn) => turn.messages),
+      [2, 4],
+      'each record marks the history length it ended at',
+    );
+    t.ok(
+      turns.every((turn) => typeof turn.durationMs === 'number' && turn.durationMs >= 0),
+      'durations preserved',
+    );
+    await second.close();
+  });
 });

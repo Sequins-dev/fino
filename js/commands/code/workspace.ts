@@ -339,6 +339,8 @@ export class CodeWorkspace {
       }
     }
     await this.#store.putMeta(`subagents:${id}`, undefined);
+    await this.#store.putMeta(`code:turns:${id}`, undefined);
+    this.#draftModels.delete(id);
     await this.#persist();
     this.#notify();
   }

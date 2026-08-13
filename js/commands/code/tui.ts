@@ -52,7 +52,7 @@ import {
 import { writeStdout } from 'fino:tty';
 import { env } from 'fino:process';
 import { basename } from 'fino:file/path';
-import type { CodeEngine, CodeMode, TurnResult } from 'fino:commands/code/engine';
+import type { CodeEngine, CodeMode, CodeTurnRecord, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
 import {
@@ -1001,7 +1001,7 @@ export async function runCodeTui(
     redraw();
   }
 
-  function seedFromHistory(tab: TabView, messages: ModelMessage[]): void {
+  function seedFromHistory(tab: TabView, messages: ModelMessage[], turns: CodeTurnRecord[]): void {
     // Durable history replaces the conversation, but harness-generated
     // notices (the intro banner, sub-agent status notes) are not in it and
     // must survive the reseed.
@@ -1009,7 +1009,21 @@ export async function runCodeTui(
     const pinnedBottom = tab.entries.filter((entry) => entry.pin === 'bottom');
     tab.entries = [];
     const toolEntries = new Map<string, TranscriptEntry>();
-    for (const message of messages) {
+    // Turn records carry the history length they ended at, so the markers
+    // land between the same messages they did when the turns ran.
+    const marks = new Map<number, CodeTurnRecord[]>();
+    for (const turn of turns) {
+      const at = Math.min(turn.messages, messages.length);
+      marks.set(at, [...(marks.get(at) ?? []), turn]);
+    }
+    const flushMarks = (index: number): void => {
+      for (const turn of marks.get(index) ?? []) {
+        tab.entries.push({ kind: 'turn', text: turnMarkerText(turn), done: true });
+      }
+    };
+    for (let index = 0; index < messages.length; index++) {
+      flushMarks(index);
+      const message = messages[index]!;
       if (message.role === 'user' && typeof message.content === 'string') {
         const synthetic = message.content.startsWith('[subagent settlement]');
         tab.entries.push({
@@ -1051,9 +1065,16 @@ export async function runCodeTui(
         }
       }
     }
+    flushMarks(messages.length);
     tab.entries = [...pinnedTop, ...tab.entries, ...pinnedBottom];
     tab.seeded = true;
     redraw();
+  }
+
+  /** One line of turn bookkeeping: the outcome and how long it took. */
+  function turnMarkerText(turn: CodeTurnRecord): string {
+    const mark = turn.status === 'done' ? '✔' : '✗';
+    return `${mark} ${formatDuration(turn.durationMs)}`;
   }
 
   function attachSession(engine: CodeEngine): SessionUI {
@@ -1079,12 +1100,11 @@ export async function runCodeTui(
     };
     sessions.set(id, session);
     view(session, 'main');
-    session.historyReady = engine
-      .history()
-      .then((messages) => {
+    session.historyReady = Promise.all([engine.history(), engine.turns()])
+      .then(([messages, turns]) => {
         const tab = view(session, 'main');
         const live = tab.entries.some((entry) => entry.pin === undefined);
-        if (messages.length > 0 && !tab.seeded && !live) seedFromHistory(tab, messages);
+        if (messages.length > 0 && !tab.seeded && !live) seedFromHistory(tab, messages, turns);
       })
       .catch(() => {});
     engine.onSubagentEvent((childId, ev) => {
@@ -1270,7 +1290,12 @@ export async function runCodeTui(
       session.abort = undefined;
       main.entries.push({
         kind: 'turn',
-        text: `✔ ${formatDuration(Date.now() - (session.turnStartedAt ?? Date.now()))}`,
+        text: turnMarkerText({
+          at: Date.now(),
+          durationMs: Date.now() - (session.turnStartedAt ?? Date.now()),
+          status: session.state === 'error' ? 'error' : 'done',
+          messages: 0,
+        }),
         done: true,
       });
       session.turnStartedAt = undefined;

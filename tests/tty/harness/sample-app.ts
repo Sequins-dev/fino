@@ -6,6 +6,8 @@
  *   HARNESS_CHUNK       characters per streamed delta (default: 24)
  *   HARNESS_DELAY_MS    pause between deltas, to exercise streaming UI
  *   HARNESS_SUBAGENTS   number of sub-agents the first turn fans out to
+ *   HARNESS_DIR         reuse a workspace directory, to exercise resume
+ *   HARNESS_MODELS      size of a scripted model catalog for the picker
  */
 import { CodeWorkspace } from 'fino:commands/code/workspace';
 import { runCodeTui } from 'fino:commands/code/tui';
@@ -117,14 +119,19 @@ const model: Model = {
   },
 };
 
-const dir = `/tmp/tui-harness-run-${Date.now().toString(36)}`;
-await new DiskFileSystem().mkdir(dir);
+// HARNESS_DIR reuses a workspace across runs so resume can be exercised.
+const dir = env.HARNESS_DIR ?? `/tmp/tui-harness-run-${Date.now().toString(36)}`;
+try {
+  await new DiskFileSystem().mkdir(dir);
+} catch (_) {
+  // already there on a resumed run
+}
 const workspace = await CodeWorkspace.open({
   cwd: dir,
   chatModel: model,
   transcriptsDir: false,
 });
-const engine = await workspace.createSession();
+const engine = (await workspace.openLatest()) ?? (await workspace.createSession());
 // A scripted catalog: the harness has no provider credentials, and the model
 // picker's layout is the thing under test.
 const catalogSize = Number(env.HARNESS_MODELS ?? '0');

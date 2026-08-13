@@ -74,9 +74,10 @@ While a turn runs, a spinner sits above the input showing what the agent is
 doing — the running tool, elapsed time, active sub-agents, queued messages —
 so a long pause reads as work rather than a freeze. When the turn ends the
 indicator moves into the transcript as a greyed `✔ <duration>` line, so it
-scrolls with the conversation and stays put ahead of the next message; the
-same outcome is recorded in the JSONL mirror as a `turn_end` event with its
-`durationMs`. Assistant messages are highlighted as they stream: markdown
+scrolls with the conversation and stays put ahead of the next message.
+Each turn's outcome, duration, and position in the history is recorded in the
+session store beside the conversation, so reopening a thread restores the
+markers; the JSONL mirror carries the same thing as a `turn_end` event. Assistant messages are highlighted as they stream: markdown
 blocks render as they settle, and code inside a fence is syntax-highlighted
 before the closing fence arrives. A horizontal rule marks the start of each
 prose answer.

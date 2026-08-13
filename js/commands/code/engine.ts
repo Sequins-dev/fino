@@ -127,6 +127,24 @@ export interface CodeEngineOptions {
 }
 
 /**
+ * What one finished turn cost, recorded durably alongside the thread.
+ *
+ * The conversation history holds messages, not turns: nothing in it says
+ * where one turn ended or how long it took. These records fill that gap so a
+ * reopened session shows the same per-turn markers it showed while running.
+ */
+export interface CodeTurnRecord {
+  /** When the turn finished (ms since epoch). */
+  at: number;
+  /** How long it ran, sub-agent settlement included. */
+  durationMs: number;
+  /** Terminal status of the turn. */
+  status: RunResult['status'];
+  /** History length when it ended, which is where the marker belongs. */
+  messages: number;
+}
+
+/**
  * A pending approval request surfaced by a suspended turn.
  */
 export interface PendingApproval {
@@ -151,6 +169,8 @@ export interface TurnResult {
 }
 
 const MAX_TURN_CONTINUATIONS = 25;
+/** Turn records kept per thread; older ones fall off the front. */
+const MAX_TURN_RECORDS = 500;
 const NON_CHAT_MODEL_ID =
   /dall-e|whisper|\btts\b|tts-|embed|moderation|audio|realtime|image|sora|transcribe|codex-embed/i;
 
@@ -541,6 +561,37 @@ export class CodeEngine {
     return history?.render() ?? [];
   }
 
+  /**
+   * Per-turn records for this thread, oldest first.
+   *
+   * Kept in the session store beside the conversation — the same durable
+   * place the sub-agent registry lives — so reopening a thread restores the
+   * turn markers rather than rebuilding them from the JSONL mirror, which is
+   * a mirror precisely so nothing depends on it.
+   */
+  async turns(): Promise<CodeTurnRecord[]> {
+    const stored = (await this.#store.getMeta(this.#turnsKey())) as CodeTurnRecord[] | null;
+    return stored ?? [];
+  }
+
+  #turnsKey(): string {
+    return `code:turns:${this.#threadId}`;
+  }
+
+  async #recordTurn(durationMs: number, status: RunResult['status']): Promise<void> {
+    try {
+      const messages = (await this.history()).length;
+      const turns = await this.turns();
+      turns.push({ at: Date.now(), durationMs, status, messages });
+      await this.#store.putMeta(
+        this.#turnsKey(),
+        turns.length > MAX_TURN_RECORDS ? turns.slice(-MAX_TURN_RECORDS) : turns,
+      );
+    } catch (_) {
+      // Bookkeeping must never fail a turn that already completed.
+    }
+  }
+
   /** Approve a sub-agent's pending gated tool call. */
   approveSubagent(id: string): void {
     this.#pool?.approve(id);
@@ -679,12 +730,14 @@ export class CodeEngine {
     if (turn.status !== 'suspended') {
       // Duration spans the whole turn, sub-agent settlement included, which
       // is what the interface reports when the turn finishes.
+      const durationMs = Date.now() - (this.#turnStartedAt ?? Date.now());
+      this.#turnStartedAt = undefined;
       this.#transcript?.parent().append({
         type: 'turn_end',
         status: turn.status,
-        durationMs: Date.now() - (this.#turnStartedAt ?? Date.now()),
+        durationMs,
       });
-      this.#turnStartedAt = undefined;
+      await this.#recordTurn(durationMs, turn.status);
     }
     this.#setActivity(turn.status === 'suspended' ? 'waiting' : 'idle');
     return turn;
