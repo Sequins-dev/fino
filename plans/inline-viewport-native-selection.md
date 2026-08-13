@@ -3,8 +3,8 @@
 Status: **researched and prototyped, not implemented.** Written to be picked
 up cold.
 
-This is an internal design note, not published documentation — it lives here
-rather than in `js/*.md` because it describes work that has not been done.
+This is a plan, not published documentation — it lives in `plans/` rather
+than `js/*.md` because it describes work that has not been done.
 
 ## The problem
 
