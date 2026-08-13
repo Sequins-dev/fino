@@ -46,7 +46,7 @@ import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
 import {
   ATTENTION,
-  ATTENTION_ORDER,
+  ATTENTION_RANK,
   CHILD_GLYPHS,
   MODE_COLORS,
   MODE_HELP,
@@ -1049,15 +1049,17 @@ export async function runCodeTui(
   // --- footer -----------------------------------------------------------
 
   /**
-   * The four attention dots, as one segment beside the project name.
+   * One dot for what the other sessions want, beside the project name.
    *
-   * They sit with the rest of the bar rather than against the right edge: a
-   * right-aligned cluster has to be re-placed the moment the window changes
-   * width, and until it is, it hangs off the end of the row.
+   * A single dot in the most urgent state reads at a glance where four
+   * separate ones asked to be decoded; the session manager is where the
+   * per-session breakdown belongs. Filled when something wants attention,
+   * hollow when nothing does — a dim `·` would read as one of the separators
+   * the rest of the bar is built from.
    */
-  function attentionDots(): string {
+  function attentionDot(): string {
     const summary = workspace.attentionSummary(visible?.sessionId ?? archived?.id);
-    const flags: Record<(typeof ATTENTION_ORDER)[number], boolean> = {
+    const flags: Record<(typeof ATTENTION_RANK)[number], boolean> = {
       busy: summary.busy,
       input:
         summary.input ||
@@ -1065,17 +1067,17 @@ export async function runCodeTui(
       error: summary.error,
       done: summary.done,
     };
-    // Filled when lit, hollow when not — a dim `·` would read as one of the
-    // separators the rest of the bar is built from.
-    return ATTENTION_ORDER.map((kind) =>
-      flags[kind] ? `${ATTENTION[kind]}●${tk.reset}` : style('○', tk.dim),
-    ).join(' ');
+    const lit = ATTENTION_RANK.find((kind) => flags[kind]);
+    return lit !== undefined ? `${ATTENTION[lit]}●${tk.reset}` : style('○', tk.dim);
   }
 
   function statusSegments(session: SessionUI | undefined): Segment[] {
+    // The dot leads the bar, where the sidebar button used to sit: it is the
+    // one thing here that changes on its own, so it reads better with the
+    // margin to its left than buried between segments.
     const left: Segment[] = [
-      { text: `≡ ${projectName()}`, key: 'sessions', style: tk.bold },
-      { text: attentionDots(), attached: true },
+      { text: ` ${attentionDot()}` },
+      { text: projectName(), style: tk.bold, attached: true },
     ];
     if (archived !== undefined) {
       left.push({ text: archived.title });

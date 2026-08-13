@@ -23,8 +23,8 @@ export interface Segment {
   /** Theme token(s) applied to the text. */
   style?: string;
   /**
-   * Join to the previous segment with a space instead of the ` · ` separator,
-   * for a cluster that belongs to it rather than standing on its own.
+   * Join to the previous segment with a single space instead of the ` · `
+   * separator, for something that belongs to it rather than standing alone.
    */
   attached?: boolean;
 }
@@ -42,8 +42,8 @@ export function renderStatusBar(opts: { segments: Segment[]; width: number }): R
   for (const segment of opts.segments) {
     if (segment.text.length === 0) continue;
     if (column > 0) {
-      line += segment.attached === true ? '  ' : separator;
-      column += segment.attached === true ? 2 : 3;
+      line += segment.attached === true ? ' ' : separator;
+      column += segment.attached === true ? 1 : 3;
     }
     const width = visibleWidth(segment.text);
     if (segment.key !== undefined) {

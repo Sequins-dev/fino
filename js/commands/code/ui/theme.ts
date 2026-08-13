@@ -38,8 +38,15 @@ export const ATTENTION: Record<AttentionKind, string> = {
   busy: tk.yellow,
 };
 
-/** Fixed display order of the status-bar attention dots. */
-export const ATTENTION_ORDER: AttentionKind[] = ['busy', 'input', 'error', 'done'];
+/**
+ * Attention states in precedence order, most urgent first.
+ *
+ * The status bar shows one dot for the whole workspace, so when several
+ * background sessions want attention at once it reports the one that most
+ * needs a decision: being asked a question outranks a failure, which outranks
+ * a result waiting to be read, which outranks work still in progress.
+ */
+export const ATTENTION_RANK: AttentionKind[] = ['input', 'error', 'done', 'busy'];
 
 /** Bullet color per tool state. */
 export const TOOL_MARKS: Record<'running' | 'ok' | 'error', string> = {

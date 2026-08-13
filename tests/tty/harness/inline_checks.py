@@ -36,7 +36,7 @@ def spawn(**envs):
     for key, value in envs.items():
         os.environ[key] = value
     t = Tui()
-    t.wait_ready(20, marker='· harness-model ·')
+    t.wait_ready(20, marker='harness-model')
     return t
 
 
@@ -44,12 +44,23 @@ def alltext(t):
     return '\n'.join(t.screen.scrollback() + [t.screen.line(i) for i in range(24)])
 
 
-def status(t):
-    """The status-bar row, wherever the footer currently sits."""
-    for i in range(23, -1, -1):
-        row = t.screen.line(i)
-        if '\u2261 ' in row:
+def status(t, height=24):
+    """The status-bar row: the last row the footer painted."""
+    for i in range(height - 1, -1, -1):
+        row = t.screen.line(i).rstrip()
+        if row:
             return row
+    return ''
+
+
+def dot_color(t, height=24):
+    """SGR of the attention dot, which carries its state as its color."""
+    for i in range(height - 1, -1, -1):
+        if t.screen.line(i).strip():
+            for text, sgr in t.screen.styled_spans(i):
+                if '\u25cf' in text:
+                    return sgr
+            return ''
     return ''
 
 
@@ -182,12 +193,12 @@ def scenario_attention_dots():
     t.send('hi b', settle=0.2)
     t.send('\r', settle=0.6)
     t.send('\x0e', settle=1.2)
-    check('\u25cf \u25cb \u25cb \u25cb' in status(t), 'busy dot lit while background session works')
+    check('33' in dot_color(t), f'dot goes yellow while a background session works ({dot_color(t)!r})')
     time.sleep(12.0)
-    check('\u25cb \u25cb \u25cb \u25cf' in status(t), 'done dot lit for unseen result')
+    check('32' in dot_color(t), f'dot goes green for an unseen result ({dot_color(t)!r})')
     t.send('\x0e', settle=1.5)
     time.sleep(0.5)
-    check('\u25cf' not in status(t), 'dots clear when the session is seen')
+    check('\u25cf' not in status(t), 'the dot goes hollow once the session is seen')
     check(len(status(t).rstrip()) < 80, 'the status bar stops where its content stops')
     quit_app(t)
 
@@ -203,7 +214,7 @@ def scenario_resize():
         rows = [t.screen.line(i) for i in range(height)]
         return (
             sum(1 for r in rows if 'ask, or /help' in r),
-            sum(1 for r in rows if '≡ ' in r),
+            sum(1 for r in rows if 'harness-model' in r),
         )
 
     check(footers(24) == (1, 1), 'one composer and one status bar to begin with')

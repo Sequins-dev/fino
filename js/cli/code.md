@@ -108,11 +108,12 @@ horizontal rule marks the start of each prose answer.
 
 The status bar names the project directory, the model, the mode (the one
 colored word — magenta for plan, cyan for build, red for auto), and the
-sub-agent count, plus transient notes. At its right edge sit four attention
-dots for the *other* sessions: yellow lights when one is busy, blue when one
-needs input (an approval or a suspension), red when one errored, and green
-when one finished a turn you have not looked at yet. Switching to a session
-clears its dot.
+sub-agent count, plus transient notes. It leads with a single attention dot
+for the *other* sessions, filled in the color of whichever wants attention
+most: blue when one needs input (an approval or a suspension), then red for an
+error, green for a turn that finished while you were elsewhere, and yellow for
+work still running. It is hollow when nothing is waiting, and switching to a
+session clears its state. The session manager has the per-session breakdown.
 
 Menus — the slash-command overlay, the agent selector, the model picker, and
 the session manager — share one selection model: a `▸` marker at the head of
