@@ -198,6 +198,28 @@ describe('fino:tty/tui input decoding', () => {
       ],
       'shift-right arrow',
     );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B[3;2~')),
+      [
+        {
+          type: 'key',
+          key: 'delete',
+          shift: true,
+        },
+      ],
+      'shift-delete keeps its name and modifier',
+    );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B\x7f')),
+      [
+        {
+          type: 'key',
+          key: 'backspace',
+          alt: true,
+        },
+      ],
+      'meta-prefixed backspace decodes as backspace, not DEL',
+    );
   });
   it('decodes SGR mouse events', (t) => {
     t.deepEqual(
@@ -430,6 +452,22 @@ describe('fino:tty/tui TextBuffer', () => {
     buffer.insert('BETA ');
     t.equal(buffer.text, 'alpha BETA gamma', 'typing replaces the selection');
     t.equal(buffer.selection, null, 'selection clears after the edit');
+  });
+
+  it('deletes by word in both directions', async (t) => {
+    const { TextBuffer } = await import('fino:tty/tui');
+    const buffer = new TextBuffer('alpha beta gamma');
+    buffer.moveTo(11);
+    buffer.deleteWord(-1);
+    t.equal(buffer.text, 'alpha gamma', 'word before the cursor removed');
+    t.equal(buffer.cursor, 6, 'cursor lands where the word started');
+    buffer.deleteWord(1);
+    t.equal(buffer.text, 'alpha ', 'word after the cursor removed');
+    buffer.setText('one two');
+    buffer.moveTo(3);
+    buffer.moveBy(1, { word: true, select: true });
+    buffer.deleteWord(-1);
+    t.equal(buffer.text, 'one', 'a selection is deleted whole, not a word past it');
   });
 
   it('collapses a selection to the side movement points at', async (t) => {

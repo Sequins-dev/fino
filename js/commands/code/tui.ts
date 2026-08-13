@@ -83,6 +83,8 @@ const SLASH_MAX_ROWS = 6;
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const SPINNER_INTERVAL_MS = 100;
 const AGENT_MENU_MAX_ROWS = 8;
+/** Head of every menu row; white marks the selection, grey the rest. */
+const MENU_MARKER = '▸';
 /** Rows kept clear above and below a centred popover. */
 const MENU_MARGIN_ROWS = 2;
 /** The mode is the one colored word in the status bar. */
@@ -369,6 +371,8 @@ export async function runCodeTui(
   let modelMenuHitRows: Array<{ row: number; index: number }> = [];
   let transcriptHitRows: Array<{ row: number; entryIndex: number }> = [];
   let slashHitRows: Array<{ row: number; index: number }> = [];
+  /** Absolute command indexes of the rows the overlay is showing. */
+  let slashHitIndexes: number[] = [];
   let slashTop = 0;
   let slashSelected = 0;
   let lastSlashFilter = '';
@@ -384,9 +388,20 @@ export async function runCodeTui(
    * regions the last paint recorded. Returns `undefined` over inert cells.
    */
   function hoverKeyAt(x: number, y: number): string | undefined {
-    if (approvalQueue.length > 0 || contextMenu || modelMenu) return undefined;
+    // A blocking approval owns every cell until it is answered.
+    if (approvalQueue.length > 0) return undefined;
     const inSidebar = sidebarVisible && x < SIDEBAR_WIDTH;
     const contentX = x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
+    if (contextMenu) {
+      if (!inSidebar) return undefined;
+      const hit = menuHitRows.find((row) => row.row === y);
+      return hit ? `menu:${hit.index}` : undefined;
+    }
+    if (modelMenu) {
+      if (inSidebar) return undefined;
+      const hit = modelMenuHitRows.find((row) => row.row === y);
+      return hit ? `model:${hit.index}` : undefined;
+    }
     if (inSidebar) {
       if (y === height - 1) {
         return sidebarTabHits.find((hit) => x >= hit.start && x <= hit.end)?.key;
@@ -473,6 +488,22 @@ export async function runCodeTui(
     return session.busy ? 3 : 1;
   }
 
+  /**
+   * One row of a menu list, styled the way every menu here is styled.
+   *
+   * Selection moves a marker from grey to white at the head of the row and
+   * hover brightens the label; neither fills a background, which reads as a
+   * block of color rather than as a pointer.
+   */
+  function menuRow(
+    label: string,
+    opts: { selected: boolean; hovered: boolean; width: number },
+  ): string {
+    const marker = opts.selected ? `${WHITE}${MENU_MARKER}${RESET}` : `${DIM}${MENU_MARKER}${RESET}`;
+    const text = opts.hovered ? `${BOLD}${WHITE}${stripAnsi(label)}${RESET}` : label;
+    return clipVisible(`${marker} ${text}`, opts.width);
+  }
+
   /** Columns the input text itself gets, after the `❯ ` gutter. */
   function inputWidth(cw: number): number {
     return Math.max(8, cw);
@@ -503,11 +534,25 @@ export async function runCodeTui(
     });
   }
 
-  /** Track the hovered target, repainting only when it actually changes. */
+  /**
+   * Track the hovered target, repainting only when it actually changes.
+   *
+   * Pointing at a menu row also selects it, so the pointer and the keyboard
+   * drive one selection between them and activating — by click or by Enter —
+   * always acts on the row that looks chosen.
+   */
   function updateHover(x: number, y: number): void {
     const next = hoverKeyAt(x, y);
     if (next === hover) return;
     hover = next;
+    const [kind, value] = (next ?? '').split(':');
+    const index = Number(value);
+    if (!Number.isNaN(index)) {
+      if (kind === 'slash') slashSelected = index;
+      else if (kind === 'agent' && agentMenu) agentMenu.selected = index;
+      else if (kind === 'model' && modelMenu) modelMenu.selected = index;
+      else if (kind === 'menu' && contextMenu) contextMenu.selected = index;
+    }
     redraw();
   }
 
@@ -574,14 +619,16 @@ export async function runCodeTui(
       const state = states.get(id);
       const label =
         id === 'main'
-          ? ` ❯ ${sessionTitle(session.id)}`
-          : ` ${state ? CHILD_GLYPHS[state.status] : '·'} ${session.viewNames.get(id) ?? id}${
+          ? `❯ ${sessionTitle(session.id)}`
+          : `${state ? CHILD_GLYPHS[state.status] : '·'} ${session.viewNames.get(id) ?? id}${
               state ? ` ${DIM}${state.status}${RESET}` : ''
             }`;
       const marked = id === session.focusedView ? `${label}  ${DIM}(viewing)${RESET}` : label;
-      return index === menu.selected
-        ? `${INVERSE}${padVisible(clipVisible(stripAnsi(marked), cw + 1), cw + 2)}${RESET}`
-        : clipVisible(marked, cw + 2);
+      return menuRow(marked, {
+        selected: index === menu.selected,
+        hovered: hover === `agent:${index}`,
+        width: cw + 2,
+      });
     });
     if (menu.views.length > AGENT_MENU_MAX_ROWS) {
       lines.push(`${DIM} … ${menu.views.length} agents — ↑/↓ to browse${RESET}`);
@@ -1449,8 +1496,12 @@ export async function runCodeTui(
     const lines = [
       `${YELLOW}┌${'─'.repeat(w - 2)}┐${RESET}`,
       ...items.map((item, index) => {
-        const body = padVisible(` ${item}`, w - 2);
-        return `${YELLOW}│${RESET}${index === menu.selected ? `${INVERSE}${body}${RESET}` : body}${YELLOW}│${RESET}`;
+        const row = menuRow(item, {
+          selected: index === menu.selected,
+          hovered: hover === `menu:${index}`,
+          width: w - 3,
+        });
+        return `${YELLOW}│${RESET} ${padVisible(row, w - 3)}${YELLOW}│${RESET}`;
       }),
       `${YELLOW}└${'─'.repeat(w - 2)}┘${RESET}`,
     ];
@@ -1607,15 +1658,18 @@ export async function runCodeTui(
         Math.min(slashSelected - SLASH_MAX_ROWS + 1, slashMatches.length - SLASH_MAX_ROWS),
       );
       const visible = slashMatches.slice(start, start + SLASH_MAX_ROWS);
+      slashHitIndexes = [];
       for (let i = 0; i < visible.length; i++) {
         const command = visible[i]!;
         const index = start + i;
-        const label = ` /${command.name}${command.args ? ` ${command.args}` : ''}`;
-        const line = `${label}  ${DIM}${command.description}${RESET}`;
+        slashHitIndexes.push(index);
+        const label = `/${command.name}${command.args ? ` ${command.args}` : ''}`;
         slashLines.push(
-          index === slashSelected
-            ? `${INVERSE}${padVisible(clipVisible(stripAnsi(line), cw + 1), cw + 2)}${RESET}`
-            : clipVisible(line, cw + 2),
+          menuRow(`${label}  ${DIM}${command.description}${RESET}`, {
+            selected: index === slashSelected,
+            hovered: hover === `slash:${index}`,
+            width: cw + 2,
+          }),
         );
       }
       if (slashMatches.length > SLASH_MAX_ROWS) {
@@ -1666,9 +1720,14 @@ export async function runCodeTui(
           if (entry.kind === 'header') {
             body.push(`${DIM}${BOLD}${entry.label}${RESET}`);
           } else {
-            const marker = entry.id === session.engine.modelId ? '●' : ' ';
-            const line = ` ${marker} ${entry.id}`;
-            body.push(index === menu.selected ? `${INVERSE}${line}${RESET}` : line);
+            const current = entry.id === session.engine.modelId ? ` ${GREEN}●${RESET}` : '';
+            body.push(
+              menuRow(`${entry.id}${current}`, {
+                selected: index === menu.selected,
+                hovered: hover === `model:${index}`,
+                width: innerWidth - 4,
+              }),
+            );
             modelMenuHitRows.push({ row: 0, index });
           }
         }
@@ -1710,8 +1769,8 @@ export async function runCodeTui(
     queueTop = transcriptHeight;
     lines.push(...queueLines);
     slashTop = transcriptHeight + queueLines.length;
-    for (let i = 0; i < slashLines.length; i++) {
-      slashHitRows.push({ row: slashTop + i, index: i });
+    for (let i = 0; i < slashHitIndexes.length; i++) {
+      slashHitRows.push({ row: slashTop + i, index: slashHitIndexes[i]! });
     }
     lines.push(...slashLines);
     const isMain = session.focusedView === 'main';
@@ -2079,11 +2138,7 @@ export async function runCodeTui(
         if (session && approvalQueue.length === 0 && !contextMenu) {
           const slashHit = slashHitRows.find((r) => r.row === event.y);
           if (slashHit && slashMatches.length > 0) {
-            const start = Math.max(
-              0,
-              Math.min(slashSelected - SLASH_MAX_ROWS + 1, slashMatches.length - SLASH_MAX_ROWS),
-            );
-            const command = slashMatches[start + slashHit.index];
+            const command = slashMatches[slashHit.index];
             if (command) applySlashCommand(session, command);
             return;
           }
@@ -2340,13 +2395,13 @@ export async function runCodeTui(
       redraw();
       return;
     }
-    if (event.key === 'backspace') {
-      buffer.backspace();
-      redraw();
-      return;
-    }
-    if (event.key === 'delete') {
-      buffer.deleteForward();
+    if (event.key === 'backspace' || event.key === 'delete') {
+      const delta = event.key === 'backspace' ? -1 : 1;
+      // Shift and Alt both mean "by word" here, matching the movement keys
+      // and the chord terminals actually send for Option+Delete.
+      if (select || word) buffer.deleteWord(delta);
+      else if (delta < 0) buffer.backspace();
+      else buffer.deleteForward();
       redraw();
       return;
     }

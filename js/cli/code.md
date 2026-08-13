@@ -62,7 +62,9 @@ autocomplete overlay of the available slash commands above the input
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
 - The input is a full editor line: the cursor moves with `←`/`→`, jumps words
   with `Alt`+arrow, and selects with `Shift` held — including `Shift`+`Alt`,
-  which extends the selection a word at a time. Typing replaces a selection.
+  which extends the selection a word at a time. Typing replaces a selection,
+  and `Shift` or `Alt` with `Backspace`/`Delete` removes a word at a time in
+  either direction.
   Long input wraps to as many rows as it needs, `↑`/`↓` walk those rows, and
   `Shift`+`Enter` inserts a line break. At the top or bottom row, where there
   is no line left to move to, `↑`/`↓` recall previously sent messages
@@ -98,6 +100,13 @@ rather than here, where it would only describe the session already on
 screen. Clickable controls — the `≡ <project>` sidebar button, the model, the
 mode, the agent count, `[steer now]`, tool calls, and sidebar rows —
 highlight on hover, brightening rather than filling in.
+
+Menus — the slash-command overlay, the model picker, the agent selector, and
+the session context menu — share one selection model: a `▸` marker at the head
+of the row turns white on the selected entry, hovering brightens a row and
+moves the selection to it, and clicking or `Enter` acts on whatever is
+selected. Pointer and keyboard drive the same choice rather than two
+competing ones.
 
 Tool activity renders as a call signature with named parameters —
 `read_file(path: "js/ai/agent.ts", offset: 10)` — and clicking one expands

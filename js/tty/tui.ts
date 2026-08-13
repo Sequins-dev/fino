@@ -298,7 +298,7 @@ function decodeCsi(sequence: string): TuiEvent | null {
       shift,
     };
   }
-  const tilde = /^\x1b\[(\d+)~$/.exec(sequence);
+  const tilde = /^\x1b\[(\d+)(?:;(\d+))?~$/.exec(sequence);
   if (tilde) {
     const name = (
       {
@@ -309,7 +309,14 @@ function decodeCsi(sequence: string): TuiEvent | null {
         '6': 'pagedown',
       } as Record<string, string>
     )[tilde[1]!];
-    if (name) return keyEvent(name);
+    if (name) {
+      const bits = tilde[2] ? Number(tilde[2]) - 1 : 0;
+      return keyEvent(name, {
+        ...(bits & 1 ? { shift: true } : {}),
+        ...(bits & 2 ? { alt: true } : {}),
+        ...(bits & 4 ? { ctrl: true } : {}),
+      });
+    }
   }
   return null;
 }
@@ -327,7 +334,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
-      const csi = sgr ?? /^\x1b\[(?:\d+~|\d+;\d+[A-Za-z~]|[A-Za-z])/.exec(text.slice(i));
+      const csi = sgr ?? /^\x1b\[(?:\d+(?:;\d+)?~|\d+;\d+[A-Za-z]|[A-Za-z])/.exec(text.slice(i));
       if (csi) {
         const event = decodeCsi(csi[0]);
         if (event) events.push(event);
@@ -335,7 +342,14 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
         continue;
       }
       if (i + 1 < text.length) {
-        events.push(keyEvent(text[i + 1]!, { alt: true }));
+        // Meta-prefixed control characters carry the same names they do on
+        // their own, so Alt+Backspace reads as backspace rather than DEL.
+        const [named] = decodeTuiInput(new TextEncoder().encode(text[i + 1]!));
+        events.push(
+          named && named.type === 'key'
+            ? { ...named, alt: true }
+            : keyEvent(text[i + 1]!, { alt: true }),
+        );
         i += 2;
         continue;
       }
@@ -1075,6 +1089,20 @@ export class TextBuffer {
     if (this.#deleteSelection()) return;
     if (this.#cursor >= this.#text.length) return;
     this.#text = this.#text.slice(0, this.#cursor) + this.#text.slice(this.#cursor + 1);
+  }
+  /**
+   * Delete a whole word, backwards or forwards.
+   *
+   * With a selection, the selection goes instead — deleting exactly what is
+   * highlighted is what the highlight promises.
+   */
+  deleteWord(delta: number): void {
+    if (this.#deleteSelection()) return;
+    const target = delta < 0 ? this.#wordLeft() : this.#wordRight();
+    const [start, end] = delta < 0 ? [target, this.#cursor] : [this.#cursor, target];
+    if (start === end) return;
+    this.#text = this.#text.slice(0, start) + this.#text.slice(end);
+    this.#cursor = start;
   }
   #deleteSelection(): boolean {
     const range = this.selection;
