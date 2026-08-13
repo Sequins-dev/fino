@@ -147,6 +147,31 @@ const anthropicToolSse = [
   sseFrame('message_stop', {}),
 ];
 describe('anthropic provider', () => {
+  it('opts gpt-5 tool calls out of reasoning_effort', async (t) => {
+    for (const [modelName, expected] of [
+      ['gpt-5.6-sol', 'none'],
+      ['o3-mini', undefined],
+      ['gpt-4o', undefined],
+    ] as const) {
+      const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
+      const model = openai({ apiKey: 'test', client, model: modelName });
+      await model
+        .stream({
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [{ name: 't', description: 'd', parameters: { type: 'object' } }],
+        })
+        .result();
+      const body = client.capturedBodies[0] as Record<string, unknown>;
+      t.equal(body.reasoning_effort, expected, `${modelName} reasoning_effort`);
+    }
+  });
+  it('leaves reasoning_effort alone when no tools are sent', async (t) => {
+    const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
+    const model = openai({ apiKey: 'test', client, model: 'gpt-5.6-sol' });
+    await model.stream({ messages: [{ role: 'user', content: 'hi' }] }).result();
+    const body = client.capturedBodies[0] as Record<string, unknown>;
+    t.equal(body.reasoning_effort, undefined, 'tool-free requests keep the default');
+  });
   it('streams text and assembles result', async (t) => {
     const client = fakeClient([streamResponse(sseBytes(...anthropicTextSse))]);
     const model = anthropic({

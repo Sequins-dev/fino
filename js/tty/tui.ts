@@ -454,10 +454,13 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
     void timer.then(() => controller.abort(new Error('terminal size query timed out')));
     let response = '';
     while (!controller.signal.aborted) {
-      const chunk = await stdin().read({
-        maxBytes: 64,
-        signal: controller.signal,
-      });
+      // Race the read against the deadline rather than trusting the abort
+      // signal: a terminal that never answers the cursor-position query would
+      // otherwise block here forever and the app would never paint.
+      const chunk = await Promise.race([
+        stdin().read({ maxBytes: 64, signal: controller.signal }),
+        timer.then(() => null),
+      ]);
       if (chunk === null) break;
       response += decoder.decode(chunk);
       const match = /\x1b\[(\d+);(\d+)R/.exec(response);

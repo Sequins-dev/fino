@@ -39,8 +39,8 @@ import {
   Box,
   Text,
   copyToClipboard,
+  getTerminalSize,
   highlightSelection,
-  measureTerminalSize,
   render,
   selectionIsEmpty,
   selectionText,
@@ -290,7 +290,10 @@ export async function runCodeTui(
   workspace: CodeWorkspace,
   opts: CodeTuiOptions = {},
 ): Promise<void> {
-  const terminal = await measureTerminalSize();
+  // ioctl(TIOCGWINSZ) is authoritative and synchronous; the cursor-position
+  // round-trip measureTerminalSize() performs is redundant here and stalls on
+  // terminals that never answer it.
+  const terminal = getTerminalSize();
   let width = terminal.width;
   let height = terminal.height;
 
@@ -360,6 +363,26 @@ export async function runCodeTui(
     const toolHit = transcriptHitRows.find((r) => r.row === y);
     if (toolHit) return `tool:${toolHit.entryIndex}`;
     return undefined;
+  }
+
+  /**
+   * Copy the current selection to the system clipboard.
+   *
+   * Terminals intercept the platform copy chord (Cmd+C on macOS) before the
+   * application sees it, and it copies the terminal's own selection — which
+   * an application-drawn highlight is not. So the clipboard is written as
+   * soon as a selection is made, and the selection is kept on screen so it
+   * stays visible and can be re-copied.
+   */
+  function copySelection(): boolean {
+    if (!selection || selectionIsEmpty(selection)) return false;
+    const text = selectionText(lastFrameLines, selection);
+    if (text.length === 0) return false;
+    void writeStdout(copyToClipboard(text));
+    const session = focused();
+    if (session) session.status = `Copied ${text.length} characters.`;
+    redraw();
+    return true;
   }
 
   function contentWidth(): number {
@@ -1414,7 +1437,7 @@ export async function runCodeTui(
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
             'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
             'Transcript: click a tool call to expand its input/output (source and Markdown are formatted)',
-            'Drag over the transcript to select text; Ctrl+E copies the selection to the clipboard',
+            'Drag over the transcript to select text — it copies to the clipboard on release; Ctrl+E re-copies',
             'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
           ].join('\n'),
         );
@@ -1665,6 +1688,7 @@ export async function runCodeTui(
       if (event.action === 'release') {
         // A press that never turned into a drag leaves no selection behind.
         if (selection && selectionIsEmpty(selection)) selection = undefined;
+        else if (selection && selectionAnchor) copySelection();
         selectionAnchor = undefined;
         return;
       }
@@ -1745,19 +1769,10 @@ export async function runCodeTui(
       return;
     }
     if (event.ctrl && event.key === 'e') {
-      if (!selection || selectionIsEmpty(selection)) {
-        if (session) {
-          session.status = 'Nothing selected — drag over the transcript first.';
-          redraw();
-        }
-        return;
+      if (!copySelection() && session) {
+        session.status = 'Nothing selected — drag over the transcript first.';
+        redraw();
       }
-      const text = selectionText(lastFrameLines, selection);
-      void writeStdout(copyToClipboard(text));
-      if (session) session.status = `Copied ${text.length} characters.`;
-      selection = undefined;
-      selectionAnchor = undefined;
-      redraw();
       return;
     }
     if (event.ctrl && event.key === 'b') {
