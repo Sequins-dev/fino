@@ -83,11 +83,11 @@ const SPINNER_INTERVAL_MS = 100;
 const AGENT_MENU_MAX_ROWS = 8;
 /** Rows kept clear above and below a centred popover. */
 const MENU_MARGIN_ROWS = 2;
-/** The status bar carries the mode, so each level gets its own color. */
-const MODE_BACKGROUNDS: Record<CodeMode, string> = {
-  plan: '\x1b[45m',
-  build: '\x1b[44m',
-  auto: '\x1b[41m',
+/** The mode is the one colored word in the status bar. */
+const MODE_COLORS: Record<CodeMode, string> = {
+  plan: '\x1b[35m',
+  build: '\x1b[36m',
+  auto: '\x1b[31m',
 };
 const MODE_ORDER: CodeMode[] = ['plan', 'build', 'auto'];
 const MODE_HELP: Record<CodeMode, string> = {
@@ -167,7 +167,6 @@ interface ApprovalItem {
 
 type SidebarRow =
   | { kind: 'action-new' }
-  | { kind: 'project'; label: string }
   | { kind: 'session'; id: string; archived: boolean };
 
 interface SidebarDisplay {
@@ -291,9 +290,7 @@ function wrapPlain(text: string, width: number): string[] {
 }
 
 function rowKey(row: SidebarRow): string {
-  if (row.kind === 'action-new') return 'new';
-  if (row.kind === 'project') return 'project';
-  return `s:${row.id}`;
+  return row.kind === 'action-new' ? 'new' : `s:${row.id}`;
 }
 
 /**
@@ -391,7 +388,7 @@ export async function runCodeTui(
       }
       const entry = sidebarDisplayCache.lineMap[sidebarScroll + y];
       const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
-      if (!row || row.kind === 'project') return undefined;
+      if (!row) return undefined;
       return `sidebar:${entry!.rowIndex}`;
     }
     if (y === height - 1) {
@@ -1148,6 +1145,11 @@ export async function runCodeTui(
     return session;
   }
 
+  /** The project directory the workspace is rooted in. */
+  function projectName(): string {
+    return basename(workspace.cwd).toString() || workspace.cwd;
+  }
+
   /** A session with no registry entry has not run a turn yet. */
   function isDraft(id: string): boolean {
     return workspace.meta(id) === undefined;
@@ -1295,9 +1297,7 @@ export async function runCodeTui(
   // --- sidebar ---------------------------------------------------------
 
   function sidebarRows(): SidebarRow[] {
-    const rows: SidebarRow[] = [
-      { kind: 'project', label: basename(workspace.cwd).toString() || workspace.cwd },
-    ];
+    const rows: SidebarRow[] = [];
     if (sidebarTab === 'active') rows.push({ kind: 'action-new' });
     for (const meta of workspace.list({ archived: sidebarTab === 'archived' })) {
       rows.push({ kind: 'session', id: meta.id, archived: sidebarTab === 'archived' });
@@ -1332,12 +1332,6 @@ export async function runCodeTui(
         lines.push(line);
         lineMap.push({ rowIndex, first });
       };
-      if (row.kind === 'project') {
-        push(padVisible('', w), true);
-        push(`${BOLD}${padVisible(`  ${clipVisible(row.label, w - 4)}`, w)}${RESET}`);
-        push(padVisible('', w));
-        continue;
-      }
       // Every entry is a bordered card, so the list reads as separated items
       // and hover has a target the size of the whole entry. Hover recolors
       // the border rather than restyling the card, which would fight with the
@@ -1413,7 +1407,6 @@ export async function runCodeTui(
   }
 
   function focusSidebarRow(row: SidebarRow): void {
-    if (row.kind === 'project') return;
     selectedKey = rowKey(row);
     if (row.kind === 'action-new') {
       void focusDraft();
@@ -1477,9 +1470,7 @@ export async function runCodeTui(
         `${DIM}no session — Ctrl+B or click ≡ for the sidebar, /new to start one${RESET}`,
       );
       while (lines.length < height - 2) lines.push('');
-      lines.push(
-        `${MODE_BACKGROUNDS.build}${padVisible(`${sidebarVisible ? '«' : '≡'} fino code`, cw + 2)}${RESET}`,
-      );
+      lines.push(`${BOLD}${padVisible(`${sidebarVisible ? '«' : '≡'} fino code`, cw + 2)}${RESET}`);
       return lines;
     }
     const queueLines: string[] = [];
@@ -1686,48 +1677,39 @@ export async function runCodeTui(
           }`
         : ''
       : (session.viewNames.get(session.focusedView) ?? 'sub-agent');
-    const modeLabel = session.engine.mode.toUpperCase();
     const selectLabel = selection ? ' · SELECTION (Ctrl+E copies)' : '';
-    const bg = MODE_BACKGROUNDS[session.engine.mode];
     // Build the bar from segments so clickable ones get hit ranges and a
-    // hover highlight; inverse reads as a pressable control over the bar's
-    // own background.
+    // hover highlight. The bar keeps the terminal's own background — a filled
+    // one made the text hard to read — so the mode is colored instead.
     statusHits = [];
     let statusLine = '';
     let column = 0;
-    const segment = (text: string, key?: string): void => {
+    const segment = (text: string, key?: string, style = ''): void => {
       const width = visibleWidth(text);
       if (key) {
         statusHits.push({ start: column, end: column + width - 1, key });
-        statusLine += hover === key ? `${INVERSE}${text}${RESET}${bg}` : text;
+        statusLine += hover === key ? `${INVERSE}${text}${RESET}` : `${style}${text}${RESET}`;
       } else {
-        statusLine += text;
+        statusLine += `${style}${text}${RESET}`;
       }
       column += width;
     };
     segment(
-      `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}`,
+      `${sidebarVisible ? '«' : '≡'} ${clipVisible(projectName(), 24)}`,
       'status:sidebar',
+      BOLD,
     );
-    segment(' · ');
+    segment(' · ', undefined, DIM);
     segment(session.engine.modelId, 'status:model');
-    segment(' · ');
-    segment(modeLabel, 'status:mode');
+    segment(' · ', undefined, DIM);
+    segment(session.engine.mode.toUpperCase(), 'status:mode', MODE_COLORS[session.engine.mode]);
     if (agentLabel) {
-      segment(' · ');
+      segment(' · ', undefined, DIM);
       segment(agentLabel, 'status:agents');
     }
-    segment(`${selectLabel} ${stateGlyph(session)}${session.flash ? ` ${session.flash}` : ''}`);
-    lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
+    segment(`${selectLabel}${session.flash ? ` · ${session.flash}` : ''}`, undefined, DIM);
+    lines.push(padVisible(clipVisible(statusLine, cw + 1), cw + 2));
     return lines;
-  }
-
-  /** Symbolic session state: what the old `Ready`/`Working…` text said. */
-  function stateGlyph(session: SessionUI): string {
-    if (session.state === 'working') return `${YELLOW}⟳${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
-    if (session.state === 'waiting') return `${RED}▲${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
-    if (session.state === 'error') return `${RED}✗${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
-    return `${GREEN}●${RESET}${MODE_BACKGROUNDS[session.engine.mode]}`;
   }
 
   function composedView() {
@@ -2190,9 +2172,6 @@ export async function runCodeTui(
       let index = selectedRowIndex(display);
       if (index < 0) index = 0;
       let next = index + (event.key === 'p' ? -1 : 1);
-      while (next >= 0 && next < rows.length && rows[next]!.kind === 'project') {
-        next += event.key === 'p' ? -1 : 1;
-      }
       if (next >= 0 && next < rows.length) focusSidebarRow(rows[next]!);
       redraw();
       return;

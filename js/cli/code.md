@@ -81,10 +81,13 @@ blocks render as they settle, and code inside a fence is syntax-highlighted
 before the closing fence arrives. A horizontal rule marks the start of each
 prose answer.
 
-The status bar carries the session state as a glyph — `●` idle, `⟳` working,
-`▲` waiting on approval, `✗` failed — plus transient notes like a copy
-confirmation. Clickable controls — the `≡ <title>` sidebar button, the model,
-the mode, the agent count, `[steer now]`, tool calls, and sidebar rows —
+The status bar names the project directory, the model, the mode, and the
+sub-agent count, plus transient notes like a copy confirmation. It keeps the
+terminal's own background — the mode is the one colored word, magenta for
+plan, cyan for build, red for auto. Per-session state lives in the sidebar
+rather than here, where it would only describe the session already on
+screen. Clickable controls — the `≡ <project>` sidebar button, the model, the
+mode, the agent count, `[steer now]`, tool calls, and sidebar rows —
 highlight on hover.
 
 Tool activity renders as a call signature with named parameters —
@@ -107,10 +110,11 @@ empty session behind. `fino code sessions` lists them (`--archived` for the
 history list), `fino code --thread <id>` reopens one, and `--continue`
 resumes the most recent.
 
-Inside the TUI, `Ctrl+B` or clicking the `≡ <title>` button in the status bar
-opens the collapsible session sidebar: the project directory name, a
-`+ new session` card, then sessions as bordered cards ordered by recent
-activity with `⟳` working / `▲` waiting / `·` idle indicators. Card borders
+Inside the TUI, `Ctrl+B` or clicking the `≡ <project>` button in the status
+bar opens the collapsible session sidebar: a `+ new session` card, then
+sessions as bordered cards ordered by recent activity with `⟳` working /
+`▲` waiting / `·` idle indicators — the signal for which conversation wants
+attention. Card borders
 are grey and turn white under the pointer. `+ new session` opens a blank
 chat rather than creating a session — it becomes one when you send its first
 message. A switcher along the bottom of the sidebar, level with the status
