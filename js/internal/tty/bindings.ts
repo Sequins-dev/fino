@@ -325,6 +325,24 @@ export function eraseBelow(): string {
   return '\x1B[0J';
 }
 /**
+ * Return the ED 2 sequence that clears the whole visible screen.
+ *
+ * Unlike {@link eraseBelow} this names no row, so it stays correct even when
+ * the terminal has resized since the sequence was composed — the case that
+ * makes row-addressed erases unreliable during a window drag. Scrollback is
+ * left alone.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseVisible } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseVisible());
+ * ```
+ */
+export function eraseVisible(): string {
+  return '\x1B[2J';
+}
+/**
  * Return the sequences that clear the screen and purge the scrollback.
  *
  * Resets any scroll region and SGR state, homes the cursor, clears the

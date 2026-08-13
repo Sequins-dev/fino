@@ -43,7 +43,7 @@ describe('fino:commands/code/ui blocks', () => {
 
   it('opens assistant blocks with a rule and blank row', (t) => {
     const lines = renderAssistantBlock('hello **world**', 40);
-    t.equal(stripAnsi(lines[0]!), '─'.repeat(40), 'rule first');
+    t.equal(stripAnsi(lines[0]!), '─'.repeat(39), 'rule stops a column short of the width');
     t.equal(lines[1], '', 'blank after the rule');
     t.ok(lines.slice(2).some((line) => stripAnsi(line).includes('hello')), 'markdown body');
     t.deepEqual(
@@ -82,7 +82,7 @@ describe('fino:commands/code/ui blocks', () => {
       40,
     );
     t.equal(session[0], '', 'leading blank');
-    t.equal(stripAnsi(session[1]!), '━'.repeat(40), 'heavy rule');
+    t.equal(stripAnsi(session[1]!), '━'.repeat(39), 'heavy rule stops a column short');
     t.equal(stripAnsi(session[2]!), '» my session', 'titled');
     t.equal(stripAnsi(session[3]!), 'claude-test · BUILD', 'subtitle');
     t.equal(session[session.length - 1], '', 'trailing blank');

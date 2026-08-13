@@ -48,7 +48,7 @@ export interface FooterState {
   composerPlaceholder: string;
   /** Agent selector, when open (renders below the composer). */
   agentMenu?: SelectList;
-  status: { left: Segment[]; right: Segment[] };
+  status: Segment[];
 }
 
 /** Queued previews kept visible before the overflow row. */
@@ -121,7 +121,7 @@ function footerLayout(state: FooterState): FooterLayout {
   const width = state.width;
   const budget = Math.max(3, Math.min(FOOTER_MAX_ROWS, state.height - 4));
 
-  const statusPane = renderStatusBar({ left: state.status.left, right: state.status.right, width });
+  const statusPane = renderStatusBar({ segments: state.status, width });
   const statusLines = statusPane.lines;
 
   const approvalLines =

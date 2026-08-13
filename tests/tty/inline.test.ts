@@ -111,6 +111,20 @@ describe('fino:tty/tui composeInlineFrame', () => {
     t.equal(idle.out, '', 'identical frame produces no output at all');
   });
 
+  it('keeps footer rows off the last column and erases before writing', (t) => {
+    // A row that fills the last column can be recorded as soft-wrapped, and
+    // joined with the row below it the next time the terminal re-wraps — which
+    // is what a narrowing window does, sliding the composer out of alignment.
+    const { out } = composeInlineFrame(state({ historyBottom: 3 }), {
+      frame: { lines: ['x'.repeat(40), 'short'] },
+    });
+    for (const painted of out.matchAll(/\x1B\[\d+;1H\x1B\[K([^\x1b]*)/g)) {
+      t.ok(painted[1]!.length <= 9, `painted row stays within width-1: ${painted[1]!.length}`);
+    }
+    t.ok(out.includes('\x1B[K'), 'rows are erased rather than padded');
+    t.ok(!/xxxxxxxxxx/.test(out), 'the row is clipped a column short of the width');
+  });
+
   it('parks and shows the cursor at the frame cell, absolutely', (t) => {
     const base = state({ historyBottom: 8 });
     const { out, state: next } = composeInlineFrame(base, {

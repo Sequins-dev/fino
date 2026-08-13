@@ -68,7 +68,10 @@ export function renderAssistantBlock(markdown: string, width: number): string[] 
  * pipeline commits this on the first delta, before any settled markdown.
  */
 export function assistantBlockPrefix(width: number): string[] {
-  return [renderRule(Math.max(1, width)), ''];
+  // One column short of the terminal: a row that fills the last column can be
+  // recorded as soft-wrapped and joined with the row below it when the window
+  // is narrowed, which drags the following line out of alignment.
+  return [renderRule(Math.max(1, width - 1)), ''];
 }
 
 /**
@@ -149,7 +152,7 @@ export function renderSessionHeader(
   },
   width: number,
 ): string[] {
-  const rule = style('━'.repeat(Math.max(1, width)), tk.dim);
+  const rule = style('━'.repeat(Math.max(1, width - 1)), tk.dim);
   const glyph =
     opts.kind === 'subagent' ? `${CHILD_GLYPHS[opts.childStatus ?? 'working']} ` : '» ';
   const title = clipAnsi(`${glyph}${opts.title}`, width);

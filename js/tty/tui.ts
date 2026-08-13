@@ -580,21 +580,30 @@ function fit(text: string, width: number): string {
   return chars.slice(0, width).join('').padEnd(width, ' ');
 }
 /**
- * Clip a possibly-styled line to `width` visible cells and pad it to exactly
- * that width.
+ * Clip a possibly-styled line to `width` visible cells, padding it to exactly
+ * that width unless `pad` is false.
  *
  * Escape sequences are preserved without counting toward the width, and the
  * result always ends with an SGR reset before its padding so a truncated
- * styled run never leaks color into whatever is painted after it.
+ * styled run never leaks color into whatever is painted after it. Padding is
+ * worth suppressing where a row must not fill the terminal: a line written to
+ * the last column can be recorded as soft-wrapped, and joined with the line
+ * below it the next time the terminal re-wraps.
  *
  * ```ts
  * import { fitAnsi } from 'fino:tty/tui';
  *
  * fitAnsi('\x1b[32mhello world\x1b[0m', 5); // green 'hello', then reset
+ * fitAnsi('hi', 6, { pad: false }); // 'hi'
  * ```
  */
-export function fitAnsi(text: string, width: number): string {
-  if (!hasAnsi(text)) return fit(text, width);
+export function fitAnsi(text: string, width: number, options: { pad?: boolean } = {}): string {
+  const pad = options.pad !== false;
+  if (!hasAnsi(text)) {
+    const chars = Array.from(text);
+    const clipped = chars.slice(0, width).join('');
+    return pad ? clipped.padEnd(width, ' ') : clipped;
+  }
   // Clip by visible width, preserving escape sequences, and always close with
   // a reset: a styled line truncated mid-run must never leak its SGR state
   // into the rows painted after it.
@@ -614,7 +623,7 @@ export function fitAnsi(text: string, width: number): string {
     seen += 1;
     index += ch.length;
   }
-  return out + '\x1b[0m' + spaces(width - seen);
+  return out + '\x1b[0m' + (pad ? spaces(width - seen) : '');
 }
 function backgroundCode(background: unknown): string | null {
   switch (background) {

@@ -81,8 +81,8 @@ const AGENT_MENU_MAX_ROWS = 8;
 const REPLAY_MAX = 200;
 /** Quiet period after the last resize before rebuilding the transcript. */
 const RESIZE_REFLOW_MS = 75;
-/** Longest a continuous drag may go without a rebuild. */
-const RESIZE_REFLOW_MAX_MS = 250;
+/** How often a continuous drag rebuilds the transcript. */
+const RESIZE_REFLOW_MAX_MS = 120;
 /** Ceiling on the footer, above what the terminal height allows. */
 const MAX_FOOTER_ROWS = 32;
 
@@ -175,8 +175,8 @@ export async function runCodeTui(
   let archived: { id: string; title: string; entries: TranscriptEntry[] } | undefined;
   /** Pending width rebuild, coalesced across a resize drag. */
   let reflowTimer: ReturnType<typeof setTimeout> | undefined;
-  /** When the in-progress drag must be rebuilt by, however long it runs. */
-  let reflowDeadline = 0;
+  /** When the transcript was last rebuilt, to pace a drag's rebuilds. */
+  let lastReflowAt = 0;
   /** Streaming tail of the visible view's open assistant message. */
   let tail: StreamTail | undefined;
   /** The tool currently running in the visible view, for footer detail. */
@@ -467,6 +467,7 @@ export async function runCodeTui(
    * actually changed and only once the drag has settled.
    */
   function reflowTranscript(): void {
+    lastReflowAt = Date.now();
     if (overlay.active !== null) return;
     // The message in flight is re-rendered from its entry, so the tail it was
     // building at the old width is dropped rather than committed.
@@ -485,21 +486,25 @@ export async function runCodeTui(
   }
 
   function scheduleReflow(): void {
-    // Terminals report a size for every step of a drag, and rebuilding on
-    // each one would clear the screen dozens of times — so a rebuild waits
-    // for the drag to pause. Waiting only for the pause, though, leaves the
-    // text visibly wrapped for the old width for as long as the drag lasts,
-    // so a long drag is also rebuilt at a steady interval as it goes.
+    // The renderer holds its surface still from the moment a resize arrives
+    // until this rebuild clears it, so the first one runs immediately: any
+    // wait here is a wait with the screen frozen. The rest of a drag is
+    // rebuilt at a steady interval, since redrawing the conversation for
+    // every intermediate size a drag reports would be wasted work.
     const now = Date.now();
-    if (reflowDeadline === 0) reflowDeadline = now + RESIZE_REFLOW_MAX_MS;
+    const since = now - lastReflowAt;
     if (reflowTimer !== undefined) clearTimeout(reflowTimer);
+    if (since >= RESIZE_REFLOW_MAX_MS) {
+      reflowTimer = undefined;
+      reflowTranscript();
+      return;
+    }
     reflowTimer = setTimeout(
       () => {
         reflowTimer = undefined;
-        reflowDeadline = 0;
         reflowTranscript();
       },
-      Math.max(0, Math.min(RESIZE_REFLOW_MS, reflowDeadline - now)),
+      Math.max(RESIZE_REFLOW_MS, RESIZE_REFLOW_MAX_MS - since),
     );
   }
 
@@ -971,7 +976,6 @@ export async function runCodeTui(
     quitting = true;
     if (paintTimer !== undefined) clearTimeout(paintTimer);
     if (reflowTimer !== undefined) clearTimeout(reflowTimer);
-    reflowDeadline = 0;
     if (spinnerTimer !== undefined) clearInterval(spinnerTimer);
     spinnerTimer = undefined;
     finish?.();
@@ -1044,7 +1048,14 @@ export async function runCodeTui(
 
   // --- footer -----------------------------------------------------------
 
-  function attentionDots(): Segment[] {
+  /**
+   * The four attention dots, as one segment beside the project name.
+   *
+   * They sit with the rest of the bar rather than against the right edge: a
+   * right-aligned cluster has to be re-placed the moment the window changes
+   * width, and until it is, it hangs off the end of the row.
+   */
+  function attentionDots(): string {
     const summary = workspace.attentionSummary(visible?.sessionId ?? archived?.id);
     const flags: Record<(typeof ATTENTION_ORDER)[number], boolean> = {
       busy: summary.busy,
@@ -1054,14 +1065,18 @@ export async function runCodeTui(
       error: summary.error,
       done: summary.done,
     };
-    return ATTENTION_ORDER.map((kind) => ({
-      text: flags[kind] ? '●' : '·',
-      style: flags[kind] ? ATTENTION[kind] : tk.dim,
-    }));
+    // Filled when lit, hollow when not — a dim `·` would read as one of the
+    // separators the rest of the bar is built from.
+    return ATTENTION_ORDER.map((kind) =>
+      flags[kind] ? `${ATTENTION[kind]}●${tk.reset}` : style('○', tk.dim),
+    ).join(' ');
   }
 
-  function statusSegments(session: SessionUI | undefined): { left: Segment[]; right: Segment[] } {
-    const left: Segment[] = [{ text: `≡ ${projectName()}`, key: 'sessions', style: tk.bold }];
+  function statusSegments(session: SessionUI | undefined): Segment[] {
+    const left: Segment[] = [
+      { text: `≡ ${projectName()}`, key: 'sessions', style: tk.bold },
+      { text: attentionDots(), attached: true },
+    ];
     if (archived !== undefined) {
       left.push({ text: archived.title });
       left.push({ text: 'ARCHIVED · read-only', style: tk.dim });
@@ -1086,7 +1101,7 @@ export async function runCodeTui(
       }
       if (session.flash !== undefined) left.push({ text: session.flash, style: tk.dim });
     }
-    return { left, right: attentionDots() };
+    return left;
   }
 
   function composerPlaceholder(session: SessionUI): string {

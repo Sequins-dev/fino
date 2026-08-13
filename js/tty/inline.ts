@@ -39,6 +39,7 @@ import {
   eraseLine,
   eraseScrollback,
   eraseToLineEnd,
+  eraseVisible,
   exitAlternateScreen,
   exitMouseMode,
   hideCursor,
@@ -275,17 +276,27 @@ export function composeInlineFrame(
   }
 
   let lastLines = state.lastLines;
+  // Footer rows stop one column short and are erased rather than padded. A row
+  // that fills the last column can be recorded as soft-wrapped, and the next
+  // time the terminal re-wraps — narrowing the window — it joins that row with
+  // the one below, which arrives as the composer sliding right behind a run of
+  // padding spaces.
+  const cell = Math.max(1, width - 1);
   if (frame) {
     const next: string[] = [];
-    for (let i = 0; i < footerRows; i++) next.push(fitAnsi(frame.lines[i] ?? '', width));
+    for (let i = 0; i < footerRows; i++) {
+      next.push(fitAnsi(frame.lines[i] ?? '', cell, { pad: false }));
+    }
     const repaintAll = geometryChanged || ops.forceRepaint === true;
     for (let i = 0; i < next.length; i++) {
-      if (repaintAll || next[i] !== lastLines[i]) out += cursorTo(top + i, 1) + next[i];
+      if (repaintAll || next[i] !== lastLines[i]) {
+        out += cursorTo(top + i, 1) + eraseToLineEnd() + next[i];
+      }
     }
     lastLines = next;
   } else if (ops.forceRepaint === true) {
     for (let i = 0; i < lastLines.length && i < footerRows; i++) {
-      out += cursorTo(top + i, 1) + lastLines[i];
+      out += cursorTo(top + i, 1) + eraseToLineEnd() + lastLines[i];
     }
   }
 
@@ -314,6 +325,9 @@ interface OverlayState {
   handle: OverlayHandle;
 }
 
+/** How long a resize waits for a rebuild before repainting on its own. */
+const RESIZE_RECOVERY_MS = 400;
+
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
@@ -332,6 +346,8 @@ class InlineAppImpl implements InlineApp {
   #ready = false;
   #stopped = false;
   #overlay: OverlayState | null = null;
+  #resizePending = false;
+  #resizeFallback?: ReturnType<typeof setTimeout>;
   #preEvents: TuiEvent[] = [];
   #stopResize?: () => void;
   #disposeSignals: Array<() => void> = [];
@@ -513,29 +529,34 @@ class InlineAppImpl implements InlineApp {
       return;
     }
     if (next.width === this.#state.width && next.height === this.#state.height) return;
-    const oldTop = footerTop(this.#state.height, this.#state.footerRows, this.#state.historyBottom);
-    // A terminal that loses rows moves its content up to keep the cursor on
-    // screen, but how far is emulator-specific and cannot be read back
-    // cheaply mid-drag. Assume the most it could have moved — the whole
-    // height difference — and clear from there: anything less would leave the
-    // previous footer stranded above the new one, reading as a second copy of
-    // the composer. Over-clearing only costs history rows the caller is
-    // expected to re-emit anyway, which is what `onResize` is for.
-    const shed = Math.max(0, this.#state.height - next.height);
+    // Painting stops until the caller rebuilds. A resize moves the terminal's
+    // content by an emulator-specific amount, and output is written
+    // asynchronously, so a repaint composed now can land against a grid that
+    // has already changed size again — stamping a fresh footer beside the one
+    // the terminal carried off, once per event, faster than any erase aimed at
+    // a particular row can chase it. Holding the surface still until it is
+    // cleared wholesale is the only way to keep exactly one of everything.
     this.#state.width = next.width;
     this.#state.height = next.height;
-    const rows = Math.max(1, Math.min(this.#state.footerRows, next.height - 1));
-    this.#state.footerRows = rows;
-    const regionBottom = Math.max(1, next.height - rows);
-    const top = footerTop(next.height, rows, Math.max(0, this.#state.historyBottom - shed));
-    const clearFrom = Math.max(1, Math.min(top, oldTop - shed));
-    this.#state.historyBottom = Math.min(clearFrom - 1, regionBottom);
+    this.#state.footerRows = Math.max(1, Math.min(this.#state.footerRows, next.height - 1));
+    this.#resizePending = true;
+    if (this.#resizeFallback !== undefined) clearTimeout(this.#resizeFallback);
+    // A caller with nothing to rebuild from still has to get its surface back.
+    this.#resizeFallback = setTimeout(() => this.#recoverFromResize(), RESIZE_RECOVERY_MS);
+    this.#options.onResize?.({ ...next }, this);
+  }
+
+  /** Repaint on a cleared screen when no rebuild came after a resize. */
+  #recoverFromResize(): void {
+    this.#resizeFallback = undefined;
+    if (!this.#resizePending || this.#stopped) return;
+    this.#resizePending = false;
+    this.#state.historyBottom = 0;
     this.#state.lastLines = [];
-    this.#write(hideCursor() + resetScrollRegion() + cursorTo(clearFrom, 1) + eraseBelow());
+    this.#write(hideCursor() + resetScrollRegion() + cursorTo(1, 1) + eraseVisible());
     this.#forceRepaint = true;
     this.#pendingFrame = this.#pendingFrame ?? this.#lastFrame;
     this.#schedule();
-    this.#options.onResize?.({ ...next }, this);
   }
 
   #clampFrame(frame: InlineFrame): InlineFrame {
@@ -567,6 +588,9 @@ class InlineAppImpl implements InlineApp {
 
   #flush(): void {
     if (!this.#ready || this.#stopped || this.#overlay !== null) return;
+    // Held after a resize: whatever is composed now would be placed against
+    // geometry the terminal has already moved on from.
+    if (this.#resizePending) return;
     const history = this.#pendingHistory;
     const frame = this.#pendingFrame;
     const force = this.#forceRepaint;
@@ -598,6 +622,11 @@ class InlineAppImpl implements InlineApp {
 
   resetHistory(): void {
     if (this.#stopped) return;
+    this.#resizePending = false;
+    if (this.#resizeFallback !== undefined) {
+      clearTimeout(this.#resizeFallback);
+      this.#resizeFallback = undefined;
+    }
     this.#pendingHistory = [];
     this.#write(eraseScrollback());
     this.#state.historyBottom = 0;
@@ -710,6 +739,8 @@ class InlineAppImpl implements InlineApp {
     }
     if (this.#overlay !== null) this.#closeOverlay(this.#overlay);
     this.#stopResize?.();
+    if (this.#resizeFallback !== undefined) clearTimeout(this.#resizeFallback);
+    this.#resizePending = false;
     for (const dispose of this.#disposeSignals) dispose();
     this.#disposeSignals = [];
     this.#root?.dispose();

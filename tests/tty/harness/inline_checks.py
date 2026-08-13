@@ -182,12 +182,13 @@ def scenario_attention_dots():
     t.send('hi b', settle=0.2)
     t.send('\r', settle=0.6)
     t.send('\x0e', settle=1.2)
-    check('\u25cf \u00b7 \u00b7 \u00b7' in status(t), 'busy dot lit while background session works')
+    check('\u25cf \u25cb \u25cb \u25cb' in status(t), 'busy dot lit while background session works')
     time.sleep(12.0)
-    check('\u00b7 \u00b7 \u00b7 \u25cf' in status(t), 'done dot lit for unseen result')
+    check('\u25cb \u25cb \u25cb \u25cf' in status(t), 'done dot lit for unseen result')
     t.send('\x0e', settle=1.5)
     time.sleep(0.5)
     check('\u25cf' not in status(t), 'dots clear when the session is seen')
+    check(len(status(t).rstrip()) < 80, 'the status bar stops where its content stops')
     quit_app(t)
 
 
