@@ -510,6 +510,22 @@ const openaiToolSse = [
   'data: [DONE]\n\n',
 ];
 describe('openai provider', () => {
+  it('sends max_completion_tokens for reasoning-era model families', async (t) => {
+    for (const [modelName, expectedKey] of [
+      ['gpt-5.6-sol', 'max_completion_tokens'],
+      ['o3-mini', 'max_completion_tokens'],
+      ['gpt-4o', 'max_tokens'],
+      ['llama-3.1-8b-instruct', 'max_tokens'],
+    ] as const) {
+      const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
+      const model = openai({ apiKey: 'test', client, model: modelName });
+      await model.stream({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 77 }).result();
+      const body = client.capturedBodies[0] as Record<string, unknown>;
+      t.equal(body[expectedKey], 77, `${modelName} uses ${expectedKey}`);
+      const otherKey = expectedKey === 'max_tokens' ? 'max_completion_tokens' : 'max_tokens';
+      t.equal(body[otherKey], undefined, `${modelName} omits ${otherKey}`);
+    }
+  });
   it('streams text and assembles result', async (t) => {
     const client = fakeClient([streamResponse(sseBytes(...openaiTextSse))]);
     const model = openai({

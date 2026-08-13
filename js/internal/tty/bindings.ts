@@ -58,6 +58,9 @@ const lib = (() => {
       ioctl: {
         parameters: ['i32', 'u64', 'buffer'],
         result: 'i32',
+        // ioctl(2) is variadic; without a variadic call interface, macOS
+        // arm64 passes the argument registers wrong and every request fails.
+        variadic: 2,
       },
     });
   } catch (_) {
@@ -286,18 +289,18 @@ export function exitMouseMode(): string {
  * ```
  */
 export function queryTerminalSize(): TerminalSize {
+  const parse = (winsize: ArrayBuffer): TerminalSize | null => {
+    const view = new DataView(winsize);
+    const rows = view.getUint16(0, true);
+    const cols = view.getUint16(2, true);
+    return rows > 0 && cols > 0 ? { width: cols, height: rows } : null;
+  };
   if (lib !== null) {
     for (const fd of [1, 0]) {
       const winsize = new ArrayBuffer(8);
       if (Number(lib.symbols.ioctl(fd, BigInt(TIOCGWINSZ), winsize)) === 0) {
-        const view = new DataView(winsize);
-        const rows = view.getUint16(0, true);
-        const cols = view.getUint16(2, true);
-        if (rows > 0 && cols > 0)
-          return {
-            width: cols,
-            height: rows,
-          };
+        const size = parse(winsize);
+        if (size) return size;
       }
     }
   }

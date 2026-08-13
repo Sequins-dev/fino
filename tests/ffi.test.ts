@@ -329,3 +329,23 @@ describe('usizeBig / isizeBig return types', () => {
     t.equal(n, 5n, 'strlen("hello") === 5n');
   });
 });
+describe('variadic calls', () => {
+  it('passes variadic arguments through a variadic call interface', (t) => {
+    // snprintf(char *, size_t, const char *, ...) — without `variadic`, the
+    // arm64 ABI passes these arguments in the wrong place and the formatted
+    // output is garbage. This is the ABI that terminal-size ioctl() depends
+    // on, so a regression here silently breaks TUI sizing.
+    const lib = dlopen(null, {
+      snprintf: {
+        parameters: ['buffer', 'usize', 'buffer', 'i32', 'i32'],
+        result: 'i32',
+        variadic: 3,
+      },
+    });
+    const out = new Uint8Array(64);
+    const format = new TextEncoder().encode('%d-%d\0');
+    const written = Number(lib.symbols.snprintf(out, 64, format, 42, 7));
+    const text = new TextDecoder().decode(out.subarray(0, written));
+    t.equal(text, '42-7', 'variadic integers reach the callee in order');
+  });
+});

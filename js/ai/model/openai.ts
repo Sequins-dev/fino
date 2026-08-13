@@ -63,6 +63,13 @@ import {
 } from 'internal:ai/shared';
 import { HttpClient } from 'fino:net/http/client';
 const DEFAULT_MAX_TOKENS = 4096;
+// OpenAI's reasoning-era model families reject the legacy `max_tokens`
+// parameter and require `max_completion_tokens`. Older models and
+// OpenAI-compatible servers (vLLM, llama-server) still expect `max_tokens`,
+// so the choice keys off the model family.
+function requiresMaxCompletionTokens(model: string): boolean {
+  return /^(o\d|gpt-5)/i.test(model);
+}
 function mapFinishReason(raw: string): StopReason {
   switch (raw) {
     case 'stop':
@@ -168,7 +175,8 @@ function buildOpenAIRequest(
   }
   const body: Record<string, unknown> = {
     model: modelName,
-    max_tokens: req.maxTokens ?? maxTokens,
+    [requiresMaxCompletionTokens(modelName) ? 'max_completion_tokens' : 'max_tokens']:
+      req.maxTokens ?? maxTokens,
     messages,
     stream,
   };
