@@ -9,7 +9,9 @@
  *
  * V1 is terminal-only and POSIX-oriented. It includes raw keyboard input and
  * SGR mouse events for fullscreen apps, but it does not implement DOM/HTML
- * output, React hooks, or inline terminal regions.
+ * output or React hooks. Inline rendering — committed output in real
+ * scrollback below a pinned footer — is provided by `renderInline` (see
+ * `fino:tty/inline`, re-exported here).
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -51,6 +53,18 @@ import {
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
 export { h, Fragment, createSignal, batch };
+export {
+  renderInline,
+  withInlineApp,
+  composeInlineFrame,
+  type InlineApp,
+  type InlineFrame,
+  type InlineOptions,
+  type InlineComposeState,
+  type InlineComposeOps,
+  type OverlayHandle,
+  type OverlayOptions,
+} from './inline.ts';
 type Direction = 'row' | 'column';
 type Align = 'start' | 'center' | 'end';
 type TuiKind = 'box' | 'text' | 'spacer' | 'input' | 'button' | 'list' | 'scrollview';
@@ -405,9 +419,22 @@ export class TuiInput {
    * copy text, at the cost of in-app mouse interaction.
    */
   setMouse(enabled: boolean): void {
-    if (this.#closed || enabled === this.#mouse) return;
+    const sequence = this.takeMouse(enabled);
+    if (sequence !== '') void writeStdout(sequence);
+  }
+  /**
+   * Flip mouse reporting state and return the escape sequence that enacts it,
+   * without writing anything.
+   *
+   * Hosts that serialize terminal output (the inline renderer's write chain)
+   * use this to compose the mode change into the same write as the rest of a
+   * transition, so it cannot race ahead of it. Returns an empty string when
+   * the state did not change.
+   */
+  takeMouse(enabled: boolean): string {
+    if (this.#closed || enabled === this.#mouse) return '';
     this.#mouse = enabled;
-    void writeStdout(enabled ? enterMouseMode({ motion: this.#motion }) : exitMouseMode());
+    return enabled ? enterMouseMode({ motion: this.#motion }) : exitMouseMode();
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
@@ -523,11 +550,50 @@ function hasAnsi(text: string): boolean {
 function visibleLength(text: string): number {
   return Array.from(text.replace(ANSI_RE, '')).length;
 }
+/**
+ * Measure the visible width of a line in character cells, ignoring ANSI
+ * escape sequences.
+ *
+ * ```ts
+ * import { visibleWidth } from 'fino:tty/tui';
+ *
+ * visibleWidth('\x1b[1mbold\x1b[0m'); // 4
+ * ```
+ */
+export function visibleWidth(text: string): number {
+  return visibleLength(text);
+}
+/**
+ * Remove ANSI escape sequences, leaving only the visible characters.
+ *
+ * ```ts
+ * import { stripAnsi } from 'fino:tty/tui';
+ *
+ * stripAnsi('\x1b[36mcyan\x1b[0m'); // 'cyan'
+ * ```
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
+}
 function fit(text: string, width: number): string {
   const chars = Array.from(text);
   return chars.slice(0, width).join('').padEnd(width, ' ');
 }
-function fitAnsi(text: string, width: number): string {
+/**
+ * Clip a possibly-styled line to `width` visible cells and pad it to exactly
+ * that width.
+ *
+ * Escape sequences are preserved without counting toward the width, and the
+ * result always ends with an SGR reset before its padding so a truncated
+ * styled run never leaks color into whatever is painted after it.
+ *
+ * ```ts
+ * import { fitAnsi } from 'fino:tty/tui';
+ *
+ * fitAnsi('\x1b[32mhello world\x1b[0m', 5); // green 'hello', then reset
+ * ```
+ */
+export function fitAnsi(text: string, width: number): string {
   if (!hasAnsi(text)) return fit(text, width);
   // Clip by visible width, preserving escape sequences, and always close with
   // a reset: a styled line truncated mid-run must never leak its SGR state

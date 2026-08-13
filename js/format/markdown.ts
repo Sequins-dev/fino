@@ -1729,6 +1729,9 @@ export class MarkdownTerminalStream {
   #options: MarkdownTerminalOptions;
   #settled = 0;
   #lines: string[] = [];
+  #mode: 'render' | 'commit' | null = null;
+  #emitted = false;
+  #done = false;
   constructor(options: MarkdownTerminalOptions = {}) {
     this.#options = options;
   }
@@ -1738,12 +1741,71 @@ export class MarkdownTerminalStream {
    * `markdown` is the whole message, not just the newest delta.
    */
   render(markdown: string): string[] {
+    if (this.#mode === 'commit') {
+      throw new Error('render() cannot be used on a MarkdownTerminalStream after commit() or finish()');
+    }
+    this.#mode = 'render';
     const settled = this.#settled + settledMarkdownLength(markdown.slice(this.#settled));
     if (settled > this.#settled) {
       this.#lines = this.#join(this.#lines, this.#block(markdown.slice(this.#settled, settled)));
       this.#settled = settled;
     }
     return this.#join(this.#lines, this.#block(markdown.slice(this.#settled)));
+  }
+  /**
+   * Flush the lines that settled since the last `commit()`, plus a fresh
+   * render of the still-open tail.
+   *
+   * `markdown` is the whole message so far, as with `render()`. Returned
+   * `lines` are final: they carry their own leading blank separator, are
+   * never re-emitted, and are dropped from the stream's state so memory
+   * stays proportional to the open block rather than the whole message.
+   * Concatenating every `lines` array with the last `tail` reproduces what
+   * `render()` would return for the same input.
+   */
+  commit(markdown: string): { lines: string[]; tail: string[] } {
+    this.#enterCommit();
+    return {
+      lines: this.#flushSettled(markdown),
+      tail: this.#separated(this.#block(markdown.slice(this.#settled))),
+    };
+  }
+  /**
+   * Flush everything not yet committed — remaining settled lines and the
+   * final render of the open tail — and mark the stream done.
+   *
+   * Any later `render()`, `commit()`, or `finish()` call throws.
+   */
+  finish(markdown: string): string[] {
+    this.#enterCommit();
+    const lines = this.#flushSettled(markdown);
+    const tail = this.#separated(this.#block(markdown.slice(this.#settled)));
+    this.#done = true;
+    return [...lines, ...tail];
+  }
+  #enterCommit(): void {
+    if (this.#mode === 'render') {
+      throw new Error('commit() and finish() cannot be used on a MarkdownTerminalStream after render()');
+    }
+    if (this.#done) throw new Error('MarkdownTerminalStream is already finished');
+    this.#mode = 'commit';
+  }
+  #flushSettled(markdown: string): string[] {
+    const settled = this.#settled + settledMarkdownLength(markdown.slice(this.#settled));
+    if (settled <= this.#settled) return [];
+    const block = this.#block(markdown.slice(this.#settled, settled));
+    this.#settled = settled;
+    if (block.length === 0) return [];
+    const lines = this.#separated(block);
+    this.#emitted = true;
+    return lines;
+  }
+  // The blank separator between blocks belongs to the start of the later
+  // block: a commit whose block ends the message must not leave a dangling
+  // blank line, so concatenated commits + tail stay identical to render().
+  #separated(lines: string[]): string[] {
+    if (lines.length === 0 || !this.#emitted) return lines;
+    return ['', ...lines];
   }
   #block(markdown: string): string[] {
     const rendered = renderMarkdownTerminal(markdown, this.#options);

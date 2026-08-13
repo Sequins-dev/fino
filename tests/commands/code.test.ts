@@ -276,6 +276,49 @@ describe('fino:commands/code — engine', () => {
     t.equal(engine.threadId, thread, 'thread survives the mode switch');
     await engine.close();
   });
+
+  it('ends a thrown turn in error activity and clears it on the next turn', async (t) => {
+    const dir = tempDir();
+    const scripted = scriptModel([endTurn('first'), endTurn('recovered')]);
+    let turns = 0;
+    const model: Model = {
+      ...scripted,
+      stream(req: GenerateRequest): ModelStream {
+        turns++;
+        if (turns === 2) throw new Error('provider exploded');
+        return scripted.stream(req);
+      },
+    };
+    const activity: string[] = [];
+    const engine = await CodeEngine.create({
+      cwd: dir,
+      chatModel: model,
+      sessionDb: false,
+      transcriptsDir: false,
+      onActivity: (status) => activity.push(status),
+    });
+    const first = await engine.runTurn('start well');
+    t.equal(first.status, 'done', 'the first turn completes');
+    t.deepEqual(activity, ['working', 'idle'], 'a good turn still ends idle');
+
+    await t.rejects(() => engine.runTurn('break it'), /provider exploded/, 'the turn throws');
+    t.deepEqual(
+      activity,
+      ['working', 'idle', 'working', 'error'],
+      'a thrown turn settles in error',
+    );
+    t.equal(engine.activity, 'error', 'error state is sticky between turns');
+
+    const third = await engine.runTurn('try again');
+    t.equal(third.status, 'done', 'the next turn completes');
+    t.deepEqual(
+      activity,
+      ['working', 'idle', 'working', 'error', 'working', 'idle'],
+      'the next turn clears the error and ends idle',
+    );
+    t.equal(engine.activity, 'idle', 'engine agrees');
+    await engine.close();
+  });
 });
 function roleModel(parentTurns: StreamEvent[][], childTurns: StreamEvent[][]): Model {
   let parentIdx = 0;

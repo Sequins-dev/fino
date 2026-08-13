@@ -22,6 +22,16 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/code/prompt` | not yet benchmarked |
 | `fino:commands/code/engine` | not yet benchmarked |
 | `fino:commands/code/tui` | not yet benchmarked |
+| `fino:commands/code/ui/theme` | not yet benchmarked |
+| `fino:commands/code/ui/blocks` | not yet benchmarked |
+| `fino:commands/code/ui/stream` | not yet benchmarked |
+| `fino:commands/code/ui/activity` | not yet benchmarked |
+| `fino:commands/code/ui/approval` | not yet benchmarked |
+| `fino:commands/code/ui/history` | not yet benchmarked |
+| `fino:commands/code/ui/footer` | not yet benchmarked |
+| `fino:commands/code/ui/overlay` | not yet benchmarked |
+| `fino:commands/code/ui/views/session-manager` | not yet benchmarked |
+| `fino:commands/code/ui/views/model-picker` | not yet benchmarked |
 | `fino:commands/mcp` | not yet benchmarked |
 | `fino:ai/subagents` | not yet benchmarked |
 | `fino:commands/code/transcript` | not yet benchmarked |
@@ -52,6 +62,15 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui/web/state` | not yet benchmarked |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
+| `fino:tty/inline` | not yet benchmarked |
+| `fino:tty/components/pane` | not yet benchmarked |
+| `fino:tty/components/theme` | not yet benchmarked |
+| `fino:tty/components/text` | not yet benchmarked |
+| `fino:tty/components/spinner` | not yet benchmarked |
+| `fino:tty/components/box` | not yet benchmarked |
+| `fino:tty/components/list` | not yet benchmarked |
+| `fino:tty/components/composer` | not yet benchmarked |
+| `fino:tty/components/statusbar` | not yet benchmarked |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |

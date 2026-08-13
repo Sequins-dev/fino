@@ -6,6 +6,7 @@
  *   HARNESS_CHUNK       characters per streamed delta (default: 24)
  *   HARNESS_DELAY_MS    pause between deltas, to exercise streaming UI
  *   HARNESS_SUBAGENTS   number of sub-agents the first turn fans out to
+ *   HARNESS_APPROVAL    "1" scripts a gated write_file call (approval band)
  *   HARNESS_DIR         reuse a workspace directory, to exercise resume
  *   HARNESS_MODELS      size of a scripted model catalog for the picker
  */
@@ -82,10 +83,15 @@ function toolCall(id: string, name: string, args: unknown): StreamEvent[] {
 }
 
 const fanOut = Number(env.HARNESS_SUBAGENTS ?? '0');
+const gated = env.HARNESS_APPROVAL === '1';
 // The parent spawns N children, waits for them, then answers; each child
 // reports a summary and stops. Roles are told apart by the system prompt,
-// exactly as the delegation tests do.
+// exactly as the delegation tests do. HARNESS_APPROVAL scripts a gated
+// write_file call first, so the approval band can be exercised.
 const parentTurns: StreamEvent[][] = [
+  ...(gated
+    ? [toolCall('pa', 'write_file', { path: 'approved.txt', content: 'harness' })]
+    : []),
   ...Array.from({ length: fanOut }, (_, index) =>
     toolCall(`p${index}`, 'subagent_spawn', {
       task: `research part ${index + 1}`,

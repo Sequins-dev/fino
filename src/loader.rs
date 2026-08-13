@@ -157,6 +157,28 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/code/transcript", "commands/code/transcript"),
     source_builtin!("fino:commands/code/toolview", "commands/code/toolview"),
     source_builtin!("fino:commands/code/workspace", "commands/code/workspace"),
+    source_builtin!("fino:commands/code/ui/theme", "commands/code/ui/theme"),
+    source_builtin!("fino:commands/code/ui/blocks", "commands/code/ui/blocks"),
+    source_builtin!("fino:commands/code/ui/stream", "commands/code/ui/stream"),
+    source_builtin!(
+        "fino:commands/code/ui/activity",
+        "commands/code/ui/activity"
+    ),
+    source_builtin!(
+        "fino:commands/code/ui/approval",
+        "commands/code/ui/approval"
+    ),
+    source_builtin!("fino:commands/code/ui/history", "commands/code/ui/history"),
+    source_builtin!("fino:commands/code/ui/footer", "commands/code/ui/footer"),
+    source_builtin!("fino:commands/code/ui/overlay", "commands/code/ui/overlay"),
+    source_builtin!(
+        "fino:commands/code/ui/views/session-manager",
+        "commands/code/ui/views/session-manager"
+    ),
+    source_builtin!(
+        "fino:commands/code/ui/views/model-picker",
+        "commands/code/ui/views/model-picker"
+    ),
     source_builtin!("fino:commands/mcp", "commands/mcp"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
@@ -282,6 +304,15 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
     source_builtin!("fino:tty/tui", "tty/tui"),
+    source_builtin!("fino:tty/inline", "tty/inline"),
+    source_builtin!("fino:tty/components/pane", "tty/components/pane"),
+    source_builtin!("fino:tty/components/theme", "tty/components/theme"),
+    source_builtin!("fino:tty/components/text", "tty/components/text"),
+    source_builtin!("fino:tty/components/spinner", "tty/components/spinner"),
+    source_builtin!("fino:tty/components/box", "tty/components/box"),
+    source_builtin!("fino:tty/components/list", "tty/components/list"),
+    source_builtin!("fino:tty/components/composer", "tty/components/composer"),
+    source_builtin!("fino:tty/components/statusbar", "tty/components/statusbar"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(

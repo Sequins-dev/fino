@@ -226,6 +226,123 @@ export function enableAutoWrap(): string {
   return '\x1B[?7h';
 }
 /**
+ * Return the DECSTBM sequence that confines scrolling to rows `top..bottom`.
+ *
+ * Rows are 1-based and inclusive. While the region is set, newlines at row
+ * `bottom` scroll only rows `top..bottom` — rows evicted off `top` enter the
+ * terminal's scrollback when the region starts at row 1. Inline renderers use
+ * this transiently to push finalized lines into real scrollback while a footer
+ * stays pinned below the region. Always pair with {@link resetScrollRegion}
+ * within the same composed write.
+ *
+ * Side effect mandated by the DEC spec: setting margins homes the cursor to
+ * row 1, column 1. Never assume the cursor position after emitting this;
+ * follow it with an absolute {@link cursorTo}.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { setScrollRegion, resetScrollRegion, cursorTo } from 'internal:tty/bindings';
+ *
+ * await writeStdout(setScrollRegion(1, 20) + cursorTo(20) + '\r\nnew line' + resetScrollRegion());
+ * ```
+ */
+export function setScrollRegion(top: number, bottom: number): string {
+  return `\x1B[${top};${bottom}r`;
+}
+/**
+ * Return the DECSTBM reset sequence that restores full-screen scrolling.
+ *
+ * Undoes {@link setScrollRegion}. Like setting margins, resetting them homes
+ * the cursor to row 1, column 1 — follow with an absolute {@link cursorTo}.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { resetScrollRegion } from 'internal:tty/bindings';
+ *
+ * await writeStdout(resetScrollRegion());
+ * ```
+ */
+export function resetScrollRegion(): string {
+  return '\x1B[r';
+}
+/**
+ * Return the CUP sequence that moves the cursor to `row`, `column` (1-based).
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(5, 1) + 'painted at row 5');
+ * ```
+ */
+export function cursorTo(row: number, column: number = 1): string {
+  return `\x1B[${row};${column}H`;
+}
+/**
+ * Return the EL 0 sequence that erases from the cursor to the end of the line.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseToLineEnd } from 'internal:tty/bindings';
+ *
+ * await writeStdout('replacement text' + eraseToLineEnd());
+ * ```
+ */
+export function eraseToLineEnd(): string {
+  return '\x1B[K';
+}
+/**
+ * Return the EL 2 sequence that erases the entire current line.
+ *
+ * The cursor does not move; the row becomes blank cells.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo, eraseLine } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(3) + eraseLine());
+ * ```
+ */
+export function eraseLine(): string {
+  return '\x1B[2K';
+}
+/**
+ * Return the ED 0 sequence that erases from the cursor to the end of the screen.
+ *
+ * Clears the rest of the current row and every row below it, leaving rows above
+ * the cursor — and the terminal's scrollback — untouched. Inline renderers use
+ * this to clear only their footer zone on resize and exit instead of the
+ * scrollback-hostile full clear.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo, eraseBelow } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(21, 1) + eraseBelow());
+ * ```
+ */
+export function eraseBelow(): string {
+  return '\x1B[0J';
+}
+/**
+ * Return the DSR 6 sequence that asks the terminal to report the cursor position.
+ *
+ * The terminal replies on stdin with `CSI row;column R` (1-based). Emit this
+ * before starting a competing stdin reader, and read the reply with a timeout —
+ * not every terminal answers.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { queryCursorPosition } from 'internal:tty/bindings';
+ *
+ * await writeStdout(queryCursorPosition());
+ * // ... read `\x1B[{row};{col}R` from stdin ...
+ * ```
+ */
+export function queryCursorPosition(): string {
+  return '\x1B[6n';
+}
+/**
  * Return the ANSI sequences that enable SGR mouse reporting.
  *
  * Enables three private modes at once: `1000` (button press/release events),

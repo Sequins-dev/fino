@@ -49,8 +49,14 @@ export interface CodeSessionMeta {
   model?: string;
 }
 
-/** Coarse activity of a session for list indicators. */
-export type CodeSessionActivity = 'working' | 'waiting' | 'idle';
+/**
+ * Coarse activity of a session for list indicators.
+ *
+ * `done` is the workspace's own state, not the engine's: a turn that finished
+ * while the user was looking at another session stays `done` until
+ * `markSeen()` retires it, so the sidebar can flag unread results.
+ */
+export type CodeSessionActivity = 'working' | 'waiting' | 'idle' | 'error' | 'done';
 
 /**
  * Options for `CodeWorkspace.open()` — engine defaults applied to every
@@ -169,6 +175,50 @@ export class CodeWorkspace {
     return this.#activity.get(id) ?? 'idle';
   }
 
+  /**
+   * Retire a session's unread `done` or `error` flag once the user has looked
+   * at its result.
+   */
+  markSeen(id: string): void {
+    const current = this.#activity.get(id);
+    if (current !== 'done' && current !== 'error') return;
+    this.#activity.set(id, 'idle');
+    this.#notify();
+  }
+
+  /**
+   * What the other sessions need from the user, folded into one set of flags
+   * for a single indicator in the interface.
+   *
+   * `excludeId` drops the session the user is already looking at.
+   */
+  attentionSummary(excludeId?: string): {
+    input: boolean;
+    error: boolean;
+    done: boolean;
+    busy: boolean;
+  } {
+    const summary = { input: false, error: false, done: false, busy: false };
+    for (const meta of this.#sessions) {
+      if (meta.archived || meta.id === excludeId) continue;
+      switch (this.#activity.get(meta.id)) {
+        case 'waiting':
+          summary.input = true;
+          break;
+        case 'error':
+          summary.error = true;
+          break;
+        case 'done':
+          summary.done = true;
+          break;
+        case 'working':
+          summary.busy = true;
+          break;
+      }
+    }
+    return summary;
+  }
+
   /** The cached engine for an already-opened session, if any. */
   engineFor(id: string): CodeEngine | undefined {
     return this.#engines.get(id);
@@ -225,7 +275,8 @@ export class CodeWorkspace {
         void this.#persist();
       },
       onActivity: (status) => {
-        this.#activity.set(id, status);
+        const settled = status === 'idle' && this.#activity.get(id) === 'working';
+        this.#activity.set(id, settled ? 'done' : status);
         this.#touch(id);
       },
       onTurn: (input) => {

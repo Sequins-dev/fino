@@ -242,3 +242,160 @@ describe('fino:format/markdown — MarkdownTerminalStream', () => {
     );
   });
 });
+
+describe('fino:format/markdown — MarkdownTerminalStream commit/finish', () => {
+  const FULL = [
+    '# Title',
+    '',
+    'Intro paragraph with **bold** and `code`.',
+    '',
+    '```ts',
+    'const x: number = 1;',
+    'export function add(a: number, b: number): number {',
+    '  return a + b;',
+    '}',
+    '```',
+    '',
+    'Middle prose after the fence.',
+    '',
+    '- alpha',
+    '- beta',
+    '- gamma',
+    '',
+    'Between the list and the table.',
+    '',
+    '| a | b |',
+    '| --- | --- |',
+    '| 1 | 2 |',
+    '| 3 | 4 |',
+    '',
+    'Closing prose without trailing newline',
+  ].join('\n');
+
+  function commitInChunks(doc: string, sizes: number[]): string[] {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    const out: string[] = [];
+    let end = 0;
+    let step = 0;
+    while (end < doc.length) {
+      end = Math.min(doc.length, end + sizes[step % sizes.length]!);
+      step++;
+      if (end < doc.length) out.push(...stream.commit(doc.slice(0, end)).lines);
+    }
+    out.push(...stream.finish(doc));
+    return out;
+  }
+
+  it('concatenated commit lines plus finish equal a whole-text render', (t) => {
+    const expected = renderMarkdownTerminal(FULL, { width: 60 }).split('\n');
+    for (const sizes of [[1], [7], [3, 11, 5], [64], [FULL.length]]) {
+      t.deepEqual(
+        commitInChunks(FULL, sizes),
+        expected,
+        `chunk sizes ${JSON.stringify(sizes)} reproduce the whole render exactly once per line`,
+      );
+    }
+  });
+
+  it('commit lines plus current tail equal a whole-text render at every prefix', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    const committed: string[] = [];
+    for (let end = 1; end <= FULL.length; end++) {
+      const prefix = FULL.slice(0, end);
+      const { lines, tail } = stream.commit(prefix);
+      committed.push(...lines);
+      const expected = renderMarkdownTerminal(prefix, { width: 60 });
+      t.deepEqual(
+        [...committed, ...tail],
+        expected.length === 0 ? [] : expected.split('\n'),
+        `prefix of ${end} chars matches a whole render`,
+      );
+    }
+  });
+
+  it('returns empty lines when nothing new has settled', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60, color: false });
+    const text = '# A\n\nStill being written';
+    const first = stream.commit(text);
+    t.deepEqual(first.lines, ['# A'], 'heading settles on the first commit');
+    const second = stream.commit(text);
+    t.deepEqual(second.lines, [], 'no new settled content means no lines');
+    t.deepEqual(second.tail, ['', 'Still being written'], 'tail is still rendered');
+  });
+
+  it('emits the inter-block separator once, at the start of the later block', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60, color: false });
+    const first = stream.commit('# A\n\nPara.');
+    t.deepEqual(first.lines, ['# A'], 'first commit carries no leading separator');
+    t.deepEqual(first.tail, ['', 'Para.'], 'tail after committed content leads with the separator');
+    const second = stream.commit('# A\n\nPara.\n\nMore text.');
+    t.deepEqual(second.lines, ['', 'Para.'], 'later block leads with exactly one separator');
+    t.deepEqual(second.tail, ['', 'More text.'], 'open tail keeps its own separator');
+    t.deepEqual(stream.finish('# A\n\nPara.\n\nMore text.'), ['', 'More text.'], 'finish flushes only what remains');
+  });
+
+  it('keeps a single never-settling paragraph entirely in the tail', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 200, color: false });
+    const words = Array.from({ length: 20 }, (_, index) => `word${index}`).join(' ');
+    for (let end = 1; end < words.length; end += 9) {
+      const { lines } = stream.commit(words.slice(0, end));
+      t.deepEqual(lines, [], `nothing settles at ${end} chars`);
+    }
+    t.deepEqual(stream.finish(words), [words], 'finish flushes the whole paragraph');
+  });
+
+  it('keeps an unclosed fence entirely in the tail despite interior blank lines', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60, color: false });
+    const fence = '```text\nfirst\n\nsecond';
+    t.deepEqual(stream.commit(fence).lines, [], 'blank line inside a fence does not settle');
+    t.deepEqual(
+      stream.finish(fence),
+      renderMarkdownTerminal(fence, { width: 60, color: false }).split('\n'),
+      'finish renders the open fence',
+    );
+  });
+
+  it('finish on a fresh instance flushes everything in one call', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    t.deepEqual(
+      stream.finish(FULL),
+      renderMarkdownTerminal(FULL, { width: 60 }).split('\n'),
+      'single finish equals a whole render',
+    );
+  });
+
+  it('handles trailing content without a trailing newline', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60, color: false });
+    stream.commit('First.\n\nSecond.\n\ntail text');
+    t.deepEqual(stream.finish('First.\n\nSecond.\n\ntail text'), ['', 'tail text'], 'unterminated tail flushes on finish');
+  });
+
+  it('never re-emits a settled line across commits', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60, color: false });
+    const first = stream.commit('# A\n\nOne.\n\nTwo.');
+    t.ok(first.lines.includes('# A'), 'heading emitted by the first commit');
+    const second = stream.commit('# A\n\nOne.\n\nTwo.\n\nThree.');
+    t.ok(!second.lines.includes('# A'), 'heading is not emitted again');
+    t.ok(!second.lines.includes('One.'), 'first paragraph is not emitted again');
+    t.ok(!stream.finish('# A\n\nOne.\n\nTwo.\n\nThree.').includes('One.'), 'finish does not repeat settled lines');
+  });
+
+  it('rejects mixing render() with commit()/finish()', (t) => {
+    const rendered = new MarkdownTerminalStream({ width: 60 });
+    rendered.render('# A');
+    t.throws(() => rendered.commit('# A'), /after render/, 'commit after render throws');
+    t.throws(() => rendered.finish('# A'), /after render/, 'finish after render throws');
+
+    const committed = new MarkdownTerminalStream({ width: 60 });
+    committed.commit('# A');
+    t.throws(() => committed.render('# A'), /after commit/, 'render after commit throws');
+  });
+
+  it('rejects any call after finish()', (t) => {
+    const stream = new MarkdownTerminalStream({ width: 60 });
+    stream.finish('# A');
+    t.throws(() => stream.commit('# A\n\nMore'), /finished/, 'commit after finish throws');
+    t.throws(() => stream.finish('# A\n\nMore'), /finished/, 'finish after finish throws');
+    t.throws(() => stream.render('# A'), /commit/, 'render after finish throws');
+  });
+});

@@ -68,6 +68,16 @@ import { foldEventsToTranscript, SessionTranscript } from 'fino:commands/code/tr
 export type CodeMode = 'plan' | 'build' | 'auto';
 
 /**
+ * Coarse engine activity for session lists and sidebars.
+ *
+ * `error` is a sticky state: a turn that ended by throwing (or in a status
+ * other than `done`/`suspended`) stays in it until the next turn starts
+ * working. Aborted turns are `idle`, not `error` — cancelling is a normal
+ * outcome, not a failure to report.
+ */
+export type EngineActivity = 'working' | 'waiting' | 'idle' | 'error';
+
+/**
  * Options for `CodeEngine.create()`.
  */
 export interface CodeEngineOptions {
@@ -111,9 +121,9 @@ export interface CodeEngineOptions {
   /**
    * Observe coarse engine activity for session lists and sidebars:
    * `working` while a turn drives, `waiting` when suspended on an approval,
-   * `idle` between turns.
+   * `error` when a turn ended badly, `idle` between turns.
    */
-  onActivity?: (status: 'working' | 'waiting' | 'idle') => void;
+  onActivity?: (status: EngineActivity) => void;
   /**
    * Called with each user turn input before it runs — used by
    * `CodeWorkspace` to derive session titles and activity timestamps.
@@ -243,7 +253,7 @@ export class CodeEngine {
   #transcript?: SessionTranscript;
   #transcriptFold?: ReturnType<typeof foldEventsToTranscript>;
   #childFolds = new Map<string, ReturnType<typeof foldEventsToTranscript>>();
-  #activity: 'working' | 'waiting' | 'idle' = 'idle';
+  #activity: EngineActivity = 'idle';
   #turnStartedAt?: number;
   #reviewPrompted = new Set<string>();
   #subagentEventListener?: (id: string, ev: AgentEvent) => void;
@@ -655,7 +665,7 @@ export class CodeEngine {
     });
   }
 
-  #setActivity(activity: 'working' | 'waiting' | 'idle'): void {
+  #setActivity(activity: EngineActivity): void {
     if (this.#activity === activity) return;
     this.#activity = activity;
     try {
@@ -665,9 +675,15 @@ export class CodeEngine {
     }
   }
 
-  /** Coarse activity for session lists: working, waiting, or idle. */
-  get activity(): 'working' | 'waiting' | 'idle' {
+  /** Coarse activity for session lists: working, waiting, error, or idle. */
+  get activity(): EngineActivity {
     return this.#activity;
+  }
+
+  // Cancelling a turn is a normal outcome, so only genuine failures leave the
+  // session showing an error for the session list to surface.
+  #settleActivity(err: unknown): void {
+    this.#setActivity((err as Error | undefined)?.name === 'AbortError' ? 'idle' : 'error');
   }
 
   #turnEvents(hooks: TurnHooks): ((ev: AgentEvent) => void) | undefined {
@@ -764,7 +780,9 @@ export class CodeEngine {
       });
       await this.#recordTurn(durationMs, turn.status);
     }
-    this.#setActivity(turn.status === 'suspended' ? 'waiting' : 'idle');
+    if (turn.status === 'suspended') this.#setActivity('waiting');
+    else if (turn.status === 'done' || turn.status === 'cancelled') this.#setActivity('idle');
+    else this.#setActivity('error');
     return turn;
   }
 
@@ -788,7 +806,7 @@ export class CodeEngine {
     try {
       return await this.#finishTurn(await this.#runOnThread(input, hooks), hooks);
     } catch (err) {
-      this.#setActivity('idle');
+      this.#settleActivity(err);
       throw err;
     }
   }
@@ -806,7 +824,7 @@ export class CodeEngine {
         hooks,
       );
     } catch (err) {
-      this.#setActivity('idle');
+      this.#settleActivity(err);
       throw err;
     }
   }
@@ -829,7 +847,7 @@ export class CodeEngine {
         hooks,
       );
     } catch (err) {
-      this.#setActivity('idle');
+      this.#settleActivity(err);
       throw err;
     }
   }

@@ -119,9 +119,67 @@ describe('fino:commands/code — workspace registry', () => {
     const engine = await workspace.createSession();
     t.equal(workspace.activity(engine.threadId), 'idle', 'idle before first turn');
     await engine.runTurn('go');
-    t.equal(workspace.activity(engine.threadId), 'idle', 'idle after turn completes');
-    t.equal(engine.activity, 'idle', 'engine agrees');
+    t.equal(workspace.activity(engine.threadId), 'done', 'unseen result after the turn completes');
+    t.equal(engine.activity, 'idle', 'the engine itself is idle');
     await workspace.close();
+  });
+
+  it('retires a done session with markSeen', async (t) => {
+    const workspace = await CodeWorkspace.open({
+      cwd: tempDir(),
+      chatModel: scriptModel([endTurn('quick')]),
+      transcriptsDir: false,
+      sessionDb: false,
+    });
+    const engine = await workspace.createSession();
+    await engine.runTurn('go');
+    t.equal(workspace.activity(engine.threadId), 'done', 'result is unseen');
+    let notifications = 0;
+    workspace.onChange(() => notifications++);
+    workspace.markSeen(engine.threadId);
+    t.equal(workspace.activity(engine.threadId), 'idle', 'seen result drops to idle');
+    t.equal(notifications, 1, 'markSeen notifies observers');
+    workspace.markSeen(engine.threadId);
+    t.equal(notifications, 1, 'markSeen on an idle session is a no-op');
+    await workspace.close();
+  });
+
+  it('summarises which other sessions need attention', async (t) => {
+    const workspace = await CodeWorkspace.open({
+      cwd: tempDir(),
+      chatModel: scriptModel([
+        toolCallTurn('call_1', 'write_file', JSON.stringify({ path: 'out.txt', content: 'x\n' })),
+      ]),
+      transcriptsDir: false,
+      sessionDb: false,
+    });
+    const waiting = await workspace.createSession();
+    const result = await waiting.runTurn('write it');
+    t.equal(result.status, 'suspended', 'the gated tool suspends the turn');
+    t.equal(workspace.activity(waiting.threadId), 'waiting', 'session waits on approval');
+
+    t.deepEqual(
+      workspace.attentionSummary(),
+      { input: true, error: false, done: false, busy: false },
+      'a suspended session asks for input',
+    );
+    t.deepEqual(
+      workspace.attentionSummary(waiting.threadId),
+      { input: false, error: false, done: false, busy: false },
+      'the excluded session does not count against itself',
+    );
+
+    // Closing releases the engines but keeps recorded activity, so archiving
+    // afterwards leaves an archived session with a live `waiting` entry —
+    // exactly the case the archived filter has to drop.
+    await workspace.close();
+    await workspace.archiveSession(waiting.threadId);
+    t.equal(workspace.activity(waiting.threadId), 'waiting', 'activity survived the close');
+    t.deepEqual(
+      workspace.attentionSummary(),
+      { input: false, error: false, done: false, busy: false },
+      'archived sessions never ask for attention',
+    );
   });
 });
 
