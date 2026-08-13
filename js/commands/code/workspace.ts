@@ -93,6 +93,7 @@ export class CodeWorkspace {
   #storeCloser?: () => Promise<void>;
   #sessions: CodeSessionMeta[] = [];
   #engines = new Map<string, CodeEngine>();
+  #draftModels = new Map<string, string>();
   #activity = new Map<string, CodeSessionActivity>();
   #listeners = new Set<() => void>();
 
@@ -208,18 +209,40 @@ export class CodeWorkspace {
       threadId: id,
       onModelChange: (modelId) => {
         const meta = this.#sessions.find((s) => s.id === id);
-        if (meta) {
-          meta.model = modelId;
-          void this.#persist();
+        if (!meta) {
+          // Chosen in a blank chat: held until the session registers.
+          this.#draftModels.set(id, modelId);
+          return;
         }
+        meta.model = modelId;
+        void this.#persist();
       },
       onActivity: (status) => {
         this.#activity.set(id, status);
         this.#touch(id);
       },
       onTurn: (input) => {
+        // A session earns its registry entry by being used. Registering at
+        // creation left an "untitled" row behind every time the app was
+        // opened and closed without a prompt.
         const meta = this.#sessions.find((s) => s.id === id);
-        if (meta && meta.title === 'untitled') {
+        if (!meta) {
+          const now = Date.now();
+          const model = this.#draftModels.get(id);
+          this.#draftModels.delete(id);
+          this.#sessions.push({
+            id,
+            title: deriveTitle(input),
+            createdAt: now,
+            updatedAt: now,
+            archived: false,
+            ...(model ? { model } : {}),
+          });
+          void this.#persist();
+          this.#notify();
+          return;
+        }
+        if (meta.title === 'untitled') {
           meta.title = deriveTitle(input);
           void this.#persist();
         }
@@ -232,13 +255,13 @@ export class CodeWorkspace {
 
   /**
    * Create a fresh session and return its engine.
+   *
+   * The session is not in the registry yet: it joins the list — and the
+   * durable store — when its first turn runs, so opening the app and closing
+   * it again leaves no empty session behind.
    */
   async createSession(): Promise<CodeEngine> {
     const id = `code-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const now = Date.now();
-    this.#sessions.push({ id, title: 'untitled', createdAt: now, updatedAt: now, archived: false });
-    await this.#persist();
-    this.#notify();
     return this.#openEngine(id);
   }
 

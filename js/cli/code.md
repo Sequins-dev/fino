@@ -72,11 +72,14 @@ autocomplete overlay of the available slash commands above the input
 
 While a turn runs, a spinner sits above the input showing what the agent is
 doing — the running tool, elapsed time, active sub-agents, queued messages —
-so a long pause reads as work rather than a freeze; when the turn ends it
-greys out and reports how long the turn took. Assistant messages are
-highlighted as they stream: markdown blocks render as they settle, and code
-inside a fence is syntax-highlighted before the closing fence arrives. A
-horizontal rule marks the start of each prose answer.
+so a long pause reads as work rather than a freeze. When the turn ends the
+indicator moves into the transcript as a greyed `✔ <duration>` line, so it
+scrolls with the conversation and stays put ahead of the next message; the
+same outcome is recorded in the JSONL mirror as a `turn_end` event with its
+`durationMs`. Assistant messages are highlighted as they stream: markdown
+blocks render as they settle, and code inside a fence is syntax-highlighted
+before the closing fence arrives. A horizontal rule marks the start of each
+prose answer.
 
 The status bar carries the session state as a glyph — `●` idle, `⟳` working,
 `▲` waiting on approval, `✗` failed — plus transient notes like a copy
@@ -97,15 +100,21 @@ accepted until it is decided, and concurrent requests queue.
 
 ## Sessions
 
-Every conversation is a registered session with a durable id and a title
-derived from its first prompt. `fino code sessions` lists them
-(`--archived` for the history list), `fino code --thread <id>` reopens one,
-and `--continue` resumes the most recent. Inside the TUI, `Ctrl+B` or
-clicking the `≡ <title>` button in the status bar opens the collapsible
-session sidebar: the project directory name, a `+ new session` button, then
-active sessions as bordered cards ordered by recent activity with `⟳`
-working / `▲` waiting / `·` idle indicators, and archived sessions in a
-scrollable history list below.
+Every conversation is a session with a durable id and a title derived from
+its first prompt. A session joins the registry when that first message runs,
+not when it is created, so opening the app and closing it again leaves no
+empty session behind. `fino code sessions` lists them (`--archived` for the
+history list), `fino code --thread <id>` reopens one, and `--continue`
+resumes the most recent.
+
+Inside the TUI, `Ctrl+B` or clicking the `≡ <title>` button in the status bar
+opens the collapsible session sidebar: the project directory name, a
+`+ new session` card, then sessions as bordered cards ordered by recent
+activity with `⟳` working / `▲` waiting / `·` idle indicators. Card borders
+are grey and turn white under the pointer. `+ new session` opens a blank
+chat rather than creating a session — it becomes one when you send its first
+message. A switcher along the bottom of the sidebar, level with the status
+bar, moves between the active and archived lists.
 Several sessions can run turns at once; `Ctrl+N`/`Ctrl+P` (or clicking)
 switches focus, and right-clicking a session opens a context menu to
 rename, archive, or delete it (delete removes the thread and its sub-agent

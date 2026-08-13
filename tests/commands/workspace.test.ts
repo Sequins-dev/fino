@@ -162,6 +162,11 @@ describe('fino:commands/code — JSONL transcripts', () => {
     );
     t.equal(lines[0]!.text, 'please write x.txt', 'user text recorded');
     t.equal(lines[3]!.text, 'wrote the file', 'assistant text folded from deltas');
+    t.equal(lines[4]!.status, 'done', 'turn end records the outcome');
+    t.ok(
+      typeof lines[4]!.durationMs === 'number' && lines[4]!.durationMs >= 0,
+      'turn end records how long the turn took',
+    );
   });
 
   it('writes per-child transcripts for sub-agent conversations', async (t) => {
@@ -213,6 +218,9 @@ describe('fino:commands/code — per-session model memory', () => {
       });
       const engine = await open1.createSession();
       const id = engine.threadId;
+      t.equal(open1.meta(id), undefined, 'an unused session stays out of the registry');
+      await engine.runTurn('remember my model');
+      t.equal(open1.meta(id)?.title, 'remember my model', 'the first turn registers it');
       await engine.setModel('claude-test-model');
       t.equal(open1.meta(id)?.model, 'claude-test-model', 'model recorded in the registry');
       await open1.close();

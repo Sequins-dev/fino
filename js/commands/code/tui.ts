@@ -65,6 +65,7 @@ const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
 const INVERSE = '\x1b[7m';
 const UNDERLINE = '\x1b[4m';
+const WHITE = '\x1b[97m';
 const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -96,7 +97,7 @@ const MODE_HELP: Record<CodeMode, string> = {
 };
 
 interface TranscriptEntry {
-  kind: 'user' | 'assistant' | 'tool' | 'notice';
+  kind: 'user' | 'assistant' | 'tool' | 'notice' | 'turn';
   text: string;
   done: boolean;
   toolState?: 'running' | 'ok' | 'error';
@@ -150,8 +151,6 @@ interface SessionUI {
   flash?: string;
   /** Wall-clock start of the running turn, for the activity indicator. */
   turnStartedAt?: number;
-  /** How long the last completed turn took, kept on screen after it ends. */
-  lastTurnMs?: number;
   /** What the agent is doing right now, shown beside the spinner. */
   activity: string;
   seenChildApprovals: Set<string>;
@@ -169,8 +168,7 @@ interface ApprovalItem {
 type SidebarRow =
   | { kind: 'action-new' }
   | { kind: 'project'; label: string }
-  | { kind: 'session'; id: string; archived: boolean }
-  | { kind: 'divider'; label: string };
+  | { kind: 'session'; id: string; archived: boolean };
 
 interface SidebarDisplay {
   rows: SidebarRow[];
@@ -295,7 +293,6 @@ function wrapPlain(text: string, width: number): string[] {
 function rowKey(row: SidebarRow): string {
   if (row.kind === 'action-new') return 'new';
   if (row.kind === 'project') return 'project';
-  if (row.kind === 'divider') return `div:${row.label}`;
   return `s:${row.id}`;
 }
 
@@ -335,6 +332,10 @@ export async function runCodeTui(
   let sidebarVisible = false;
   let selectedKey = '';
   let sidebarScroll = 0;
+  let sidebarTab: 'active' | 'archived' = 'active';
+  let sidebarTabHits: Array<{ start: number; end: number; key: string }> = [];
+  /** Session created but not yet registered: the blank chat behind `+`. */
+  let draftId: string | undefined;
   const approvalQueue: ApprovalItem[] = [];
   let app: TuiApp;
   let lastPaint = 0;
@@ -385,9 +386,12 @@ export async function runCodeTui(
     const inSidebar = sidebarVisible && x < SIDEBAR_WIDTH;
     const contentX = x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
     if (inSidebar) {
+      if (y === height - 1) {
+        return sidebarTabHits.find((hit) => x >= hit.start && x <= hit.end)?.key;
+      }
       const entry = sidebarDisplayCache.lineMap[sidebarScroll + y];
       const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
-      if (!row || row.kind === 'divider' || row.kind === 'project') return undefined;
+      if (!row || row.kind === 'project') return undefined;
       return `sidebar:${entry!.rowIndex}`;
     }
     if (y === height - 1) {
@@ -435,9 +439,11 @@ export async function runCodeTui(
   }
 
   /**
-   * The band between the transcript and the input: a live indicator while a
-   * turn runs, the finished turn's duration afterwards, blank before the
-   * first turn. Blank rows on either side keep it off both neighbours.
+   * The band between the transcript and the input, shown only while a turn
+   * runs. Once it ends the result moves into the transcript as a `turn`
+   * entry, so it scrolls with the conversation it belongs to and stays put
+   * ahead of the next message. Blank rows on either side keep it off both
+   * neighbours.
    */
   function activityLines(session: SessionUI, cw: number): string[] {
     if (session.busy) {
@@ -458,12 +464,11 @@ export async function runCodeTui(
         '',
       ];
     }
-    if (session.lastTurnMs === undefined) return [''];
-    return ['', `${DIM}✔ ${formatDuration(session.lastTurnMs)}${RESET}`, ''];
+    return [''];
   }
 
   function activityRows(session: SessionUI): number {
-    return session.busy || session.lastTurnMs !== undefined ? 3 : 1;
+    return session.busy ? 3 : 1;
   }
 
   /** Track the hovered target, repainting only when it actually changes. */
@@ -834,10 +839,9 @@ export async function runCodeTui(
       sessions.delete(menu.sessionId);
       await workspace.deleteSession(menu.sessionId);
       if (focusedSessionId === menu.sessionId) {
-        focusedSessionId = workspace.list()[0]?.id ?? '';
-        if (focusedSessionId && !sessions.has(focusedSessionId)) {
-          await focusSession(focusedSessionId);
-        }
+        const next = workspace.list()[0]?.id;
+        if (next) await focusSession(next);
+        else await focusDraft();
       }
     }
     redraw();
@@ -871,6 +875,8 @@ export async function runCodeTui(
       lines = wrapPlain(entry.text, cw - 2).map(
         (line, index) => (index === 0 ? `${CYAN}❯${RESET} ` : '  ') + line,
       );
+    } else if (entry.kind === 'turn') {
+      lines = [`${DIM}${clipVisible(entry.text, cw)}${RESET}`];
     } else if (entry.kind === 'assistant') {
       lines = assistantLines(entry, cw);
     } else if (entry.kind === 'tool') {
@@ -934,7 +940,9 @@ export async function runCodeTui(
       if (rows.length > 0) rows.push('');
       // A rule ahead of each prose answer marks where the agent starts
       // talking again after a run of tool calls.
-      if (entry.kind === 'assistant') rows.push(`${DIM}${'─'.repeat(Math.max(1, cw))}${RESET}`);
+      if (entry.kind === 'assistant') {
+        rows.push(`${DIM}${'─'.repeat(Math.max(1, cw))}${RESET}`, '');
+      }
       if (entry.kind === 'tool') toolRows.set(rows.length, index);
       rows.push(...entryLines(entry, cw, hover === `tool:${index}`));
     }
@@ -1140,13 +1148,18 @@ export async function runCodeTui(
     return session;
   }
 
+  /** A session with no registry entry has not run a turn yet. */
+  function isDraft(id: string): boolean {
+    return workspace.meta(id) === undefined;
+  }
+
   function sessionTitle(id: string): string {
-    return workspace.meta(id)?.title ?? id;
+    return workspace.meta(id)?.title ?? 'new session';
   }
 
   async function focusSession(id: string, viewId = 'main'): Promise<void> {
     focusedSessionId = id;
-    selectedKey = viewId === 'main' ? `s:${id}` : selectedKey;
+    selectedKey = viewId === 'main' ? (isDraft(id) ? 'new' : `s:${id}`) : selectedKey;
     if (!sessions.has(id)) {
       const engine = await workspace.openSession(id);
       attachSession(engine);
@@ -1195,7 +1208,6 @@ export async function runCodeTui(
     session.state = 'working';
     session.flash = undefined;
     session.turnStartedAt = Date.now();
-    session.lastTurnMs = undefined;
     session.activity = 'thinking';
     session.abort = new AbortController();
     syncSpinner();
@@ -1254,7 +1266,11 @@ export async function runCodeTui(
     } finally {
       session.busy = false;
       session.abort = undefined;
-      session.lastTurnMs = Date.now() - (session.turnStartedAt ?? Date.now());
+      main.entries.push({
+        kind: 'turn',
+        text: `✔ ${formatDuration(Date.now() - (session.turnStartedAt ?? Date.now()))}`,
+        done: true,
+      });
       session.turnStartedAt = undefined;
       session.activity = '';
       syncSpinner();
@@ -1281,15 +1297,10 @@ export async function runCodeTui(
   function sidebarRows(): SidebarRow[] {
     const rows: SidebarRow[] = [
       { kind: 'project', label: basename(workspace.cwd).toString() || workspace.cwd },
-      { kind: 'action-new' },
     ];
-    for (const meta of workspace.list()) {
-      rows.push({ kind: 'session', id: meta.id, archived: false });
-    }
-    const archived = workspace.list({ archived: true });
-    if (archived.length > 0) {
-      rows.push({ kind: 'divider', label: 'archived' });
-      for (const meta of archived) rows.push({ kind: 'session', id: meta.id, archived: true });
+    if (sidebarTab === 'active') rows.push({ kind: 'action-new' });
+    for (const meta of workspace.list({ archived: sidebarTab === 'archived' })) {
+      rows.push({ kind: 'session', id: meta.id, archived: sidebarTab === 'archived' });
     }
     return rows;
   }
@@ -1317,47 +1328,72 @@ export async function runCodeTui(
       const row = rows[rowIndex]!;
       const selected = rowKey(row) === selectedKey;
       const hovered = hover === `sidebar:${rowIndex}`;
-      const emit = (line: string, first: boolean, dim = false): void => {
-        const padded = dim ? `${DIM}${padVisible(line, w)}${RESET}` : padVisible(line, w);
-        // The selected row is already inverse, so hover has to add the
-        // underline on top of it or it would read as no feedback at all.
-        lines.push(
-          selected
-            ? `${INVERSE}${hovered ? UNDERLINE : ''}${padded}${RESET}`
-            : hovered
-              ? `${UNDERLINE}${padded}${RESET}`
-              : padded,
-        );
+      const push = (line: string, first = false): void => {
+        lines.push(line);
         lineMap.push({ rowIndex, first });
       };
       if (row.kind === 'project') {
-        lines.push(`${BOLD}${padVisible(` ${clipVisible(row.label, w - 2)}`, w)}${RESET}`);
-        lineMap.push({ rowIndex, first: true });
+        push(padVisible('', w), true);
+        push(`${BOLD}${padVisible(`  ${clipVisible(row.label, w - 4)}`, w)}${RESET}`);
+        push(padVisible('', w));
         continue;
       }
-      if (row.kind === 'action-new') {
-        const label = padVisible(`${selected ? '+' : `${GREEN}+${RESET}`} new session`, w - 2);
-        emit(`${label}${selected ? '«' : `${DIM}«${RESET}`} `, true);
-        continue;
-      }
-      if (row.kind === 'divider') {
-        lines.push(`${DIM}${padVisible(`— ${row.label} —`, w)}${RESET}`);
-        lineMap.push({ rowIndex, first: true });
-        continue;
-      }
-      // Each session is a bordered card: the border separates neighbours and
-      // gives hover and selection a target the size of the whole entry.
-      const indicator = selected ? sessionGlyph(row.id) : sessionIndicator(row.id);
-      const titleLines = wrapPlain(sessionTitle(row.id), w - 6).slice(0, SESSION_TITLE_LINES);
+      // Every entry is a bordered card, so the list reads as separated items
+      // and hover has a target the size of the whole entry. Hover recolors
+      // the border rather than restyling the card, which would fight with the
+      // selection highlight.
+      const border = selected || hovered ? WHITE : DIM;
       const dim = row.archived && !selected;
-      emit(`┌${'─'.repeat(w - 2)}┐`, true, dim);
+      const inner = (line: string): string => {
+        const body = padVisible(line, w - 4);
+        return `${border}│${RESET}${selected ? INVERSE : dim ? DIM : ''} ${body} ${RESET}${border}│${RESET}`;
+      };
+      const titleLines =
+        row.kind === 'action-new'
+          ? ['new session']
+          : wrapPlain(sessionTitle(row.id), w - 6).slice(0, SESSION_TITLE_LINES);
+      const indicator =
+        row.kind === 'action-new'
+          ? selected
+            ? '+'
+            : `${GREEN}+${RESET}`
+          : selected
+            ? sessionGlyph(row.id)
+            : sessionIndicator(row.id);
+      push(`${border}┌${'─'.repeat(w - 2)}┐${RESET}`, true);
       for (let i = 0; i < titleLines.length; i++) {
-        const prefix = i === 0 ? `${indicator} ` : '  ';
-        emit(`│ ${padVisible(`${prefix}${titleLines[i]}`, w - 4)} │`, false, dim);
+        push(inner(`${i === 0 ? `${indicator} ` : '  '}${titleLines[i]}`));
       }
-      emit(`└${'─'.repeat(w - 2)}┘`, false, dim);
+      push(`${border}└${'─'.repeat(w - 2)}┘${RESET}`);
     }
     return { rows, lines, lineMap };
+  }
+
+  /**
+   * The sidebar's bottom row: which list is showing, level with the status
+   * bar so the two read as one footer.
+   */
+  function sidebarTabLine(): string {
+    const counts = {
+      active: workspace.list().length,
+      archived: workspace.list({ archived: true }).length,
+    };
+    sidebarTabHits = [];
+    let line = '';
+    let column = 0;
+    const tab = (name: 'active' | 'archived'): void => {
+      const text = ` ${name} ${counts[name]} `;
+      sidebarTabHits.push({ start: column, end: column + text.length - 1, key: `tab:${name}` });
+      const style =
+        sidebarTab === name ? INVERSE : hover === `tab:${name}` ? `${WHITE}${UNDERLINE}` : DIM;
+      line += `${style}${text}${RESET}`;
+      column += text.length;
+    };
+    tab('active');
+    line += `${DIM}│${RESET}`;
+    column += 1;
+    tab('archived');
+    return padVisible(line, SIDEBAR_WIDTH);
   }
 
   function selectedRowIndex(display: SidebarDisplay): number {
@@ -1371,23 +1407,38 @@ export async function runCodeTui(
       (entry) => entry.rowIndex === rowIndex && entry.first,
     );
     if (firstLine < 0) return;
+    const listRows = Math.max(1, height - 1);
     if (firstLine < sidebarScroll) sidebarScroll = firstLine;
-    if (firstLine >= sidebarScroll + height) sidebarScroll = firstLine - height + 1;
+    if (firstLine >= sidebarScroll + listRows) sidebarScroll = firstLine - listRows + 1;
   }
 
   function focusSidebarRow(row: SidebarRow): void {
-    if (row.kind === 'divider' || row.kind === 'project') return;
+    if (row.kind === 'project') return;
     selectedKey = rowKey(row);
     if (row.kind === 'action-new') {
-      void workspace.createSession().then((engine) => {
-        attachSession(engine);
-        focusedSessionId = engine.threadId;
-        selectedKey = `s:${engine.threadId}`;
-        redraw();
-      });
+      void focusDraft();
       return;
     }
     void focusSession(row.id, 'main');
+  }
+
+  /**
+   * Show the blank chat behind `+ new session`.
+   *
+   * The session exists but stays out of the registry until its first message,
+   * so opening the app — or clicking `+` and changing your mind — leaves no
+   * empty session behind. One draft is enough: clicking `+` again returns to
+   * the same blank chat.
+   */
+  async function focusDraft(): Promise<void> {
+    if (draftId === undefined || !isDraft(draftId)) {
+      const engine = await workspace.createSession();
+      draftId = engine.threadId;
+      attachSession(engine);
+    }
+    await focusSession(draftId, 'main');
+    selectedKey = 'new';
+    redraw();
   }
 
   // --- rendering -------------------------------------------------------
@@ -1690,11 +1741,14 @@ export async function runCodeTui(
     sidebarDisplayCache = buildSidebarDisplay();
     ensureSelectedVisible(sidebarDisplayCache);
     const lines: string[] = [];
-    for (let i = 0; i < height; i++) {
+    // The last sidebar row is the list switcher, level with the status bar.
+    const listRows = Math.max(1, height - 1);
+    for (let i = 0; i < listRows; i++) {
       const lineIndex = sidebarScroll + i;
       const cell = sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
       lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
     }
+    lines.push(`${sidebarTabLine()}${DIM}│${RESET}${content[listRows] ?? ''}`);
     lastFrameLines = lines;
     const painted = selection ? highlightSelection(lines, selection) : lines;
     return h(Box, { direction: 'column', gap: 0 }, ...painted.map((line) => h(Text, null, line)));
@@ -1787,13 +1841,9 @@ export async function runCodeTui(
         notice(session, meta?.archived ? 'session unarchived' : 'session archived');
         break;
       }
-      case 'new': {
-        const engine = await workspace.createSession();
-        attachSession(engine);
-        focusedSessionId = engine.threadId;
-        selectedKey = `s:${engine.threadId}`;
+      case 'new':
+        await focusDraft();
         break;
-      }
       case 'debug': {
         // Hover, drag-selection and clicks each depend on a different mouse
         // reporting mode, so the counts say which ones this terminal sends:
@@ -1925,7 +1975,7 @@ export async function runCodeTui(
           redraw();
           return;
         }
-        if (event.y === height - 1) {
+        if (event.y === height - 1 && !inSidebar) {
           const hit = statusHits.find((h) => contentX >= h.start && contentX <= h.end);
           if (hit?.key === 'status:sidebar') {
             sidebarVisible = !sidebarVisible;
@@ -1955,14 +2005,18 @@ export async function runCodeTui(
           return;
         }
         if (inSidebar) {
+          if (event.y === height - 1) {
+            const hit = sidebarTabHits.find((h) => event.x >= h.start && event.x <= h.end);
+            if (hit) {
+              sidebarTab = hit.key === 'tab:archived' ? 'archived' : 'active';
+              sidebarScroll = 0;
+              redraw();
+            }
+            return;
+          }
           const entry = sidebarDisplayCache.lineMap[sidebarScroll + event.y];
           const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
           if (!row) return;
-          if (row.kind === 'action-new' && event.x >= SIDEBAR_WIDTH - 2) {
-            sidebarVisible = false;
-            redraw();
-            return;
-          }
           focusSidebarRow(row);
           redraw();
           return;
@@ -2037,7 +2091,7 @@ export async function runCodeTui(
           return;
         }
         if (inSidebar) {
-          const max = Math.max(0, sidebarDisplayCache.lines.length - height);
+          const max = Math.max(0, sidebarDisplayCache.lines.length - Math.max(1, height - 1));
           sidebarScroll = Math.max(
             0,
             Math.min(max, sidebarScroll + (event.button === 'wheel-up' ? -3 : 3)),
@@ -2136,14 +2190,10 @@ export async function runCodeTui(
       let index = selectedRowIndex(display);
       if (index < 0) index = 0;
       let next = index + (event.key === 'p' ? -1 : 1);
-      while (next >= 0 && next < rows.length && rows[next]!.kind === 'divider') {
+      while (next >= 0 && next < rows.length && rows[next]!.kind === 'project') {
         next += event.key === 'p' ? -1 : 1;
       }
-      if (next >= 0 && next < rows.length) {
-        const row = rows[next]!;
-        selectedKey = rowKey(row);
-        if (row.kind !== 'action-new') focusSidebarRow(row);
-      }
+      if (next >= 0 && next < rows.length) focusSidebarRow(rows[next]!);
       redraw();
       return;
     }
@@ -2180,13 +2230,7 @@ export async function runCodeTui(
       return;
     }
     if (!session) {
-      if (event.text === '/' || event.key === 'enter') {
-        const engine = await workspace.createSession();
-        attachSession(engine);
-        focusedSessionId = engine.threadId;
-        selectedKey = `s:${engine.threadId}`;
-        redraw();
-      }
+      if (event.text === '/' || event.key === 'enter') await focusDraft();
       return;
     }
     if (event.key === 'escape') {
@@ -2261,7 +2305,15 @@ export async function runCodeTui(
     }
   }
 
-  workspace.onChange(() => redraw());
+  workspace.onChange(() => {
+    // The draft joins the registry when its first message runs; the sidebar
+    // selection follows it from the `+` card to its own row.
+    if (draftId !== undefined && !isDraft(draftId)) {
+      if (selectedKey === 'new' && focusedSessionId === draftId) selectedKey = `s:${draftId}`;
+      draftId = undefined;
+    }
+    redraw();
+  });
 
   const initialId = opts.sessionId ?? workspace.list()[0]?.id;
   let initialSession: SessionUI | undefined;
@@ -2269,7 +2321,8 @@ export async function runCodeTui(
     const engine = workspace.engineFor(initialId) ?? (await workspace.openSession(initialId));
     initialSession = attachSession(engine);
     focusedSessionId = initialSession.id;
-    selectedKey = `s:${initialSession.id}`;
+    selectedKey = isDraft(initialSession.id) ? 'new' : `s:${initialSession.id}`;
+    if (isDraft(initialSession.id)) draftId = initialSession.id;
     // Replay the thread before the first render pass so a resumed session
     // opens on its transcript rather than an empty view.
     await initialSession.historyReady;

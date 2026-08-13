@@ -195,6 +195,7 @@ export class CodeEngine {
   #transcriptFold?: ReturnType<typeof foldEventsToTranscript>;
   #childFolds = new Map<string, ReturnType<typeof foldEventsToTranscript>>();
   #activity: 'working' | 'waiting' | 'idle' = 'idle';
+  #turnStartedAt?: number;
   #reviewPrompted = new Set<string>();
   #subagentEventListener?: (id: string, ev: AgentEvent) => void;
   #subagentStatusListener?: (id: string, state: SubagentState) => void;
@@ -676,7 +677,14 @@ export class CodeEngine {
     const turn = this.#toTurn(result);
     this.#transcriptFold?.flush();
     if (turn.status !== 'suspended') {
-      this.#transcript?.parent().append({ type: 'turn_end', status: turn.status });
+      // Duration spans the whole turn, sub-agent settlement included, which
+      // is what the interface reports when the turn finishes.
+      this.#transcript?.parent().append({
+        type: 'turn_end',
+        status: turn.status,
+        durationMs: Date.now() - (this.#turnStartedAt ?? Date.now()),
+      });
+      this.#turnStartedAt = undefined;
     }
     this.#setActivity(turn.status === 'suspended' ? 'waiting' : 'idle');
     return turn;
@@ -693,6 +701,7 @@ export class CodeEngine {
    * with a settlement summary for review.
    */
   async runTurn(input: string, hooks: TurnHooks = {}): Promise<TurnResult> {
+    this.#turnStartedAt = Date.now();
     try {
       this.#opts.onTurn?.(input);
     } catch (_) {
