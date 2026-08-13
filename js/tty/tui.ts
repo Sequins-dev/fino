@@ -46,6 +46,7 @@ import {
   exitMouseMode,
   hideCursor,
   onResize,
+  setClipboard,
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
@@ -272,14 +273,20 @@ function decodeCsi(sequence: string): TuiEvent | null {
           ? 'middle'
           : base === 2
             ? 'right'
-            : 'left';
+            : 'none';
+    // Button bits 3 with the motion bit set is pointer movement with nothing
+    // held (mode 1003 hover); without the motion bit it is a plain release.
     const action = wheel
       ? 'wheel'
-      : releaseMarker || base === 3
+      : releaseMarker
         ? 'release'
         : drag
-          ? 'drag'
-          : 'press';
+          ? base === 3
+            ? 'move'
+            : 'drag'
+          : base === 3
+            ? 'release'
+            : 'press';
     return {
       type: 'mouse',
       action,
@@ -779,6 +786,144 @@ function renderElement(node: VNode, width: number, height: number): string[] {
  * The returned string contains exactly `height` lines joined with `\n`, and
  * each line is padded or clipped to `width` cells.
  */
+/** A point in the terminal grid, in zero-based cell coordinates. */
+export interface SelectionPoint {
+  x: number;
+  y: number;
+}
+/**
+ * A text selection over rendered frame rows.
+ *
+ * `anchor` is where the drag started and `focus` where it currently is;
+ * either may come first on screen, so consumers should normalize with
+ * `normalizeSelection()` rather than assuming an order.
+ */
+export interface Selection {
+  anchor: SelectionPoint;
+  focus: SelectionPoint;
+}
+/**
+ * Order a selection's endpoints top-to-bottom, left-to-right.
+ *
+ * Returns the pair as `{ start, end }` so rendering and extraction can walk
+ * forward regardless of which direction the user dragged.
+ *
+ * ```ts no_run
+ * import { normalizeSelection } from 'fino:tty/tui';
+ *
+ * normalizeSelection({ anchor: { x: 8, y: 4 }, focus: { x: 2, y: 1 } });
+ * // { start: { x: 2, y: 1 }, end: { x: 8, y: 4 } }
+ * ```
+ */
+export function normalizeSelection(selection: Selection): {
+  start: SelectionPoint;
+  end: SelectionPoint;
+} {
+  const { anchor, focus } = selection;
+  const forward = focus.y > anchor.y || (focus.y === anchor.y && focus.x >= anchor.x);
+  return forward ? { start: anchor, end: focus } : { start: focus, end: anchor };
+}
+/** Whether a selection covers at least one cell. */
+export function selectionIsEmpty(selection: Selection): boolean {
+  return selection.anchor.x === selection.focus.x && selection.anchor.y === selection.focus.y;
+}
+function visibleCells(line: string): string[] {
+  const cells: string[] = [];
+  let index = 0;
+  while (index < line.length) {
+    ANSI_RE.lastIndex = index;
+    const match = ANSI_RE.exec(line);
+    if (match && match.index === index) {
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(line.codePointAt(index)!);
+    cells.push(ch);
+    index += ch.length;
+  }
+  return cells;
+}
+function selectionSpan(
+  row: number,
+  start: SelectionPoint,
+  end: SelectionPoint,
+  width: number,
+): { from: number; to: number } | null {
+  if (row < start.y || row > end.y) return null;
+  const from = row === start.y ? start.x : 0;
+  const to = row === end.y ? end.x : width;
+  return to <= from ? null : { from, to };
+}
+/**
+ * Extract the plain text covered by a selection from rendered frame rows.
+ *
+ * Styling is stripped and trailing padding on each row is trimmed, so the
+ * result is what the user visually selected rather than the frame's
+ * fixed-width cells. Rows are joined with newlines.
+ *
+ * ```ts no_run
+ * import { selectionText } from 'fino:tty/tui';
+ *
+ * const copied = selectionText(frame.split('\n'), selection);
+ * ```
+ */
+export function selectionText(lines: string[], selection: Selection): string {
+  const { start, end } = normalizeSelection(selection);
+  const out: string[] = [];
+  for (let row = start.y; row <= end.y; row++) {
+    const line = lines[row];
+    if (line === undefined) continue;
+    const cells = visibleCells(line);
+    const span = selectionSpan(row, start, end, cells.length);
+    if (!span) continue;
+    out.push(cells.slice(span.from, span.to).join('').replace(/\s+$/, ''));
+  }
+  return out.join('\n');
+}
+/**
+ * Overlay a selection highlight onto rendered frame rows.
+ *
+ * Selected cells are re-emitted inverted, with the surrounding styling of the
+ * row preserved on either side. Rows outside the selection are returned
+ * unchanged, so this is safe to apply to a whole frame every paint.
+ *
+ * ```ts no_run
+ * import { highlightSelection } from 'fino:tty/tui';
+ *
+ * const painted = highlightSelection(rows, selection);
+ * ```
+ */
+export function highlightSelection(lines: string[], selection: Selection): string[] {
+  if (selectionIsEmpty(selection)) return lines;
+  const { start, end } = normalizeSelection(selection);
+  return lines.map((line, row) => {
+    const cells = visibleCells(line);
+    const span = selectionSpan(row, start, end, cells.length);
+    if (!span) return line;
+    const before = cells.slice(0, span.from).join('');
+    const selected = cells.slice(span.from, span.to).join('');
+    const after = cells.slice(span.to).join('');
+    // Rebuilding from visible cells drops the row's own styling inside the
+    // selection, which is the point: the highlight must read uniformly.
+    return `${before}\x1b[7m${selected}\x1b[0m${after}`;
+  });
+}
+/**
+ * Return the terminal sequence that copies `text` to the system clipboard.
+ *
+ * Uses OSC 52, so the terminal emulator performs the copy and it works over
+ * SSH and inside multiplexers. Write the result to stdout.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { copyToClipboard } from 'fino:tty/tui';
+ *
+ * await writeStdout(copyToClipboard(selected));
+ * ```
+ */
+export function copyToClipboard(text: string): string {
+  return setClipboard(text);
+}
 export function renderFrame(element: VNode, options: RenderFrameOptions): string {
   const width = Math.max(0, Math.floor(options.width));
   const height = Math.max(0, Math.floor(options.height));

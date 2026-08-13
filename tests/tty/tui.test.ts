@@ -217,7 +217,7 @@ describe('fino:tty/tui input decoding', () => {
       'left press uses zero-based coordinates',
     );
     t.deepEqual(
-      decodeTuiInput(new TextEncoder().encode('\x1B[<35;12;5M')),
+      decodeTuiInput(new TextEncoder().encode('\x1B[<0;12;5m')),
       [
         {
           type: 'mouse',
@@ -230,7 +230,39 @@ describe('fino:tty/tui input decoding', () => {
           shift: false,
         },
       ],
-      'release event',
+      'SGR release uses the lowercase terminator',
+    );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B[<35;12;5M')),
+      [
+        {
+          type: 'mouse',
+          action: 'move',
+          button: 'none',
+          x: 11,
+          y: 4,
+          ctrl: false,
+          alt: false,
+          shift: false,
+        },
+      ],
+      'motion with no button held is a hover move, not a release',
+    );
+    t.deepEqual(
+      decodeTuiInput(new TextEncoder().encode('\x1B[<32;12;5M')),
+      [
+        {
+          type: 'mouse',
+          action: 'drag',
+          button: 'left',
+          x: 11,
+          y: 4,
+          ctrl: false,
+          alt: false,
+          shift: false,
+        },
+      ],
+      'motion with a button held is a drag',
     );
     t.deepEqual(
       decodeTuiInput(new TextEncoder().encode('\x1B[<64;2;3M')),
@@ -298,5 +330,76 @@ describe('fino:tty/tui mouse modes', () => {
     t.ok(enterMouseMode({ motion: true }).includes('\x1B[?1003h'), 'motion mode opt-in');
     t.ok(enterMouseMode().includes('\x1B[?1006h'), 'SGR coordinates always requested');
     t.ok(exitMouseMode().includes('\x1B[?1003l'), 'exit disables motion tracking');
+  });
+});
+describe('fino:tty/tui selection', () => {
+  it('normalizes endpoints regardless of drag direction', async (t) => {
+    const { normalizeSelection } = await import('fino:tty/tui');
+    const forward = normalizeSelection({ anchor: { x: 2, y: 1 }, focus: { x: 8, y: 4 } });
+    const backward = normalizeSelection({ anchor: { x: 8, y: 4 }, focus: { x: 2, y: 1 } });
+    t.deepEqual(forward, backward, 'both drag directions normalize the same');
+    t.deepEqual(forward.start, { x: 2, y: 1 }, 'earliest point first');
+  });
+
+  it('extracts plain text across rows, ignoring styling and padding', async (t) => {
+    const { selectionText } = await import('fino:tty/tui');
+    const rows = ['\x1b[31mhello world\x1b[0m   ', 'second line      ', 'third            '];
+    t.equal(
+      selectionText(rows, { anchor: { x: 6, y: 0 }, focus: { x: 6, y: 1 } }),
+      'world\nsecond',
+      'multi-row selection strips ANSI and trailing padding',
+    );
+    t.equal(
+      selectionText(rows, { anchor: { x: 0, y: 1 }, focus: { x: 6, y: 1 } }),
+      'second',
+      'single-row selection',
+    );
+  });
+
+  it('highlights only the selected cells', async (t) => {
+    const { highlightSelection } = await import('fino:tty/tui');
+    const rows = ['abcdef', 'ghijkl'];
+    const painted = highlightSelection(rows, { anchor: { x: 2, y: 0 }, focus: { x: 4, y: 0 } });
+    t.equal(painted[0], 'ab\x1b[7mcd\x1b[0mef', 'inverse wraps the selected span');
+    t.equal(painted[1], 'ghijkl', 'untouched rows unchanged');
+  });
+
+  it('treats a zero-width selection as empty', async (t) => {
+    const { selectionIsEmpty, highlightSelection } = await import('fino:tty/tui');
+    const empty = { anchor: { x: 3, y: 1 }, focus: { x: 3, y: 1 } };
+    t.equal(selectionIsEmpty(empty), true, 'same point is empty');
+    t.deepEqual(highlightSelection(['abc'], empty), ['abc'], 'empty selection paints nothing');
+  });
+
+  it('encodes clipboard writes as OSC 52', async (t) => {
+    const { copyToClipboard } = await import('fino:tty/tui');
+    const sequence = copyToClipboard('hi');
+    t.equal(sequence, `\x1B]52;c;${btoa('hi')}\x07`, 'base64 OSC 52 payload');
+  });
+});
+describe('fino:tty/tui signal-driven rendering', () => {
+  it('re-commits frames when an observed signal changes', async (t) => {
+    const { createRoot, createSignal } = await import('fino:ui');
+    const { frameSink } = await import('fino:tty/tui');
+    const count = createSignal(0);
+    const frames: string[] = [];
+    const sink = frameSink({ width: 10, height: 1 });
+    const root = createRoot(() => h(Text, null, `n=${count.get()}`), {
+      commit(tree) {
+        const frame = sink.commit(tree);
+        frames.push(frame);
+        return frame;
+      },
+    });
+    t.equal(frames.length, 1, 'first pass renders immediately');
+    t.equal(frames[0]!.trimEnd(), 'n=0', 'initial value painted');
+    count.set(1);
+    t.equal(frames.length, 2, 'signal write re-renders without an imperative call');
+    t.equal(frames[1]!.trimEnd(), 'n=1', 'new value painted');
+    count.set(1);
+    t.equal(frames.length, 2, 'writing the same value does not re-render');
+    root.dispose();
+    count.set(2);
+    t.equal(frames.length, 2, 'disposed root stops observing');
   });
 });

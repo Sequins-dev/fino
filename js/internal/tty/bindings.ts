@@ -249,6 +249,30 @@ export function enterMouseMode(options: { motion?: boolean } = {}): string {
   return `\x1B[?1000h\x1B[?1002h${motion}\x1B[?1006h`;
 }
 /**
+ * Return the OSC 52 sequence that writes `text` to the system clipboard.
+ *
+ * OSC 52 asks the terminal emulator itself to set the clipboard, so it works
+ * over SSH and inside multiplexers where the application has no direct access
+ * to the host clipboard. Terminals that do not implement it ignore the
+ * sequence, and some (notably tmux and a few emulators) require the feature to
+ * be enabled in their configuration.
+ *
+ * The payload is base64-encoded UTF-8 as the protocol requires.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { setClipboard } from 'internal:tty/bindings';
+ *
+ * await writeStdout(setClipboard('copied from the TUI'));
+ * ```
+ */
+export function setClipboard(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `\x1B]52;c;${btoa(binary)}\x07`;
+}
+/**
  * Return the ANSI sequences that disable mouse reporting.
  *
  * Reverses the three modes enabled by {@link enterMouseMode}, in the opposite

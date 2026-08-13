@@ -34,8 +34,21 @@ import type { AgentEvent, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { SubagentState } from 'fino:ai/subagents';
 import type { ModelMessage } from 'fino:ai/model';
 import { renderMarkdownTerminal } from 'fino:format/markdown';
-import { h } from 'fino:ui';
-import { Box, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } from 'fino:tty/tui';
+import { createSignal, h } from 'fino:ui';
+import {
+  Box,
+  Text,
+  copyToClipboard,
+  highlightSelection,
+  measureTerminalSize,
+  render,
+  selectionIsEmpty,
+  selectionText,
+  type Selection,
+  type TuiApp,
+  type TuiEvent,
+} from 'fino:tty/tui';
+import { writeStdout } from 'fino:tty';
 import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
 import type { CodeWorkspace } from 'fino:commands/code/workspace';
 import { contentText, previewText } from 'fino:commands/code/transcript';
@@ -300,8 +313,14 @@ export async function runCodeTui(
   let queueTop = 0;
   let sidebarDisplayCache: SidebarDisplay = { rows: [], lines: [], lineMap: [] };
   let contextMenu: ContextMenuState | undefined;
-  let selectMode = false;
+  // The single source of truth the render thunk observes: every state
+  // mutation routes through redraw(), which bumps this and lets the fino:ui
+  // effect re-run composedView(). Nothing calls app.update().
+  const revision = createSignal(0);
   let hover: string | undefined;
+  let selection: Selection | undefined;
+  let selectionAnchor: { x: number; y: number } | undefined;
+  let lastFrameLines: string[] = [];
   let statusHits: Array<{ start: number; end: number; key: string }> = [];
   let menuHitRows: Array<{ row: number; index: number }> = [];
   let modelMenu: ModelMenuState | undefined;
@@ -1303,7 +1322,7 @@ export async function runCodeTui(
     const viewLabel = isMain ? '' : ` · ${session.viewNames.get(session.focusedView) ?? ''}`;
     const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
     const autoLabel = session.engine.auto ? ' · auto' : '';
-    const selectLabel = selectMode ? ' · SELECT (Ctrl+E)' : '';
+    const selectLabel = selection ? ' · SELECTION (Ctrl+E copies)' : '';
     const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
     // Build the bar from segments so clickable ones get hit ranges and a
     // hover highlight; inverse reads as a pressable control over the bar's
@@ -1334,7 +1353,9 @@ export async function runCodeTui(
     const session = focused();
     const content = contentLines(session);
     if (!sidebarVisible) {
-      return h(Box, { direction: 'column', gap: 0 }, ...content.map((line) => h(Text, null, line)));
+      lastFrameLines = content;
+      const painted = selection ? highlightSelection(content, selection) : content;
+      return h(Box, { direction: 'column', gap: 0 }, ...painted.map((line) => h(Text, null, line)));
     }
     sidebarDisplayCache = buildSidebarDisplay();
     ensureSelectedVisible(sidebarDisplayCache);
@@ -1344,15 +1365,19 @@ export async function runCodeTui(
       const cell = sidebarDisplayCache.lines[lineIndex] ?? ' '.repeat(SIDEBAR_WIDTH);
       lines.push(`${cell}${DIM}│${RESET}${content[i] ?? ''}`);
     }
-    return h(Box, { direction: 'column', gap: 0 }, ...lines.map((line) => h(Text, null, line)));
+    lastFrameLines = lines;
+    const painted = selection ? highlightSelection(lines, selection) : lines;
+    return h(Box, { direction: 'column', gap: 0 }, ...painted.map((line) => h(Text, null, line)));
   }
 
-  function paint(): void {
-    if (!app) return;
-    lastPaint = Date.now();
-    app.update(composedView());
-  }
-
+  /**
+   * Mark the interface dirty.
+   *
+   * The render thunk reads `revision`, so bumping it is what re-renders —
+   * there is no imperative paint call. Bumps are coalesced to the frame
+   * interval because streamed tokens arrive far faster than a terminal can
+   * usefully repaint.
+   */
   function redraw(): void {
     const elapsed = Date.now() - lastPaint;
     if (elapsed >= REDRAW_INTERVAL_MS) {
@@ -1360,13 +1385,15 @@ export async function runCodeTui(
         clearTimeout(paintTimer);
         paintTimer = undefined;
       }
-      paint();
+      lastPaint = Date.now();
+      revision.set(revision.get() + 1);
       return;
     }
     if (paintTimer === undefined) {
       paintTimer = setTimeout(() => {
         paintTimer = undefined;
-        paint();
+        lastPaint = Date.now();
+        revision.set(revision.get() + 1);
       }, REDRAW_INTERVAL_MS - elapsed);
     }
   }
@@ -1387,7 +1414,7 @@ export async function runCodeTui(
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
             'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
             'Transcript: click a tool call to expand its input/output (source and Markdown are formatted)',
-            'Ctrl+E — select mode: releases the mouse so you can select and copy text (Shift+drag also works in most terminals)',
+            'Drag over the transcript to select text; Ctrl+E copies the selection to the clipboard',
             'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
           ].join('\n'),
         );
@@ -1522,6 +1549,14 @@ export async function runCodeTui(
         return;
       }
       if (event.action === 'press' && event.button === 'left') {
+        if (selection) {
+          selection = undefined;
+          redraw();
+        }
+        // Arm a selection anchor for cells with no click action of their own;
+        // the drag handler promotes it to a real selection.
+        selectionAnchor =
+          hoverKeyAt(event.x, event.y) === undefined ? { x: event.x, y: event.y } : undefined;
         if (modelMenu) {
           if (!inSidebar && session) {
             const hit = modelMenuHitRows.find((r) => r.row === event.y);
@@ -1611,12 +1646,26 @@ export async function runCodeTui(
           }
         }
       }
-      if (event.action === 'move' || event.action === 'drag') {
+      if (event.action === 'drag') {
+        // A drag that began on inert content is a text selection.
+        if (selectionAnchor) {
+          selection = { anchor: selectionAnchor, focus: { x: event.x, y: event.y } };
+          redraw();
+        }
+        return;
+      }
+      if (event.action === 'move') {
         const next = hoverKeyAt(event.x, event.y);
         if (next !== hover) {
           hover = next;
           redraw();
         }
+        return;
+      }
+      if (event.action === 'release') {
+        // A press that never turned into a drag leaves no selection behind.
+        if (selection && selectionIsEmpty(selection)) selection = undefined;
+        selectionAnchor = undefined;
         return;
       }
       if (event.action === 'wheel') {
@@ -1696,10 +1745,18 @@ export async function runCodeTui(
       return;
     }
     if (event.ctrl && event.key === 'e') {
-      // Mouse capture suppresses the terminal's own text selection; release
-      // it so the transcript can be selected and copied natively.
-      selectMode = !selectMode;
-      app.setMouse(!selectMode);
+      if (!selection || selectionIsEmpty(selection)) {
+        if (session) {
+          session.status = 'Nothing selected — drag over the transcript first.';
+          redraw();
+        }
+        return;
+      }
+      const text = selectionText(lastFrameLines, selection);
+      void writeStdout(copyToClipboard(text));
+      if (session) session.status = `Copied ${text.length} characters.`;
+      selection = undefined;
+      selectionAnchor = undefined;
       redraw();
       return;
     }
@@ -1772,6 +1829,12 @@ export async function runCodeTui(
       return;
     }
     if (event.key === 'escape') {
+      if (selection) {
+        selection = undefined;
+        selectionAnchor = undefined;
+        redraw();
+        return;
+      }
       if (session.focusedView !== 'main') {
         session.engine.cancelSubagent(session.focusedView);
         notice(session, 'cancelling sub-agent run…', session.focusedView);
@@ -1847,8 +1910,8 @@ export async function runCodeTui(
     initialSession = attachSession(engine);
     focusedSessionId = initialSession.id;
     selectedKey = `s:${initialSession.id}`;
-    // Replay the thread before the first paint so a resumed session opens on
-    // its transcript rather than an empty view.
+    // Replay the thread before the first render pass so a resumed session
+    // opens on its transcript rather than an empty view.
     await initialSession.historyReady;
     initialSession.views.get('main')!.entries.unshift({
       kind: 'notice',
@@ -1858,22 +1921,28 @@ export async function runCodeTui(
     });
   }
 
-  app = render(composedView(), {
-    input: true,
-    mouse: true,
-    motion: true,
-    onEvent: handleEvent,
-    onResize: (size) => {
-      width = size.width;
-      height = size.height;
-      redraw();
+  app = render(
+    () => {
+      revision.get();
+      return composedView();
     },
-  });
+    {
+      input: true,
+      mouse: true,
+      motion: true,
+      onEvent: handleEvent,
+      onResize: (size) => {
+        width = size.width;
+        height = size.height;
+        redraw();
+      },
+    },
+  );
   const initial = app.size();
   if (initial.width !== width || initial.height !== height) {
     width = initial.width;
     height = initial.height;
-    paint();
+    redraw();
   }
   // Recovery must start only after `app` exists: driveTurn repaints
   // synchronously, and an early throw would leave the session stuck busy.

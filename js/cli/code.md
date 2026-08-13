@@ -53,10 +53,9 @@ autocomplete overlay of the available slash commands above the input
 - `/auto` toggles auto-approval of gated tools.
 - `/new` starts a fresh thread; `/exit` quits.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
-- `Ctrl+E` toggles select mode, which releases the mouse back to the terminal
-  so transcript text can be selected and copied (most terminals also allow
-  `Shift`+drag while the app holds the mouse). The status bar shows `SELECT`
-  while it is active.
+- Drag over the transcript to select text; the selection highlights as you
+  drag and `Ctrl+E` copies it to the system clipboard (via OSC 52, so it
+  works over SSH and inside multiplexers). `Esc` or a click clears it.
 
 Clickable controls — the sidebar toggle and model name in the status bar,
 `[steer now]`, tool calls, and sidebar rows — highlight on hover.
