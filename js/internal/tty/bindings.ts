@@ -243,8 +243,10 @@ export function enableAutoWrap(): string {
  * await writeStdout(enterMouseMode());
  * ```
  */
-export function enterMouseMode(): string {
-  return '\x1B[?1000h\x1B[?1002h\x1B[?1006h';
+export function enterMouseMode(options: { motion?: boolean } = {}): string {
+  // 1000 press/release, 1002 drag, 1003 any motion (hover), 1006 SGR coords.
+  const motion = options.motion ? '\x1B[?1003h' : '';
+  return `\x1B[?1000h\x1B[?1002h${motion}\x1B[?1006h`;
 }
 /**
  * Return the ANSI sequences that disable mouse reporting.
@@ -262,7 +264,7 @@ export function enterMouseMode(): string {
  * ```
  */
 export function exitMouseMode(): string {
-  return '\x1B[?1006l\x1B[?1002l\x1B[?1000l';
+  return '\x1B[?1006l\x1B[?1003l\x1B[?1002l\x1B[?1000l';
 }
 /**
  * Query the current terminal size from the attached TTY.

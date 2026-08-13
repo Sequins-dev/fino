@@ -48,6 +48,7 @@ import {
 const DIM = '\x1b[2m';
 const BOLD = '\x1b[1m';
 const INVERSE = '\x1b[7m';
+const UNDERLINE = '\x1b[4m';
 const CYAN = '\x1b[36m';
 const GREEN = '\x1b[32m';
 const RED = '\x1b[31m';
@@ -73,6 +74,11 @@ interface TranscriptEntry {
   argsKey?: string;
   outputText?: string;
   expanded?: boolean;
+  /**
+   * Harness-generated entry kept across history reseeds: `top` for the
+   * intro banner, `bottom` for status notes appended after the transcript.
+   */
+  pin?: 'top' | 'bottom';
   cachedLines?: string[];
   cachedKey?: string;
 }
@@ -81,6 +87,8 @@ interface TabView {
   entries: TranscriptEntry[];
   scrollOffset: number;
   stickToBottom: boolean;
+  /** Whether durable history has been replayed into this view. */
+  seeded?: boolean;
 }
 
 interface QueuedMessage {
@@ -102,6 +110,8 @@ interface SessionUI {
   abort?: AbortController;
   status: string;
   seenChildApprovals: Set<string>;
+  /** Resolves once durable history has been replayed into the main view. */
+  historyReady: Promise<void>;
 }
 
 interface ApprovalItem {
@@ -290,15 +300,48 @@ export async function runCodeTui(
   let queueTop = 0;
   let sidebarDisplayCache: SidebarDisplay = { rows: [], lines: [], lineMap: [] };
   let contextMenu: ContextMenuState | undefined;
+  let selectMode = false;
+  let hover: string | undefined;
+  let statusHits: Array<{ start: number; end: number; key: string }> = [];
   let menuHitRows: Array<{ row: number; index: number }> = [];
   let modelMenu: ModelMenuState | undefined;
   let modelMenuHitRows: Array<{ row: number; index: number }> = [];
-  let modelHitRange: { start: number; end: number } | undefined;
+  let modelHitRange: { start: number; end: number; key: string } | undefined;
   let transcriptHitRows: Array<{ row: number; entryIndex: number }> = [];
   let slashHitRows: Array<{ row: number; index: number }> = [];
   let slashTop = 0;
   let slashSelected = 0;
   let lastSlashFilter = '';
+
+  /**
+   * Resolve a pointer position to a hoverable target key, reusing the hit
+   * regions the last paint recorded. Returns `undefined` over inert cells.
+   */
+  function hoverKeyAt(x: number, y: number): string | undefined {
+    if (approvalQueue.length > 0 || contextMenu || modelMenu) return undefined;
+    const inSidebar = sidebarVisible && x < SIDEBAR_WIDTH;
+    const contentX = x - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0);
+    if (inSidebar) {
+      const entry = sidebarDisplayCache.lineMap[sidebarScroll + y];
+      const row = entry ? sidebarDisplayCache.rows[entry.rowIndex] : undefined;
+      if (!row || row.kind === 'divider') return undefined;
+      return `sidebar:${entry!.rowIndex}`;
+    }
+    if (y === height - 1) {
+      const hit = statusHits.find((h) => contentX >= h.start && contentX <= h.end);
+      return hit?.key;
+    }
+    const slashHit = slashHitRows.find((r) => r.row === y);
+    if (slashHit) return `slash:${slashHit.index}`;
+    const queueRow = y - queueTop;
+    const queueHit = queueHitRows.find(
+      (r) => r.row === queueRow && contentX >= r.buttonStart && contentX <= r.buttonEnd,
+    );
+    if (queueHit) return `queue:${queueHit.index}`;
+    const toolHit = transcriptHitRows.find((r) => r.row === y);
+    if (toolHit) return `tool:${toolHit.entryIndex}`;
+    return undefined;
+  }
 
   function contentWidth(): number {
     return Math.max(20, width - (sidebarVisible ? SIDEBAR_WIDTH + 1 : 0) - 2);
@@ -495,8 +538,9 @@ export async function runCodeTui(
 
   // --- transcript ------------------------------------------------------
 
-  function entryLines(entry: TranscriptEntry, cw: number): string[] {
+  function entryLines(entry: TranscriptEntry, cw: number, hovered = false): string[] {
     const key = [
+      hovered,
       entry.kind,
       entry.done,
       entry.toolState ?? '',
@@ -527,7 +571,9 @@ export async function runCodeTui(
       const signature = formatToolSignature(entry.text, entry.argsValue, {
         maxValue: Math.max(12, Math.floor(cw / 3)),
       });
-      lines = [`${mark} ${clipVisible(signature, cw - 4)} ${DIM}${disclosure}${RESET}`];
+      const shown = clipVisible(signature, cw - 4);
+      const head = hovered ? `${UNDERLINE}${shown}${RESET}` : shown;
+      lines = [`${mark} ${head} ${DIM}${disclosure}${RESET}`];
       if (entry.expanded) {
         const section = (label: string, body: string[]): string[] => {
           if (body.length === 0) return [];
@@ -574,7 +620,7 @@ export async function runCodeTui(
       const entry = tab.entries[index]!;
       if (rows.length > 0) rows.push('');
       if (entry.kind === 'tool') toolRows.set(rows.length, index);
-      rows.push(...entryLines(entry, cw));
+      rows.push(...entryLines(entry, cw, hover === `tool:${index}`));
     }
     return { rows, toolRows };
   }
@@ -635,6 +681,11 @@ export async function runCodeTui(
   }
 
   function seedFromHistory(tab: TabView, messages: ModelMessage[]): void {
+    // Durable history replaces the conversation, but harness-generated
+    // notices (the intro banner, sub-agent status notes) are not in it and
+    // must survive the reseed.
+    const pinnedTop = tab.entries.filter((entry) => entry.pin === 'top');
+    const pinnedBottom = tab.entries.filter((entry) => entry.pin === 'bottom');
     tab.entries = [];
     const toolEntries = new Map<string, TranscriptEntry>();
     for (const message of messages) {
@@ -679,6 +730,8 @@ export async function runCodeTui(
         }
       }
     }
+    tab.entries = [...pinnedTop, ...tab.entries, ...pinnedBottom];
+    tab.seeded = true;
     redraw();
   }
 
@@ -700,14 +753,18 @@ export async function runCodeTui(
       busy: false,
       status: 'Ready',
       seenChildApprovals: new Set(),
+      historyReady: Promise.resolve(),
     };
     sessions.set(id, session);
     view(session, 'main');
-    void engine.history().then((messages) => {
-      if (messages.length > 0 && view(session, 'main').entries.length === 0) {
-        seedFromHistory(view(session, 'main'), messages);
-      }
-    });
+    session.historyReady = engine
+      .history()
+      .then((messages) => {
+        const tab = view(session, 'main');
+        const live = tab.entries.some((entry) => entry.pin === undefined);
+        if (messages.length > 0 && !tab.seeded && !live) seedFromHistory(tab, messages);
+      })
+      .catch(() => {});
     engine.onSubagentEvent((childId, ev) => {
       const state = engine.subagentStates().find((s) => s.id === childId);
       if (state) session.viewNames.set(childId, state.name);
@@ -739,7 +796,7 @@ export async function runCodeTui(
         if (state.doneReport) {
           const marker = `suggests done: ${state.doneReport}`;
           if (!tab.entries.some((e) => e.kind === 'notice' && e.text === marker)) {
-            tab.entries.push({ kind: 'notice', text: marker, done: true });
+            tab.entries.push({ kind: 'notice', text: marker, done: true, pin: 'bottom' });
           }
         }
         void engine.subagentHistory(childId).then((messages) => {
@@ -751,6 +808,7 @@ export async function runCodeTui(
           kind: 'notice',
           text: `failed: ${state.error ?? 'unknown'}`,
           done: true,
+          pin: 'bottom',
         });
       }
       redraw();
@@ -916,8 +974,16 @@ export async function runCodeTui(
     for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
       const row = rows[rowIndex]!;
       const selected = rowKey(row) === selectedKey;
+      const hovered = hover === `sidebar:${rowIndex}`;
       const emit = (line: string, first: boolean): void => {
-        lines.push(selected ? `${INVERSE}${padVisible(line, w)}${RESET}` : padVisible(line, w));
+        const padded = padVisible(line, w);
+        lines.push(
+          selected
+            ? `${INVERSE}${padded}${RESET}`
+            : hovered
+              ? `${UNDERLINE}${padded}${RESET}`
+              : padded,
+        );
         lineMap.push({ rowIndex, first });
       };
       if (row.kind === 'action-new') {
@@ -1061,7 +1127,9 @@ export async function runCodeTui(
           buttonEnd: 2 + preview.length + label.length,
           index,
         });
-        queueLines.push(`${DIM}· ${preview}${RESET}${YELLOW}${label}${RESET}`);
+        const button =
+          hover === `queue:${index}` ? `${INVERSE}${label}${RESET}` : `${YELLOW}${label}${RESET}`;
+        queueLines.push(`${DIM}· ${preview}${RESET}${button}`);
       }
       if (session.queue.length > shown.length) {
         queueLines.push(`${DIM}… ${session.queue.length - shown.length} more queued${RESET}`);
@@ -1096,7 +1164,8 @@ export async function runCodeTui(
         slashLines.push(`${DIM} … ${slashMatches.length} commands — ↑/↓ to browse${RESET}`);
       }
     }
-    const transcriptHeight = Math.max(1, height - queueLines.length - slashLines.length - 2);
+    // -3 reserves the blank separator, the input line, and the status bar.
+    const transcriptHeight = Math.max(1, height - queueLines.length - slashLines.length - 3);
     let rows: string[];
     const tab = view(session, session.focusedView);
     if (approvalQueue.length > 0) {
@@ -1221,6 +1290,7 @@ export async function runCodeTui(
       isMain && session.input.length > 0
         ? `${CYAN}❯${RESET} ${session.input}▏`
         : `${CYAN}❯${RESET} ${DIM}${placeholder}${RESET}`;
+    lines.push('');
     lines.push(clipVisible(inputLine, cw + 2));
     const states = session.engine.subagentStates();
     const activeCount = states.filter(
@@ -1233,14 +1303,29 @@ export async function runCodeTui(
     const viewLabel = isMain ? '' : ` · ${session.viewNames.get(session.focusedView) ?? ''}`;
     const modeLabel = session.engine.planMode ? 'PLAN' : 'CODE';
     const autoLabel = session.engine.auto ? ' · auto' : '';
+    const selectLabel = selectMode ? ' · SELECT (Ctrl+E)' : '';
     const bg = session.engine.planMode ? MAGENTA_BG : BLUE_BG;
-    const beforeModel = `${sidebarVisible ? '«' : '≡'} ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · `;
-    const modelSegment = session.engine.modelId;
-    modelHitRange = {
-      start: visibleWidth(beforeModel),
-      end: visibleWidth(beforeModel) + visibleWidth(modelSegment) - 1,
+    // Build the bar from segments so clickable ones get hit ranges and a
+    // hover highlight; inverse reads as a pressable control over the bar's
+    // own background.
+    statusHits = [];
+    let statusLine = '';
+    let column = 0;
+    const segment = (text: string, key?: string): void => {
+      const width = visibleWidth(text);
+      if (key) {
+        statusHits.push({ start: column, end: column + width - 1, key });
+        statusLine += hover === key ? `${INVERSE}${text}${RESET}${bg}` : text;
+      } else {
+        statusLine += text;
+      }
+      column += width;
     };
-    const statusLine = `${beforeModel}${modelSegment} · ${modeLabel}${autoLabel}${agentSegment} · ${session.status}`;
+    segment(sidebarVisible ? '«' : '≡', 'status:sidebar');
+    segment(` ${clipVisible(sessionTitle(session.id), 24)}${viewLabel} · `);
+    segment(session.engine.modelId, 'status:model');
+    segment(` · ${modeLabel}${autoLabel}${selectLabel}${agentSegment} · ${session.status}`);
+    modelHitRange = statusHits.find((hit) => hit.key === 'status:model');
     lines.push(`${bg}${padVisible(clipVisible(statusLine, cw + 1), cw + 2)}${RESET}`);
     return lines;
   }
@@ -1302,6 +1387,7 @@ export async function runCodeTui(
             'Ctrl+B or click ≡ — sidebar · Ctrl+N/P — next/prev session · Tab — cycle views',
             'Sidebar: click "+ new session", click ▸/▾ to expand, right-click for rename/archive/delete',
             'Transcript: click a tool call to expand its input/output (source and Markdown are formatted)',
+            'Ctrl+E — select mode: releases the mouse so you can select and copy text (Shift+drag also works in most terminals)',
             'While a turn runs: Enter queues, [steer now]/Ctrl+S steers; the queue sends when the turn ends.',
           ].join('\n'),
         );
@@ -1525,6 +1611,14 @@ export async function runCodeTui(
           }
         }
       }
+      if (event.action === 'move' || event.action === 'drag') {
+        const next = hoverKeyAt(event.x, event.y);
+        if (next !== hover) {
+          hover = next;
+          redraw();
+        }
+        return;
+      }
       if (event.action === 'wheel') {
         if (slashMatches.length > 0 && session && !inSidebar) {
           const delta = event.button === 'wheel-up' ? -1 : 1;
@@ -1599,6 +1693,14 @@ export async function runCodeTui(
       } else if (event.key === 'enter') {
         void runContextMenuItem(menu, menu.selected);
       }
+      return;
+    }
+    if (event.ctrl && event.key === 'e') {
+      // Mouse capture suppresses the terminal's own text selection; release
+      // it so the transcript can be selected and copied natively.
+      selectMode = !selectMode;
+      app.setMouse(!selectMode);
+      redraw();
       return;
     }
     if (event.ctrl && event.key === 'b') {
@@ -1745,16 +1847,21 @@ export async function runCodeTui(
     initialSession = attachSession(engine);
     focusedSessionId = initialSession.id;
     selectedKey = `s:${initialSession.id}`;
+    // Replay the thread before the first paint so a resumed session opens on
+    // its transcript rather than an empty view.
+    await initialSession.historyReady;
     initialSession.views.get('main')!.entries.unshift({
       kind: 'notice',
       text: 'fino code — /help for commands, Ctrl+B or click ≡ for the session sidebar, Shift+Tab toggles plan mode.',
       done: true,
+      pin: 'top',
     });
   }
 
   app = render(composedView(), {
     input: true,
     mouse: true,
+    motion: true,
     onEvent: handleEvent,
     onResize: (size) => {
       width = size.width;

@@ -229,3 +229,32 @@ describe('fino:commands/code — per-session model memory', () => {
     }
   });
 });
+describe('fino:commands/code — resumed session history', () => {
+  it('replays the full conversation when a thread is reopened', async (t) => {
+    const dir = tempDir();
+    await new DiskFileSystem().mkdir(dir);
+    const first = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('the assistant reply')]),
+      transcriptsDir: false,
+    });
+    const engine = await first.createSession();
+    const id = engine.threadId;
+    await engine.runTurn('the original user prompt');
+    await first.close();
+
+    const second = await CodeWorkspace.open({
+      cwd: dir,
+      chatModel: scriptModel([endTurn('unused')]),
+      transcriptsDir: false,
+    });
+    const reopened = await second.openSession(id);
+    const messages = await reopened.history();
+    t.equal(messages.length, 2, 'both turns replay from the store');
+    t.equal(messages[0]!.role, 'user', 'user message first');
+    t.equal(messages[0]!.content, 'the original user prompt', 'prompt preserved');
+    t.equal(messages[1]!.role, 'assistant', 'assistant reply second');
+    t.equal(messages[1]!.content, 'the assistant reply', 'reply preserved');
+    await second.close();
+  });
+});

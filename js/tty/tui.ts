@@ -134,6 +134,11 @@ export interface RenderOptions {
   height?: number;
   input?: boolean;
   mouse?: boolean;
+  /**
+   * Report mouse motion without a held button so the app can render hover
+   * affordances. Off by default; motion events are frequent.
+   */
+  motion?: boolean;
   onEvent?: (event: TuiEvent, app: TuiApp) => void | Promise<void>;
   /**
    * Called after the terminal is resized and the app has repainted at the
@@ -150,6 +155,15 @@ export interface TuiApp {
   input?: TuiInput;
   /** Current viewport size; tracks live terminal resizes. */
   size(): TerminalSize;
+  /**
+   * Turn mouse capture on or off while the app runs.
+   *
+   * Capturing the mouse suppresses the terminal's own text selection, so
+   * apps that want the user to select and copy content should expose a way
+   * to release it. Returns the resulting state; `false` when the app was
+   * created without mouse input at all.
+   */
+  setMouse(enabled: boolean): boolean;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -338,15 +352,41 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
 /** Options for creating a raw terminal input reader. */
 export interface TuiInputOptions {
   mouse?: boolean;
+  /**
+   * Report mouse motion even when no button is held, so applications can
+   * implement hover affordances. Costs one input event per cell crossed.
+   */
+  motion?: boolean;
 }
 /** Raw terminal input reader for keyboard and mouse events. */
 export class TuiInput {
   #restoreRaw: (() => void) | null;
   #closed = false;
   #queue: TuiEvent[] = [];
+  #mouse: boolean;
+  #motion: boolean;
   constructor(options: TuiInputOptions = {}) {
     this.#restoreRaw = enterRawMode(0);
-    void writeStdout(options.mouse === false ? '' : enterMouseMode());
+    this.#mouse = options.mouse !== false;
+    this.#motion = options.motion === true;
+    if (this.#mouse) void writeStdout(enterMouseMode({ motion: this.#motion }));
+  }
+  /** Whether mouse reporting is currently captured by the application. */
+  get mouse(): boolean {
+    return this.#mouse;
+  }
+  /**
+   * Turn mouse reporting on or off while the app runs.
+   *
+   * While reporting is on, the terminal routes clicks and drags to the
+   * application, which suppresses the terminal's own text selection. Turning
+   * it off hands the mouse back to the terminal so the user can select and
+   * copy text, at the cost of in-app mouse interaction.
+   */
+  setMouse(enabled: boolean): void {
+    if (this.#closed || enabled === this.#mouse) return;
+    this.#mouse = enabled;
+    void writeStdout(enabled ? enterMouseMode({ motion: this.#motion }) : exitMouseMode());
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
@@ -808,7 +848,9 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   let width = options.width ?? size.width;
   let height = options.height ?? size.height;
   const input =
-    options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
+    options.input || options.onEvent
+      ? createTuiInput({ mouse: options.mouse ?? true, motion: options.motion ?? false })
+      : undefined;
   let frame = '';
   let lastTree: VNode | null = null;
   let commitCount = 0;
@@ -846,6 +888,10 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     },
     size(): TerminalSize {
       return { width, height };
+    },
+    setMouse(enabled: boolean): boolean {
+      input?.setMouse(enabled);
+      return input?.mouse ?? false;
     },
     stop(): void {
       if (stopped) return;

@@ -291,3 +291,12 @@ describe('fino:tty/tui ANSI clipping', () => {
     t.ok(frame.slice(lastReset + 4).trim() === '', 'nothing styled after the final reset');
   });
 });
+describe('fino:tty/tui mouse modes', () => {
+  it('requests motion tracking only when asked', async (t) => {
+    const { enterMouseMode, exitMouseMode } = await import('internal:tty/bindings');
+    t.ok(!enterMouseMode().includes('1003'), 'no any-motion tracking by default');
+    t.ok(enterMouseMode({ motion: true }).includes('\x1B[?1003h'), 'motion mode opt-in');
+    t.ok(enterMouseMode().includes('\x1B[?1006h'), 'SGR coordinates always requested');
+    t.ok(exitMouseMode().includes('\x1B[?1003l'), 'exit disables motion tracking');
+  });
+});

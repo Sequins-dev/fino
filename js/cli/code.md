@@ -53,6 +53,13 @@ autocomplete overlay of the available slash commands above the input
 - `/auto` toggles auto-approval of gated tools.
 - `/new` starts a fresh thread; `/exit` quits.
 - `Esc` cancels the running turn; the mouse wheel and `PgUp`/`PgDn` scroll.
+- `Ctrl+E` toggles select mode, which releases the mouse back to the terminal
+  so transcript text can be selected and copied (most terminals also allow
+  `Shift`+drag while the app holds the mouse). The status bar shows `SELECT`
+  while it is active.
+
+Clickable controls — the sidebar toggle and model name in the status bar,
+`[steer now]`, tool calls, and sidebar rows — highlight on hover.
 
 Tool activity renders as a call signature with named parameters —
 `read_file(path: "js/ai/agent.ts", offset: 10)` — and clicking one expands
