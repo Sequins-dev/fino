@@ -13,6 +13,12 @@ class Screen:
         self.cx = self.cy = 0
         self.sgr = ''
         self.pending = ''
+        # DECSTBM margins: apps pin a viewport by confining scrolling to the
+        # rows above it, so history has to actually scroll to be testable.
+        self.top = 0
+        self.bottom = rows - 1
+        self.saved = None
+        self.scrolled = []
 
     def feed(self, data):
         # A read can split an escape sequence; hold the tail until it completes
@@ -49,6 +55,20 @@ class Screen:
                 elif cmd == 'J':
                     self.cells = [[' '] * self.cols for _ in range(self.rows)]
                     self.styles = [[''] * self.cols for _ in range(self.rows)]
+                elif cmd == 'r':
+                    parts = [p for p in params.split(';') if p] if params else []
+                    self.top = int(parts[0]) - 1 if len(parts) > 0 else 0
+                    self.bottom = int(parts[1]) - 1 if len(parts) > 1 else self.rows - 1
+                elif cmd == 'K':
+                    if 0 <= self.cy < self.rows:
+                        for x in range(self.cx, self.cols):
+                            self.cells[self.cy][x] = ' '
+                            self.styles[self.cy][x] = ''
+                elif cmd == 's':
+                    self.saved = (self.cx, self.cy)
+                elif cmd == 'u':
+                    if self.saved:
+                        self.cx, self.cy = self.saved
                 elif cmd == 'm':
                     # Attributes accumulate until a reset, so a row painted
                     # inverse-then-underline reports both.
@@ -61,12 +81,30 @@ class Screen:
             if ch == '\r':
                 self.cx = 0; i += 1; continue
             if ch == '\n':
-                self.cy += 1; i += 1; continue
+                if self.cy >= self.bottom:
+                    self.scroll_region()
+                else:
+                    self.cy += 1
+                i += 1
+                continue
             if 0 <= self.cy < self.rows and 0 <= self.cx < self.cols:
                 self.cells[self.cy][self.cx] = ch
                 self.styles[self.cy][self.cx] = self.sgr
             self.cx += 1
             i += 1
+    def scroll_region(self):
+        """Shift the scrolling region up one row, as a terminal would."""
+        self.scrolled.append(''.join(self.cells[self.top]).rstrip())
+        for y in range(self.top, self.bottom):
+            self.cells[y] = self.cells[y + 1]
+            self.styles[y] = self.styles[y + 1]
+        self.cells[self.bottom] = [' '] * self.cols
+        self.styles[self.bottom] = [''] * self.cols
+
+    def scrollback(self):
+        """Lines that scrolled off the top — the terminal's own history."""
+        return self.scrolled
+
     def line(self, row):
         return ''.join(self.cells[row]).rstrip()
     def styled_spans(self, row):
