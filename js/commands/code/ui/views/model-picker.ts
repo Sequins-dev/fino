@@ -92,8 +92,8 @@ export class ModelPickerView implements OverlayView {
       body = [style(` failed to list models: ${this.#error}`, tk.red), style(' Ctrl+R retries', tk.dim)];
     } else {
       // The picker owns the whole screen, so the list takes every row left
-      // between the header and the key hint.
-      this.#list.setMaxRows(Math.max(1, size.height - header.length - 1));
+      // between the header and the blank row above the key hint.
+      this.#list.setMaxRows(Math.max(1, size.height - header.length - 2));
       const pane = this.#list.render(width - 2);
       body = pane.lines.map((line) => ` ${line}`);
       hits = pane.hits.map((hit) => ({
@@ -104,7 +104,10 @@ export class ModelPickerView implements OverlayView {
       }));
     }
     const lines = [...header, ...body];
+    // A blank row always separates the list from the key hint, whether the
+    // list fills the screen or stops short of it.
     while (lines.length < size.height - 1) lines.push('');
+    lines[size.height - 2] = '';
     lines.push(hint);
     return { lines: lines.slice(0, size.height), hits };
   }
