@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/theme — the `fino code` styling vocabulary.
+ * internal:commands/code/ui/theme — the `fino code` styling vocabulary.
  *
  * Every color decision the app makes routes through this module, on top of
  * the base tokens from `fino:tty/components/theme`. Mode colors, the

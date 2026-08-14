@@ -1,11 +1,11 @@
 /**
- * fino:commands/code/ui/approval — the footer approval band.
+ * internal:commands/code/ui/approval — the footer approval band.
  *
  * Tool approvals render as a yellow-bordered band where the composer
  * normally sits: the same place the user's eyes already are, answered with
  * `y`/`n`, no overlay. While one is pending the composer is locked and the
  * selectors are suppressed; the decision commits to scrollback as a record
- * (`renderApprovalDecision` in `fino:commands/code/ui/blocks`).
+ * (`renderApprovalDecision` in `internal:commands/code/ui/blocks`).
  */
 import { tk, style } from 'fino:tty/components/theme';
 import { wrapPlain } from 'fino:tty/components/text';

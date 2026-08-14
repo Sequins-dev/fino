@@ -13,11 +13,11 @@ import {
   turnMarkerText,
   formatDuration,
   type TranscriptEntry,
-} from 'fino:commands/code/ui/blocks';
-import { entriesFromHistory, seedEntries, inputHistoryFromMessages } from 'fino:commands/code/ui/history';
-import { StreamTail } from 'fino:commands/code/ui/stream';
-import { renderActivityLive, renderRunningTool } from 'fino:commands/code/ui/activity';
-import { renderApprovalBand } from 'fino:commands/code/ui/approval';
+} from 'internal:commands/code/ui/blocks';
+import { entriesFromHistory, seedEntries, inputHistoryFromMessages } from 'internal:commands/code/ui/history';
+import { StreamTail } from 'internal:commands/code/ui/stream';
+import { renderActivityLive, renderRunningTool } from 'internal:commands/code/ui/activity';
+import { renderApprovalBand } from 'internal:commands/code/ui/approval';
 import type { ModelMessage } from 'fino:ai/model';
 import type { CodeTurnRecord } from 'fino:commands/code/engine';
 
@@ -27,7 +27,7 @@ function turn(status: 'done' | 'error', durationMs: number, messages = 2): CodeT
   return { at: 1000, durationMs, status, messages } as CodeTurnRecord;
 }
 
-describe('fino:commands/code/ui blocks', () => {
+describe('internal:commands/code/ui blocks', () => {
   it('renders user blocks with the gutter and hanging indent', (t) => {
     for (const width of WIDTHS) {
       const lines = renderUserBlock('please look at the thing and tell me what it does', width);
@@ -109,7 +109,7 @@ describe('fino:commands/code/ui blocks', () => {
   });
 });
 
-describe('fino:commands/code/ui history', () => {
+describe('internal:commands/code/ui history', () => {
   const messages: ModelMessage[] = [
     { role: 'user', content: 'first question' },
     {
@@ -153,7 +153,7 @@ describe('fino:commands/code/ui history', () => {
   });
 });
 
-describe('fino:commands/code/ui stream', () => {
+describe('internal:commands/code/ui stream', () => {
   it('splits settled and tail, committing each line exactly once', (t) => {
     const tail = new StreamTail(40);
     const committed: string[] = [];
@@ -219,7 +219,7 @@ describe('fino:commands/code/ui stream', () => {
   });
 });
 
-describe('fino:commands/code/ui activity', () => {
+describe('internal:commands/code/ui activity', () => {
   it('renders the live indicator parts in order', (t) => {
     const line = renderActivityLive({
       spinnerFrame: '⠋',
@@ -251,7 +251,7 @@ describe('fino:commands/code/ui activity', () => {
   });
 });
 
-describe('fino:commands/code/ui approval', () => {
+describe('internal:commands/code/ui approval', () => {
   it('renders the approval band boxed with source, tool, and keys', (t) => {
     const lines = renderApprovalBand(
       {

@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/views/model-picker — the full-screen model chooser.
+ * internal:commands/code/ui/views/model-picker — the full-screen model chooser.
  *
  * A mouse-enabled overlay over the async provider catalog: models grouped
  * under provider headers, the current model marked, `Enter` (or a click)
@@ -11,7 +11,7 @@ import type { ModelInfo } from 'fino:ai/model';
 import { tk, style } from 'fino:tty/components/theme';
 import { SelectList, type ListItem } from 'fino:tty/components/list';
 import type { RenderedPane } from 'fino:tty/components/pane';
-import type { OverlayView } from 'fino:commands/code/ui/overlay';
+import type { OverlayView } from 'internal:commands/code/ui/overlay';
 
 /** Wiring for the picker: catalog access and the pick callback. */
 export interface ModelPickerOptions {

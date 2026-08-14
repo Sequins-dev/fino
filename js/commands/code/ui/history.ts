@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/history — durable history to transcript entries.
+ * internal:commands/code/ui/history — durable history to transcript entries.
  *
  * Pure conversions from stored conversation data (`ModelMessage[]` plus
  * `CodeTurnRecord[]`) into the transcript-entry form the block renderers
@@ -9,7 +9,7 @@
 import type { ModelMessage } from 'fino:ai/model';
 import type { CodeTurnRecord } from 'fino:commands/code/engine';
 import { contentText, previewText } from 'fino:commands/code/transcript';
-import { turnMarkerText, type TranscriptEntry } from 'fino:commands/code/ui/blocks';
+import { turnMarkerText, type TranscriptEntry } from 'internal:commands/code/ui/blocks';
 
 /**
  * Rebuild transcript entries from a stored conversation.

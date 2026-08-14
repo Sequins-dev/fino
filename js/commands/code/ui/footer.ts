@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/footer — the dynamic footer composition.
+ * internal:commands/code/ui/footer — the dynamic footer composition.
  *
  * Assembles the inline app's pinned bottom region from its bands, top to
  * bottom: streaming tail · activity indicator (with running-tool detail) ·
@@ -15,8 +15,8 @@ import { clipAnsi } from 'fino:tty/components/text';
 import type { Composer } from 'fino:tty/components/composer';
 import type { SelectList } from 'fino:tty/components/list';
 import { renderStatusBar, type Segment } from 'fino:tty/components/statusbar';
-import { renderActivityLive, renderRunningTool } from 'fino:commands/code/ui/activity';
-import { renderApprovalBand, type ApprovalPrompt } from 'fino:commands/code/ui/approval';
+import { renderActivityLive, renderRunningTool } from 'internal:commands/code/ui/activity';
+import { renderApprovalBand, type ApprovalPrompt } from 'internal:commands/code/ui/approval';
 
 /** Everything the footer needs to paint one frame. */
 export interface FooterState {

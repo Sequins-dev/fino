@@ -8,14 +8,17 @@
  * linter, formatter, package installer, and project scaffolder. Authored
  * guides from the docs build are listed as MCP resources under `fino-doc://`.
  *
+ * Writing files and running shell commands are left to the host as well, for
+ * the same reason: the tools here drive Fino's toolchain, not the filesystem.
+ *
  * By default the server speaks newline-delimited JSON-RPC over this process's
  * stdio (the transport MCP hosts use to launch server commands) and exposes
  * only the read-only tools: `docs_search`, `docs_show`, and `fino_lint`.
- * `--allow-write` adds the tools that change files — `write_file`,
- * `edit_file`, `fino_fmt`, `fino_install`, `fino_init`. `--allow-shell` adds
- * `shell` plus `fino_test` and `fino_bench`, which run arbitrary project code
- * and so carry the same risk as a shell. `--http <port>` serves the Streamable
- * HTTP transport instead of stdio.
+ * `--allow-write` adds the commands that change files — `fino_fmt`,
+ * `fino_install`, `fino_init`. `--allow-shell` adds `fino_test` and
+ * `fino_bench`, which run arbitrary project code and so carry the same risk as
+ * a shell. `--http <port>` serves the Streamable HTTP transport instead of
+ * stdio.
  *
  * ```sh
  * fino mcp                       # stdio, read-only tools
@@ -42,13 +45,13 @@ export interface McpToolsOptions {
    */
   docsDir?: string;
   /**
-   * Expose the tools that change files: `write_file`, `edit_file`,
-   * `fino_fmt`, `fino_install`, `fino_init`. Defaults to `false`.
+   * Expose the commands that change files: `fino_fmt`, `fino_install`,
+   * `fino_init`, and the `fix` parameter of `fino_lint`. Defaults to `false`.
    */
   allowWrite?: boolean;
   /**
-   * Expose the tools that execute code: `shell`, `fino_test`, `fino_bench`.
-   * Defaults to `false`.
+   * Expose the commands that execute project code: `fino_test` and
+   * `fino_bench`. Defaults to `false`.
    */
   allowShell?: boolean;
 }
@@ -57,8 +60,9 @@ export interface McpToolsOptions {
  * Build the tool set `fino mcp` mounts for one policy.
  *
  * Only `docs_search`, `docs_show`, and `fino_lint` are unconditional. The
- * generic file tools that `fino code` uses (`list_files`, `read_file`,
- * `search_files`) are deliberately dropped here — every MCP host already has
+ * generic tools that `fino code` uses (`list_files`, `read_file`,
+ * `search_files`, `write_file`, `edit_file`, `shell`) are deliberately dropped
+ * here — every MCP host already has
  * them, so the server keeps to what is unique to Fino.
  *
  * ```ts no_run
@@ -70,20 +74,18 @@ export interface McpToolsOptions {
  */
 export async function createMcpTools(opts: McpToolsOptions): Promise<Tool[]> {
   const { createCodeTools } = await import('fino:commands/code/tools');
-  const { createFinoCommandTools } = await import('fino:commands/mcp/tools');
+  const { createFinoCommandTools } = await import('internal:commands/mcp/tools');
   const { join } = await import('fino:file/path');
   const allowWrite = opts.allowWrite ?? false;
   const allowShell = opts.allowShell ?? false;
+  // Only the documentation index is taken from the `fino code` tool set. Its
+  // file and shell tools stay behind: a host running this server already has
+  // its own, and duplicating them only gives a model two ways to do the same
+  // thing, one of which is scoped to the wrong working directory.
   const exposed = new Set(['docs_search', 'docs_show']);
-  if (allowWrite) {
-    exposed.add('write_file');
-    exposed.add('edit_file');
-  }
-  if (allowShell) exposed.add('shell');
   const tools = createCodeTools({
     cwd: opts.cwd,
     docsDir: opts.docsDir ?? join(opts.cwd, 'docs').toString(),
-    writes: allowWrite || allowShell,
     auto: true,
   }).filter((t) => exposed.has(t.name));
   tools.push(...createFinoCommandTools({ cwd: opts.cwd, writes: allowWrite, shell: allowShell }));
@@ -104,7 +106,8 @@ const MCP_INSTRUCTIONS = [
   'guides are MCP resources, not tools: list resources and read the fino-doc:// URI you',
   'need. The fino_* tools run the project Fino toolchain — fino_lint, fino_fmt,',
   'fino_test, fino_bench, fino_install, fino_init — relative to the server process',
-  'working directory. Read and edit source files with your own tools.',
+  'working directory. Read, search, and edit source files, and run shell commands,',
+  'with your own tools — this server deliberately does not duplicate them.',
 ].join(' ');
 
 const command = new Task({
@@ -179,12 +182,12 @@ const command = new Task({
         flags: '--allow-write',
         type: 'boolean',
         description:
-          'Expose the tools that change files: write_file, edit_file, fino_fmt, fino_install, fino_init',
+          'Expose the commands that change files: fino_fmt, fino_install, fino_init, fino_lint --fix',
       },
       {
         flags: '--allow-shell',
         type: 'boolean',
-        description: 'Expose the tools that execute code: shell, fino_test, fino_bench',
+        description: 'Expose the commands that execute project code: fino_test, fino_bench',
       },
       {
         flags: '--http',

@@ -51,7 +51,7 @@ import {
   MODE_COLORS,
   MODE_HELP,
   MODE_ORDER,
-} from 'fino:commands/code/ui/theme';
+} from 'internal:commands/code/ui/theme';
 import {
   assistantBlockPrefix,
   renderApprovalDecision,
@@ -60,18 +60,18 @@ import {
   renderToolBlock,
   turnMarkerText,
   type TranscriptEntry,
-} from 'fino:commands/code/ui/blocks';
+} from 'internal:commands/code/ui/blocks';
 import {
   entriesFromHistory,
   inputHistoryFromMessages,
   seedEntries,
-} from 'fino:commands/code/ui/history';
-import { StreamTail } from 'fino:commands/code/ui/stream';
-import { composeFooter, tailAllowance, type FooterState } from 'fino:commands/code/ui/footer';
-import type { ApprovalPrompt } from 'fino:commands/code/ui/approval';
-import { OverlayController } from 'fino:commands/code/ui/overlay';
-import { SessionManagerView } from 'fino:commands/code/ui/views/session-manager';
-import { ModelPickerView } from 'fino:commands/code/ui/views/model-picker';
+} from 'internal:commands/code/ui/history';
+import { StreamTail } from 'internal:commands/code/ui/stream';
+import { composeFooter, tailAllowance, type FooterState } from 'internal:commands/code/ui/footer';
+import type { ApprovalPrompt } from 'internal:commands/code/ui/approval';
+import { OverlayController } from 'internal:commands/code/ui/overlay';
+import { SessionManagerView } from 'internal:commands/code/ui/views/session-manager';
+import { ModelPickerView } from 'internal:commands/code/ui/views/model-picker';
 
 const REDRAW_INTERVAL_MS = 33;
 const SPINNER_INTERVAL_MS = 100;

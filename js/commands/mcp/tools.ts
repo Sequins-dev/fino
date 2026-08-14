@@ -1,5 +1,5 @@
 /**
- * fino:commands/mcp/tools — Fino's own CLI commands, exposed as MCP tools.
+ * internal:commands/mcp/tools — Fino's own CLI commands, exposed as MCP tools.
  *
  * `fino mcp` deliberately does not re-export generic file reading, listing, or
  * searching: every MCP host already has those. What only Fino can offer is
@@ -20,7 +20,7 @@
  * loader cache.
  *
  * ```ts no_run
- * import { createFinoCommandTools } from 'fino:commands/mcp/tools';
+ * import { createFinoCommandTools } from 'internal:commands/mcp/tools';
  *
  * const tools = createFinoCommandTools({ cwd: '/repo', writes: true, shell: true });
  * const names = tools.map((t) => t.name);
@@ -429,7 +429,7 @@ function initTool(cwd: string): Tool {
  * the same risk as a shell.
  *
  * ```ts no_run
- * import { createFinoCommandTools } from 'fino:commands/mcp/tools';
+ * import { createFinoCommandTools } from 'internal:commands/mcp/tools';
  *
  * const readOnly = createFinoCommandTools({ cwd: '/repo' });
  * // ['fino_lint']

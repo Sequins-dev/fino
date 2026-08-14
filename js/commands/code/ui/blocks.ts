@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/blocks — committed-form transcript renderers.
+ * internal:commands/code/ui/blocks — committed-form transcript renderers.
  *
  * Every function here renders one transcript block into the pre-styled,
  * pre-wrapped lines that get committed into terminal scrollback. Committed
@@ -15,7 +15,7 @@ import {
   formatToolSignature,
   formatToolOutputLines,
 } from 'fino:commands/code/toolview';
-import { TOOL_MARKS, CHILD_GLYPHS } from 'fino:commands/code/ui/theme';
+import { TOOL_MARKS, CHILD_GLYPHS } from 'internal:commands/code/ui/theme';
 import type { SubagentState } from 'fino:ai/subagents';
 import type { CodeTurnRecord } from 'fino:commands/code/engine';
 

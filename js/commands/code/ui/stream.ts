@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/stream — the streaming assistant tail.
+ * internal:commands/code/ui/stream — the streaming assistant tail.
  *
  * Bridges a streaming assistant message onto the inline commit pipeline:
  * settled markdown blocks flow out through {@link StreamTail.takeSettled}

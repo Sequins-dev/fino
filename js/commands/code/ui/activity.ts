@@ -1,15 +1,15 @@
 /**
- * fino:commands/code/ui/activity — the live turn activity indicator.
+ * internal:commands/code/ui/activity — the live turn activity indicator.
  *
  * The spinner line shown in the footer while a turn runs, and the
  * footer-only detail view of the currently running tool. The committed
  * counterpart — the dim `✔ 12s` line a finished turn leaves in the
- * transcript — is `renderTurnBlock` in `fino:commands/code/ui/blocks`.
+ * transcript — is `renderTurnBlock` in `internal:commands/code/ui/blocks`.
  */
 import { tk, style } from 'fino:tty/components/theme';
 import { clipAnsi } from 'fino:tty/components/text';
 import { formatToolSignature, formatToolOutputLines } from 'fino:commands/code/toolview';
-import { formatDuration } from 'fino:commands/code/ui/blocks';
+import { formatDuration } from 'internal:commands/code/ui/blocks';
 
 /** Live-state inputs for {@link renderActivityLive}. */
 export interface ActivityProps {

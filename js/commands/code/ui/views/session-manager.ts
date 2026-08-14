@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/views/session-manager — the full-screen session view.
+ * internal:commands/code/ui/views/session-manager — the full-screen session view.
  *
  * Replaces the old sidebar: a mouse-enabled overlay listing every session as
  * a full-width card with in-place controls — Enter opens, `r` renames inline,
@@ -13,8 +13,8 @@ import { tk, style } from 'fino:tty/components/theme';
 import { clipAnsi, padAnsi, wrapPlain } from 'fino:tty/components/text';
 import { Composer } from 'fino:tty/components/composer';
 import type { HitRegion, RenderedPane } from 'fino:tty/components/pane';
-import type { OverlayView } from 'fino:commands/code/ui/overlay';
-import { ATTENTION } from 'fino:commands/code/ui/theme';
+import type { OverlayView } from 'internal:commands/code/ui/overlay';
+import { ATTENTION } from 'internal:commands/code/ui/theme';
 import type { CodeSessionActivity, CodeSessionMeta } from 'fino:commands/code/workspace';
 
 /** Everything the manager needs from the app controller. */

@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/ui/overlay — full-screen modal views over the inline app.
+ * internal:commands/code/ui/overlay — full-screen modal views over the inline app.
  *
  * The chat surface is keyboard-only so the terminal keeps text selection;
  * modal views (session manager, model picker) trade that for mouse

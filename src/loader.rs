@@ -157,30 +157,45 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/code/transcript", "commands/code/transcript"),
     source_builtin!("fino:commands/code/toolview", "commands/code/toolview"),
     source_builtin!("fino:commands/code/workspace", "commands/code/workspace"),
-    source_builtin!("fino:commands/code/ui/theme", "commands/code/ui/theme"),
-    source_builtin!("fino:commands/code/ui/blocks", "commands/code/ui/blocks"),
-    source_builtin!("fino:commands/code/ui/stream", "commands/code/ui/stream"),
+    source_builtin!("internal:commands/code/ui/theme", "commands/code/ui/theme"),
     source_builtin!(
-        "fino:commands/code/ui/activity",
+        "internal:commands/code/ui/blocks",
+        "commands/code/ui/blocks"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/stream",
+        "commands/code/ui/stream"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/activity",
         "commands/code/ui/activity"
     ),
     source_builtin!(
-        "fino:commands/code/ui/approval",
+        "internal:commands/code/ui/approval",
         "commands/code/ui/approval"
     ),
-    source_builtin!("fino:commands/code/ui/history", "commands/code/ui/history"),
-    source_builtin!("fino:commands/code/ui/footer", "commands/code/ui/footer"),
-    source_builtin!("fino:commands/code/ui/overlay", "commands/code/ui/overlay"),
     source_builtin!(
-        "fino:commands/code/ui/views/session-manager",
+        "internal:commands/code/ui/history",
+        "commands/code/ui/history"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/footer",
+        "commands/code/ui/footer"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/overlay",
+        "commands/code/ui/overlay"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/views/session-manager",
         "commands/code/ui/views/session-manager"
     ),
     source_builtin!(
-        "fino:commands/code/ui/views/model-picker",
+        "internal:commands/code/ui/views/model-picker",
         "commands/code/ui/views/model-picker"
     ),
     source_builtin!("fino:commands/mcp", "commands/mcp"),
-    source_builtin!("fino:commands/mcp/tools", "commands/mcp/tools"),
+    source_builtin!("internal:commands/mcp/tools", "commands/mcp/tools"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),

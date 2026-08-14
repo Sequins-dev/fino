@@ -6,7 +6,8 @@ import { env, execPath, Process } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 import type { Transport } from 'fino:jsonrpc';
 
-const GENERIC_FILE_TOOLS = ['list_files', 'read_file', 'search_files'];
+/** Tools the host agent brings; the server never exposes them, at any gate. */
+const HOST_TOOLS = ['list_files', 'read_file', 'search_files', 'write_file', 'edit_file', 'shell'];
 
 function childEnv(): Record<string, string> {
   const out: Record<string, string> = {};
@@ -112,35 +113,33 @@ describe('fino:commands/mcp — coding tools over MCP', () => {
   it('exposes only Fino-specific tools by default', async (t) => {
     const names = await toolNames({});
     t.deepEqual(names, ['docs_search', 'docs_show', 'fino_lint'], 'read-only tool set');
-    for (const generic of GENERIC_FILE_TOOLS) {
+    for (const generic of HOST_TOOLS) {
       t.ok(!names.includes(generic), `${generic} left to the MCP host`);
     }
-    for (const gated of ['write_file', 'edit_file', 'shell', 'fino_fmt', 'fino_test']) {
+    for (const gated of ['fino_fmt', 'fino_install', 'fino_init', 'fino_test', 'fino_bench']) {
       t.ok(!names.includes(gated), `${gated} absent without its flag`);
     }
   });
 
-  it('adds the file-changing tools under --allow-write', async (t) => {
+  it('adds the file-changing commands under --allow-write', async (t) => {
     const names = await toolNames({ allowWrite: true });
-    for (const gated of ['write_file', 'edit_file', 'fino_fmt', 'fino_install', 'fino_init']) {
+    for (const gated of ['fino_fmt', 'fino_install', 'fino_init']) {
       t.ok(names.includes(gated), `${gated} exposed with --allow-write`);
     }
-    t.ok(!names.includes('shell'), 'shell still gated');
     t.ok(!names.includes('fino_test'), 'fino_test still gated');
     t.ok(!names.includes('fino_bench'), 'fino_bench still gated');
-    for (const generic of GENERIC_FILE_TOOLS) {
+    for (const generic of HOST_TOOLS) {
       t.ok(!names.includes(generic), `${generic} still left to the MCP host`);
     }
   });
 
-  it('adds the code-executing tools under --allow-shell', async (t) => {
+  it('adds the code-executing commands under --allow-shell', async (t) => {
     const names = await toolNames({ allowShell: true });
-    for (const gated of ['shell', 'fino_test', 'fino_bench']) {
+    for (const gated of ['fino_test', 'fino_bench']) {
       t.ok(names.includes(gated), `${gated} exposed with --allow-shell`);
     }
-    t.ok(!names.includes('write_file'), 'write_file still gated');
     t.ok(!names.includes('fino_fmt'), 'fino_fmt still gated');
-    for (const generic of GENERIC_FILE_TOOLS) {
+    for (const generic of HOST_TOOLS) {
       t.ok(!names.includes(generic), `${generic} still left to the MCP host`);
     }
   });
