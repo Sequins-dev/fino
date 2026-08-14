@@ -1,6 +1,6 @@
 import { evaluate, llmJudge } from 'fino:ai/eval';
 import type { ScoreResult } from 'fino:ai/eval';
-import { CodeEngine } from 'fino:commands/code/engine';
+import { CodeEngine } from 'internal:commands/code/engine';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { env } from 'fino:process';
 import { anthropic } from 'fino:ai/model';

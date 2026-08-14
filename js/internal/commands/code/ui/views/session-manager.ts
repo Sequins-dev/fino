@@ -15,7 +15,7 @@ import { Composer } from 'fino:tty/components/composer';
 import type { HitRegion, RenderedPane } from 'fino:tty/components/pane';
 import type { OverlayView } from 'internal:commands/code/ui/overlay';
 import { ATTENTION } from 'internal:commands/code/ui/theme';
-import type { CodeSessionActivity, CodeSessionMeta } from 'fino:commands/code/workspace';
+import type { CodeSessionActivity, CodeSessionMeta } from 'internal:commands/code/workspace';
 
 /** Everything the manager needs from the app controller. */
 export interface SessionManagerOptions {

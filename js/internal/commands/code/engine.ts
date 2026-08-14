@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/engine — model registry, sessions, sub-agents, and turns for `fino code`.
+ * internal:commands/code/engine — model registry, sessions, sub-agents, and turns for `fino code`.
  *
  * `CodeEngine` owns everything about the coding agent except presentation:
  * provider discovery through the `fino:ai` model registry, per-turn agent
@@ -15,7 +15,7 @@
  * restored pool's children) after a process restart.
  *
  * ```ts no_run
- * import { CodeEngine } from 'fino:commands/code/engine';
+ * import { CodeEngine } from 'internal:commands/code/engine';
  *
  * const engine = await CodeEngine.create({ cwd: '/repo' });
  * const turn = await engine.runTurn('What modules serve HTTP?', {
@@ -53,9 +53,9 @@ import { SubagentPool, subagentTools } from 'fino:ai/subagents';
 import type { SubagentBuildContext, SubagentSpec, SubagentState } from 'fino:ai/subagents';
 import { join } from 'fino:file/path';
 import { env } from 'fino:process';
-import { createCodeTools } from 'fino:commands/code/tools';
-import { codeSystemPrompt } from 'fino:commands/code/prompt';
-import { foldEventsToTranscript, SessionTranscript } from 'fino:commands/code/transcript';
+import { createCodeTools } from 'internal:commands/code/tools';
+import { codeSystemPrompt } from 'internal:commands/code/prompt';
+import { foldEventsToTranscript, SessionTranscript } from 'internal:commands/code/transcript';
 
 /**
  * How much a session is allowed to do without asking.

@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/prompt — system prompt for the `fino code` agent.
+ * internal:commands/code/prompt — system prompt for the `fino code` agent.
  *
  * `codeSystemPrompt()` renders the instructions that tune a general model
  * into a Fino platform developer: the runtime's design philosophy, the
@@ -9,7 +9,7 @@
  * across mode switches.
  *
  * ```ts no_run
- * import { codeSystemPrompt } from 'fino:commands/code/prompt';
+ * import { codeSystemPrompt } from 'internal:commands/code/prompt';
  *
  * const instructions = codeSystemPrompt({ cwd: '/repo', planMode: false });
  * ```
@@ -107,7 +107,7 @@ You are in planning mode. Your tool set is read-only: research the codebase and 
  * Render the `fino code` system prompt.
  *
  * ```ts no_run
- * import { codeSystemPrompt } from 'fino:commands/code/prompt';
+ * import { codeSystemPrompt } from 'internal:commands/code/prompt';
  *
  * const planning = codeSystemPrompt({ cwd: process.cwd(), planMode: true });
  * ```

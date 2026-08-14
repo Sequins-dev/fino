@@ -60,10 +60,10 @@ export interface McpToolsOptions {
  * Build the tool set `fino mcp` mounts for one policy.
  *
  * Only `docs_search`, `docs_show`, and `fino_lint` are unconditional. The
- * generic tools that `fino code` uses (`list_files`, `read_file`,
- * `search_files`, `write_file`, `edit_file`, `shell`) are deliberately dropped
- * here — every MCP host already has
- * them, so the server keeps to what is unique to Fino.
+ * general-purpose workspace tools of `fino:ai/tools` (`list_files`,
+ * `read_file`, `search_files`, `write_file`, `edit_file`, `shell`) are
+ * deliberately left out here — every MCP host already has them, so the server
+ * keeps to what is unique to Fino.
  *
  * ```ts no_run
  * import { createMcpTools } from 'fino:commands/mcp';
@@ -73,21 +73,15 @@ export interface McpToolsOptions {
  * ```
  */
 export async function createMcpTools(opts: McpToolsOptions): Promise<Tool[]> {
-  const { createCodeTools } = await import('fino:commands/code/tools');
+  const { createDocsTools } = await import('internal:commands/code/tools');
   const { createFinoCommandTools } = await import('internal:commands/mcp/tools');
-  const { join } = await import('fino:file/path');
   const allowWrite = opts.allowWrite ?? false;
   const allowShell = opts.allowShell ?? false;
-  // Only the documentation index is taken from the `fino code` tool set. Its
-  // file and shell tools stay behind: a host running this server already has
-  // its own, and duplicating them only gives a model two ways to do the same
-  // thing, one of which is scoped to the wrong working directory.
-  const exposed = new Set(['docs_search', 'docs_show']);
-  const tools = createCodeTools({
-    cwd: opts.cwd,
-    docsDir: opts.docsDir ?? join(opts.cwd, 'docs').toString(),
-    auto: true,
-  }).filter((t) => exposed.has(t.name));
+  // Only the documentation index is taken from the `fino code` tool set. The
+  // general-purpose workspace tools stay behind: a host running this server
+  // already has its own, and duplicating them only gives a model two ways to
+  // do the same thing, one of which is scoped to the wrong working directory.
+  const tools = createDocsTools();
   tools.push(...createFinoCommandTools({ cwd: opts.cwd, writes: allowWrite, shell: allowShell }));
   return tools;
 }

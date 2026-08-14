@@ -26,7 +26,10 @@ events, and response assembly are covered in
 function with a name, a description, and a `fino:validate` schema for its
 parameters; the runtime validates arguments before your code runs. Tools that
 wrap subprocesses, call other agents, require human approval, or execute
-untrusted code are covered in [Complex Tools](./ai/complex-tools.md) — and when
+untrusted code are covered in [Complex Tools](./ai/complex-tools.md), which
+also covers `fino:ai/tools`, the ready-made workspace tool set (file listing,
+reading, searching, writing, editing, and shell) that a coding agent can take
+as-is instead of writing its own — and when
 a tool loads code it should not trust, run that code in a
 [realm](./realm.md) with narrowed imports rather than in the application
 context.

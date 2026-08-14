@@ -8,7 +8,7 @@
  */
 import { tk, style } from 'fino:tty/components/theme';
 import { clipAnsi } from 'fino:tty/components/text';
-import { formatToolSignature, formatToolOutputLines } from 'fino:commands/code/toolview';
+import { formatToolSignature, formatToolOutputLines } from 'internal:commands/code/toolview';
 import { formatDuration } from 'internal:commands/code/ui/blocks';
 
 /** Live-state inputs for {@link renderActivityLive}. */

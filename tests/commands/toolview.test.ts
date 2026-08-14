@@ -4,7 +4,7 @@ import {
   formatToolOutputLines,
   formatToolSignature,
   languageForTool,
-} from 'fino:commands/code/toolview';
+} from 'internal:commands/code/toolview';
 
 const ESC = '\x1b';
 
@@ -12,7 +12,7 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
 
-describe('fino:commands/code/toolview — call signatures', () => {
+describe('internal:commands/code/toolview — call signatures', () => {
   it('renders arguments as named parameters', (t) => {
     t.equal(
       formatToolSignature('read_file', { path: 'js/ai/agent.ts', offset: 10 }),
@@ -47,7 +47,7 @@ describe('fino:commands/code/toolview — call signatures', () => {
   });
 });
 
-describe('fino:commands/code/toolview — language detection', () => {
+describe('internal:commands/code/toolview — language detection', () => {
   it('infers language from a path argument', (t) => {
     t.equal(languageForTool('read_file', { path: 'a.ts' }), 'ts');
     t.equal(languageForTool('read_file', { path: 'a.mjs' }), 'js');
@@ -62,7 +62,7 @@ describe('fino:commands/code/toolview — language detection', () => {
   });
 });
 
-describe('fino:commands/code/toolview — output views', () => {
+describe('internal:commands/code/toolview — output views', () => {
   it('keeps line numbers and highlights source for numbered reads', (t) => {
     const lines = formatToolOutputLines({
       name: 'read_file',
@@ -134,7 +134,7 @@ describe('fino:commands/code/toolview — output views', () => {
   });
 });
 
-describe('fino:commands/code/toolview — argument views', () => {
+describe('internal:commands/code/toolview — argument views', () => {
   it('puts each parameter on its own line and formats file bodies', (t) => {
     const lines = formatToolArgLines(
       'write_file',

@@ -14,10 +14,10 @@ import { renderMarkdownTerminal } from 'fino:format/markdown';
 import {
   formatToolSignature,
   formatToolOutputLines,
-} from 'fino:commands/code/toolview';
+} from 'internal:commands/code/toolview';
 import { TOOL_MARKS, CHILD_GLYPHS } from 'internal:commands/code/ui/theme';
 import type { SubagentState } from 'fino:ai/subagents';
-import type { CodeTurnRecord } from 'fino:commands/code/engine';
+import type { CodeTurnRecord } from 'internal:commands/code/engine';
 
 /**
  * One transcript block in a view's log.

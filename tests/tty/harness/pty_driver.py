@@ -246,7 +246,10 @@ class Tui:
         fcntl.ioctl(self.master, termios.TIOCSWINSZ, struct.pack('HHHH', rows, cols, 0, 0))
         def ctty():
             os.setsid(); fcntl.ioctl(0, termios.TIOCSCTTY, 0)
-        self.proc = subprocess.Popen([FINO, app], stdin=slave, stdout=slave, stderr=slave,
+        # Launched through the test runner: the harness app drives the code
+        # TUI's internal modules, which only the runner's import allowance
+        # opens to a filesystem script.
+        self.proc = subprocess.Popen([FINO, 'test', app], stdin=slave, stdout=slave, stderr=slave,
                                      close_fds=True, preexec_fn=ctty)
         os.close(slave)
         self.screen = Screen(cols, rows, on_report=self._report)

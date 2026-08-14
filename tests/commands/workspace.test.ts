@@ -1,6 +1,6 @@
 import { describe, it } from 'fino:test/test';
-import { CodeWorkspace } from 'fino:commands/code/workspace';
-import { SessionTranscript, TranscriptWriter } from 'fino:commands/code/transcript';
+import { CodeWorkspace } from 'internal:commands/code/workspace';
+import { SessionTranscript, TranscriptWriter } from 'internal:commands/code/transcript';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { DiskFileSystem } from 'fino:file';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';

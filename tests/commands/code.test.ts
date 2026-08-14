@@ -1,7 +1,7 @@
 import { describe, it } from 'fino:test/test';
-import { createCodeTools } from 'fino:commands/code/tools';
-import { codeSystemPrompt } from 'fino:commands/code/prompt';
-import { CodeEngine } from 'fino:commands/code/engine';
+import { createCodeTools } from 'internal:commands/code/tools';
+import { codeSystemPrompt } from 'internal:commands/code/prompt';
+import { CodeEngine } from 'internal:commands/code/engine';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { DiskFileSystem } from 'fino:file';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';

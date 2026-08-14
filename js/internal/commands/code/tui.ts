@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/tui — inline multi-session terminal interface for `fino code`.
+ * internal:commands/code/tui — inline multi-session terminal interface for `fino code`.
  *
  * Chat history lives in the terminal's real scrollback: finalized blocks —
  * user messages, settled markdown, completed tool calls, turn markers — are
@@ -22,8 +22,8 @@
  * them and decides what gets committed when.
  *
  * ```ts no_run
- * import { CodeWorkspace } from 'fino:commands/code/workspace';
- * import { runCodeTui } from 'fino:commands/code/tui';
+ * import { CodeWorkspace } from 'internal:commands/code/workspace';
+ * import { runCodeTui } from 'internal:commands/code/tui';
  *
  * const workspace = await CodeWorkspace.open({ cwd: '/repo' });
  * const engine = await workspace.createSession();
@@ -41,9 +41,9 @@ import { Composer } from 'fino:tty/components/composer';
 import { SelectList, type ListItem } from 'fino:tty/components/list';
 import { SPINNER_FRAMES } from 'fino:tty/components/spinner';
 import type { Segment } from 'fino:tty/components/statusbar';
-import type { CodeEngine, TurnResult } from 'fino:commands/code/engine';
-import type { CodeWorkspace } from 'fino:commands/code/workspace';
-import { contentText, previewText } from 'fino:commands/code/transcript';
+import type { CodeEngine, TurnResult } from 'internal:commands/code/engine';
+import type { CodeWorkspace } from 'internal:commands/code/workspace';
+import { contentText, previewText } from 'internal:commands/code/transcript';
 import {
   ATTENTION,
   ATTENTION_RANK,

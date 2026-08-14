@@ -21,6 +21,32 @@ or deduplicate where possible.
 - `ctx.suspend()` throws a suspension signal; `Session` turns that signal into
   durable suspended run state and a resume token.
 
+## Ready-Made Workspace Tools
+
+Before writing file or shell tools by hand, check `fino:ai/tools`. It ships the
+set a coding agent needs — `list_files`, `read_file`, `search_files`, and, when
+`writes` is enabled, `write_file`, `edit_file`, and `shell` — with the policy
+decisions already made: output is capped so one call cannot flood the context
+window, relative paths resolve against `cwd` (pass `confine` to refuse
+anything outside it), and the mutating tools carry
+`requiresApproval` unless `auto` is set, so a harness suspends for a human
+decision before they run.
+
+```ts
+import { agent, openai } from 'fino:ai';
+import { createWorkspaceTools } from 'fino:ai/tools';
+
+const reviewer = agent({
+  model: openai({ model: 'gpt-4o' }),
+  instructions: 'Review the working tree and report problems. Do not change files.',
+  tools: createWorkspaceTools({ cwd: '/repo', writes: false }),
+});
+```
+
+Each tool is also exported on its own — `readFileTool({ cwd })`,
+`shellTool({ cwd, auto: true })`, and so on — so an application can take the
+two it wants and pair them with its own.
+
 ## Design Tool Boundaries
 
 Keep each tool focused on one action. Prefer `lookup_ticket`, `quote_invoice`,

@@ -1,55 +1,99 @@
 /**
- * fino:commands/code/tools — the tool set behind `fino code` and `fino mcp`.
+ * fino:ai/tools — the ready-made workspace tool set for coding agents.
  *
- * `createCodeTools()` builds validated `fino:ai` tools for developing on the
- * Fino platform: full-text documentation search and symbol lookup backed by
- * the `fino doc` index, guide reading, file listing/reading/searching, and —
- * when enabled — file writing, in-place editing, and shell execution. The
- * same tools power the interactive coding agent and the MCP server, so the
- * capability policy (read-only versus write, approval-gated versus
- * auto-approved) is decided here once via options.
+ * Where `fino:ai/tool` defines one tool, this module ships the set every
+ * coding agent needs: listing, reading, and searching files, and — when
+ * writes are enabled — writing files, editing them in place, and running
+ * shell commands. Each tool is an ordinary `fino:ai` `Tool`, so it can be
+ * handed to an `Agent`, mounted on an MCP server, or invoked directly.
+ *
+ * The mutating tools (`write_file`, `edit_file`, `shell`) declare
+ * `requiresApproval` unless `auto` is set, so an interactive harness suspends
+ * for a human decision before they run. Relative paths resolve against `cwd`;
+ * absolute paths are followed as given, since an agent working on a machine
+ * rather than in a sandbox routinely reaches a scratch file or a neighbouring
+ * checkout. Pass `confine` to refuse anything outside `cwd` — worth doing for
+ * a set handed to something that should stay in one project, though it binds
+ * only these tools, not `shell`. Output is capped so one call cannot flood a context window.
  *
  * ```ts no_run
- * import { createCodeTools } from 'fino:commands/code/tools';
+ * import { agent, openai } from 'fino:ai';
+ * import { createWorkspaceTools } from 'fino:ai/tools';
  *
- * const tools = createCodeTools({ cwd: '/repo', writes: true });
- * const names = tools.map((t) => t.name);
- * // ['docs_search', 'docs_show', 'list_files', 'read_file',
- * //  'search_files', 'write_file', 'edit_file', 'shell']
+ * const coder = agent({
+ *   model: openai({ model: 'gpt-4o' }),
+ *   tools: createWorkspaceTools({ cwd: '/repo' }),
+ * });
  * ```
  */
 import { tool, Tool } from 'fino:ai/tool';
 import { v } from 'fino:validate';
 import { DiskFileSystem, Glob } from 'fino:file';
-import { dirname, isAbsolute, join, relative } from 'fino:file/path';
+import { dirname, join, relative, resolve, sep } from 'fino:file/path';
 import { kill, Process, SIGKILL } from 'fino:process';
-import type { Task } from '../../task.ts';
 
 /**
- * Options for `createCodeTools()`.
+ * Options for one workspace tool.
+ *
+ * ```ts no_run
+ * import { readFileTool } from 'fino:ai/tools';
+ *
+ * const read = readFileTool({ cwd: '/repo' });
+ * ```
  */
-export interface CodeToolsOptions {
+export interface WorkspaceToolOptions {
   /**
-   * Project root that relative tool paths resolve against.
+   * Workspace root that relative tool paths resolve against.
    */
   cwd: string;
   /**
-   * Directory holding a `fino doc build` output tree, surfaced to the model
-   * so it can `read_file` guides directly. Defaults to `<cwd>/docs`.
+   * Refuse paths that resolve outside {@link cwd}. Defaults to `false`,
+   * because an absolute path to a file elsewhere is ordinary for an agent
+   * working on a machine rather than in a sandbox — a checkout next door, a
+   * scratch file in `/tmp`, a config in the home directory. Turn it on for a
+   * tool set handed to something that should not reach past one project.
+   *
+   * Note that it confines these tools only: a set that also includes
+   * {@link shellTool} can still reach anywhere the process can.
    */
-  docsDir?: string;
+  confine?: boolean;
+}
+
+/**
+ * Options for a workspace tool that changes files or system state.
+ *
+ * ```ts no_run
+ * import { shellTool } from 'fino:ai/tools';
+ *
+ * const shell = shellTool({ cwd: '/repo', auto: true });
+ * ```
+ */
+export interface MutatingToolOptions extends WorkspaceToolOptions {
+  /**
+   * Drop `requiresApproval` so the tool executes without suspending for a
+   * human decision. Defaults to `false`.
+   */
+  auto?: boolean;
+}
+
+/**
+ * Options for `createWorkspaceTools()`.
+ *
+ * ```ts no_run
+ * import { createWorkspaceTools, WorkspaceToolsOptions } from 'fino:ai/tools';
+ *
+ * const opts: WorkspaceToolsOptions = { cwd: '/repo', writes: false };
+ * const tools = createWorkspaceTools(opts);
+ * ```
+ */
+export interface WorkspaceToolsOptions extends MutatingToolOptions {
   /**
    * Include the mutating tools (`write_file`, `edit_file`, `shell`).
    *
-   * Defaults to `true`. Set `false` for a read-only tool set, such as the
-   * coding agent's planning mode or an unprivileged MCP mount.
+   * Defaults to `true`. Set `false` for a read-only tool set, such as an
+   * agent's planning mode or an unprivileged MCP mount.
    */
   writes?: boolean;
-  /**
-   * Drop `requiresApproval` from the mutating tools so they execute without
-   * suspending for approval. Defaults to `false`.
-   */
-  auto?: boolean;
 }
 
 const MAX_OUTPUT_CHARS = 48_000;
@@ -75,8 +119,16 @@ function truncate(text: string, limit = MAX_OUTPUT_CHARS): string {
   return `${text.slice(0, limit)}\n[output truncated at ${limit} characters]`;
 }
 
-function resolvePath(cwd: string, path: string): string {
-  return isAbsolute(path) ? path : join(cwd, path).toString();
+function resolvePath(cwd: string, path: string, confine = false): string | null {
+  const root = resolve(cwd).toString();
+  const target = resolve(root, path).toString();
+  if (!confine) return target;
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return target === root || target.startsWith(prefix) ? target : null;
+}
+
+function escapeError(path: string): { content: string; isError: true } {
+  return { content: `Path ${path} resolves outside the workspace root`, isError: true };
 }
 
 async function readAllText(source: AsyncIterable<Uint8Array>): Promise<string> {
@@ -95,78 +147,22 @@ async function readAllText(source: AsyncIterable<Uint8Array>): Promise<string> {
   return new TextDecoder().decode(merged);
 }
 
-async function loadDocTask(): Promise<Task> {
-  const mod = (await import('fino:commands/doc')) as { default: Task };
-  return mod.default;
-}
-
-interface DocJsonResult {
-  found?: boolean;
-  output?: string;
-}
-
-const DOC_BUILD_HINT =
-  'No documentation index found. Build one first with: fino doc build --types runtime-builtins.d.ts js ' +
-  '(from the fino repository root), or point the tools at a project that has run `fino doc build`.';
-
-function docsSearchTool(): Tool {
-  return tool({
-    name: 'docs_search',
-    description:
-      'Full-text search the Fino documentation index (guides and generated API reference). ' +
-      'Use this first when deciding which fino:* module or symbol serves a use case. Read-only.',
-    parameters: v.object({
-      query: v.string().describe('Search terms, e.g. "http server routing" or "kqueue"'),
-    }),
-    execute: async ({ query }: { query: string }) => {
-      const doc = await loadDocTask();
-      const search = doc.child('search');
-      if (!search) return { content: 'doc search command unavailable', isError: true };
-      try {
-        const result = (await search.run(
-          { query: query.split(/\s+/).filter((term) => term.length > 0) },
-          { outputMode: 'json' },
-        )) as DocJsonResult;
-        return truncate(result.output ?? 'No results.');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes('no prior doc build')) {
-          return { content: DOC_BUILD_HINT, isError: true };
-        }
-        return { content: `docs_search failed: ${message}`, isError: true };
-      }
-    },
-  });
-}
-
-function docsShowTool(): Tool {
-  return tool({
-    name: 'docs_show',
-    description:
-      'Show the generated API reference for one Fino symbol by qualified name, e.g. ' +
-      '"agent", "Session.approveTool", or "net/http/app.App". Read-only.',
-    parameters: v.object({
-      symbol: v.string().describe('Symbol or module name, optionally member-qualified'),
-    }),
-    execute: async ({ symbol }: { symbol: string }) => {
-      const doc = await loadDocTask();
-      const show = doc.child('show');
-      if (!show) return { content: 'doc show command unavailable', isError: true };
-      try {
-        const result = (await show.run({ symbol }, { outputMode: 'json' })) as DocJsonResult;
-        return truncate(result.output ?? 'No result.');
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        if (message.includes('no prior doc build')) {
-          return { content: DOC_BUILD_HINT, isError: true };
-        }
-        return { content: `docs_show failed: ${message}`, isError: true };
-      }
-    },
-  });
-}
-
-function listFilesTool(fs: DiskFileSystem, cwd: string): Tool {
+/**
+ * Build the `list_files` tool: glob the workspace for file paths.
+ *
+ * Results are sorted, reported relative to `cwd`, and capped at 500 entries.
+ * Read-only.
+ *
+ * ```ts no_run
+ * import { listFilesTool } from 'fino:ai/tools';
+ *
+ * const list = listFilesTool({ cwd: '/repo' });
+ * ```
+ */
+export function listFilesTool(opts: WorkspaceToolOptions): Tool {
+  const fs = new DiskFileSystem();
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
   return tool({
     name: 'list_files',
     description:
@@ -198,7 +194,22 @@ function listFilesTool(fs: DiskFileSystem, cwd: string): Tool {
   });
 }
 
-function readFileTool(fs: DiskFileSystem, cwd: string): Tool {
+/**
+ * Build the `read_file` tool: read a text file with line numbers.
+ *
+ * Long lines are clipped, the page is capped at 2000 lines, and the result
+ * tells the model the offset to continue from. Read-only.
+ *
+ * ```ts no_run
+ * import { readFileTool } from 'fino:ai/tools';
+ *
+ * const read = readFileTool({ cwd: '/repo' });
+ * ```
+ */
+export function readFileTool(opts: WorkspaceToolOptions): Tool {
+  const fs = new DiskFileSystem();
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
   return tool({
     name: 'read_file',
     description:
@@ -217,7 +228,8 @@ function readFileTool(fs: DiskFileSystem, cwd: string): Tool {
       offset?: number;
       limit?: number;
     }) => {
-      const target = resolvePath(cwd, path);
+      const target = resolvePath(cwd, path, confine);
+      if (target === null) return escapeError(path);
       let text: string;
       try {
         text = new TextDecoder().decode(await fs.readFile(target));
@@ -260,7 +272,22 @@ async function* walkProjectFiles(
   }
 }
 
-function searchFilesTool(fs: DiskFileSystem, cwd: string): Tool {
+/**
+ * Build the `search_files` tool: grep the workspace with a regular expression.
+ *
+ * The walk skips build output and dot directories, ignores files over 1 MiB or
+ * containing NUL bytes, and caps results at 200 matches. Read-only.
+ *
+ * ```ts no_run
+ * import { searchFilesTool } from 'fino:ai/tools';
+ *
+ * const search = searchFilesTool({ cwd: '/repo' });
+ * ```
+ */
+export function searchFilesTool(opts: WorkspaceToolOptions): Tool {
+  const fs = new DiskFileSystem();
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
   return tool({
     name: 'search_files',
     description:
@@ -328,28 +355,6 @@ function searchFilesTool(fs: DiskFileSystem, cwd: string): Tool {
   });
 }
 
-function writeFileTool(fs: DiskFileSystem, cwd: string, auto: boolean): Tool {
-  return tool({
-    name: 'write_file',
-    description:
-      'Create or overwrite one file with the given content, creating parent directories as ' +
-      'needed. This changes files on disk; prefer edit_file for small changes to existing files.',
-    parameters: v.object({
-      path: v.string().describe('File path, relative to the project root or absolute'),
-      content: v.string().describe('Full new file content'),
-    }),
-    risk: 'writes files',
-    sideEffects: true,
-    requiresApproval: !auto,
-    execute: async ({ path, content }: { path: string; content: string }) => {
-      const target = resolvePath(cwd, path);
-      await mkdirRecursive(fs, dirname(target).toString());
-      await fs.writeFile(target, new TextEncoder().encode(content));
-      return `Wrote ${content.length} characters to ${path}`;
-    },
-  });
-}
-
 async function mkdirRecursive(fs: DiskFileSystem, dir: string): Promise<void> {
   try {
     await fs.mkdir(dir);
@@ -368,7 +373,61 @@ async function mkdirRecursive(fs: DiskFileSystem, dir: string): Promise<void> {
   }
 }
 
-function editFileTool(fs: DiskFileSystem, cwd: string, auto: boolean): Tool {
+/**
+ * Build the `write_file` tool: create or overwrite one file.
+ *
+ * Parent directories are created as needed. Declares `requiresApproval`
+ * unless `auto` is set.
+ *
+ * ```ts no_run
+ * import { writeFileTool } from 'fino:ai/tools';
+ *
+ * const write = writeFileTool({ cwd: '/repo' });
+ * ```
+ */
+export function writeFileTool(opts: MutatingToolOptions): Tool {
+  const fs = new DiskFileSystem();
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
+  return tool({
+    name: 'write_file',
+    description:
+      'Create or overwrite one file with the given content, creating parent directories as ' +
+      'needed. This changes files on disk; prefer edit_file for small changes to existing files.',
+    parameters: v.object({
+      path: v.string().describe('File path, relative to the project root or absolute'),
+      content: v.string().describe('Full new file content'),
+    }),
+    risk: 'writes files',
+    sideEffects: true,
+    requiresApproval: !(opts.auto ?? false),
+    execute: async ({ path, content }: { path: string; content: string }) => {
+      const target = resolvePath(cwd, path, confine);
+      if (target === null) return escapeError(path);
+      await mkdirRecursive(fs, dirname(target).toString());
+      await fs.writeFile(target, new TextEncoder().encode(content));
+      return `Wrote ${content.length} characters to ${path}`;
+    },
+  });
+}
+
+/**
+ * Build the `edit_file` tool: replace text in one file.
+ *
+ * `oldText` must match exactly once unless `replaceAll` is set, so an
+ * ambiguous edit fails instead of guessing. Declares `requiresApproval`
+ * unless `auto` is set.
+ *
+ * ```ts no_run
+ * import { editFileTool } from 'fino:ai/tools';
+ *
+ * const edit = editFileTool({ cwd: '/repo' });
+ * ```
+ */
+export function editFileTool(opts: MutatingToolOptions): Tool {
+  const fs = new DiskFileSystem();
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
   return tool({
     name: 'edit_file',
     description:
@@ -382,7 +441,7 @@ function editFileTool(fs: DiskFileSystem, cwd: string, auto: boolean): Tool {
     }),
     risk: 'writes files',
     sideEffects: true,
-    requiresApproval: !auto,
+    requiresApproval: !(opts.auto ?? false),
     execute: async ({
       path,
       oldText,
@@ -394,7 +453,8 @@ function editFileTool(fs: DiskFileSystem, cwd: string, auto: boolean): Tool {
       newText: string;
       replaceAll?: boolean;
     }) => {
-      const target = resolvePath(cwd, path);
+      const target = resolvePath(cwd, path, confine);
+      if (target === null) return escapeError(path);
       let text: string;
       try {
         text = new TextDecoder().decode(await fs.readFile(target));
@@ -422,7 +482,22 @@ function editFileTool(fs: DiskFileSystem, cwd: string, auto: boolean): Tool {
   });
 }
 
-function shellTool(cwd: string, auto: boolean): Tool {
+/**
+ * Build the `shell` tool: run a command from the workspace root.
+ *
+ * The command runs under `/bin/sh -c`, is killed on timeout or run
+ * cancellation, and reports exit code, stdout, and stderr. A non-zero exit is
+ * an `isError` tool result. Declares `requiresApproval` unless `auto` is set.
+ *
+ * ```ts no_run
+ * import { shellTool } from 'fino:ai/tools';
+ *
+ * const shell = shellTool({ cwd: '/repo' });
+ * ```
+ */
+export function shellTool(opts: MutatingToolOptions): Tool {
+  const cwd = opts.cwd;
+  const confine = opts.confine ?? false;
   return tool({
     name: 'shell',
     description:
@@ -440,7 +515,7 @@ function shellTool(cwd: string, auto: boolean): Tool {
     }),
     risk: 'executes commands',
     sideEffects: true,
-    requiresApproval: !auto,
+    requiresApproval: !(opts.auto ?? false),
     timeoutMs: 630_000,
     execute: async (
       {
@@ -494,38 +569,28 @@ function shellTool(cwd: string, auto: boolean): Tool {
 }
 
 /**
- * Build the Fino coding tool set.
+ * Build the workspace tool set.
  *
- * Always includes the read-only tools (`docs_search`, `docs_show`,
- * `list_files`, `read_file`, `search_files`). When
- * `writes` is enabled (the default) the mutating tools (`write_file`,
- * `edit_file`, `shell`) are appended; they declare `requiresApproval` unless
- * `auto` is set, so an interactive session suspends for a decision before
- * they run.
+ * Always includes the read-only tools (`list_files`, `read_file`,
+ * `search_files`). When `writes` is enabled (the default) the mutating tools
+ * (`write_file`, `edit_file`, `shell`) are appended; they declare
+ * `requiresApproval` unless `auto` is set, so an interactive session suspends
+ * for a decision before they run.
  *
  * ```ts no_run
- * import { createCodeTools } from 'fino:commands/code/tools';
+ * import { createWorkspaceTools } from 'fino:ai/tools';
  *
- * const planning = createCodeTools({ cwd: '/repo', writes: false });
- * const full = createCodeTools({ cwd: '/repo', auto: true });
+ * const planning = createWorkspaceTools({ cwd: '/repo', writes: false });
+ * const full = createWorkspaceTools({ cwd: '/repo', auto: true });
  * ```
  */
-export function createCodeTools(opts: CodeToolsOptions): Tool[] {
-  const fs = new DiskFileSystem();
+export function createWorkspaceTools(opts: WorkspaceToolsOptions): Tool[] {
   const cwd = opts.cwd;
-  const tools = [
-    docsSearchTool(),
-    docsShowTool(),
-    listFilesTool(fs, cwd),
-    readFileTool(fs, cwd),
-    searchFilesTool(fs, cwd),
-  ];
+  const confine = opts.confine ?? false;
+  const auto = opts.auto ?? false;
+  const tools = [listFilesTool({ cwd }), readFileTool({ cwd }), searchFilesTool({ cwd })];
   if (opts.writes ?? true) {
-    tools.push(
-      writeFileTool(fs, cwd, opts.auto ?? false),
-      editFileTool(fs, cwd, opts.auto ?? false),
-      shellTool(cwd, opts.auto ?? false),
-    );
+    tools.push(writeFileTool({ cwd, auto }), editFileTool({ cwd, auto }), shellTool({ cwd, auto }));
   }
   return tools;
 }

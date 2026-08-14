@@ -12,10 +12,10 @@
  * several at once. With a positional prompt it instead runs one
  * non-interactive turn and prints the streamed answer.
  *
- * The interactive UI lives in `fino:commands/code/tui`, turn execution in
- * `fino:commands/code/engine`, the session registry in
- * `fino:commands/code/workspace`, and the tool set in
- * `fino:commands/code/tools`; this module only defines the CLI surface.
+ * The interactive UI lives in `internal:commands/code/tui`, turn execution in
+ * `internal:commands/code/engine`, the session registry in
+ * `internal:commands/code/workspace`, and the tool set in
+ * `internal:commands/code/tools`; this module only defines the CLI surface.
  *
  * ```ts no_run
  * import code from 'fino:commands/code';
@@ -30,8 +30,8 @@ import type { AgentEvent } from 'fino:ai/runtime';
 import type {
   CodeEngine as CodeEngineType,
   TurnResult as TurnResultType,
-} from 'fino:commands/code/engine';
-import type { CodeWorkspace as CodeWorkspaceType } from 'fino:commands/code/workspace';
+} from 'internal:commands/code/engine';
+import type { CodeWorkspace as CodeWorkspaceType } from 'internal:commands/code/workspace';
 
 interface CodeCommandInput {
   prompt?: string[];
@@ -48,7 +48,7 @@ interface CodeCommandInput {
 }
 
 async function openWorkspace(input: CodeCommandInput, root: string): Promise<CodeWorkspaceType> {
-  const { CodeWorkspace } = await import('fino:commands/code/workspace');
+  const { CodeWorkspace } = await import('internal:commands/code/workspace');
   return CodeWorkspace.open({
     cwd: root,
     model: input.model,
@@ -122,7 +122,7 @@ const command = new Task({
         await workspace.close();
         throw new Error('fino code: interactive mode needs a TTY; pass a prompt for one-shot use');
       }
-      const { runCodeTui } = await import('fino:commands/code/tui');
+      const { runCodeTui } = await import('internal:commands/code/tui');
       await runCodeTui(workspace, {
         sessionId: engine.threadId,
         recover: continuing,

@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/workspace — the multi-session registry behind `fino code`.
+ * internal:commands/code/workspace — the multi-session registry behind `fino code`.
  *
  * A `CodeWorkspace` owns one shared session store and the durable registry
  * of user-level sessions in it: their ids (thread ids), auto-derived titles,
@@ -10,7 +10,7 @@
  * data model behind the sidebar and `fino code sessions`.
  *
  * ```ts no_run
- * import { CodeWorkspace } from 'fino:commands/code/workspace';
+ * import { CodeWorkspace } from 'internal:commands/code/workspace';
  *
  * const workspace = await CodeWorkspace.open({ cwd: '/repo' });
  * const engine = await workspace.createSession();
@@ -28,7 +28,7 @@ import {
   readThreadTurns,
   type CodeEngineOptions,
   type CodeTurnRecord,
-} from 'fino:commands/code/engine';
+} from 'internal:commands/code/engine';
 import type { ModelMessage } from 'fino:ai/model';
 
 /**

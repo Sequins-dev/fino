@@ -7,7 +7,7 @@
  * here so each surface renders the same state the same way.
  */
 import { tk } from 'fino:tty/components/theme';
-import type { CodeMode } from 'fino:commands/code/engine';
+import type { CodeMode } from 'internal:commands/code/engine';
 import type { SubagentState } from 'fino:ai/subagents';
 
 /** The mode is the one colored word in the status bar. */

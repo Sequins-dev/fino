@@ -19,7 +19,7 @@ import { StreamTail } from 'internal:commands/code/ui/stream';
 import { renderActivityLive, renderRunningTool } from 'internal:commands/code/ui/activity';
 import { renderApprovalBand } from 'internal:commands/code/ui/approval';
 import type { ModelMessage } from 'fino:ai/model';
-import type { CodeTurnRecord } from 'fino:commands/code/engine';
+import type { CodeTurnRecord } from 'internal:commands/code/engine';
 
 const WIDTHS = [40, 72];
 

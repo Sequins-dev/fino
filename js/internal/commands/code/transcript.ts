@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/transcript — append-only JSONL transcript mirrors.
+ * internal:commands/code/transcript — append-only JSONL transcript mirrors.
  *
  * `fino code` persists its authoritative state in the SQLite session store;
  * this module mirrors the human-facing timeline into JSONL files so
@@ -14,7 +14,7 @@
  * parent↔child conversation.
  *
  * ```ts no_run
- * import { SessionTranscript } from 'fino:commands/code/transcript';
+ * import { SessionTranscript } from 'internal:commands/code/transcript';
  *
  * const transcript = new SessionTranscript('/repo/.fino/code/transcripts', threadId);
  * transcript.parent().append({ type: 'user', text: 'hello' });

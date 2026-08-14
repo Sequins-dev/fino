@@ -10,8 +10,8 @@
  *   HARNESS_DIR         reuse a workspace directory, to exercise resume
  *   HARNESS_MODELS      size of a scripted model catalog for the picker
  */
-import { CodeWorkspace } from 'fino:commands/code/workspace';
-import { runCodeTui } from 'fino:commands/code/tui';
+import { CodeWorkspace } from 'internal:commands/code/workspace';
+import { runCodeTui } from 'internal:commands/code/tui';
 import { assembleResult } from 'fino:ai/model';
 import { createSignal } from 'fino:signals';
 import { DiskFileSystem } from 'fino:file';

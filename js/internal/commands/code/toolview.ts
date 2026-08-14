@@ -1,5 +1,5 @@
 /**
- * fino:commands/code/toolview — function-call rendering for tool activity.
+ * internal:commands/code/toolview — function-call rendering for tool activity.
  *
  * Tool calls read best as code: this module renders one as a call signature
  * with named parameters — `read_file(path: "js/ai/agent.ts", offset: 10)` —
@@ -12,7 +12,7 @@
  * wrapped text, so the view never fails on unexpected output.
  *
  * ```ts no_run
- * import { formatToolSignature, formatToolOutputLines } from 'fino:commands/code/toolview';
+ * import { formatToolSignature, formatToolOutputLines } from 'internal:commands/code/toolview';
  *
  * formatToolSignature('read_file', { path: 'a.ts', offset: 10 });
  * // 'read_file(path: "a.ts", offset: 10)'

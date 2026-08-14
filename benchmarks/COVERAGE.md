@@ -20,7 +20,6 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/code` | not yet benchmarked |
 | `fino:commands/code/tools` | not yet benchmarked |
 | `fino:commands/code/prompt` | not yet benchmarked |
-| `fino:commands/code/engine` | not yet benchmarked |
 | `fino:commands/code/tui` | not yet benchmarked |
 | `fino:commands/mcp` | not yet benchmarked |
 | `fino:ai/subagents` | not yet benchmarked |
@@ -157,6 +156,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/model/local` | not yet benchmarked |
 | `fino:ai/model/openai` | not yet benchmarked |
 | `fino:ai/tool` | not yet benchmarked |
+| `fino:ai/tools` | not yet benchmarked |
 | `fino:ai/harness` | not yet benchmarked |
 | `fino:ai/runtime` | not yet benchmarked |
 | `fino:ai/agent` | not yet benchmarked |
