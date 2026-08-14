@@ -63,6 +63,21 @@ import {
 } from 'internal:ai/shared';
 import { HttpClient } from 'fino:net/http/client';
 const DEFAULT_MAX_TOKENS = 4096;
+// OpenAI's reasoning-era model families reject the legacy `max_tokens`
+// parameter and require `max_completion_tokens`. Older models and
+// OpenAI-compatible servers (vLLM, llama-server) still expect `max_tokens`,
+// so the choice keys off the model family.
+function requiresMaxCompletionTokens(model: string): boolean {
+  return /^(o\d|gpt-5)/i.test(model);
+}
+// gpt-5.x defaults to a reasoning effort that /v1/chat/completions rejects
+// alongside function tools ("To use function tools, use /v1/responses or set
+// reasoning_effort to 'none'"). Opt those requests out explicitly. The
+// o-series is excluded: reasoning is the point of those models, and they do
+// accept tools on this endpoint.
+function toolsNeedReasoningOptOut(model: string): boolean {
+  return /^gpt-5/i.test(model);
+}
 function mapFinishReason(raw: string): StopReason {
   switch (raw) {
     case 'stop':
@@ -168,7 +183,8 @@ function buildOpenAIRequest(
   }
   const body: Record<string, unknown> = {
     model: modelName,
-    max_tokens: req.maxTokens ?? maxTokens,
+    [requiresMaxCompletionTokens(modelName) ? 'max_completion_tokens' : 'max_tokens']:
+      req.maxTokens ?? maxTokens,
     messages,
     stream,
   };
@@ -179,6 +195,9 @@ function buildOpenAIRequest(
   if (effectiveTopP != null) body.top_p = effectiveTopP;
   const effectiveSeed = req.seed ?? seed;
   if (effectiveSeed != null) body.seed = effectiveSeed;
+  if (req.tools?.length && toolsNeedReasoningOptOut(modelName)) {
+    body.reasoning_effort = 'none';
+  }
   if (req.tools?.length) {
     body.tools = req.tools.map((t) => ({
       type: 'function',

@@ -103,8 +103,8 @@ architecture; the deep dives cover
 The [CLI guide](./cli.md) maps every command:
 [run](./cli/run.md), [repl](./cli/repl.md), [test](./cli/test.md),
 [bench](./cli/bench.md), [task](./cli/task.md), [init](./cli/init.md),
-[install](./cli/install.md), [doc](./cli/doc.md), [fmt](./cli/fmt.md), and
-[lint](./cli/lint.md).
+[install](./cli/install.md), [doc](./cli/doc.md), [fmt](./cli/fmt.md),
+[lint](./cli/lint.md), [code](./cli/code.md), and [mcp](./cli/mcp.md).
 
 ## API Reference
 

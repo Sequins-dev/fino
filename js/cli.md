@@ -21,6 +21,8 @@ in another CLI, MCP server, agent tool set, or test harness.
 - [`fino doc`](./cli/doc.md) builds, searches, displays, and tests docs.
 - [`fino fmt`](./cli/fmt.md) formats JS and TS source.
 - [`fino lint`](./cli/lint.md) reports lint diagnostics and safe fixes.
+- [`fino code`](./cli/code.md) starts the Fino coding agent.
+- [`fino mcp`](./cli/mcp.md) serves the coding tools over MCP.
 
 ## Reuse Command Tasks
 

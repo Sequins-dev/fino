@@ -67,8 +67,40 @@ fn parse_callback(
     };
 
     let options = parse_options(scope, args.get(1), true);
-    let result = catch_unwind(AssertUnwindSafe(|| parse_source(&source, &options)));
+    // parse() is documented to report failures through `ok`/`errors` rather
+    // than throwing, and callers routinely hand it half-written source (an
+    // editor buffer, a model's streamed code block). OXC asserts internally
+    // on some of that input; the unwind is already caught here, so the
+    // default hook's stderr message is noise that would also corrupt any TUI
+    // sharing the terminal.
+    let result = quietly(|| catch_unwind(AssertUnwindSafe(|| parse_source(&source, &options))));
     set_json_result(scope, rv, "parse", result);
+}
+
+thread_local! {
+    static PANIC_QUIET: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Run `body` with panic messages from this thread suppressed.
+///
+/// The hook is installed once and defers to the previous hook for every
+/// thread that has not opted in, so unexpected panics elsewhere still report
+/// normally.
+fn quietly<T>(body: impl FnOnce() -> T) -> T {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if PANIC_QUIET.with(|quiet| quiet.get()) {
+                return;
+            }
+            previous(info);
+        }));
+    });
+    PANIC_QUIET.with(|quiet| quiet.set(true));
+    let result = body();
+    PANIC_QUIET.with(|quiet| quiet.set(false));
+    result
 }
 
 fn transpile_callback(

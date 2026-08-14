@@ -192,6 +192,8 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('fmt'), 'help includes fmt command');
     t.ok(stdout.includes('lint'), 'help includes lint command');
     t.ok(stdout.includes('task'), 'help includes task command');
+    t.ok(stdout.includes('code'), 'help includes code command');
+    t.ok(stdout.includes('mcp'), 'help includes mcp command');
   });
   it('runs a script through the root command', async (t) => {
     const { stdout, stderr, result } = await runCli(['./tests/fixtures/cli-script.ts']);
@@ -366,7 +368,19 @@ describe('CLI commands', () => {
     );
   });
   it('prints focused help for each subcommand', async (t) => {
-    const commands = ['run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'repl'];
+    const commands = [
+      'run',
+      'test',
+      'bench',
+      'install',
+      'init',
+      'doc',
+      'fmt',
+      'lint',
+      'repl',
+      'code',
+      'mcp',
+    ];
     for (const command of commands) {
       const stdout = await parseRoot([command, '--help']);
       t.ok(stdout.includes(`Usage: fino ${command}`), `${command} --help includes command usage`);

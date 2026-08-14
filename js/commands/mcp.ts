@@ -1,0 +1,200 @@
+/**
+ * fino:commands/mcp — serve the Fino-specific development tools over MCP.
+ *
+ * `fino mcp` exposes only what a host cannot already do for itself. Generic
+ * file listing, reading, and searching are left to the MCP client; what ships
+ * here is the Fino documentation index (`docs_search`, `docs_show`) plus
+ * Fino's own commands as `fino_*` tools — the test runner, benchmark runner,
+ * linter, formatter, package installer, and project scaffolder. Authored
+ * guides from the docs build are listed as MCP resources under `fino-doc://`.
+ *
+ * Writing files and running shell commands are left to the host as well, for
+ * the same reason: the tools here drive Fino's toolchain, not the filesystem.
+ *
+ * By default the server speaks newline-delimited JSON-RPC over this process's
+ * stdio (the transport MCP hosts use to launch server commands) and exposes
+ * only the read-only tools: `docs_search`, `docs_show`, and `fino_lint`.
+ * `--allow-write` adds the commands that change files — `fino_fmt`,
+ * `fino_install`, `fino_init`. `--allow-shell` adds `fino_test` and
+ * `fino_bench`, which run arbitrary project code and so carry the same risk as
+ * a shell. `--http <port>` serves the Streamable HTTP transport instead of
+ * stdio.
+ *
+ * ```sh
+ * fino mcp                       # stdio, read-only tools
+ * fino mcp --allow-write --allow-shell
+ * fino mcp --http 8090           # Streamable HTTP on 127.0.0.1:8090/mcp
+ * ```
+ */
+import { Task } from '../task.ts';
+import { cwd } from '../process.ts';
+import type { Tool } from 'fino:ai/tool';
+
+/**
+ * Options for `createMcpTools()`.
+ */
+export interface McpToolsOptions {
+  /**
+   * Project root the tools operate against, normally the server process
+   * working directory.
+   */
+  cwd: string;
+  /**
+   * Directory holding a `fino doc build` output tree used by `docs_search`
+   * and `docs_show`. Defaults to `<cwd>/docs`.
+   */
+  docsDir?: string;
+  /**
+   * Expose the commands that change files: `fino_fmt`, `fino_install`,
+   * `fino_init`, and the `fix` parameter of `fino_lint`. Defaults to `false`.
+   */
+  allowWrite?: boolean;
+  /**
+   * Expose the commands that execute project code: `fino_test` and
+   * `fino_bench`. Defaults to `false`.
+   */
+  allowShell?: boolean;
+}
+
+/**
+ * Build the tool set `fino mcp` mounts for one policy.
+ *
+ * Only `docs_search`, `docs_show`, and `fino_lint` are unconditional. The
+ * general-purpose workspace tools of `fino:ai/tools` (`list_files`,
+ * `read_file`, `search_files`, `write_file`, `edit_file`, `shell`) are
+ * deliberately left out here — every MCP host already has them, so the server
+ * keeps to what is unique to Fino.
+ *
+ * ```ts no_run
+ * import { createMcpTools } from 'fino:commands/mcp';
+ *
+ * const tools = await createMcpTools({ cwd: '/repo' });
+ * // ['docs_search', 'docs_show', 'fino_lint']
+ * ```
+ */
+export async function createMcpTools(opts: McpToolsOptions): Promise<Tool[]> {
+  const { createFinoTools } = await import('internal:commands/tools');
+  // Exactly the Fino tool set and nothing else. The general-purpose workspace
+  // tools of `fino:ai/tools` stay behind: a host running this server already
+  // has its own, and duplicating them only gives a model two ways to do the
+  // same thing, one of which is scoped to the wrong working directory.
+  //
+  // `auto` is set because MCP has no approval protocol — a client that wants a
+  // human in the loop owns that decision, and here the flag that exposes a
+  // tool at all is the policy boundary.
+  return createFinoTools({
+    cwd: opts.cwd,
+    writes: opts.allowWrite ?? false,
+    shell: opts.allowShell ?? false,
+    auto: true,
+  });
+}
+
+interface McpCommandInput {
+  'allow-write'?: boolean;
+  'allow-shell'?: boolean;
+  http?: number;
+  'docs-dir'?: string;
+}
+
+const MCP_INSTRUCTIONS = [
+  'Fino platform development tools. Fino is a JS/TS runtime with a thin native core;',
+  'its standard library lives in fino:* modules. Use docs_search first to discover which',
+  'module serves a use case, then docs_show for exact symbol reference. Full authored',
+  'guides are MCP resources, not tools: list resources and read the fino-doc:// URI you',
+  'need. The fino_* tools run the project Fino toolchain — fino_lint, fino_fmt,',
+  'fino_test, fino_bench, fino_install, fino_init — relative to the server process',
+  'working directory. Read, search, and edit source files, and run shell commands,',
+  'with your own tools — this server deliberately does not duplicate them.',
+].join(' ');
+
+const command = new Task({
+  name: 'mcp',
+  description: 'Serve the Fino coding tools over the Model Context Protocol',
+  outputMode: 'text',
+  run: async function runMcpCommand(input: McpCommandInput, ctx) {
+    const root = ctx.cwd ?? cwd();
+    const { mcpServer, stdioServerTransport } = await import('fino:ai/mcp');
+    const { DiskFileSystem } = await import('fino:file');
+    const { join } = await import('fino:file/path');
+    const docsDir = input['docs-dir'] ?? join(root, 'docs').toString();
+    const tools = await createMcpTools({
+      cwd: root,
+      docsDir,
+      allowWrite: input['allow-write'] ?? false,
+      allowShell: input['allow-shell'] ?? false,
+    });
+    const fs = new DiskFileSystem();
+    const server = mcpServer({
+      name: 'fino',
+      version: '0.1.0',
+      instructions: MCP_INSTRUCTIONS,
+      tools,
+      resources: async () => {
+        const resources = [];
+        try {
+          for await (const entry of fs.glob('**/*.md', { cwd: docsDir, onlyFiles: true })) {
+            const rel = entry.path.toString().slice(docsDir.length + 1);
+            resources.push({
+              uri: `fino-doc://${rel}`,
+              name: rel,
+              mimeType: 'text/markdown',
+            });
+          }
+        } catch (_) {
+          // no docs build; expose no resources
+        }
+        return resources;
+      },
+      readResource: async (uri) => {
+        if (!uri.startsWith('fino-doc://')) throw new Error(`Unknown resource: ${uri}`);
+        const rel = uri.slice('fino-doc://'.length);
+        if (rel.includes('..') || rel.startsWith('/')) throw new Error(`Invalid resource: ${uri}`);
+        const bytes = await fs.readFile(join(docsDir, rel).toString());
+        return {
+          uri,
+          mimeType: 'text/markdown',
+          text: new TextDecoder().decode(bytes),
+        };
+      },
+    });
+    if (input.http !== undefined) {
+      const { App } = await import('fino:net/http/app');
+      const { mountMcp } = await import('fino:ai/mcp');
+      const app = new App();
+      mountMcp(app, '/mcp', server);
+      await ctx.writer.writeText?.(
+        `fino mcp: serving Streamable HTTP on http://127.0.0.1:${input.http}/mcp\n`,
+      );
+      await app.listen({ port: input.http });
+      await new Promise<void>(() => {});
+      return '';
+    }
+    await server.serve(stdioServerTransport());
+    return '';
+  },
+  cli: {
+    usage: 'fino mcp [options]',
+    options: [
+      {
+        flags: '--allow-write',
+        type: 'boolean',
+        description:
+          'Expose the commands that change files: fino_fmt, fino_install, fino_init, fino_lint --fix',
+      },
+      {
+        flags: '--allow-shell',
+        type: 'boolean',
+        description: 'Expose the commands that execute project code: fino_test, fino_bench',
+      },
+      {
+        flags: '--http',
+        type: 'number',
+        description: 'Serve Streamable HTTP on this port instead of stdio',
+      },
+      { flags: '--docs-dir', type: 'string', description: 'Docs build directory (default ./docs)' },
+    ],
+  },
+});
+
+export { command as default };

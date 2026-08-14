@@ -26,7 +26,10 @@ events, and response assembly are covered in
 function with a name, a description, and a `fino:validate` schema for its
 parameters; the runtime validates arguments before your code runs. Tools that
 wrap subprocesses, call other agents, require human approval, or execute
-untrusted code are covered in [Complex Tools](./ai/complex-tools.md) — and when
+untrusted code are covered in [Complex Tools](./ai/complex-tools.md), which
+also covers `fino:ai/tools`, the ready-made workspace tool set (file listing,
+reading, searching, writing, editing, and shell) that a coding agent can take
+as-is instead of writing its own — and when
 a tool loads code it should not trust, run that code in a
 [realm](./realm.md) with narrowed imports rather than in the application
 context.
@@ -42,6 +45,31 @@ must match a schema.
 threads, and suspend/resume state through a `SessionStore`, so a conversation
 can survive process restarts or pause for human approval. The agent remains
 the behavior boundary; the session is the durability boundary.
+
+**Sub-agents** scale the loop out. A `SubagentPool` (`fino:ai/subagents`)
+lets a parent agent spawn concurrent child agents — each a durable session
+thread whose "user" is the parent — track their progress, steer them
+mid-run, and review their completion reports before finalizing. Children
+persist beyond the turn that spawned them: any settled child can be revived
+later on its existing conversation. The pool persists through the session
+store, so restarts resurrect running children too.
+
+**Workspaces** are the layer above a single conversation. An application that
+lets a person keep several sessions — a chat sidebar, a queue of running
+jobs, a `sessions` subcommand — needs to know which threads exist, what they
+are called, when each was last touched, which are archived, and which are
+asking for attention. `AgentWorkspace` (`fino:ai/workspace`) keeps that
+registry in one shared `SessionStore` and manages one live object per
+session, whatever kind of object the application drives. Sessions register on
+their first turn, so opening the app and closing it again leaves no empty row
+behind.
+
+**Transcripts** make a run readable. A session store is built for resuming a
+run, not for reading one; `fino:ai/transcript` mirrors the human-facing
+timeline into append-only JSONL files — one object per line, one file per
+thread and per sub-agent — so conversations are auditable by people and by
+models with file tools. The mirror is best-effort and write-only: deleting it
+loses nothing operational.
 
 Around that core:
 

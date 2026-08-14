@@ -178,6 +178,16 @@ export type {
   ThreadState,
   ToolApprovalDecision,
 } from 'fino:ai/session';
+export { SubagentPool, subagentCompleteTool, subagentTools } from 'fino:ai/subagents';
+export type {
+  SubagentApproval,
+  SubagentBuild,
+  SubagentBuildContext,
+  SubagentPoolOptions,
+  SubagentSpec,
+  SubagentState,
+  SubagentStatus,
+} from 'fino:ai/subagents';
 export { memory, retriever, SqliteMemory } from 'fino:ai/memory';
 export type {
   ChunkOptions,
@@ -231,6 +241,7 @@ export {
   MCPServer,
   mcpServer,
   mountMcp,
+  stdioServerTransport,
   stdioTransport,
 } from 'fino:ai/mcp';
 export type {

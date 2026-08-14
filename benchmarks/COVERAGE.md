@@ -17,6 +17,16 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/install` | not yet benchmarked |
 | `fino:commands/doc` | not yet benchmarked |
 | `fino:commands/doc/theme` | not yet benchmarked |
+| `fino:commands/code` | not yet benchmarked |
+| `fino:commands/code/tools` | not yet benchmarked |
+| `fino:commands/code/prompt` | not yet benchmarked |
+| `fino:commands/code/tui` | not yet benchmarked |
+| `fino:commands/mcp` | not yet benchmarked |
+| `fino:ai/subagents` | not yet benchmarked |
+| `fino:ai/transcript` | not yet benchmarked |
+| `fino:ai/workspace` | not yet benchmarked |
+| `fino:commands/code/toolview` | not yet benchmarked |
+| `fino:commands/code/workspace` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
@@ -42,6 +52,15 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui/web/state` | not yet benchmarked |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
+| `fino:tty/inline` | not yet benchmarked |
+| `fino:tty/components/pane` | not yet benchmarked |
+| `fino:tty/components/theme` | not yet benchmarked |
+| `fino:tty/components/text` | not yet benchmarked |
+| `fino:tty/components/spinner` | not yet benchmarked |
+| `fino:tty/components/box` | not yet benchmarked |
+| `fino:tty/components/list` | not yet benchmarked |
+| `fino:tty/components/composer` | not yet benchmarked |
+| `fino:tty/components/statusbar` | not yet benchmarked |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |
@@ -138,6 +157,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/model/local` | not yet benchmarked |
 | `fino:ai/model/openai` | not yet benchmarked |
 | `fino:ai/tool` | not yet benchmarked |
+| `fino:ai/tools` | not yet benchmarked |
 | `fino:ai/harness` | not yet benchmarked |
 | `fino:ai/runtime` | not yet benchmarked |
 | `fino:ai/agent` | not yet benchmarked |

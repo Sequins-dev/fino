@@ -149,6 +149,70 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
+    source_builtin!("fino:commands/code", "commands/code"),
+    source_builtin!(
+        "internal:commands/code/tools",
+        "internal/commands/code/tools"
+    ),
+    source_builtin!(
+        "internal:commands/code/prompt",
+        "internal/commands/code/prompt"
+    ),
+    source_builtin!(
+        "internal:commands/code/engine",
+        "internal/commands/code/engine"
+    ),
+    source_builtin!("internal:commands/code/tui", "internal/commands/code/tui"),
+    source_builtin!(
+        "internal:commands/code/toolview",
+        "internal/commands/code/toolview"
+    ),
+    source_builtin!(
+        "internal:commands/code/workspace",
+        "internal/commands/code/workspace"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/theme",
+        "internal/commands/code/ui/theme"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/blocks",
+        "internal/commands/code/ui/blocks"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/stream",
+        "internal/commands/code/ui/stream"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/activity",
+        "internal/commands/code/ui/activity"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/approval",
+        "internal/commands/code/ui/approval"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/history",
+        "internal/commands/code/ui/history"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/footer",
+        "internal/commands/code/ui/footer"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/overlay",
+        "internal/commands/code/ui/overlay"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/views/session-manager",
+        "internal/commands/code/ui/views/session-manager"
+    ),
+    source_builtin!(
+        "internal:commands/code/ui/views/model-picker",
+        "internal/commands/code/ui/views/model-picker"
+    ),
+    source_builtin!("fino:commands/mcp", "commands/mcp"),
+    source_builtin!("internal:commands/tools", "internal/commands/tools"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),
@@ -273,6 +337,15 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
     source_builtin!("fino:tty/tui", "tty/tui"),
+    source_builtin!("fino:tty/inline", "tty/inline"),
+    source_builtin!("fino:tty/components/pane", "tty/components/pane"),
+    source_builtin!("fino:tty/components/theme", "tty/components/theme"),
+    source_builtin!("fino:tty/components/text", "tty/components/text"),
+    source_builtin!("fino:tty/components/spinner", "tty/components/spinner"),
+    source_builtin!("fino:tty/components/box", "tty/components/box"),
+    source_builtin!("fino:tty/components/list", "tty/components/list"),
+    source_builtin!("fino:tty/components/composer", "tty/components/composer"),
+    source_builtin!("fino:tty/components/statusbar", "tty/components/statusbar"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
@@ -688,14 +761,18 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/model/openai", "ai/model/openai"),
     source_builtin!("fino:ai/context", "ai/context"),
     source_builtin!("fino:ai/tool", "ai/tool"),
+    source_builtin!("fino:ai/tools", "ai/tools"),
     source_builtin!("fino:ai/runtime", "ai/runtime"),
     source_builtin!("fino:ai/budget", "ai/budget"),
     source_builtin!("fino:ai/gateway", "ai/gateway"),
+    source_builtin!("fino:ai/subagents", "ai/subagents"),
     source_builtin!("fino:ai/sandbox", "ai/sandbox"),
     source_builtin!("fino:ai/cache", "ai/cache"),
     source_builtin!("fino:ai/agent", "ai/agent"),
     source_builtin!("fino:ai/memory", "ai/memory"),
     source_builtin!("fino:ai/session", "ai/session"),
+    source_builtin!("fino:ai/transcript", "ai/transcript"),
+    source_builtin!("fino:ai/workspace", "ai/workspace"),
     source_builtin!("fino:ai/skill", "ai/skill"),
     source_builtin!("fino:ai/eval", "ai/eval"),
     source_builtin!("fino:ai/mcp", "ai/mcp"),

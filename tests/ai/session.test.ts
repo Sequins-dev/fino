@@ -1192,3 +1192,267 @@ describe('SessionStore', () => {
     }
   });
 });
+describe('Session streaming', () => {
+  it('forwards model deltas and tool events through onEvent while checkpointing', async (t) => {
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo a value.',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+      execute: async (args: unknown) => `echo:${(args as { value: string }).value}`,
+    });
+    const bot = agent({
+      model: scriptModel([
+        toolCallTurn('call_1', 'echo', JSON.stringify({ value: 'hi' })),
+        endTurn('all done'),
+      ]),
+      tools: [echo],
+    });
+    const events: string[] = [];
+    let streamed = '';
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => {
+        events.push(ev.type);
+        if (ev.type === 'model_event' && ev.event.type === 'text_delta') streamed += ev.event.text;
+      },
+    });
+    const result = await sess.start('run the echo tool');
+    t.equal(result.status, 'done', 'run completed');
+    t.equal(streamed, 'all done', 'text deltas streamed through onEvent');
+    t.ok(events.includes('tool_start'), 'tool_start delivered');
+    t.ok(events.includes('tool_result'), 'tool_result delivered');
+    t.ok(events.includes('step_start'), 'step boundaries delivered');
+  });
+
+  it('streams approved-tool execution events after approveTool', async (t) => {
+    const gated = tool({
+      name: 'gated',
+      description: 'Requires approval.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+      requiresApproval: true,
+      execute: async () => 'gated ran',
+    });
+    const bot = agent({
+      model: scriptModel([toolCallTurn('call_g', 'gated', '{}'), endTurn('after approval')]),
+      tools: [gated],
+    });
+    const events: string[] = [];
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => events.push(ev.type),
+    });
+    const first = await sess.start('run the gated tool');
+    t.equal(first.status, 'suspended', 'run suspended for approval');
+    const eventsBefore = events.length;
+    const resumed = await sess.approveTool(first.state.suspendedOn!.token);
+    t.equal(resumed.status, 'done', 'run completed after approval');
+    const after = events.slice(eventsBefore);
+    t.ok(after.includes('tool_start'), 'approval execution emits tool_start');
+    t.ok(after.includes('tool_result'), 'approval execution emits tool_result');
+  });
+
+  it('does not fail the run when the onEvent observer throws', async (t) => {
+    const bot = agent({ model: scriptModel([endTurn('fine')]) });
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: () => {
+        throw new Error('observer boom');
+      },
+    });
+    const result = await sess.start('hello');
+    t.equal(result.status, 'done', 'run unaffected by observer error');
+    t.equal(result.text, 'fine', 'result text intact');
+  });
+});
+describe('Session steering', () => {
+  it('injects steering messages at the next step boundary', async (t) => {
+    const requests: ModelMessage[][] = [];
+    let sess: Session;
+    const steerTool = tool({
+      name: 'work',
+      description: 'Do some work.',
+      parameters: { type: 'object', properties: {} },
+      execute: async () => {
+        sess.steer('actually, focus on the tests');
+        return 'working';
+      },
+    });
+    const turns = [toolCallTurn('call_1', 'work', '{}'), endTurn('done')];
+    let idx = 0;
+    const model: Model = {
+      id: 'capture',
+      name: 'capture',
+      provider: 'test',
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req.messages);
+        const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+        idx++;
+        async function* gen() {
+          yield* turn;
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    sess = session({
+      store: new InMemorySessionStore(),
+      agent: agent({ model, tools: [steerTool] }),
+    });
+    const result = await sess.start('start working');
+    t.equal(result.status, 'done', 'run completed');
+    const second = requests[1]!;
+    const last = second[second.length - 1]!;
+    t.equal(last.role, 'user', 'steered message appended as user');
+    t.equal(last.content, 'actually, focus on the tests', 'steering text visible to the model');
+  });
+
+  it('returns steering the run ended before consuming', async (t) => {
+    let sess: Session;
+    const model: Model = {
+      id: 'late',
+      name: 'late',
+      provider: 'test',
+      stream(): ModelStream {
+        sess.steer('too late for this run');
+        async function* gen() {
+          yield* endTurn('finished');
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    sess = session({ store: new InMemorySessionStore(), agent: agent({ model }) });
+    const result = await sess.start('go');
+    t.equal(result.status, 'done', 'run completed');
+    t.deepEqual(
+      result.unconsumedSteering,
+      ['too late for this run'],
+      'unconsumed steering returned',
+    );
+  });
+
+  it('holds steering across a suspension and injects after approval', async (t) => {
+    const gated = tool({
+      name: 'gated',
+      description: 'Needs approval.',
+      parameters: { type: 'object', properties: {} },
+      requiresApproval: true,
+      execute: async () => 'ran',
+    });
+    const requests: ModelMessage[][] = [];
+    const turns = [toolCallTurn('call_g', 'gated', '{}'), endTurn('after')];
+    let idx = 0;
+    const model: Model = {
+      id: 'capture',
+      name: 'capture',
+      provider: 'test',
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req.messages);
+        const turn = turns[Math.min(idx, turns.length - 1)] ?? [];
+        idx++;
+        async function* gen() {
+          yield* turn;
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+    };
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: agent({ model, tools: [gated] }),
+    });
+    const first = await sess.start('run it');
+    t.equal(first.status, 'suspended', 'suspended for approval');
+    sess.steer('note while you were paused');
+    const resumed = await sess.approveTool(first.state.suspendedOn!.token);
+    t.equal(resumed.status, 'done', 'completed after approval');
+    const second = requests[1]!;
+    const texts = second
+      .filter((m) => m.role === 'user' && typeof m.content === 'string')
+      .map((m) => m.content);
+    t.ok(
+      texts.includes('note while you were paused'),
+      'steering queued during suspension reached the model after approval',
+    );
+  });
+});
+
+describe('SessionStore metadata', () => {
+  it('round-trips JSON values in the in-memory store', async (t) => {
+    const store = new InMemorySessionStore();
+    t.equal(await store.getMeta('missing'), null, 'unknown key is null');
+    await store.putMeta('k', { list: [1, 2], name: 'x' });
+    t.deepEqual(await store.getMeta('k'), { list: [1, 2], name: 'x' }, 'value round-trips');
+    await store.putMeta('k', undefined);
+    t.equal(await store.getMeta('k'), null, 'undefined deletes');
+  });
+
+  it('persists metadata across sqlite reopen', async (t) => {
+    const path = `/tmp/fino-session-meta-${Date.now().toString(36)}.db`;
+    const fs = new DiskFileSystem();
+    try {
+      const store = await SqliteSessionStore.open(path);
+      await store.putMeta('pool', { children: ['a', 'b'] });
+      await store.close();
+      const reopened = await SqliteSessionStore.open(path);
+      t.deepEqual(
+        await reopened.getMeta('pool'),
+        { children: ['a', 'b'] },
+        'value survives reopen',
+      );
+      await reopened.putMeta('pool', undefined);
+      t.equal(await reopened.getMeta('pool'), null, 'delete works');
+      await reopened.close();
+    } finally {
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+});
+describe('Session streaming — tool event payloads', () => {
+  it('delivers tool args on tool_start and content on tool_result', async (t) => {
+    const echo = tool({
+      name: 'echo',
+      description: 'Echo a value.',
+      parameters: {
+        type: 'object',
+        properties: { value: { type: 'string' } },
+      },
+      execute: async (args: unknown) => `echo:${(args as { value: string }).value}`,
+    });
+    const bot = agent({
+      model: scriptModel([
+        toolCallTurn('call_1', 'echo', JSON.stringify({ value: 'payload' })),
+        endTurn('done'),
+      ]),
+      tools: [echo],
+    });
+    const events: Array<Record<string, unknown>> = [];
+    const sess = session({
+      store: new InMemorySessionStore(),
+      agent: bot,
+      onEvent: (ev) => events.push(ev as unknown as Record<string, unknown>),
+    });
+    await sess.start('run echo');
+    const start = events.find((ev) => ev.type === 'tool_start');
+    const result = events.find((ev) => ev.type === 'tool_result');
+    t.deepEqual(start?.args, { value: 'payload' }, 'tool_start carries parsed args');
+    t.equal(result?.content, 'echo:payload', 'tool_result carries the tool output');
+  });
+});

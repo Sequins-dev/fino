@@ -35,6 +35,7 @@
  * @internal
  */
 import { env, os } from 'internal:process';
+import { signal } from '../../process.ts';
 import { dlopen } from 'fino:ffi';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const TCSANOW = 0;
@@ -57,6 +58,9 @@ const lib = (() => {
       ioctl: {
         parameters: ['i32', 'u64', 'buffer'],
         result: 'i32',
+        // ioctl(2) is variadic; without a variadic call interface, macOS
+        // arm64 passes the argument registers wrong and every request fails.
+        variadic: 2,
       },
     });
   } catch (_) {
@@ -222,6 +226,162 @@ export function enableAutoWrap(): string {
   return '\x1B[?7h';
 }
 /**
+ * Return the DECSTBM sequence that confines scrolling to rows `top..bottom`.
+ *
+ * Rows are 1-based and inclusive. While the region is set, newlines at row
+ * `bottom` scroll only rows `top..bottom` — rows evicted off `top` enter the
+ * terminal's scrollback when the region starts at row 1. Inline renderers use
+ * this transiently to push finalized lines into real scrollback while a footer
+ * stays pinned below the region. Always pair with {@link resetScrollRegion}
+ * within the same composed write.
+ *
+ * Side effect mandated by the DEC spec: setting margins homes the cursor to
+ * row 1, column 1. Never assume the cursor position after emitting this;
+ * follow it with an absolute {@link cursorTo}.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { setScrollRegion, resetScrollRegion, cursorTo } from 'internal:tty/bindings';
+ *
+ * await writeStdout(setScrollRegion(1, 20) + cursorTo(20) + '\r\nnew line' + resetScrollRegion());
+ * ```
+ */
+export function setScrollRegion(top: number, bottom: number): string {
+  return `\x1B[${top};${bottom}r`;
+}
+/**
+ * Return the DECSTBM reset sequence that restores full-screen scrolling.
+ *
+ * Undoes {@link setScrollRegion}. Like setting margins, resetting them homes
+ * the cursor to row 1, column 1 — follow with an absolute {@link cursorTo}.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { resetScrollRegion } from 'internal:tty/bindings';
+ *
+ * await writeStdout(resetScrollRegion());
+ * ```
+ */
+export function resetScrollRegion(): string {
+  return '\x1B[r';
+}
+/**
+ * Return the CUP sequence that moves the cursor to `row`, `column` (1-based).
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(5, 1) + 'painted at row 5');
+ * ```
+ */
+export function cursorTo(row: number, column: number = 1): string {
+  return `\x1B[${row};${column}H`;
+}
+/**
+ * Return the EL 0 sequence that erases from the cursor to the end of the line.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseToLineEnd } from 'internal:tty/bindings';
+ *
+ * await writeStdout('replacement text' + eraseToLineEnd());
+ * ```
+ */
+export function eraseToLineEnd(): string {
+  return '\x1B[K';
+}
+/**
+ * Return the EL 2 sequence that erases the entire current line.
+ *
+ * The cursor does not move; the row becomes blank cells.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo, eraseLine } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(3) + eraseLine());
+ * ```
+ */
+export function eraseLine(): string {
+  return '\x1B[2K';
+}
+/**
+ * Return the ED 0 sequence that erases from the cursor to the end of the screen.
+ *
+ * Clears the rest of the current row and every row below it, leaving rows above
+ * the cursor — and the terminal's scrollback — untouched. Inline renderers use
+ * this to clear only their footer zone on resize and exit instead of the
+ * scrollback-hostile full clear.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo, eraseBelow } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(21, 1) + eraseBelow());
+ * ```
+ */
+export function eraseBelow(): string {
+  return '\x1B[0J';
+}
+/**
+ * Return the ED 2 sequence that clears the whole visible screen.
+ *
+ * Unlike {@link eraseBelow} this names no row, so it stays correct even when
+ * the terminal has resized since the sequence was composed — the case that
+ * makes row-addressed erases unreliable during a window drag. Scrollback is
+ * left alone.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseVisible } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseVisible());
+ * ```
+ */
+export function eraseVisible(): string {
+  return '\x1B[2J';
+}
+/**
+ * Return the sequences that clear the screen and purge the scrollback.
+ *
+ * Resets any scroll region and SGR state, homes the cursor, clears the
+ * visible screen (ED 2) and then the scrollback buffer (ED 3), and homes
+ * again — some terminals only honour the erase when the cursor is home.
+ * Inline renderers use this to rebuild a transcript at a new width: rows
+ * already written cannot be re-wrapped, so they are discarded and re-emitted
+ * from source. Everything scrolled off is lost, which is the price of the
+ * rebuild.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseScrollback } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseScrollback());
+ * ```
+ */
+export function eraseScrollback(): string {
+  return '\x1B[r\x1B[0m\x1B[H\x1B[2J\x1B[3J\x1B[H';
+}
+/**
+ * Return the DSR 6 sequence that asks the terminal to report the cursor position.
+ *
+ * The terminal replies on stdin with `CSI row;column R` (1-based). Emit this
+ * before starting a competing stdin reader, and read the reply with a timeout —
+ * not every terminal answers.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { queryCursorPosition } from 'internal:tty/bindings';
+ *
+ * await writeStdout(queryCursorPosition());
+ * // ... read `\x1B[{row};{col}R` from stdin ...
+ * ```
+ */
+export function queryCursorPosition(): string {
+  return '\x1B[6n';
+}
+/**
  * Return the ANSI sequences that enable SGR mouse reporting.
  *
  * Enables three private modes at once: `1000` (button press/release events),
@@ -239,8 +399,34 @@ export function enableAutoWrap(): string {
  * await writeStdout(enterMouseMode());
  * ```
  */
-export function enterMouseMode(): string {
-  return '\x1B[?1000h\x1B[?1002h\x1B[?1006h';
+export function enterMouseMode(options: { motion?: boolean } = {}): string {
+  // 1000 press/release, 1002 drag, 1003 any motion (hover), 1006 SGR coords.
+  const motion = options.motion ? '\x1B[?1003h' : '';
+  return `\x1B[?1000h\x1B[?1002h${motion}\x1B[?1006h`;
+}
+/**
+ * Return the OSC 52 sequence that writes `text` to the system clipboard.
+ *
+ * OSC 52 asks the terminal emulator itself to set the clipboard, so it works
+ * over SSH and inside multiplexers where the application has no direct access
+ * to the host clipboard. Terminals that do not implement it ignore the
+ * sequence, and some (notably tmux and a few emulators) require the feature to
+ * be enabled in their configuration.
+ *
+ * The payload is base64-encoded UTF-8 as the protocol requires.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { setClipboard } from 'internal:tty/bindings';
+ *
+ * await writeStdout(setClipboard('copied from the TUI'));
+ * ```
+ */
+export function setClipboard(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return `\x1B]52;c;${btoa(binary)}\x07`;
 }
 /**
  * Return the ANSI sequences that disable mouse reporting.
@@ -258,7 +444,7 @@ export function enterMouseMode(): string {
  * ```
  */
 export function exitMouseMode(): string {
-  return '\x1B[?1006l\x1B[?1002l\x1B[?1000l';
+  return '\x1B[?1006l\x1B[?1003l\x1B[?1002l\x1B[?1000l';
 }
 /**
  * Query the current terminal size from the attached TTY.
@@ -285,18 +471,18 @@ export function exitMouseMode(): string {
  * ```
  */
 export function queryTerminalSize(): TerminalSize {
+  const parse = (winsize: ArrayBuffer): TerminalSize | null => {
+    const view = new DataView(winsize);
+    const rows = view.getUint16(0, true);
+    const cols = view.getUint16(2, true);
+    return rows > 0 && cols > 0 ? { width: cols, height: rows } : null;
+  };
   if (lib !== null) {
     for (const fd of [1, 0]) {
       const winsize = new ArrayBuffer(8);
       if (Number(lib.symbols.ioctl(fd, BigInt(TIOCGWINSZ), winsize)) === 0) {
-        const view = new DataView(winsize);
-        const rows = view.getUint16(0, true);
-        const cols = view.getUint16(2, true);
-        if (rows > 0 && cols > 0)
-          return {
-            width: cols,
-            height: rows,
-          };
+        const size = parse(winsize);
+        if (size) return size;
       }
     }
   }
@@ -359,13 +545,9 @@ export function enterRawMode(_fd: number = 0): () => void {
 /**
  * Subscribe to terminal resize notifications.
  *
- * Invokes `callback` once synchronously with the current {@link TerminalSize}
- * and returns a disposer to unsubscribe. This is a forward-compatible stub:
- * the runtime does not yet deliver `SIGWINCH` to JS, so no further callbacks
- * fire and the returned disposer is a no-op. Hosts that need to track live
- * resizes should still poll {@link queryTerminalSize} on each paint. The API
- * shape is stable, so once signal delivery lands, callers gain live updates
- * without changing their code.
+ * Invokes `callback` once synchronously with the current {@link TerminalSize},
+ * then again with a fresh measurement every time the terminal delivers
+ * `SIGWINCH`. Returns a disposer that unsubscribes from the signal.
  *
  * ```ts no_run
  * import { onResize } from 'internal:tty/bindings';
@@ -378,5 +560,10 @@ export function enterRawMode(_fd: number = 0): () => void {
  */
 export function onResize(callback: (size: TerminalSize) => void): () => void {
   callback(queryTerminalSize());
-  return () => {};
+  const handle = signal('SIGWINCH').subscribe(() => {
+    callback(queryTerminalSize());
+  });
+  return () => {
+    handle.dispose();
+  };
 }

@@ -9,7 +9,9 @@
  *
  * V1 is terminal-only and POSIX-oriented. It includes raw keyboard input and
  * SGR mouse events for fullscreen apps, but it does not implement DOM/HTML
- * output, React hooks, or inline terminal regions.
+ * output or React hooks. Inline rendering — committed output in real
+ * scrollback below a pinned footer — is provided by `renderInline` (see
+ * `fino:tty/inline`, re-exported here).
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -45,10 +47,24 @@ import {
   exitAlternateScreen,
   exitMouseMode,
   hideCursor,
+  onResize,
+  setClipboard,
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
 export { h, Fragment, createSignal, batch };
+export {
+  renderInline,
+  withInlineApp,
+  composeInlineFrame,
+  type InlineApp,
+  type InlineFrame,
+  type InlineOptions,
+  type InlineComposeState,
+  type InlineComposeOps,
+  type OverlayHandle,
+  type OverlayOptions,
+} from './inline.ts';
 type Direction = 'row' | 'column';
 type Align = 'start' | 'center' | 'end';
 type TuiKind = 'box' | 'text' | 'spacer' | 'input' | 'button' | 'list' | 'scrollview';
@@ -133,13 +149,36 @@ export interface RenderOptions {
   height?: number;
   input?: boolean;
   mouse?: boolean;
+  /**
+   * Report mouse motion without a held button so the app can render hover
+   * affordances. Off by default; motion events are frequent.
+   */
+  motion?: boolean;
   onEvent?: (event: TuiEvent, app: TuiApp) => void | Promise<void>;
+  /**
+   * Called after the terminal is resized and the app has repainted at the
+   * new size. Only fires when neither `width` nor `height` was fixed in the
+   * options — explicit sizes opt out of live resizing. Use it to re-layout
+   * application state that depends on the viewport.
+   */
+  onResize?: (size: TerminalSize, app: TuiApp) => void;
 }
 /** Handle returned by `render()` for updating or stopping a fullscreen app. */
 export interface TuiApp {
   update(element: VNode): void;
   stop(): void;
   input?: TuiInput;
+  /** Current viewport size; tracks live terminal resizes. */
+  size(): TerminalSize;
+  /**
+   * Turn mouse capture on or off while the app runs.
+   *
+   * Capturing the mouse suppresses the terminal's own text selection, so
+   * apps that want the user to select and copy content should expose a way
+   * to release it. Returns the resulting state; `false` when the app was
+   * created without mouse input at all.
+   */
+  setMouse(enabled: boolean): boolean;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -207,6 +246,25 @@ function decodeCsi(sequence: string): TuiEvent | null {
   if (sequence === '\x1B[H') return keyEvent('home');
   if (sequence === '\x1B[F') return keyEvent('end');
   if (sequence === '\x1B[Z') return keyEvent('tab', { shift: true });
+  const modified = /^\x1b\[1;(\d+)([ABCDHF])$/.exec(sequence);
+  if (modified) {
+    const name = (
+      {
+        A: 'up',
+        B: 'down',
+        C: 'right',
+        D: 'left',
+        H: 'home',
+        F: 'end',
+      } as Record<string, string>
+    )[modified[2]!]!;
+    const bits = Number(modified[1]) - 1;
+    return keyEvent(name, {
+      ...(bits & 1 ? { shift: true } : {}),
+      ...(bits & 2 ? { alt: true } : {}),
+      ...(bits & 4 ? { ctrl: true } : {}),
+    });
+  }
   const sgr = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/.exec(sequence);
   if (sgr) {
     const code = Number(sgr[1]);
@@ -229,14 +287,20 @@ function decodeCsi(sequence: string): TuiEvent | null {
           ? 'middle'
           : base === 2
             ? 'right'
-            : 'left';
+            : 'none';
+    // Button bits 3 with the motion bit set is pointer movement with nothing
+    // held (mode 1003 hover); without the motion bit it is a plain release.
     const action = wheel
       ? 'wheel'
-      : releaseMarker || base === 3
+      : releaseMarker
         ? 'release'
         : drag
-          ? 'drag'
-          : 'press';
+          ? base === 3
+            ? 'move'
+            : 'drag'
+          : base === 3
+            ? 'release'
+            : 'press';
     return {
       type: 'mouse',
       action,
@@ -248,7 +312,7 @@ function decodeCsi(sequence: string): TuiEvent | null {
       shift,
     };
   }
-  const tilde = /^\x1b\[(\d+)~$/.exec(sequence);
+  const tilde = /^\x1b\[(\d+)(?:;(\d+))?~$/.exec(sequence);
   if (tilde) {
     const name = (
       {
@@ -259,7 +323,14 @@ function decodeCsi(sequence: string): TuiEvent | null {
         '6': 'pagedown',
       } as Record<string, string>
     )[tilde[1]!];
-    if (name) return keyEvent(name);
+    if (name) {
+      const bits = tilde[2] ? Number(tilde[2]) - 1 : 0;
+      return keyEvent(name, {
+        ...(bits & 1 ? { shift: true } : {}),
+        ...(bits & 2 ? { alt: true } : {}),
+        ...(bits & 4 ? { ctrl: true } : {}),
+      });
+    }
   }
   return null;
 }
@@ -277,7 +348,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
-      const csi = sgr ?? /^\x1b\[(?:\d+~|[A-Za-z])/.exec(text.slice(i));
+      const csi = sgr ?? /^\x1b\[(?:\d+(?:;\d+)?~|\d+;\d+[A-Za-z]|[A-Za-z])/.exec(text.slice(i));
       if (csi) {
         const event = decodeCsi(csi[0]);
         if (event) events.push(event);
@@ -285,7 +356,14 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
         continue;
       }
       if (i + 1 < text.length) {
-        events.push(keyEvent(text[i + 1]!, { alt: true }));
+        // Meta-prefixed control characters carry the same names they do on
+        // their own, so Alt+Backspace reads as backspace rather than DEL.
+        const [named] = decodeTuiInput(new TextEncoder().encode(text[i + 1]!));
+        events.push(
+          named && named.type === 'key'
+            ? { ...named, alt: true }
+            : keyEvent(text[i + 1]!, { alt: true }),
+        );
         i += 2;
         continue;
       }
@@ -309,15 +387,54 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
 /** Options for creating a raw terminal input reader. */
 export interface TuiInputOptions {
   mouse?: boolean;
+  /**
+   * Report mouse motion even when no button is held, so applications can
+   * implement hover affordances. Costs one input event per cell crossed.
+   */
+  motion?: boolean;
 }
 /** Raw terminal input reader for keyboard and mouse events. */
 export class TuiInput {
   #restoreRaw: (() => void) | null;
   #closed = false;
   #queue: TuiEvent[] = [];
+  #mouse: boolean;
+  #motion: boolean;
   constructor(options: TuiInputOptions = {}) {
     this.#restoreRaw = enterRawMode(0);
-    void writeStdout(options.mouse === false ? '' : enterMouseMode());
+    this.#mouse = options.mouse !== false;
+    this.#motion = options.motion === true;
+    if (this.#mouse) void writeStdout(enterMouseMode({ motion: this.#motion }));
+  }
+  /** Whether mouse reporting is currently captured by the application. */
+  get mouse(): boolean {
+    return this.#mouse;
+  }
+  /**
+   * Turn mouse reporting on or off while the app runs.
+   *
+   * While reporting is on, the terminal routes clicks and drags to the
+   * application, which suppresses the terminal's own text selection. Turning
+   * it off hands the mouse back to the terminal so the user can select and
+   * copy text, at the cost of in-app mouse interaction.
+   */
+  setMouse(enabled: boolean): void {
+    const sequence = this.takeMouse(enabled);
+    if (sequence !== '') void writeStdout(sequence);
+  }
+  /**
+   * Flip mouse reporting state and return the escape sequence that enacts it,
+   * without writing anything.
+   *
+   * Hosts that serialize terminal output (the inline renderer's write chain)
+   * use this to compose the mode change into the same write as the rest of a
+   * transition, so it cannot race ahead of it. Returns an empty string when
+   * the state did not change.
+   */
+  takeMouse(enabled: boolean): string {
+    if (this.#closed || enabled === this.#mouse) return '';
+    this.#mouse = enabled;
+    return enabled ? enterMouseMode({ motion: this.#motion }) : exitMouseMode();
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
@@ -378,10 +495,13 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
     void timer.then(() => controller.abort(new Error('terminal size query timed out')));
     let response = '';
     while (!controller.signal.aborted) {
-      const chunk = await stdin().read({
-        maxBytes: 64,
-        signal: controller.signal,
-      });
+      // Race the read against the deadline rather than trusting the abort
+      // signal: a terminal that never answers the cursor-position query would
+      // otherwise block here forever and the app would never paint.
+      const chunk = await Promise.race([
+        stdin().read({ maxBytes: 64, signal: controller.signal }),
+        timer.then(() => null),
+      ]);
       if (chunk === null) break;
       response += decoder.decode(chunk);
       const match = /\x1b\[(\d+);(\d+)R/.exec(response);
@@ -430,13 +550,80 @@ function hasAnsi(text: string): boolean {
 function visibleLength(text: string): number {
   return Array.from(text.replace(ANSI_RE, '')).length;
 }
+/**
+ * Measure the visible width of a line in character cells, ignoring ANSI
+ * escape sequences.
+ *
+ * ```ts
+ * import { visibleWidth } from 'fino:tty/tui';
+ *
+ * visibleWidth('\x1b[1mbold\x1b[0m'); // 4
+ * ```
+ */
+export function visibleWidth(text: string): number {
+  return visibleLength(text);
+}
+/**
+ * Remove ANSI escape sequences, leaving only the visible characters.
+ *
+ * ```ts
+ * import { stripAnsi } from 'fino:tty/tui';
+ *
+ * stripAnsi('\x1b[36mcyan\x1b[0m'); // 'cyan'
+ * ```
+ */
+export function stripAnsi(text: string): string {
+  return text.replace(ANSI_RE, '');
+}
 function fit(text: string, width: number): string {
   const chars = Array.from(text);
   return chars.slice(0, width).join('').padEnd(width, ' ');
 }
-function fitAnsi(text: string, width: number): string {
-  if (!hasAnsi(text)) return fit(text, width);
-  return text + spaces(width - visibleLength(text));
+/**
+ * Clip a possibly-styled line to `width` visible cells, padding it to exactly
+ * that width unless `pad` is false.
+ *
+ * Escape sequences are preserved without counting toward the width, and the
+ * result always ends with an SGR reset before its padding so a truncated
+ * styled run never leaks color into whatever is painted after it. Padding is
+ * worth suppressing where a row must not fill the terminal: a line written to
+ * the last column can be recorded as soft-wrapped, and joined with the line
+ * below it the next time the terminal re-wraps.
+ *
+ * ```ts
+ * import { fitAnsi } from 'fino:tty/tui';
+ *
+ * fitAnsi('\x1b[32mhello world\x1b[0m', 5); // green 'hello', then reset
+ * fitAnsi('hi', 6, { pad: false }); // 'hi'
+ * ```
+ */
+export function fitAnsi(text: string, width: number, options: { pad?: boolean } = {}): string {
+  const pad = options.pad !== false;
+  if (!hasAnsi(text)) {
+    const chars = Array.from(text);
+    const clipped = chars.slice(0, width).join('');
+    return pad ? clipped.padEnd(width, ' ') : clipped;
+  }
+  // Clip by visible width, preserving escape sequences, and always close with
+  // a reset: a styled line truncated mid-run must never leak its SGR state
+  // into the rows painted after it.
+  let out = '';
+  let seen = 0;
+  let index = 0;
+  while (index < text.length && seen < width) {
+    ANSI_RE.lastIndex = index;
+    const match = ANSI_RE.exec(text);
+    if (match && match.index === index) {
+      out += match[0];
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(text.codePointAt(index)!);
+    out += ch;
+    seen += 1;
+    index += ch.length;
+  }
+  return out + '\x1b[0m' + (pad ? spaces(width - seen) : '');
 }
 function backgroundCode(background: unknown): string | null {
   switch (background) {
@@ -495,7 +682,7 @@ function textContent(node: VNode): string {
 }
 function wrapText(text: string, width: number, wrap: boolean): string[] {
   if (width <= 0) return [];
-  if (!wrap) return [fit(text, width)];
+  if (!wrap) return [hasAnsi(text) ? fitAnsi(text, width) : fit(text, width)];
   const chars = Array.from(text);
   const lines: string[] = [];
   for (let index = 0; index < chars.length; index += width) {
@@ -691,6 +878,423 @@ function renderElement(node: VNode, width: number, height: number): string[] {
  * The returned string contains exactly `height` lines joined with `\n`, and
  * each line is padded or clipped to `width` cells.
  */
+/** A point in the terminal grid, in zero-based cell coordinates. */
+export interface SelectionPoint {
+  x: number;
+  y: number;
+}
+/**
+ * A rectangular area of the frame that a selection may not leave.
+ *
+ * Coordinates are zero-based cell offsets into the frame, matching the
+ * `x`/`y` of mouse events.
+ */
+export interface SelectionRegion {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+/**
+ * A text selection over rendered frame rows.
+ *
+ * `anchor` is where the drag started and `focus` where it currently is;
+ * either may come first on screen, so consumers should normalize with
+ * `normalizeSelection()` rather than assuming an order.
+ *
+ * `region` scopes the selection to one pane, the way a scroll container
+ * bounds a selection in a browser: a drag that starts inside a list cannot
+ * pick up text from the pane beside it. Set it to the area the drag began
+ * in; leave it unset to select over the whole frame.
+ */
+export interface Selection {
+  anchor: SelectionPoint;
+  focus: SelectionPoint;
+  region?: SelectionRegion;
+}
+function clampToRegion(point: SelectionPoint, region: SelectionRegion | undefined): SelectionPoint {
+  if (!region) return point;
+  // `x` is a column boundary — a selection may end one past the last cell —
+  // while `y` addresses a row, so their limits differ by one.
+  const maxX = region.x + Math.max(0, region.width);
+  const maxY = region.y + Math.max(0, region.height - 1);
+  return {
+    x: Math.min(Math.max(point.x, region.x), maxX),
+    y: Math.min(Math.max(point.y, region.y), Math.max(region.y, maxY)),
+  };
+}
+/**
+ * Order a selection's endpoints top-to-bottom, left-to-right.
+ *
+ * Returns the pair as `{ start, end }` so rendering and extraction can walk
+ * forward regardless of which direction the user dragged. Endpoints are
+ * clamped into the selection's `region` when it has one.
+ *
+ * ```ts no_run
+ * import { normalizeSelection } from 'fino:tty/tui';
+ *
+ * normalizeSelection({ anchor: { x: 8, y: 4 }, focus: { x: 2, y: 1 } });
+ * // { start: { x: 2, y: 1 }, end: { x: 8, y: 4 } }
+ * ```
+ */
+export function normalizeSelection(selection: Selection): {
+  start: SelectionPoint;
+  end: SelectionPoint;
+} {
+  const anchor = clampToRegion(selection.anchor, selection.region);
+  const focus = clampToRegion(selection.focus, selection.region);
+  const forward = focus.y > anchor.y || (focus.y === anchor.y && focus.x >= anchor.x);
+  return forward ? { start: anchor, end: focus } : { start: focus, end: anchor };
+}
+/** Whether a selection covers at least one cell. */
+export function selectionIsEmpty(selection: Selection): boolean {
+  const { start, end } = normalizeSelection(selection);
+  return start.x === end.x && start.y === end.y;
+}
+function visibleCells(line: string): string[] {
+  const cells: string[] = [];
+  let index = 0;
+  while (index < line.length) {
+    ANSI_RE.lastIndex = index;
+    const match = ANSI_RE.exec(line);
+    if (match && match.index === index) {
+      index += match[0].length;
+      continue;
+    }
+    const ch = String.fromCodePoint(line.codePointAt(index)!);
+    cells.push(ch);
+    index += ch.length;
+  }
+  return cells;
+}
+function selectionSpan(
+  row: number,
+  start: SelectionPoint,
+  end: SelectionPoint,
+  width: number,
+  region?: SelectionRegion,
+): { from: number; to: number } | null {
+  if (row < start.y || row > end.y) return null;
+  const left = region ? region.x : 0;
+  const right = region ? Math.min(width, region.x + region.width) : width;
+  const from = Math.max(left, row === start.y ? start.x : left);
+  const to = Math.min(right, row === end.y ? end.x : right);
+  return to <= from ? null : { from, to };
+}
+/**
+ * Extract the plain text covered by a selection from rendered frame rows.
+ *
+ * Styling is stripped and trailing padding on each row is trimmed, so the
+ * result is what the user visually selected rather than the frame's
+ * fixed-width cells. Rows are joined with newlines.
+ *
+ * ```ts no_run
+ * import { selectionText } from 'fino:tty/tui';
+ *
+ * const copied = selectionText(frame.split('\n'), selection);
+ * ```
+ */
+export function selectionText(lines: string[], selection: Selection): string {
+  const { start, end } = normalizeSelection(selection);
+  const out: string[] = [];
+  for (let row = start.y; row <= end.y; row++) {
+    const line = lines[row];
+    if (line === undefined) continue;
+    const cells = visibleCells(line);
+    const span = selectionSpan(row, start, end, cells.length, selection.region);
+    if (!span) continue;
+    out.push(cells.slice(span.from, span.to).join('').replace(/\s+$/, ''));
+  }
+  return out.join('\n');
+}
+/**
+ * Overlay a selection highlight onto rendered frame rows.
+ *
+ * Selected cells are re-emitted inverted, with the surrounding styling of the
+ * row preserved on either side. Rows outside the selection are returned
+ * unchanged, so this is safe to apply to a whole frame every paint.
+ *
+ * ```ts no_run
+ * import { highlightSelection } from 'fino:tty/tui';
+ *
+ * const painted = highlightSelection(rows, selection);
+ * ```
+ */
+export function highlightSelection(lines: string[], selection: Selection): string[] {
+  if (selectionIsEmpty(selection)) return lines;
+  const { start, end } = normalizeSelection(selection);
+  return lines.map((line, row) => {
+    const cells = visibleCells(line);
+    const span = selectionSpan(row, start, end, cells.length, selection.region);
+    if (!span) return line;
+    const before = cells.slice(0, span.from).join('');
+    const selected = cells.slice(span.from, span.to).join('');
+    const after = cells.slice(span.to).join('');
+    // Rebuilding from visible cells drops the row's own styling inside the
+    // selection, which is the point: the highlight must read uniformly.
+    return `${before}\x1b[7m${selected}\x1b[0m${after}`;
+  });
+}
+/**
+ * Return the terminal sequence that copies `text` to the system clipboard.
+ *
+ * Uses OSC 52, so the terminal emulator performs the copy and it works over
+ * SSH and inside multiplexers. Write the result to stdout.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { copyToClipboard } from 'fino:tty/tui';
+ *
+ * await writeStdout(copyToClipboard(selected));
+ * ```
+ */
+/** One visual line of a wrapped buffer, with its offset into the text. */
+export interface TextBufferLine {
+  /** Line contents, without a trailing newline. */
+  text: string;
+  /** Index in the buffer where this line starts. */
+  start: number;
+}
+/** Wrapped layout of a buffer plus where the cursor sits inside it. */
+export interface TextBufferLayout {
+  lines: TextBufferLine[];
+  /** Cursor's visual line. */
+  row: number;
+  /** Cursor's column within that line. */
+  column: number;
+}
+/** A selected range of a buffer, ordered. */
+export interface TextBufferRange {
+  start: number;
+  end: number;
+}
+function isWordChar(ch: string): boolean {
+  return /[\p{L}\p{N}_]/u.test(ch);
+}
+/**
+ * Editable text with a cursor, selection, and word-wrapped layout.
+ *
+ * The model behind a terminal input that is more than a one-line string: the
+ * cursor can sit anywhere, edits happen in place, movement can extend a
+ * selection, and the text wraps to as many visual lines as it needs. Callers
+ * own the styling — `layout()` hands back the wrapped lines and the cursor's
+ * position in them, and the app decides how to paint them.
+ *
+ * ```ts no_run
+ * import { TextBuffer } from 'fino:tty/tui';
+ *
+ * const buffer = new TextBuffer('hello world');
+ * buffer.moveBy(-1, { word: true, select: true });
+ * buffer.insert('there');
+ * buffer.text; // 'hello there'
+ * ```
+ */
+export class TextBuffer {
+  #text: string;
+  #cursor: number;
+  #anchor?: number;
+  constructor(text = '') {
+    this.#text = text;
+    this.#cursor = text.length;
+  }
+  /** Current contents. */
+  get text(): string {
+    return this.#text;
+  }
+  /** Cursor offset, between 0 and `text.length`. */
+  get cursor(): number {
+    return this.#cursor;
+  }
+  /** Whether the buffer holds nothing. */
+  get isEmpty(): boolean {
+    return this.#text.length === 0;
+  }
+  /** The selected range, or `null` when nothing is selected. */
+  get selection(): TextBufferRange | null {
+    if (this.#anchor === undefined || this.#anchor === this.#cursor) return null;
+    return this.#anchor < this.#cursor
+      ? { start: this.#anchor, end: this.#cursor }
+      : { start: this.#cursor, end: this.#anchor };
+  }
+  /** Text covered by the selection, or `''`. */
+  selectedText(): string {
+    const range = this.selection;
+    return range ? this.#text.slice(range.start, range.end) : '';
+  }
+  /** Replace the contents, dropping any selection. */
+  setText(text: string, cursor = text.length): void {
+    this.#text = text;
+    this.#cursor = Math.max(0, Math.min(text.length, cursor));
+    this.#anchor = undefined;
+  }
+  /** Empty the buffer. */
+  clear(): void {
+    this.setText('');
+  }
+  /** Drop the selection, keeping the cursor. */
+  collapse(): void {
+    this.#anchor = undefined;
+  }
+  /** Select everything. */
+  selectAll(): void {
+    this.#anchor = 0;
+    this.#cursor = this.#text.length;
+  }
+  /** Insert text at the cursor, replacing the selection when there is one. */
+  insert(text: string): void {
+    const range = this.selection;
+    if (range) {
+      this.#text = this.#text.slice(0, range.start) + text + this.#text.slice(range.end);
+      this.#cursor = range.start + text.length;
+      this.#anchor = undefined;
+      return;
+    }
+    this.#text = this.#text.slice(0, this.#cursor) + text + this.#text.slice(this.#cursor);
+    this.#cursor += text.length;
+  }
+  /** Delete the selection, or the character before the cursor. */
+  backspace(): void {
+    if (this.#deleteSelection()) return;
+    if (this.#cursor === 0) return;
+    this.#text = this.#text.slice(0, this.#cursor - 1) + this.#text.slice(this.#cursor);
+    this.#cursor -= 1;
+  }
+  /** Delete the selection, or the character after the cursor. */
+  deleteForward(): void {
+    if (this.#deleteSelection()) return;
+    if (this.#cursor >= this.#text.length) return;
+    this.#text = this.#text.slice(0, this.#cursor) + this.#text.slice(this.#cursor + 1);
+  }
+  /**
+   * Delete a whole word, backwards or forwards.
+   *
+   * With a selection, the selection goes instead — deleting exactly what is
+   * highlighted is what the highlight promises.
+   */
+  deleteWord(delta: number): void {
+    if (this.#deleteSelection()) return;
+    const target = delta < 0 ? this.#wordLeft() : this.#wordRight();
+    const [start, end] = delta < 0 ? [target, this.#cursor] : [this.#cursor, target];
+    if (start === end) return;
+    this.#text = this.#text.slice(0, start) + this.#text.slice(end);
+    this.#cursor = start;
+  }
+  #deleteSelection(): boolean {
+    const range = this.selection;
+    if (!range) return false;
+    this.#text = this.#text.slice(0, range.start) + this.#text.slice(range.end);
+    this.#cursor = range.start;
+    this.#anchor = undefined;
+    return true;
+  }
+  /**
+   * Move the cursor to an absolute offset.
+   *
+   * With `select`, the selection extends from wherever it was anchored;
+   * without it, any selection collapses.
+   */
+  moveTo(index: number, select = false): void {
+    const next = Math.max(0, Math.min(this.#text.length, index));
+    if (select) this.#anchor ??= this.#cursor;
+    else this.#anchor = undefined;
+    this.#cursor = next;
+  }
+  /**
+   * Move one character, or one word with `word`.
+   *
+   * Without `select`, moving out of a selection lands on the edge the
+   * movement points at rather than one character past it, which is what
+   * every editor does.
+   */
+  moveBy(delta: number, opts: { word?: boolean; select?: boolean } = {}): void {
+    const range = this.selection;
+    if (range && !opts.select && !opts.word) {
+      this.moveTo(delta < 0 ? range.start : range.end);
+      return;
+    }
+    const target = opts.word
+      ? delta < 0
+        ? this.#wordLeft()
+        : this.#wordRight()
+      : this.#cursor + (delta < 0 ? -1 : 1);
+    this.moveTo(target, opts.select === true);
+  }
+  #wordLeft(): number {
+    let index = this.#cursor;
+    while (index > 0 && !isWordChar(this.#text[index - 1]!)) index -= 1;
+    while (index > 0 && isWordChar(this.#text[index - 1]!)) index -= 1;
+    return index;
+  }
+  #wordRight(): number {
+    let index = this.#cursor;
+    const end = this.#text.length;
+    while (index < end && !isWordChar(this.#text[index]!)) index += 1;
+    while (index < end && isWordChar(this.#text[index]!)) index += 1;
+    return index;
+  }
+  /**
+   * Wrap the text to `width` and report where the cursor lands.
+   *
+   * Wrapping breaks on spaces where it can and mid-word when a word is longer
+   * than the width. Explicit newlines always start a new line.
+   */
+  layout(width: number): TextBufferLayout {
+    const limit = Math.max(1, Math.floor(width));
+    const lines: TextBufferLine[] = [];
+    let offset = 0;
+    for (const paragraph of this.#text.split('\n')) {
+      let rest = paragraph;
+      let start = offset;
+      for (;;) {
+        if (rest.length <= limit) {
+          lines.push({ text: rest, start });
+          break;
+        }
+        const window = rest.slice(0, limit + 1);
+        const space = window.lastIndexOf(' ');
+        const cut = space > 0 ? space + 1 : limit;
+        lines.push({ text: rest.slice(0, cut), start });
+        rest = rest.slice(cut);
+        start += cut;
+      }
+      // +1 for the newline that separated this paragraph from the next.
+      offset += paragraph.length + 1;
+    }
+    let row = 0;
+    for (let index = 0; index < lines.length; index++) {
+      if (lines[index]!.start <= this.#cursor) row = index;
+    }
+    return { lines, row, column: this.#cursor - lines[row]!.start };
+  }
+  /**
+   * Move the cursor one visual line up or down.
+   *
+   * Returns `false` when there is no such line — the caller decides what a
+   * press at the top or bottom edge means.
+   */
+  moveVertical(delta: number, width: number, select = false): boolean {
+    const { lines, row, column } = this.layout(width);
+    const target = row + (delta < 0 ? -1 : 1);
+    if (target < 0 || target >= lines.length) return false;
+    const line = lines[target]!;
+    this.moveTo(line.start + Math.min(column, line.text.length), select);
+    return true;
+  }
+  /** Move to the start of the cursor's visual line. */
+  moveLineStart(width: number, select = false): void {
+    const { lines, row } = this.layout(width);
+    this.moveTo(lines[row]!.start, select);
+  }
+  /** Move to the end of the cursor's visual line. */
+  moveLineEnd(width: number, select = false): void {
+    const { lines, row } = this.layout(width);
+    const line = lines[row]!;
+    this.moveTo(line.start + line.text.length, select);
+  }
+}
+export function copyToClipboard(text: string): string {
+  return setClipboard(text);
+}
 export function renderFrame(element: VNode, options: RenderFrameOptions): string {
   const width = Math.max(0, Math.floor(options.width));
   const height = Math.max(0, Math.floor(options.height));
@@ -733,7 +1337,11 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
  *
  * This enters the alternate screen, hides the cursor, writes the current frame,
  * and restores terminal state from `stop()`. Width and height default to the
- * current terminal size when available.
+ * current terminal size when available, and auto-measured apps track live
+ * terminal resizes: on `SIGWINCH` the screen clears and repaints at the new
+ * size, `options.onResize` fires so the app can re-layout its own state, and
+ * `app.size()` reports the current viewport. Passing explicit `width`/`height`
+ * fixes the viewport and disables resize tracking.
  *
  * Passing a function instead of a tree makes the app reactive: every signal read
  * while rendering becomes a dependency, and the screen repaints when one
@@ -753,11 +1361,15 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
 export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
-  const width = options.width ?? size.width;
-  const height = options.height ?? size.height;
+  let width = options.width ?? size.width;
+  let height = options.height ?? size.height;
   const input =
-    options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
+    options.input || options.onEvent
+      ? createTuiInput({ mouse: options.mouse ?? true, motion: options.motion ?? false })
+      : undefined;
   let frame = '';
+  let lastTree: VNode | null = null;
+  let commitCount = 0;
   function paint(): void {
     if (stopped) return;
     const lines = frame.split('\n');
@@ -768,6 +1380,8 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   const sink: Sink<string> = {
     commit(tree: VNode): string {
+      lastTree = tree;
+      commitCount += 1;
       frame = renderFrame(tree, { width, height });
       paint();
       return frame;
@@ -778,6 +1392,9 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   let root: Root<string> | null = null;
   if (typeof element === 'function') root = createRoot(element, sink);
   else sink.commit(element);
+  // Explicit width/height fix the viewport (deterministic tests, embedding);
+  // auto-measured apps track SIGWINCH and repaint at the new size.
+  let stopResize: (() => void) | undefined;
   const app: TuiApp = {
     input,
     update(next: VNode): void {
@@ -785,8 +1402,16 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       root = null;
       sink.commit(next);
     },
+    size(): TerminalSize {
+      return { width, height };
+    },
+    setMouse(enabled: boolean): boolean {
+      input?.setMouse(enabled);
+      return input?.mouse ?? false;
+    },
     stop(): void {
       if (stopped) return;
+      stopResize?.();
       root?.dispose();
       root = null;
       stopped = true;
@@ -794,6 +1419,40 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
     },
   };
+  if (options.width === undefined && options.height === undefined) {
+    const applyResize = (next: TerminalSize): void => {
+      if (stopped || (next.width === width && next.height === height)) return;
+      width = next.width;
+      height = next.height;
+      void writeStdout('\x1B[2J');
+      if (root) {
+        root.dispose();
+        root = createRoot(element as () => VNode, sink);
+        options.onResize?.({ width, height }, app);
+        return;
+      }
+      // Let the app re-layout first; only repaint the stale tree when the
+      // resize callback did not already commit a fresh one.
+      const before = commitCount;
+      options.onResize?.({ width, height }, app);
+      if (commitCount === before && lastTree) sink.commit(lastTree);
+    };
+    let first = true;
+    const disposeSignal = onResize((next) => {
+      if (first) {
+        first = false;
+        return;
+      }
+      applyResize(next);
+    });
+    // SIGWINCH delivery can be unreliable depending on the host; a cheap
+    // ioctl poll guarantees the viewport eventually converges.
+    const pollTimer = setInterval(() => applyResize(queryTerminalSize()), 750);
+    stopResize = () => {
+      clearInterval(pollTimer);
+      disposeSignal();
+    };
+  }
   if (input && options.onEvent) {
     void (async () => {
       while (!stopped) {
