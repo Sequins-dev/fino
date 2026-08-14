@@ -189,6 +189,17 @@ export class Canvas {
     }
   }
 
+  /** Dim every cell — the backdrop behind a modal layer. */
+  shade(): void {
+    const dimmed = internStyle({ dim: true });
+    for (const row of this.#cells) {
+      for (let x = 0; x < row.length; x++) {
+        const cell = row[x]!;
+        row[x] = { text: cell.text, width: cell.width, style: mergeStyle(cell.style, dimmed) };
+      }
+    }
+  }
+
   markHit(id: string, rect: Rect, depth: number): void {
     this.#hits.push({ id, depth, ...rect });
   }
@@ -434,6 +445,12 @@ function childLayoutProps(node: LayoutNode | string): ChildLayout {
 }
 
 const measureCache = new WeakMap<object, Map<string, Measured>>();
+const nodeRects = new WeakMap<object, Rect>();
+
+/** Frame-relative rect a node was last painted at, for event dispatch. */
+export function nodeRect(node: object): Rect | undefined {
+  return nodeRects.get(node);
+}
 
 /** Drop cached measurements for a retained node (called by the host on change). */
 export function invalidateMeasure(node: object): void {
@@ -861,6 +878,7 @@ function paintNode(
   const own = mergeStyle(inherited, styleFromProps(props));
   ctx.depth++;
   const depth = ctx.depth;
+  nodeRects.set(node, rect);
   const id = str(props, 'id');
   if (id) canvas.markHit(id, rect, depth);
 
@@ -1081,6 +1099,7 @@ function paintLayer(
   }
   x = Math.max(0, Math.min(x, canvas.width - width));
   y = Math.max(0, Math.min(y, canvas.height - height));
+  if (props.backdrop === true) canvas.shade();
   const rect: Rect = { x, y, width, height };
   for (let ry = rect.y; ry < rect.y + rect.height; ry++) {
     for (let rx = rect.x; rx < rect.x + rect.width; rx++) {

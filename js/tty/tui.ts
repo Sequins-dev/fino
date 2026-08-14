@@ -54,6 +54,7 @@ import {
 import { layout, measure } from 'internal:tty/layout';
 import type { BorderStyle, Constraints, Measured, WrapMode } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
+import { TuiDispatcher } from 'internal:tty/events';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type { Color, Style } from 'fino:tty/style';
@@ -166,9 +167,37 @@ export interface LayerProps extends StyleProps, Props {
   /** Cell position the layer attaches to; omitted centers it. */
   anchor?: { x: number; y: number };
   placement?: 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'center';
+  /** Dim everything beneath the layer. */
+  backdrop?: boolean;
   width?: number;
   height?: number;
   children?: Child;
+}
+/** Props accepted by `Clickable`. */
+export interface ClickableProps extends StyleProps, FlexChildProps, Props {
+  /** Fired when any cell within is clicked, or Enter/Space activates it. */
+  onClick?: () => void;
+  onKey?: (event: TuiKeyEvent) => boolean | void;
+  onMouse?: (event: TuiMouseEvent) => boolean | void;
+  onFocus?: () => void;
+  onBlur?: () => void;
+  /** Clickables join the tab order unless this is set to false. */
+  focusable?: boolean;
+  disabled?: boolean;
+  direction?: Direction;
+  gap?: number;
+  width?: number;
+  height?: number;
+  children?: Child;
+}
+/** Focus control surface exposed by a live TUI app. */
+export interface TuiFocus {
+  /** Signal carrying the focused node's `id`, for components to render focus. */
+  readonly focusedId: { get(): string | null };
+  next(): boolean;
+  prev(): boolean;
+  focus(id: string): boolean;
+  blur(): void;
 }
 /** Options for deterministic terminal snapshot rendering. */
 export interface RenderFrameOptions {
@@ -195,6 +224,8 @@ export interface TuiApp {
   input?: TuiInput;
   /** The most recently painted frame. */
   frame(): Frame | null;
+  /** Focus traversal and state for the retained tree. */
+  focus: TuiFocus;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -250,6 +281,13 @@ export function ScrollView(props: ScrollViewProps): VNode {
 /** Content painted above the normal flow, anchored or centered. */
 export function Layer(props: LayerProps): VNode {
   return h('layer', props);
+}
+/**
+ * Non-visual behavior container: lays out like a plain `Box`, and a click
+ * anywhere within it — or Enter/Space while it holds focus — fires `onClick`.
+ */
+export function Clickable(props: ClickableProps): VNode {
+  return h('clickable', props);
 }
 function keyEvent(key: string, extra: Partial<TuiKeyEvent> = {}): TuiKeyEvent {
   return {
@@ -572,6 +610,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
   const hostRoot = createTerminalRoot();
   const renderer = createRenderer(terminalHost());
+  const dispatcher = new TuiDispatcher(hostRoot);
   let lastFrame: Frame | null = null;
   let cursorShown = false;
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
@@ -605,6 +644,13 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   else sink.commit(element);
   const app: TuiApp = {
     input,
+    focus: {
+      focusedId: dispatcher.focusedId,
+      next: () => dispatcher.focusNext(),
+      prev: () => dispatcher.focusPrev(),
+      focus: (id: string) => dispatcher.focusId(id),
+      blur: () => dispatcher.blur(),
+    },
     frame(): Frame | null {
       return lastFrame;
     },
@@ -622,11 +668,14 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
     },
   };
-  if (input && options.onEvent) {
+  if (input) {
     void (async () => {
       while (!stopped) {
         const event = await input.read();
         if (event === null) break;
+        // Handlers on the tree see the event first; `onEvent` receives only
+        // what no handler consumed.
+        if (dispatcher.dispatch(event)) continue;
         await options.onEvent?.(event, app);
       }
     })();
