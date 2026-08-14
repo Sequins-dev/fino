@@ -42,6 +42,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui/web/state` | not yet benchmarked |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
+| `fino:tty/style` | not yet benchmarked |
+| `fino:tty/frame` | not yet benchmarked |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |
