@@ -100,14 +100,18 @@ async function expandArg(arg: string): Promise<string[]> {
  * default — `always`, or `never`), and `--durations` appends
  * `duration=<time>` metadata to every TAP result line.
  *
- * Output is TAP text by default. When invoked with a `json` writer (for
- * example `fino test --json ...`) the command instead emits a single JSON
- * object describing the run: the raw inputs, the imported files, the
- * effective options, and the runner's output.
+ * Output is TAP text by default, streamed to stdout as each test finishes.
+ * When invoked with a `json` writer (for example `fino test --json ...`) the
+ * runner's output sink is redirected into a buffer instead, so stdout carries
+ * exactly one JSON object describing the run: the raw inputs, the imported
+ * files, the effective options, whether the run passed, and the complete TAP
+ * report as `output`.
  *
  * Throws if no files are supplied, if expansion matches no files, or if
- * `--show-output` is given an unrecognized value. Test failures do not throw
- * here — they are reported through the runner's TAP output and exit code.
+ * `--show-output` is given an unrecognized value. A failing test also throws,
+ * so the CLI exits nonzero — but in JSON mode the result object, TAP report
+ * included, is written before the throw, so a programmatic caller supplying
+ * its own writer still receives the failure detail.
  *
  * ```ts no_run
  * import test from 'fino:commands/test';
@@ -158,22 +162,26 @@ const command = new Task({
       throw new Error(`fino test: no test files matched ${testFiles.map(String).join(', ')}`);
     }
     const { run } = await import('fino:test/test');
-    const output = await run(
-      filter === undefined
-        ? {
-            showOutput,
-            durations,
-          }
-        : {
-            filter,
-            showOutput,
-            durations,
-          },
-    );
-    if (ctx.writer.mode === 'json') {
+    const json = ctx.writer.mode === 'json';
+    // In text mode the default sink streams TAP to stdout as tests finish. In
+    // JSON mode stdout belongs to the single result object, so the report is
+    // collected instead and handed back as `output`.
+    const lines: string[] = [];
+    const base = json ? { showOutput, durations, write: (line: string) => lines.push(line) } : {
+      showOutput,
+      durations,
+    };
+    let failure: unknown;
+    try {
+      await run(filter === undefined ? base : { ...base, filter });
+    } catch (err) {
+      failure = err;
+    }
+    const output = lines.join('\n');
+    if (json) {
       const result = {
         command: 'test',
-        ok: true,
+        ok: failure === undefined,
         files: testFiles.map(String),
         imported: importFiles,
         filter,
@@ -182,8 +190,10 @@ const command = new Task({
         output,
       };
       await ctx.writer.writeJson(result);
+      if (failure !== undefined) throw failure;
       return result;
     }
+    if (failure !== undefined) throw failure;
     return output;
   },
   cli: {

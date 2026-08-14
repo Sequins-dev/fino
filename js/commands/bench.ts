@@ -78,10 +78,11 @@ async function expandArg(arg: string): Promise<string[]> {
  * benchmark groups whose full path contains the filter text are run.
  *
  * Throws when no files are supplied or when expansion finds no benchmark
- * files. In JSON output mode the command writes a summary object recording
- * the requested files, the modules actually imported, and the active filter;
- * the measurements themselves are always printed by the runner rather than
- * returned.
+ * files. In text mode the measurements stream to stdout as they are taken. In
+ * JSON output mode the runner's output sink is redirected into a buffer, so
+ * stdout carries exactly one summary object recording the requested files, the
+ * modules actually imported, the active filter, and the complete measurement
+ * report as `output`.
  *
  * ```ts no_run
  * import bench from 'fino:commands/bench';
@@ -121,8 +122,15 @@ const command = new Task({
       );
     }
     const { run } = await import('fino:bench');
-    const output = await (filter === undefined ? run({}) : run({ filter }));
-    if (ctx.writer.mode === 'json') {
+    const json = ctx.writer.mode === 'json';
+    // In text mode the default sink streams measurements to stdout as they are
+    // taken. In JSON mode stdout belongs to the single result object, so the
+    // report is collected instead and handed back as `output`.
+    const lines: string[] = [];
+    const base = json ? { write: (line: string) => lines.push(line) } : {};
+    await run(filter === undefined ? base : { ...base, filter });
+    const output = lines.join('\n');
+    if (json) {
       const result = {
         command: 'bench',
         ok: true,

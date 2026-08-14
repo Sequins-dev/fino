@@ -5,6 +5,7 @@ import { DiskFileSystem } from 'fino:file';
 import { env, execPath, Process } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 import type { Transport } from 'fino:jsonrpc';
+import type { ToolRunContext } from 'fino:ai/tool';
 
 /** Tools the host agent brings; the server never exposes them, at any gate. */
 const HOST_TOOLS = ['list_files', 'read_file', 'search_files', 'write_file', 'edit_file', 'shell'];
@@ -54,6 +55,19 @@ async function toolNames(options: {
 }): Promise<string[]> {
   const tools = await createMcpTools({ cwd: '/tmp', ...options });
   return tools.map((entry) => entry.name).sort();
+}
+
+function toolCtx(): ToolRunContext {
+  return {
+    signal: new AbortController().signal,
+    toolCallId: 'call_test',
+    step: 0,
+    runId: 'run_test',
+    messages: [],
+    suspend(): never {
+      throw new Error('suspend unsupported in this test');
+    },
+  };
 }
 
 async function makeTempProject(name: string, files: Record<string, string>): Promise<string> {
@@ -155,6 +169,24 @@ describe('fino:commands/mcp — coding tools over MCP', () => {
       Object.keys((schema as { properties?: Record<string, unknown> }).properties ?? {});
     t.ok(!properties(readOnly.parameters).includes('fix'), 'no fix parameter by default');
     t.ok(properties(writable.parameters).includes('fix'), 'fix parameter with --allow-write');
+  });
+
+  it('returns lint diagnostics from the in-process task rather than a count', async (t) => {
+    const dir = await makeTempProject('diag', {
+      'clean.ts': 'export const answer = 42;\n',
+      'dirty.ts': 'export function f() {\n  debugger;\n  return 1;\n}\n',
+    });
+    const lint = (await createMcpTools({ cwd: dir })).find((entry) => entry.name === 'fino_lint')!;
+    const clean = await lint.invoke({ paths: [`${dir}/clean.ts`] }, toolCtx());
+    t.ok(!clean.isError, 'a clean file is not an error');
+    t.ok(String(clean.content).includes('1 file checked'), 'clean run reports the count');
+
+    const dirty = await lint.invoke({ paths: [`${dir}/dirty.ts`] }, toolCtx());
+    t.equal(dirty.isError, true, 'a remaining diagnostic is a tool error');
+    const content = String(dirty.content);
+    t.ok(content.includes('no-debugger'), `diagnostic rule reaches the caller (got: ${content})`);
+    t.ok(content.includes('2:3'), 'diagnostic location reaches the caller');
+    t.ok(content.includes('1 diagnostic'), 'aggregate count is kept alongside the detail');
   });
 
   it('runs fino_lint end to end over a real MCP session', async (t) => {

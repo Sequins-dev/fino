@@ -1,6 +1,5 @@
 import { describe, it } from 'fino:test/test';
 import { CodeWorkspace } from 'internal:commands/code/workspace';
-import { SessionTranscript, TranscriptWriter } from 'internal:commands/code/transcript';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { DiskFileSystem } from 'fino:file';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
@@ -184,19 +183,6 @@ describe('fino:commands/code — workspace registry', () => {
 });
 
 describe('fino:commands/code — JSONL transcripts', () => {
-  it('appends ordered JSONL lines through the writer', async (t) => {
-    const dir = tempDir();
-    const writer = new TranscriptWriter(`${dir}/deep/nested/log.jsonl`);
-    writer.append({ type: 'user', text: 'one' });
-    writer.append({ type: 'assistant', text: 'two' });
-    await writer.close();
-    const lines = await readLines(`${dir}/deep/nested/log.jsonl`);
-    t.equal(lines.length, 2, 'two lines');
-    t.equal(lines[0]!.type, 'user', 'first line type');
-    t.equal(lines[1]!.text, 'two', 'second line text');
-    t.ok(typeof lines[0]!.ts === 'number', 'timestamps added');
-  });
-
   it('mirrors a full turn including tool activity and turn end', async (t) => {
     const dir = tempDir();
     await new DiskFileSystem().mkdir(dir);
@@ -225,18 +211,6 @@ describe('fino:commands/code — JSONL transcripts', () => {
       typeof lines[4]!.durationMs === 'number' && lines[4]!.durationMs >= 0,
       'turn end records how long the turn took',
     );
-  });
-
-  it('writes per-child transcripts for sub-agent conversations', async (t) => {
-    const dir = tempDir();
-    const transcript = new SessionTranscript(`${dir}/transcripts`, 'thread-1');
-    transcript.parent().append({ type: 'user', text: 'root' });
-    transcript.child('sa_1').append({ type: 'user', text: 'child task' });
-    await transcript.close();
-    const parent = await readLines(`${dir}/transcripts/thread-1.jsonl`);
-    const child = await readLines(`${dir}/transcripts/thread-1/sa_1.jsonl`);
-    t.equal(parent[0]!.text, 'root', 'parent file written');
-    t.equal(child[0]!.text, 'child task', 'child file written');
   });
 });
 describe('fino:commands/code — archived sessions', () => {

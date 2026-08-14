@@ -73,17 +73,21 @@ export interface McpToolsOptions {
  * ```
  */
 export async function createMcpTools(opts: McpToolsOptions): Promise<Tool[]> {
-  const { createDocsTools } = await import('internal:commands/code/tools');
-  const { createFinoCommandTools } = await import('internal:commands/mcp/tools');
-  const allowWrite = opts.allowWrite ?? false;
-  const allowShell = opts.allowShell ?? false;
-  // Only the documentation index is taken from the `fino code` tool set. The
-  // general-purpose workspace tools stay behind: a host running this server
-  // already has its own, and duplicating them only gives a model two ways to
-  // do the same thing, one of which is scoped to the wrong working directory.
-  const tools = createDocsTools();
-  tools.push(...createFinoCommandTools({ cwd: opts.cwd, writes: allowWrite, shell: allowShell }));
-  return tools;
+  const { createFinoTools } = await import('internal:commands/tools');
+  // Exactly the Fino tool set and nothing else. The general-purpose workspace
+  // tools of `fino:ai/tools` stay behind: a host running this server already
+  // has its own, and duplicating them only gives a model two ways to do the
+  // same thing, one of which is scoped to the wrong working directory.
+  //
+  // `auto` is set because MCP has no approval protocol — a client that wants a
+  // human in the loop owns that decision, and here the flag that exposes a
+  // tool at all is the policy boundary.
+  return createFinoTools({
+    cwd: opts.cwd,
+    writes: opts.allowWrite ?? false,
+    shell: opts.allowShell ?? false,
+    auto: true,
+  });
 }
 
 interface McpCommandInput {

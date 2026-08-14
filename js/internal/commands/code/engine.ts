@@ -55,7 +55,7 @@ import { join } from 'fino:file/path';
 import { env } from 'fino:process';
 import { createCodeTools } from 'internal:commands/code/tools';
 import { codeSystemPrompt } from 'internal:commands/code/prompt';
-import { foldEventsToTranscript, SessionTranscript } from 'internal:commands/code/transcript';
+import { foldEventsToTranscript, SessionTranscript } from 'fino:ai/transcript';
 
 /**
  * How much a session is allowed to do without asking.

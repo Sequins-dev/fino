@@ -120,6 +120,7 @@ interface LeafRunResult {
 interface RunContext {
   showOutput: ShowOutputMode;
   durations: boolean;
+  write: TestOutputSink;
 }
 /**
  * Primitive value accepted by `TestContext#meta()`.
@@ -151,7 +152,29 @@ export interface RunOptions {
   filter?: string;
   showOutput?: ShowOutputMode;
   durations?: boolean;
+  write?: TestOutputSink;
 }
+/**
+ * Sink that receives one line of TAP output at a time, without a trailing
+ * newline.
+ *
+ * `run()` writes every TAP line — the version header, plan lines, result
+ * lines, the trailing summary comments, and the failure detail block —
+ * through this function. It defaults to `console.log`, which is what the
+ * `fino test` CLI uses. Pass your own to collect the report as a value
+ * instead: a programmatic caller that must not write to stdout (an MCP server
+ * multiplexing JSON-RPC over it, for example) can only do that with a sink.
+ *
+ * ```ts no_run
+ * import { run, test } from 'fino:test/test';
+ *
+ * test('captured', (t) => t.ok(true));
+ * const lines: string[] = [];
+ * await run({ write: (line) => lines.push(line) });
+ * console.log(lines.join('\n'));
+ * ```
+ */
+export type TestOutputSink = (line: string) => void;
 /**
  * Value accepted by the `skip` registration option.
  *
@@ -540,8 +563,8 @@ export function afterEach(fn: HookFn): void {
 function _indent(depth: number): string {
   return '    '.repeat(depth);
 }
-function _log(depth: number, msg: string): void {
-  console.log(_indent(depth) + msg);
+function _log(ctx: RunContext, depth: number, msg: string): void {
+  ctx.write(_indent(depth) + msg);
 }
 function _nowMs(): number {
   return typeof globalThis.performance?.now === 'function'
@@ -600,34 +623,38 @@ function _formatErrorLines(err: unknown): string[] {
   }
   return lines;
 }
-function _commentLine(msg: string = ''): void {
-  console.log('#' + (msg.length > 0 ? ' ' + msg : ''));
+function _commentLine(write: TestOutputSink, msg: string = ''): void {
+  write('#' + (msg.length > 0 ? ' ' + msg : ''));
 }
-function _printFailureDetails(diagnostics: FailureDiagnostic[], showOutput: ShowOutputMode): void {
-  _commentLine('Failure details');
+function _printFailureDetails(
+  write: TestOutputSink,
+  diagnostics: FailureDiagnostic[],
+  showOutput: ShowOutputMode,
+): void {
+  _commentLine(write, 'Failure details');
   for (let i = 0; i < diagnostics.length; i++) {
     const diagnostic = diagnostics[i];
     if (diagnostic === undefined) continue;
-    _commentLine(`${i + 1}) ${diagnostic.title}`);
+    _commentLine(write, `${i + 1}) ${diagnostic.title}`);
     if (diagnostic.errors.length > 0) {
-      _commentLine('Error:');
+      _commentLine(write, 'Error:');
       for (const error of diagnostic.errors) {
-        for (const line of _formatErrorLines(error)) _commentLine('  ' + line);
+        for (const line of _formatErrorLines(error)) _commentLine(write, '  ' + line);
       }
     }
     if (showOutput === 'failures') {
       const stdout = diagnostic.output.filter((entry) => entry.fd === 1);
       const stderr = diagnostic.output.filter((entry) => entry.fd === 2);
       if (stdout.length > 0) {
-        _commentLine('Captured stdout:');
-        for (const entry of stdout) _commentLine('  ' + entry.text);
+        _commentLine(write, 'Captured stdout:');
+        for (const entry of stdout) _commentLine(write, '  ' + entry.text);
       }
       if (stderr.length > 0) {
-        _commentLine('Captured stderr:');
-        for (const entry of stderr) _commentLine('  ' + entry.text);
+        _commentLine(write, 'Captured stderr:');
+        for (const entry of stderr) _commentLine(write, '  ' + entry.text);
       }
     }
-    if (i < diagnostics.length - 1) _commentLine();
+    if (i < diagnostics.length - 1) _commentLine(write);
   }
 }
 async function _captureConsole<T>(
@@ -668,7 +695,7 @@ async function _runLeaf(
   const skipReason = inheritedSkip ?? entry.skip;
   if (skipReason !== null) {
     const suffix = skipReason !== '' ? ' # SKIP ' + skipReason : ' # SKIP';
-    _log(depth, _resultLine('ok', num, entry.name, suffix, _durationMeta(ctx, startMs)));
+    _log(ctx, depth, _resultLine('ok', num, entry.name, suffix, _durationMeta(ctx, startMs)));
     return {
       status: 'skip',
       diagnostic: null,
@@ -725,7 +752,7 @@ async function _runLeaf(
       ...metadata,
       ..._durationMeta(ctx, startMs),
     };
-    _log(depth, _resultLine('ok', num, entry.name, '', lineMetadata));
+    _log(ctx, depth, _resultLine('ok', num, entry.name, '', lineMetadata));
     return {
       status: 'pass',
       diagnostic: null,
@@ -735,7 +762,7 @@ async function _runLeaf(
       ...metadata,
       ..._durationMeta(ctx, startMs),
     };
-    _log(depth, _resultLine('not ok', num, entry.name, '', lineMetadata));
+    _log(ctx, depth, _resultLine('not ok', num, entry.name, '', lineMetadata));
     return {
       status: 'fail',
       diagnostic: {
@@ -768,7 +795,7 @@ async function _runEntries(
   path: string[] = [],
 ): Promise<RunResult> {
   const runStartMs = _nowMs();
-  _log(depth, '1..' + entries.length);
+  _log(ctx, depth, '1..' + entries.length);
   // A skip on the parent group propagates to all children.
   const groupSkip = inheritedSkip ?? parentNode?.skip ?? null;
   // Extract hooks from the parent describe (not suite — suite has no hooks).
@@ -798,6 +825,7 @@ async function _runEntries(
         const failedEntry = entries[i];
         if (failedEntry === undefined) continue;
         _log(
+          ctx,
           depth,
           _resultLine('not ok', i + 1, failedEntry.name, '', _durationMeta(ctx, runStartMs)),
         );
@@ -828,7 +856,7 @@ async function _runEntries(
         } else {
           // Group node — recurse.
           const groupStartMs = _nowMs();
-          _log(depth, '# Subtest: ' + entry.name);
+          _log(ctx, depth, '# Subtest: ' + entry.name);
           const childSkip = groupSkip ?? entry.skip ?? null;
           const childPath = entry.kind === 'describe' ? [...path, entry.name] : path;
           const {
@@ -844,19 +872,19 @@ async function _runEntries(
             childSkip !== entry.skip ? childSkip : null,
             childPath,
           );
-          _log(depth, '');
+          _log(ctx, depth, '');
           const groupMetadata = _durationMeta(ctx, groupStartMs);
           if (gf === 0 && gp === 0 && gs > 0) {
             // All children skipped — mark the group as skipped too.
             const suffix =
               childSkip !== null && childSkip !== '' ? ' # SKIP ' + childSkip : ' # SKIP';
-            _log(depth, _resultLine('ok', num, entry.name, suffix, groupMetadata));
+            _log(ctx, depth, _resultLine('ok', num, entry.name, suffix, groupMetadata));
             skipped++;
           } else if (gf === 0) {
-            _log(depth, _resultLine('ok', num, entry.name, '', groupMetadata));
+            _log(ctx, depth, _resultLine('ok', num, entry.name, '', groupMetadata));
             passed++;
           } else {
-            _log(depth, _resultLine('not ok', num, entry.name, '', groupMetadata));
+            _log(ctx, depth, _resultLine('not ok', num, entry.name, '', groupMetadata));
             failed++;
             diagnostics.push(...gd);
           }
@@ -933,10 +961,15 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
 // Public entry point
 // ---------------------------------------------------------------------------
 /**
- * Run all registered tests and print TAP-13 output.
+ * Run all registered tests and emit TAP-13 output.
  *
  * Called automatically by the `fino test` command. User test files
  * only need to call `test()` / `suite()` / `describe()` — never `run()`.
+ *
+ * Every TAP line goes through `options.write`, which defaults to
+ * `console.log`. Pass a sink to collect the report instead of printing it; the
+ * whole report — including the failure detail block — is written before the
+ * failure error is thrown, so a capturing caller keeps the diagnostics.
  *
  * @throws {Error} If any test fails (causes the process to exit with code 1).
  *
@@ -950,27 +983,29 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
 export async function run(options: RunOptions = {}): Promise<void> {
   const showOutput = options.showOutput ?? 'failures';
   const durations = options.durations === true;
+  const write = options.write ?? ((line: string) => console.log(line));
   const runStartMs = _nowMs();
-  console.log('TAP version 13');
+  write('TAP version 13');
   const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
   const { passed, failed, skipped, diagnostics } = await _runEntries(
     {
       showOutput,
       durations,
+      write,
     },
     entries,
     0,
     null,
   );
   const total = passed + failed + skipped;
-  console.log('');
-  console.log('# tests ' + total);
-  console.log('# pass  ' + passed);
-  if (skipped > 0) console.log('# skip  ' + skipped);
-  console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
+  write('');
+  write('# tests ' + total);
+  write('# pass  ' + passed);
+  if (skipped > 0) write('# skip  ' + skipped);
+  write('# time  ' + formatDurationMs(_nowMs() - runStartMs));
   if (failed > 0) {
-    console.log('# fail  ' + failed);
-    if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
+    write('# fail  ' + failed);
+    if (diagnostics.length > 0) _printFailureDetails(write, diagnostics, showOutput);
     throw new Error(failed + ' test(s) failed');
   }
 }

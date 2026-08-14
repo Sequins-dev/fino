@@ -448,11 +448,18 @@ export class Group {
    */
   #pending: PendingSpec[] = [];
   /**
+   * Sink every measurement line of this group is written through.
+   *
+   * @internal
+   */
+  #write: BenchOutputSink;
+  /**
    * Create a benchmark group.
    *
    * Most application code receives groups from `bench()` rather than calling
    * this constructor directly. `indent`, `filter`, and `path` are used by the
-   * runner for nested output and filtered execution.
+   * runner for nested output and filtered execution, and `write` receives each
+   * output line (defaulting to `console.log`).
    *
    * ```ts no_run
    * import { Group } from 'fino:test/bench';
@@ -465,11 +472,13 @@ export class Group {
     indent: number = 0,
     filter: string | null = null,
     path: string[] = [name],
+    write: BenchOutputSink = (line) => console.log(line),
   ) {
     this.#name = name;
     this.#indent = indent;
     this.#filter = filter;
     this.#path = path;
+    this.#write = write;
   }
   /**
    * Private method `#pad` used by `Group`.
@@ -585,13 +594,16 @@ export class Group {
     const selfMatches = this.#matchesSelf();
     for (const spec of this.#pending) {
       if (spec.isGroup) {
-        const sub = new Group(spec.name, this.#indent + 2, this.#filter, [
-          ...this.#path,
+        const sub = new Group(
           spec.name,
-        ]);
+          this.#indent + 2,
+          this.#filter,
+          [...this.#path, spec.name],
+          this.#write,
+        );
         spec.fn(sub);
         if (!sub.shouldRun()) continue;
-        console.log(`${pad}  # ${spec.name}`);
+        this.#write(`${pad}  # ${spec.name}`);
         await sub.finalize();
       } else if (selfMatches) {
         await this.#executeMeasurement(spec);
@@ -641,7 +653,7 @@ export class Group {
     } finally {
       if (teardown) teardown(ctx);
     }
-    console.log(`${pad}${name} - ${formatStats(stats)}`);
+    this.#write(`${pad}${name} - ${formatStats(stats)}`);
     this.#measurements.push({
       name,
       stats,
@@ -669,7 +681,7 @@ export class Group {
     if (m.length < 2) return;
     const sorted = m.slice().sort((a, b) => b.stats.opsPerSec() - a.stats.opsPerSec());
     const pad = this.#pad();
-    console.log(`${pad}Comparing...`);
+    this.#write(`${pad}Comparing...`);
     const fastest = sorted[0];
     if (fastest === undefined) return;
     const fastestMean = fastest.stats.mean;
@@ -678,10 +690,10 @@ export class Group {
       if (item === undefined) continue;
       const { name, stats } = item;
       if (i === 0) {
-        console.log(`${pad}  - ${name} (fastest)`);
+        this.#write(`${pad}  - ${name} (fastest)`);
       } else {
         const pct = ((stats.mean / fastestMean) * 100 - 100).toFixed(2);
-        console.log(`${pad}  - ${name} (${pct}% slower)`);
+        this.#write(`${pad}  - ${name} (${pct}% slower)`);
       }
     }
   }
@@ -783,9 +795,45 @@ export function bench(name: string, fn: (b: Group) => void): void {
   });
 }
 /**
- * Run all registered benchmark suites and print results.
+ * Sink that receives one line of benchmark output at a time, without a
+ * trailing newline.
  *
- * Prints the benc.h v1.0.0 header, then each suite in registration order.
+ * `run()` writes the header, every suite heading, every measurement line, and
+ * the comparison block through this function. It defaults to `console.log`,
+ * which is what the `fino bench` CLI uses; pass your own to collect the
+ * measurements as a value instead of printing them.
+ *
+ * ```ts no_run
+ * import { bench, run } from 'fino:test/bench';
+ *
+ * bench('noop', (b) => b.measure('empty', () => {}));
+ * const lines: string[] = [];
+ * await run({ write: (line) => lines.push(line) });
+ * ```
+ */
+export type BenchOutputSink = (line: string) => void;
+/**
+ * Options accepted by `run()`.
+ *
+ * `filter` keeps only benchmark groups whose full path contains the given
+ * text. `write` redirects the report away from `console.log`.
+ *
+ * ```ts no_run
+ * import { run, type BenchRunOptions } from 'fino:test/bench';
+ *
+ * const options: BenchRunOptions = { filter: 'parser' };
+ * await run(options);
+ * ```
+ */
+export interface BenchRunOptions {
+  filter?: string;
+  write?: BenchOutputSink;
+}
+/**
+ * Run all registered benchmark suites and emit results.
+ *
+ * Emits the benc.h v1.0.0 header, then each suite in registration order.
+ * Every line goes through `options.write`, which defaults to `console.log`.
  *
  * ```ts no_run
  * import { bench, run } from 'fino:test/bench';
@@ -794,18 +842,15 @@ export function bench(name: string, fn: (b: Group) => void): void {
  * await run({ filter: 'noop' });
  * ```
  */
-export async function run(
-  options: {
-    filter?: string;
-  } = {},
-) {
-  console.log('benc.h v1.0.0');
+export async function run(options: BenchRunOptions = {}) {
+  const write = options.write ?? ((line: string) => console.log(line));
+  write('benc.h v1.0.0');
   const filter = options.filter ?? null;
   for (const { name, fn } of _benches) {
-    const g = new Group(name, 0, filter, [name]);
+    const g = new Group(name, 0, filter, [name], write);
     fn(g);
     if (!g.shouldRun()) continue;
-    console.log(`# ${name}`);
+    write(`# ${name}`);
     await g.finalize();
   }
 }

@@ -63,9 +63,17 @@ two ways to do one thing.
   their approval UX, so exposure is the policy boundary here.
 - `fino_test` and `fino_bench` sit behind `--allow-shell` because importing and
   running project code is equivalent in risk to running a shell command.
-- Each `fino_*` tool spawns the `fino` binary as a child process, so its full
-  stdout and stderr come back as the tool result and every run gets a fresh
-  isolate.
+- `fino_lint`, `fino_fmt`, `fino_install`, and `fino_init` run their command in
+  the server process. Each command is a `fino:task` `Task`, so the tool drives
+  it directly and captures everything it writes to the console — the grouped
+  lint and format diagnostics included — into the tool result, instead of
+  losing them to stderr or leaking them into the JSON-RPC stream.
+- `fino_test` and `fino_bench` spawn the `fino` binary instead. They import
+  project modules for their registration side effects, and the module cache
+  has no invalidation hook, so a second in-process run would replay the code
+  as it stood at first import — an agent that edits a file and re-runs its
+  tests would be told the old code still passes. A child process gives every
+  run a fresh isolate and the current source.
 - Over stdio, the server exits when the host closes stdin; over HTTP it
   serves until the process is stopped.
 - Documentation tools use the `fino doc build` index; without one they return

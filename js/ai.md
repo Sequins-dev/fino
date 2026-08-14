@@ -54,6 +54,23 @@ persist beyond the turn that spawned them: any settled child can be revived
 later on its existing conversation. The pool persists through the session
 store, so restarts resurrect running children too.
 
+**Workspaces** are the layer above a single conversation. An application that
+lets a person keep several sessions — a chat sidebar, a queue of running
+jobs, a `sessions` subcommand — needs to know which threads exist, what they
+are called, when each was last touched, which are archived, and which are
+asking for attention. `AgentWorkspace` (`fino:ai/workspace`) keeps that
+registry in one shared `SessionStore` and manages one live object per
+session, whatever kind of object the application drives. Sessions register on
+their first turn, so opening the app and closing it again leaves no empty row
+behind.
+
+**Transcripts** make a run readable. A session store is built for resuming a
+run, not for reading one; `fino:ai/transcript` mirrors the human-facing
+timeline into append-only JSONL files — one object per line, one file per
+thread and per sub-agent — so conversations are auditable by people and by
+models with file tools. The mirror is best-effort and write-only: deleting it
+loses nothing operational.
+
 Around that core:
 
 - [Interactive CLI Harness](./ai/interactive-cli-harness.md) shows how to wire

@@ -69,6 +69,12 @@ describe('fino:commands/code — tool set', () => {
     t.deepEqual(full, [
       'docs_search',
       'docs_show',
+      'fino_lint',
+      'fino_fmt',
+      'fino_install',
+      'fino_init',
+      'fino_test',
+      'fino_bench',
       'list_files',
       'read_file',
       'search_files',
@@ -77,15 +83,30 @@ describe('fino:commands/code — tool set', () => {
       'shell',
     ]);
     const readOnly = createCodeTools({ cwd: '/tmp', writes: false }).map((tool) => tool.name);
-    t.ok(!readOnly.includes('write_file'), 'no write_file in read-only set');
-    t.ok(!readOnly.includes('edit_file'), 'no edit_file in read-only set');
-    t.ok(!readOnly.includes('shell'), 'no shell in read-only set');
+    t.deepEqual(readOnly, [
+      'docs_search',
+      'docs_show',
+      'fino_lint',
+      'list_files',
+      'read_file',
+      'search_files',
+    ]);
   });
 
   it('gates mutating tools behind approval unless auto is set', (t) => {
     const gated = createCodeTools({ cwd: '/tmp' });
     const auto = createCodeTools({ cwd: '/tmp', auto: true });
-    for (const name of ['write_file', 'edit_file', 'shell']) {
+    for (const name of [
+      'write_file',
+      'edit_file',
+      'shell',
+      'fino_lint',
+      'fino_fmt',
+      'fino_install',
+      'fino_init',
+      'fino_test',
+      'fino_bench',
+    ]) {
       t.equal(
         gated.find((tool) => tool.name === name)!.requiresApproval,
         true,

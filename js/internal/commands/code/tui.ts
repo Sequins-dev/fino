@@ -43,7 +43,7 @@ import { SPINNER_FRAMES } from 'fino:tty/components/spinner';
 import type { Segment } from 'fino:tty/components/statusbar';
 import type { CodeEngine, TurnResult } from 'internal:commands/code/engine';
 import type { CodeWorkspace } from 'internal:commands/code/workspace';
-import { contentText, previewText } from 'internal:commands/code/transcript';
+import { contentText, previewText } from 'fino:ai/transcript';
 import {
   ATTENTION,
   ATTENTION_RANK,

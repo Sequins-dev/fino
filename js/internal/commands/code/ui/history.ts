@@ -8,7 +8,7 @@
  */
 import type { ModelMessage } from 'fino:ai/model';
 import type { CodeTurnRecord } from 'internal:commands/code/engine';
-import { contentText, previewText } from 'internal:commands/code/transcript';
+import { contentText, previewText } from 'fino:ai/transcript';
 import { turnMarkerText, type TranscriptEntry } from 'internal:commands/code/ui/blocks';
 
 /**

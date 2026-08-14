@@ -1,25 +1,37 @@
 /**
- * internal:commands/code/transcript — append-only JSONL transcript mirrors.
+ * fino:ai/transcript — durable JSONL transcripts for agent sessions.
  *
- * `fino code` persists its authoritative state in the SQLite session store;
- * this module mirrors the human-facing timeline into JSONL files so
- * conversations are auditable by people and by LLMs (the agent can read its
- * own past sessions with `read_file`/`search_files`). One JSON object per
- * line, ordered by time: user inputs, steering, assistant messages, tool
- * activity, approvals, and sub-agent status transitions. The mirror is
- * write-only and best-effort — deleting it loses nothing operational.
+ * An agent's authoritative state lives in its `SessionStore`: message
+ * history, run checkpoints, suspend tokens. That format is built for resuming
+ * a run, not for reading. This module mirrors the human-facing timeline of a
+ * session into append-only JSONL files — one JSON object per line, ordered by
+ * time — so a conversation is auditable by people and readable by models: an
+ * agent with file tools can read its own past sessions with ordinary reads
+ * and greps.
  *
- * Layout under the transcripts directory: `<threadId>.jsonl` for a session's
+ * The mirror is write-only and best-effort. Every I/O error is swallowed, and
+ * deleting the files loses nothing operational; the store remains the record
+ * of truth.
+ *
+ * Layout under the transcript directory: `<threadId>.jsonl` for a session's
  * main conversation and `<threadId>/<childId>.jsonl` for each sub-agent's
  * parent↔child conversation.
  *
- * ```ts no_run
- * import { SessionTranscript } from 'internal:commands/code/transcript';
+ * `foldEventsToTranscript()` writes the `assistant`, `tool_start`, and
+ * `tool_result` lines it can derive from an `AgentEvent` stream. Every other
+ * line kind is application-defined: an application appends whatever `type`
+ * describes its own timeline — `fino code`, for example, writes `user`,
+ * `steering`, `approval`, `subagent`, and `turn_end` lines around the folded
+ * ones. Lines are plain JSON objects, so no schema is imposed beyond the `ts`
+ * timestamp added on append.
  *
- * const transcript = new SessionTranscript('/repo/.fino/code/transcripts', threadId);
+ * ```ts no_run
+ * import { SessionTranscript, foldEventsToTranscript } from 'fino:ai/transcript';
+ *
+ * const transcript = new SessionTranscript('/repo/.fino/transcripts', 'thread-1');
  * transcript.parent().append({ type: 'user', text: 'hello' });
  * const fold = foldEventsToTranscript(transcript.parent());
- * fold.onEvent(agentEvent);
+ * await agentSession.run('hello', { onEvent: fold.onEvent });
  * fold.flush();
  * await transcript.close();
  * ```
@@ -55,6 +67,14 @@ async function mkdirRecursive(fs: DiskFileSystem, dir: string): Promise<void> {
  * events land in order and survive abrupt exits up to the last completed
  * line. All I/O errors are swallowed — the transcript is a mirror, and a
  * failing mirror must never break the session it mirrors.
+ *
+ * ```ts no_run
+ * import { TranscriptWriter } from 'fino:ai/transcript';
+ *
+ * const writer = new TranscriptWriter('/repo/.fino/transcripts/thread-1.jsonl');
+ * writer.append({ type: 'user', text: 'what changed in the loader?' });
+ * await writer.close();
+ * ```
  */
 export class TranscriptWriter {
   #fs = new DiskFileSystem();
@@ -110,8 +130,21 @@ export class TranscriptWriter {
 }
 
 /**
- * Transcript file set for one `fino code` session: a parent conversation
- * file plus one file per sub-agent, created lazily.
+ * Transcript file set for one agent session: a parent conversation file plus
+ * one file per sub-agent, created lazily.
+ *
+ * Sub-agent ids come from the caller — a `fino:ai/subagents` child id, a
+ * delegated thread id, or anything else the application uses to name a nested
+ * conversation.
+ *
+ * ```ts no_run
+ * import { SessionTranscript } from 'fino:ai/transcript';
+ *
+ * const transcript = new SessionTranscript('/repo/.fino/transcripts', 'thread-1');
+ * transcript.parent().append({ type: 'user', text: 'review the diff' });
+ * transcript.child('sa_1').append({ type: 'user', text: 'read src/loader.rs' });
+ * await transcript.close();
+ * ```
  */
 export class SessionTranscript {
   #dir: string;
@@ -155,10 +188,19 @@ export class SessionTranscript {
 /**
  * Fold streaming agent events into transcript lines.
  *
- * Text deltas buffer into one `assistant` line, flushed when a tool starts,
- * a step ends, or `flush()` is called at turn end; tool activity maps to
- * `tool_start`/`tool_result` lines. Attach the returned `onEvent` alongside
- * a UI observer.
+ * Text deltas buffer into one `assistant` line, flushed when a tool starts, a
+ * step ends, the run suspends, or `flush()` is called at turn end; tool
+ * activity maps to `tool_start`/`tool_result` lines. Attach the returned
+ * `onEvent` alongside a UI observer — it only reads events, so the same
+ * stream can drive both.
+ *
+ * ```ts no_run
+ * import { TranscriptWriter, foldEventsToTranscript } from 'fino:ai/transcript';
+ *
+ * const fold = foldEventsToTranscript(new TranscriptWriter('/tmp/thread-1.jsonl'));
+ * await agentSession.run('summarize the release', { onEvent: fold.onEvent });
+ * fold.flush();
+ * ```
  */
 export function foldEventsToTranscript(writer: TranscriptWriter): {
   onEvent: (ev: AgentEvent) => void;
@@ -203,6 +245,15 @@ const PREVIEW_MAX = 4_000;
 
 /**
  * Flatten a tool result's content parts into plain text.
+ *
+ * Non-text parts collapse to a `[type]` marker, so an image or audio result
+ * still leaves a readable placeholder in the line.
+ *
+ * ```ts
+ * import { contentText } from 'fino:ai/transcript';
+ *
+ * contentText([{ type: 'text', text: 'ok' }, { type: 'image' }]); // 'ok\n[image]'
+ * ```
  */
 export function contentText(content: string | Array<{ type: string; text?: string }>): string {
   if (typeof content === 'string') return content;
@@ -212,7 +263,17 @@ export function contentText(content: string | Array<{ type: string; text?: strin
 }
 
 /**
- * Truncate transcript payload previews so mirrors stay readable.
+ * Truncate a payload preview so transcripts stay readable.
+ *
+ * Tool arguments and outputs can be arbitrarily large; a mirror is meant to
+ * be read, so oversized payloads are cut at `limit` and annotated with how
+ * much was dropped.
+ *
+ * ```ts
+ * import { previewText } from 'fino:ai/transcript';
+ *
+ * previewText('abcdef', 3); // 'abc… [truncated 3 chars]'
+ * ```
  */
 export function previewText(text: string, limit = PREVIEW_MAX): string {
   if (text.length <= limit) return text;

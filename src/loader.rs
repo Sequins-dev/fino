@@ -164,10 +164,6 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:commands/code/tui", "internal/commands/code/tui"),
     source_builtin!(
-        "internal:commands/code/transcript",
-        "internal/commands/code/transcript"
-    ),
-    source_builtin!(
         "internal:commands/code/toolview",
         "internal/commands/code/toolview"
     ),
@@ -216,7 +212,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal/commands/code/ui/views/model-picker"
     ),
     source_builtin!("fino:commands/mcp", "commands/mcp"),
-    source_builtin!("internal:commands/mcp/tools", "internal/commands/mcp/tools"),
+    source_builtin!("internal:commands/tools", "internal/commands/tools"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),
@@ -775,6 +771,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/agent", "ai/agent"),
     source_builtin!("fino:ai/memory", "ai/memory"),
     source_builtin!("fino:ai/session", "ai/session"),
+    source_builtin!("fino:ai/transcript", "ai/transcript"),
+    source_builtin!("fino:ai/workspace", "ai/workspace"),
     source_builtin!("fino:ai/skill", "ai/skill"),
     source_builtin!("fino:ai/eval", "ai/eval"),
     source_builtin!("fino:ai/mcp", "ai/mcp"),
