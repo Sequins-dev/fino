@@ -180,6 +180,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "commands/code/ui/views/model-picker"
     ),
     source_builtin!("fino:commands/mcp", "commands/mcp"),
+    source_builtin!("fino:commands/mcp/tools", "commands/mcp/tools"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),

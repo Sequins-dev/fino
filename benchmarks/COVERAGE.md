@@ -33,6 +33,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/code/ui/views/session-manager` | not yet benchmarked |
 | `fino:commands/code/ui/views/model-picker` | not yet benchmarked |
 | `fino:commands/mcp` | not yet benchmarked |
+| `fino:commands/mcp/tools` | not yet benchmarked |
 | `fino:ai/subagents` | not yet benchmarked |
 | `fino:commands/code/transcript` | not yet benchmarked |
 | `fino:commands/code/toolview` | not yet benchmarked |

@@ -1,74 +1,74 @@
 import { describe, it } from 'fino:test/test';
-import { MCPClient, mcpServer } from 'fino:ai/mcp';
-import { createCodeTools } from 'fino:commands/code/tools';
-import mcpCommand from 'fino:commands/mcp';
+import { MCPClient } from 'fino:ai/mcp';
+import mcpCommand, { createMcpTools } from 'fino:commands/mcp';
+import { DiskFileSystem } from 'fino:file';
 import { env, execPath, Process } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 import type { Transport } from 'fino:jsonrpc';
 
-class MessageQueue {
-  #buf: string[] = [];
-  #waiters: Array<(s: string) => void> = [];
-  #closed = false;
-  push(msg: string): void {
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter(msg);
-    else this.#buf.push(msg);
+const GENERIC_FILE_TOOLS = ['list_files', 'read_file', 'search_files'];
+
+function childEnv(): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) out[key] = value;
   }
-  close(): void {
-    this.#closed = true;
-    for (const waiter of this.#waiters.splice(0)) waiter('');
-  }
-  async *[Symbol.asyncIterator](): AsyncIterator<string> {
-    while (true) {
-      if (this.#buf.length > 0) {
-        yield this.#buf.shift()!;
-        continue;
-      }
-      if (this.#closed) return;
-      const msg = await new Promise<string>((resolve) => {
-        this.#waiters.push(resolve);
-      });
-      if (msg === '' && this.#closed) return;
-      if (msg) yield msg;
-    }
-  }
+  out.FINO_REACTOR_THREADS = '1';
+  return out;
 }
 
-function loopbackPair(): [Transport, Transport] {
-  const aToB = new MessageQueue();
-  const bToA = new MessageQueue();
-  const a: Transport = {
-    send: (msg) => {
-      aToB.push(msg);
+async function* splitLines(source: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for await (const chunk of source) {
+    buffer += decoder.decode(chunk, { stream: true });
+    let index = buffer.indexOf('\n');
+    while (index >= 0) {
+      const line = buffer.slice(0, index).trim();
+      buffer = buffer.slice(index + 1);
+      if (line.length > 0) yield line;
+      index = buffer.indexOf('\n');
+    }
+  }
+  if (buffer.trim().length > 0) yield buffer.trim();
+}
+
+function processTransport(proc: Process): Transport {
+  const encoder = new TextEncoder();
+  return {
+    send: async (message) => {
+      await proc.stdin.write(encoder.encode(`${message}\n`));
+      await proc.stdin.flush();
     },
-    receive: () => bToA,
+    receive: () => splitLines(proc.stdout),
     close: () => {
-      aToB.close();
-      bToA.close();
+      proc.stdin.close();
     },
   };
-  const b: Transport = {
-    send: (msg) => {
-      bToA.push(msg);
-    },
-    receive: () => aToB,
-    close: () => {
-      aToB.close();
-      bToA.close();
-    },
-  };
-  return [a, b];
+}
+
+async function toolNames(options: {
+  allowWrite?: boolean;
+  allowShell?: boolean;
+}): Promise<string[]> {
+  const tools = await createMcpTools({ cwd: '/tmp', ...options });
+  return tools.map((entry) => entry.name).sort();
+}
+
+async function makeTempProject(name: string, files: Record<string, string>): Promise<string> {
+  const fs = new DiskFileSystem();
+  const dir = `/tmp/fino-mcp-${name}-${Date.now().toString(36)}`;
+  await fs.mkdir(dir);
+  const encoder = new TextEncoder();
+  for (const [file, content] of Object.entries(files)) {
+    await fs.writeFile(`${dir}/${file}`, encoder.encode(content));
+  }
+  return dir;
 }
 
 describe('fino:commands/mcp — coding tools over MCP', () => {
   it('answers initialization over a real stdio process', async (t) => {
-    const childEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (value !== undefined) childEnv[key] = value;
-    }
-    childEnv.FINO_REACTOR_THREADS = '1';
-    const proc = new Process(execPath, ['mcp'], { env: childEnv });
+    const proc = new Process(execPath, ['mcp'], { env: childEnv() });
     // Debug-build child startup is ~0.6s cold; leave generous headroom for a
     // loaded test runner — the assertion is about responding at all.
     const timer = loop.timeout(10_000);
@@ -109,46 +109,105 @@ describe('fino:commands/mcp — coding tools over MCP', () => {
     }
   });
 
-  it('lists the read-only tool set and executes docs-independent tools', async (t) => {
-    const dir = `/tmp/fino-mcp-test-${Date.now().toString(36)}`;
-    const tools = createCodeTools({ cwd: dir, writes: false, auto: true });
-    const server = mcpServer({ name: 'fino', version: '0.1.0', tools });
-    const [clientSide, serverSide] = loopbackPair();
-    void server.serve(serverSide);
-    const client = new MCPClient({ transport: clientSide });
-    await client.connect();
-    const listed = await client.listTools();
-    const names = listed.map((entry) => entry.name).sort();
-    t.deepEqual(
-      names,
-      ['docs_search', 'docs_show', 'list_files', 'read_file', 'search_files'],
-      'read-only tools exposed',
-    );
-    const listFiles = listed.find((entry) => entry.name === 'list_files')!;
-    const result = await listFiles.run({ pattern: '**/*' });
-    t.ok(String(result).length > 0, 'remote tool call returns content');
-    await client.close();
+  it('exposes only Fino-specific tools by default', async (t) => {
+    const names = await toolNames({});
+    t.deepEqual(names, ['docs_search', 'docs_show', 'fino_lint'], 'read-only tool set');
+    for (const generic of GENERIC_FILE_TOOLS) {
+      t.ok(!names.includes(generic), `${generic} left to the MCP host`);
+    }
+    for (const gated of ['write_file', 'edit_file', 'shell', 'fino_fmt', 'fino_test']) {
+      t.ok(!names.includes(gated), `${gated} absent without its flag`);
+    }
   });
 
-  it('exposes gated tools only when the policy enables them', async (t) => {
-    const all = createCodeTools({ cwd: '/tmp', writes: true, auto: true });
-    const shellOnly = all.filter((tool) => tool.name !== 'write_file' && tool.name !== 'edit_file');
-    const server = mcpServer({ name: 'fino', tools: shellOnly });
-    const [clientSide, serverSide] = loopbackPair();
-    void server.serve(serverSide);
-    const client = new MCPClient({ transport: clientSide });
-    await client.connect();
-    const names = (await client.listTools()).map((entry) => entry.name);
-    t.ok(names.includes('shell'), 'shell exposed when allowed');
-    t.ok(!names.includes('write_file'), 'write_file absent without --allow-write');
-    await client.close();
+  it('adds the file-changing tools under --allow-write', async (t) => {
+    const names = await toolNames({ allowWrite: true });
+    for (const gated of ['write_file', 'edit_file', 'fino_fmt', 'fino_install', 'fino_init']) {
+      t.ok(names.includes(gated), `${gated} exposed with --allow-write`);
+    }
+    t.ok(!names.includes('shell'), 'shell still gated');
+    t.ok(!names.includes('fino_test'), 'fino_test still gated');
+    t.ok(!names.includes('fino_bench'), 'fino_bench still gated');
+    for (const generic of GENERIC_FILE_TOOLS) {
+      t.ok(!names.includes(generic), `${generic} still left to the MCP host`);
+    }
+  });
+
+  it('adds the code-executing tools under --allow-shell', async (t) => {
+    const names = await toolNames({ allowShell: true });
+    for (const gated of ['shell', 'fino_test', 'fino_bench']) {
+      t.ok(names.includes(gated), `${gated} exposed with --allow-shell`);
+    }
+    t.ok(!names.includes('write_file'), 'write_file still gated');
+    t.ok(!names.includes('fino_fmt'), 'fino_fmt still gated');
+    for (const generic of GENERIC_FILE_TOOLS) {
+      t.ok(!names.includes(generic), `${generic} still left to the MCP host`);
+    }
+  });
+
+  it('gates the fino_lint fix parameter behind --allow-write', async (t) => {
+    const readOnly = (await createMcpTools({ cwd: '/tmp' })).find(
+      (entry) => entry.name === 'fino_lint',
+    )!;
+    const writable = (await createMcpTools({ cwd: '/tmp', allowWrite: true })).find(
+      (entry) => entry.name === 'fino_lint',
+    )!;
+    const properties = (schema: unknown) =>
+      Object.keys((schema as { properties?: Record<string, unknown> }).properties ?? {});
+    t.ok(!properties(readOnly.parameters).includes('fix'), 'no fix parameter by default');
+    t.ok(properties(writable.parameters).includes('fix'), 'fix parameter with --allow-write');
+  });
+
+  it('runs fino_lint end to end over a real MCP session', async (t) => {
+    const dir = await makeTempProject('lint', {
+      'clean.ts': 'export const answer = 42;\n',
+    });
+    const proc = new Process(execPath, ['mcp'], { cwd: dir, env: childEnv() });
+    const timer = loop.timeout(60_000);
+    try {
+      const client = new MCPClient({ transport: processTransport(proc) });
+      const session = (async () => {
+        await client.connect();
+        const listed = await client.listTools();
+        const lint = listed.find((entry) => entry.name === 'fino_lint');
+        if (!lint) return { names: listed.map((entry) => entry.name), output: '' };
+        const output = String(await lint.run({ paths: ['clean.ts'] }));
+        return { names: listed.map((entry) => entry.name), output };
+      })();
+      const result = await Promise.race([
+        session.then((value) => ({ kind: 'done' as const, value })),
+        timer.then(() => ({ kind: 'timeout' as const })),
+      ]);
+      t.equal(result.kind, 'done', 'session completes before the timeout');
+      if (result.kind === 'done') {
+        t.deepEqual(
+          result.value.names.sort(),
+          ['docs_search', 'docs_show', 'fino_lint'],
+          'wire tool list matches the default policy',
+        );
+        t.ok(
+          result.value.output.includes('1 file checked'),
+          `fino_lint reports the checked file (got: ${result.value.output})`,
+        );
+      }
+      await client.close();
+    } finally {
+      timer.cancel();
+      proc.stdin.close();
+      try {
+        proc.kill();
+      } catch {}
+      await proc.wait();
+    }
   });
 
   it('declares the expected CLI surface', (t) => {
     const help = mcpCommand.help();
     t.ok(help.includes('mcp [options]'), 'usage line');
     t.ok(help.includes('--allow-write'), 'write gate flag');
+    t.ok(help.includes('fino_fmt'), 'write gate names the Fino command tools it unlocks');
     t.ok(help.includes('--allow-shell'), 'shell gate flag');
+    t.ok(help.includes('fino_test'), 'shell gate names the Fino command tools it unlocks');
     t.ok(help.includes('--http'), 'http mode flag');
   });
 });

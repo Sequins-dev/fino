@@ -1,16 +1,21 @@
 /**
- * fino:commands/mcp — serve the Fino coding tools over the Model Context Protocol.
+ * fino:commands/mcp — serve the Fino-specific development tools over MCP.
  *
- * `fino mcp` mounts the same tool set that powers `fino code` — documentation
- * search and symbol lookup, guide reading, file listing/reading/searching,
- * and optionally file writing and shell execution — on an MCP server, so
- * other coding agents and MCP-capable editors can develop with Fino too. By
- * default the server speaks newline-delimited JSON-RPC over this process's
+ * `fino mcp` exposes only what a host cannot already do for itself. Generic
+ * file listing, reading, and searching are left to the MCP client; what ships
+ * here is the Fino documentation index (`docs_search`, `docs_show`) plus
+ * Fino's own commands as `fino_*` tools — the test runner, benchmark runner,
+ * linter, formatter, package installer, and project scaffolder. Authored
+ * guides from the docs build are listed as MCP resources under `fino-doc://`.
+ *
+ * By default the server speaks newline-delimited JSON-RPC over this process's
  * stdio (the transport MCP hosts use to launch server commands) and exposes
- * only the read-only tools; `--allow-write` and `--allow-shell` opt into the
- * mutating tools, and `--http <port>` serves the Streamable HTTP transport
- * instead. Authored guides from the docs build are also listed as MCP
- * resources.
+ * only the read-only tools: `docs_search`, `docs_show`, and `fino_lint`.
+ * `--allow-write` adds the tools that change files — `write_file`,
+ * `edit_file`, `fino_fmt`, `fino_install`, `fino_init`. `--allow-shell` adds
+ * `shell` plus `fino_test` and `fino_bench`, which run arbitrary project code
+ * and so carry the same risk as a shell. `--http <port>` serves the Streamable
+ * HTTP transport instead of stdio.
  *
  * ```sh
  * fino mcp                       # stdio, read-only tools
@@ -20,6 +25,70 @@
  */
 import { Task } from '../task.ts';
 import { cwd } from '../process.ts';
+import type { Tool } from 'fino:ai/tool';
+
+/**
+ * Options for `createMcpTools()`.
+ */
+export interface McpToolsOptions {
+  /**
+   * Project root the tools operate against, normally the server process
+   * working directory.
+   */
+  cwd: string;
+  /**
+   * Directory holding a `fino doc build` output tree used by `docs_search`
+   * and `docs_show`. Defaults to `<cwd>/docs`.
+   */
+  docsDir?: string;
+  /**
+   * Expose the tools that change files: `write_file`, `edit_file`,
+   * `fino_fmt`, `fino_install`, `fino_init`. Defaults to `false`.
+   */
+  allowWrite?: boolean;
+  /**
+   * Expose the tools that execute code: `shell`, `fino_test`, `fino_bench`.
+   * Defaults to `false`.
+   */
+  allowShell?: boolean;
+}
+
+/**
+ * Build the tool set `fino mcp` mounts for one policy.
+ *
+ * Only `docs_search`, `docs_show`, and `fino_lint` are unconditional. The
+ * generic file tools that `fino code` uses (`list_files`, `read_file`,
+ * `search_files`) are deliberately dropped here — every MCP host already has
+ * them, so the server keeps to what is unique to Fino.
+ *
+ * ```ts no_run
+ * import { createMcpTools } from 'fino:commands/mcp';
+ *
+ * const tools = await createMcpTools({ cwd: '/repo' });
+ * // ['docs_search', 'docs_show', 'fino_lint']
+ * ```
+ */
+export async function createMcpTools(opts: McpToolsOptions): Promise<Tool[]> {
+  const { createCodeTools } = await import('fino:commands/code/tools');
+  const { createFinoCommandTools } = await import('fino:commands/mcp/tools');
+  const { join } = await import('fino:file/path');
+  const allowWrite = opts.allowWrite ?? false;
+  const allowShell = opts.allowShell ?? false;
+  const exposed = new Set(['docs_search', 'docs_show']);
+  if (allowWrite) {
+    exposed.add('write_file');
+    exposed.add('edit_file');
+  }
+  if (allowShell) exposed.add('shell');
+  const tools = createCodeTools({
+    cwd: opts.cwd,
+    docsDir: opts.docsDir ?? join(opts.cwd, 'docs').toString(),
+    writes: allowWrite || allowShell,
+    auto: true,
+  }).filter((t) => exposed.has(t.name));
+  tools.push(...createFinoCommandTools({ cwd: opts.cwd, writes: allowWrite, shell: allowShell }));
+  return tools;
+}
 
 interface McpCommandInput {
   'allow-write'?: boolean;
@@ -31,8 +100,11 @@ interface McpCommandInput {
 const MCP_INSTRUCTIONS = [
   'Fino platform development tools. Fino is a JS/TS runtime with a thin native core;',
   'its standard library lives in fino:* modules. Use docs_search first to discover which',
-  'module serves a use case, docs_show for exact symbol reference, and read_file for full',
-  'guides. File and shell tools operate relative to the server process working directory.',
+  'module serves a use case, then docs_show for exact symbol reference. Full authored',
+  'guides are MCP resources, not tools: list resources and read the fino-doc:// URI you',
+  'need. The fino_* tools run the project Fino toolchain — fino_lint, fino_fmt,',
+  'fino_test, fino_bench, fino_install, fino_init — relative to the server process',
+  'working directory. Read and edit source files with your own tools.',
 ].join(' ');
 
 const command = new Task({
@@ -42,25 +114,15 @@ const command = new Task({
   run: async function runMcpCommand(input: McpCommandInput, ctx) {
     const root = ctx.cwd ?? cwd();
     const { mcpServer, stdioServerTransport } = await import('fino:ai/mcp');
-    const { createCodeTools } = await import('fino:commands/code/tools');
     const { DiskFileSystem } = await import('fino:file');
     const { join } = await import('fino:file/path');
-    const allowWrite = input['allow-write'] ?? false;
-    const allowShell = input['allow-shell'] ?? false;
     const docsDir = input['docs-dir'] ?? join(root, 'docs').toString();
-    let tools = createCodeTools({
+    const tools = await createMcpTools({
       cwd: root,
       docsDir,
-      writes: allowWrite || allowShell,
-      auto: true,
+      allowWrite: input['allow-write'] ?? false,
+      allowShell: input['allow-shell'] ?? false,
     });
-    if (allowWrite || allowShell) {
-      tools = tools.filter((t) => {
-        if (t.name === 'shell') return allowShell;
-        if (t.name === 'write_file' || t.name === 'edit_file') return allowWrite;
-        return true;
-      });
-    }
     const fs = new DiskFileSystem();
     const server = mcpServer({
       name: 'fino',
@@ -113,8 +175,17 @@ const command = new Task({
   cli: {
     usage: 'fino mcp [options]',
     options: [
-      { flags: '--allow-write', type: 'boolean', description: 'Expose write_file and edit_file' },
-      { flags: '--allow-shell', type: 'boolean', description: 'Expose the shell tool' },
+      {
+        flags: '--allow-write',
+        type: 'boolean',
+        description:
+          'Expose the tools that change files: write_file, edit_file, fino_fmt, fino_install, fino_init',
+      },
+      {
+        flags: '--allow-shell',
+        type: 'boolean',
+        description: 'Expose the tools that execute code: shell, fino_test, fino_bench',
+      },
       {
         flags: '--http',
         type: 'number',
