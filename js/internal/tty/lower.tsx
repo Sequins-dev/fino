@@ -330,7 +330,7 @@ function contextMenu(props: Props): VNode {
   const { at, items, selectedKey, onSelect, onDismiss, id } = props as ContextMenuProps;
   return (
     <Box>
-      <Layer anchor={{ x: 0, y: -1 }} width={9999} height={9999}>
+      <Layer anchor={{ x: 0, y: -1 }} width={9999} height={9999} transparent>
         <Clickable
           focusable={false}
           width={9999}

@@ -46,7 +46,7 @@ export type Direction = 'row' | 'column';
 export type Align = 'start' | 'center' | 'end' | 'stretch';
 export type Justify = 'start' | 'center' | 'end' | 'between';
 export type WrapMode = 'none' | 'char' | 'word';
-export type BorderStyle = 'single' | 'ascii' | 'round' | 'heavy' | 'double';
+export type BorderStyle = 'single' | 'ascii' | 'heavy' | 'double';
 
 /** Style props accepted by every primitive. */
 export interface StyleProps {
@@ -96,6 +96,9 @@ export interface BoxProps extends StyleProps, FlexChildProps, Props {
   paddingY?: number;
   border?: boolean | BorderStyle;
   borderStyle?: BorderStyle;
+  /** Round the corners: `╭╮╰╯` for single (and `/\\` for ascii) borders in the
+   * terminal, border-radius on the web. Composes with any line style. */
+  rounded?: boolean;
   borderColor?: Color;
   /** Text drawn into the top border edge. */
   borderTitle?: string;
@@ -138,6 +141,8 @@ export interface LayerProps extends StyleProps, Props {
   placement?: 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'center';
   /** Dim everything beneath the layer. */
   backdrop?: boolean;
+  /** Skip the opaque backing fill, letting content beneath show through. */
+  transparent?: boolean;
   width?: number;
   height?: number;
   children?: Child;

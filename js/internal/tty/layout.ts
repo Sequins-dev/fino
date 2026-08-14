@@ -39,12 +39,18 @@ export interface Constraints {
 type Align = 'start' | 'center' | 'end' | 'stretch';
 type Justify = 'start' | 'center' | 'end' | 'between';
 export type WrapMode = 'none' | 'char' | 'word';
-export type BorderStyle = 'single' | 'ascii' | 'round' | 'heavy' | 'double';
+export type BorderStyle = 'single' | 'ascii' | 'heavy' | 'double';
+
+// Rounded corner glyphs exist only for the light line weight; ascii gets the
+// classic slash corners, and heavy/double stay square.
+const ROUNDED_CORNERS: Partial<Record<BorderStyle, [string, string, string, string]>> = {
+  single: ['╭', '╮', '╰', '╯'],
+  ascii: ['/', '\\', '\\', '/'],
+};
 
 const BORDERS: Record<BorderStyle, [string, string, string, string, string, string]> = {
   single: ['┌', '┐', '└', '┘', '─', '│'],
   ascii: ['+', '+', '+', '+', '-', '|'],
-  round: ['╭', '╮', '╰', '╯', '─', '│'],
   heavy: ['┏', '┓', '┗', '┛', '━', '┃'],
   double: ['╔', '╗', '╚', '╝', '═', '║'],
 };
@@ -467,6 +473,7 @@ export function invalidateMeasure(node: object): void {
 
 interface BoxSpec {
   direction: 'row' | 'column';
+  rounded: boolean;
   wrap: boolean;
   gap: number;
   justify: Justify;
@@ -495,6 +502,7 @@ function boxSpec(node: LayoutNode): BoxSpec {
   const align = (str(props, 'align') as Align | undefined) ?? 'stretch';
   return {
     direction: str(props, 'direction') === 'row' ? 'row' : 'column',
+    rounded: props.rounded === true,
     wrap: props.wrap === true,
     gap: num(props, 'gap') ?? 0,
     justify,
@@ -841,9 +849,17 @@ interface PaintContext {
   layers: Array<{ node: LayoutNode; inherited: Style; depth: number }>;
 }
 
-function paintBorder(canvas: Canvas, rect: Rect, border: BorderStyle, style: Style): void {
+function paintBorder(
+  canvas: Canvas,
+  rect: Rect,
+  border: BorderStyle,
+  rounded: boolean,
+  style: Style,
+): void {
   if (rect.width < 2 || rect.height < 2) return;
-  const [tl, tr, bl, br, hbar, vbar] = BORDERS[border];
+  const [stl, str_, sbl, sbr, hbar, vbar] = BORDERS[border];
+  const corners = rounded ? ROUNDED_CORNERS[border] : undefined;
+  const [tl, tr, bl, br] = corners ?? [stl, str_, sbl, sbr];
   canvas.put(rect.x, rect.y, tl, 1, style);
   canvas.put(rect.x + rect.width - 1, rect.y, tr, 1, style);
   canvas.put(rect.x, rect.y + rect.height - 1, bl, 1, style);
@@ -1024,7 +1040,7 @@ function paintNode(
       if (spec.border) {
         const borderStyle =
           spec.borderColor !== undefined ? mergeStyle(own, { fg: spec.borderColor }) : own;
-        paintBorder(canvas, rect, spec.border, borderStyle);
+        paintBorder(canvas, rect, spec.border, spec.rounded, borderStyle);
         const title = str(props, 'borderTitle');
         if (title && rect.width > 4) {
           const shown = ` ${title} `;
@@ -1144,9 +1160,11 @@ function paintLayer(
   y = Math.max(0, Math.min(y, canvas.height - height));
   if (props.backdrop === true) canvas.shade();
   const rect: Rect = { x, y, width, height };
-  for (let ry = rect.y; ry < rect.y + rect.height; ry++) {
-    for (let rx = rect.x; rx < rect.x + rect.width; rx++) {
-      canvas.put(rx, ry, ' ', 1, EMPTY_STYLE);
+  if (props.transparent !== true) {
+    for (let ry = rect.y; ry < rect.y + rect.height; ry++) {
+      for (let rx = rect.x; rx < rect.x + rect.width; rx++) {
+        canvas.put(rx, ry, ' ', 1, EMPTY_STYLE);
+      }
     }
   }
   const inner = { ...node, type: 'box' } as LayoutNode;

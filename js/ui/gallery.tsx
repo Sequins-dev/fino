@@ -210,15 +210,17 @@ function layoutGroup(): StoryGroup {
           title: { type: 'text', default: 'Session' },
           border: {
             type: 'select',
-            options: ['single', 'round', 'heavy', 'double', 'ascii'],
+            options: ['single', 'heavy', 'double', 'ascii'],
             default: 'single',
           },
+          rounded: { type: 'boolean', default: false },
           width: { type: 'number', default: 30, step: 2, min: 12, max: 60 },
         },
         view: (args) => (
           <Panel
             title={String(args.title)}
             border={args.border as never}
+            rounded={args.rounded === true || args.rounded === 'true'}
             width={Number(args.width)}
           >
             <Text>Bordered content with a title.</Text>
@@ -301,6 +303,7 @@ function overlayGroup(): StoryGroup {
   const select = createDisclosure(false);
   const model = createSignal<string | null>(null);
   const menu = createDisclosure(false);
+  const menuAt = createSignal({ x: 4, y: 1 });
   return {
     title: 'Menus & overlays',
     stories: [
@@ -359,11 +362,17 @@ function overlayGroup(): StoryGroup {
         key: 'context-menu',
         name: 'ContextMenu',
         view: () => (
-          <VStack gap={1}>
+          <VStack
+            gap={1}
+            onMouse={(event) => {
+              if (event.action === 'press') menuAt.set({ x: event.x, y: event.y });
+              return false;
+            }}
+          >
             <Button label="Open menu" onClick={() => menu.set(true)} />
             {menu.open.get() ? (
               <ContextMenu
-                at={{ x: 4, y: 1 }}
+                at={menuAt.get()}
                 items={[
                   { key: 'rename', label: 'Rename' },
                   { key: 'archive', label: 'Archive' },

@@ -309,6 +309,7 @@ describe('fino:ui/components menus and overlays', () => {
       app.text().some((row) => row.includes('Rename')),
       'menu painted at the anchor',
     );
+    t.ok(app.text()[0]!.includes('row one'), 'content beneath the menu stays visible');
     click(app, 6, 3);
     t.deepEqual(events, ['select:rename'], 'clicking a row selects');
     click(app, 28, 0);

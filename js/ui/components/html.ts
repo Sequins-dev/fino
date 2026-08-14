@@ -173,18 +173,21 @@ function flexChildCss(props: Props, css: Record<string, string>): void {
   }
 }
 
-function borderShorthand(style: unknown, color: string): { border: string; radius?: string } {
+function borderShorthand(
+  style: unknown,
+  rounded: boolean,
+  color: string,
+): { border: string; radius: string } {
+  const radius = rounded ? '0.5rem' : '0';
   switch (style) {
-    case 'round':
-      return { border: `1px solid ${color}`, radius: '0.5rem' };
     case 'heavy':
-      return { border: `3px solid ${color}` };
+      return { border: `3px solid ${color}`, radius };
     case 'double':
-      return { border: `4px double ${color}` };
+      return { border: `4px double ${color}`, radius };
     case 'ascii':
-      return { border: `1px dashed ${color}` };
+      return { border: `1px dashed ${color}`, radius };
     default:
-      return { border: `1px solid ${color}` };
+      return { border: `1px solid ${color}`, radius };
   }
 }
 
@@ -221,9 +224,9 @@ function boxNode(node: VNode, children: NormalizedChild[]): VNode {
   if (border === true || typeof border === 'string') {
     const name = typeof border === 'string' ? border : props.borderStyle;
     const color = props.borderColor ? cssColor(props.borderColor as Color) : 'var(--tui-border)';
-    const spec = borderShorthand(name, color);
+    const spec = borderShorthand(name, props.rounded === true, color);
     css.border = spec.border;
-    css.borderRadius = spec.radius ?? '0';
+    css.borderRadius = spec.radius;
   }
   if (props.overflow === 'hidden') css.overflow = 'hidden';
   sizeCss(props, css);
@@ -366,15 +369,15 @@ function handlerOf<T>(value: unknown): T | undefined {
 }
 
 function panelHtml(node: VNode): VNode {
-  const { title, id, border, borderStyle } = node.props as PanelProps;
+  const { title, id, border, borderStyle, rounded } = node.props as PanelProps;
   const css: Record<string, string> = {};
   sizeCss(node.props, css);
   flexChildCss(node.props, css);
   const styleName = typeof border === 'string' ? border : borderStyle;
-  if (typeof styleName === 'string') {
-    const spec = borderShorthand(styleName, 'var(--ui-border)');
+  if (typeof styleName === 'string' || rounded !== undefined) {
+    const spec = borderShorthand(styleName, rounded === true, 'var(--ui-border)');
     css.border = spec.border;
-    if (spec.radius !== undefined) css.borderRadius = spec.radius;
+    css.borderRadius = spec.radius;
   }
   const attrs: Props = { className: 'ui-panel', ...idAttr(id) };
   if (Object.keys(css).length > 0) attrs.style = css;

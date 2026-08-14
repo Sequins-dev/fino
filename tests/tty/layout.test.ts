@@ -209,6 +209,28 @@ describe('internal:tty/layout styling and content', () => {
   });
 });
 
+describe('internal:tty/layout rounded borders', () => {
+  it('rounds corners per line style where glyphs exist', (t) => {
+    const single = renderFrame(h(Box, { border: true, rounded: true }, h(Text, null, 'x')), {
+      width: 5,
+      height: 3,
+    }).split('\n');
+    t.equal(single[0], '╭───╮', 'single rounds to arc corners');
+    t.equal(single[2], '╰───╯', 'bottom arcs');
+    const ascii = renderFrame(h(Box, { border: 'ascii', rounded: true }, h(Text, null, 'x')), {
+      width: 5,
+      height: 3,
+    }).split('\n');
+    t.equal(ascii[0], '/---\\', 'ascii rounds to slash corners');
+    t.equal(ascii[2], '\\---/', 'bottom slashes');
+    const heavy = renderFrame(h(Box, { border: 'heavy', rounded: true }, h(Text, null, 'x')), {
+      width: 5,
+      height: 3,
+    }).split('\n');
+    t.equal(heavy[0], '┏━━━┓', 'heavy has no arc glyphs and stays square');
+  });
+});
+
 describe('internal:tty/layout layers', () => {
   it('paints layers above the flow, centered by default', (t) => {
     const frame = renderFrame(
