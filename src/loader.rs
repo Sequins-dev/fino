@@ -283,6 +283,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tty/layout", "internal/tty/layout"),
     source_builtin!("internal:tty/host", "internal/tty/host"),
     source_builtin!("internal:tty/events", "internal/tty/events"),
+    source_builtin!("internal:tty/lower", "internal/tty/lower"),
     source_builtin!("internal:tty/vt", "internal/tty/vt"),
     source_builtin!("fino:tty/tui", "tty/tui"),
     // net

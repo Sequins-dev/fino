@@ -590,6 +590,8 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
 }
 
 function controlsForm(story: Story, args: StoryArgs): VNode {
+  // Controls re-render on change; the Apply button stays as the no-JS path.
+  const resubmit = 'this.form.submit()';
   const rows = Object.entries(story.controls ?? {}).map(([name, control]) => {
     const label = control.label ?? name;
     const value = args[name] ?? control.default;
@@ -604,12 +606,13 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
           name,
           value: 'true',
           checked: value === true,
+          onchange: resubmit,
         }),
       );
     } else if (control.type === 'select') {
       field = h(
         'select',
-        { name },
+        { name, onchange: resubmit },
         ...control.options.map((option) =>
           h('option', { value: option, selected: option === value }, option),
         ),
@@ -622,9 +625,10 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
         step: String(control.step ?? 1),
         ...(control.min !== undefined ? { min: String(control.min) } : {}),
         ...(control.max !== undefined ? { max: String(control.max) } : {}),
+        onchange: resubmit,
       });
     } else {
-      field = h('input', { type: 'text', name, value: String(value) });
+      field = h('input', { type: 'text', name, value: String(value), onchange: resubmit });
     }
     return h(
       'label',

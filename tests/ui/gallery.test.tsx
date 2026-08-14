@@ -2,7 +2,20 @@
 import { describe, it } from 'fino:test/test';
 import { renderToHtml } from 'fino:ui/html';
 import { toHtml, htmlPage } from 'fino:ui/components/html';
-import { Box, Button, Checkbox, Modal, Panel, Text, VStack } from 'fino:ui/components';
+import {
+  Box,
+  Button,
+  Checkbox,
+  Details,
+  FileTree,
+  Modal,
+  Panel,
+  Select,
+  Switch,
+  Table,
+  Text,
+  VStack,
+} from 'fino:ui/components';
 import { catalogStories, defaultArgs, galleryPage } from 'fino:ui/gallery';
 import { renderFrame } from 'fino:tty/tui';
 import { openPty } from 'fino:test/pty';
@@ -16,9 +29,9 @@ describe('fino:ui/components/html', () => {
   it('maps boxes to flexbox divs and titled borders to fieldsets', (t) => {
     const html = renderToHtml(
       toHtml(
-        <Panel title="Session" width={20}>
+        <Box border borderTitle="Session" direction="column" width={20}>
           <Text style={[{ fg: 'cyan' }]}>hello</Text>
-        </Panel>,
+        </Box>,
       ),
     );
     t.ok(html.startsWith('<fieldset'), 'titled border becomes a fieldset');
@@ -29,12 +42,17 @@ describe('fino:ui/components/html', () => {
     t.ok(html.includes('white-space:pre'), 'unwrapped text preserves spacing');
   });
 
-  it('maps clickables to buttons and drops handler props', (t) => {
-    const html = renderToHtml(toHtml(<Button label="Save" onClick={() => {}} />));
-    t.ok(html.includes('<button'), 'clickable renders as a button');
-    t.ok(!html.includes('onClick'), 'handlers are dropped, not serialized');
-    const disabled = renderToHtml(toHtml(<Button label="Off" disabled />));
-    t.ok(disabled.includes(' disabled'), 'disabled carries through');
+  it('renders panels as titled cards', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <Panel title="Session">
+          <Text>hello</Text>
+        </Panel>,
+      ),
+    );
+    t.ok(html.startsWith('<section class="ui-panel"'), 'panel becomes a card section');
+    t.ok(html.includes('class="ui-panel-title">Session'), 'title becomes a card header');
+    t.ok(html.includes('hello'), 'content renders inside');
   });
 
   it('renders layers as overlays with optional backdrops', (t) => {
@@ -48,9 +66,10 @@ describe('fino:ui/components/html', () => {
         </VStack>,
       ),
     );
-    t.ok(html.includes('position:absolute'), 'layer is absolutely positioned');
-    t.ok(html.includes('rgb(0 0 0 / 0.45)'), 'backdrop dims what is beneath');
-    t.ok(html.includes('<legend>Confirm</legend>'), 'modal panel renders inside');
+    t.ok(html.includes('class="ui-overlay"'), 'modal sits on an overlay backdrop');
+    t.ok(html.includes('role="dialog"'), 'modal card is a dialog');
+    t.ok(html.includes('class="ui-modal-title">Confirm'), 'title renders in the card header');
+    t.ok(html.includes('sure?'), 'modal body renders inside');
   });
 
   it('wraps markup in a page shell with the palette', (t) => {
@@ -59,6 +78,149 @@ describe('fino:ui/components/html', () => {
     t.ok(page.includes('<title>Demo</title>'), 'title lands');
     t.ok(page.includes('--tui-cyan'), 'palette variables are defined');
     t.ok(page.includes('<p>hi</p>'), 'body markup embedded raw');
+  });
+});
+
+describe('fino:ui/components/html native lowering', () => {
+  it('lowers buttons to real web buttons and drops handlers', (t) => {
+    const html = renderToHtml(toHtml(<Button label="Save" onClick={() => {}} />));
+    t.equal(html, '<button class="ui-button" type="button">Save</button>', 'styled native button');
+    t.ok(!html.includes('[ Save ]'), 'no terminal brackets leak');
+    const disabled = renderToHtml(toHtml(<Button label="Off" disabled />));
+    t.ok(disabled.includes(' disabled'), 'disabled carries through');
+  });
+
+  it('lowers checkboxes to labeled inputs', (t) => {
+    const html = renderToHtml(
+      toHtml(<Checkbox checked label="Notifications" onChange={() => {}} />),
+    );
+    t.ok(html.includes('<input type="checkbox"'), 'real checkbox input');
+    t.ok(html.includes(' checked'), 'checked state carries');
+    t.ok(html.includes('<span>Notifications</span>'), 'label text beside the box');
+    t.ok(!html.includes('[x]'), 'no glyph leaks');
+    const off = renderToHtml(toHtml(<Checkbox checked={false} label="Off" disabled />));
+    t.ok(!off.includes(' checked'), 'unchecked stays unchecked');
+    t.ok(off.includes(' disabled'), 'disabled carries');
+  });
+
+  it('lowers switches to slider-styled checkboxes', (t) => {
+    const html = renderToHtml(toHtml(<Switch on label="Power" onChange={() => {}} />));
+    t.ok(html.includes('class="ui-switch"'), 'switch class drives the slider CSS');
+    t.ok(html.includes('type="checkbox"'), 'backed by a native checkbox');
+    t.ok(html.includes(' checked'), 'on maps to checked');
+    t.ok(!html.includes('──●') && !html.includes('●──'), 'no track glyphs leak');
+  });
+
+  it('lowers selects to native selects with options', (t) => {
+    const options = [
+      { key: 'fast', label: 'fast-1' },
+      { key: 'smart', label: 'smart-2' },
+    ];
+    const html = renderToHtml(
+      toHtml(
+        <Select
+          id="model"
+          value="smart"
+          open={false}
+          options={options}
+          onOpenChange={() => {}}
+          onChange={() => {}}
+        />,
+      ),
+    );
+    t.ok(html.includes('<select'), 'native select');
+    t.ok(html.includes('<option value="fast">fast-1</option>'), 'options from data');
+    t.ok(html.includes('<option value="smart" selected>'), 'value marks the selected option');
+    const empty = renderToHtml(
+      toHtml(
+        <Select
+          id="model"
+          value={null}
+          open={false}
+          options={options}
+          onOpenChange={() => {}}
+          onChange={() => {}}
+          placeholder="Pick one"
+        />,
+      ),
+    );
+    t.ok(empty.includes('>Pick one</option>'), 'placeholder becomes a disabled option');
+  });
+
+  it('lowers details to native disclosure elements', (t) => {
+    const open = renderToHtml(
+      toHtml(
+        <Details title="Advanced" open>
+          <Text>secret</Text>
+        </Details>,
+      ),
+    );
+    t.ok(open.startsWith('<details'), 'native details element');
+    t.ok(open.includes(' open'), 'open state carries');
+    t.ok(open.includes('<summary>Advanced</summary>'), 'title becomes the summary');
+    t.ok(open.includes('secret'), 'content renders in the body');
+    const closed = renderToHtml(toHtml(<Details title="Advanced" open={false} />));
+    t.ok(!closed.includes(' open'), 'closed details stays closed');
+    t.ok(!closed.includes('▸'), 'no toggle glyph leaks');
+  });
+
+  it('lowers tables to real table markup', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <Table
+          columns={[
+            { key: 'name', header: 'Name' },
+            { key: 'size', header: 'Size', align: 'end' },
+          ]}
+          rows={[{ name: 'a.ts', size: '120' }]}
+          selectedIndex={0}
+        />,
+      ),
+    );
+    t.ok(html.startsWith('<table class="ui-table"'), 'real table element');
+    t.ok(html.includes('<thead><tr><th>Name</th>'), 'headers in thead');
+    t.ok(html.includes('<tbody><tr class="is-selected"><td>a.ts</td>'), 'rows in tbody');
+    t.ok(html.includes('text-align:right">Size'), 'end alignment maps to CSS');
+  });
+
+  it('lowers file trees to nested native details', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <FileTree
+          nodes={[
+            {
+              key: 'src',
+              label: 'src',
+              children: [
+                { key: 'a', label: 'a.ts' },
+                { key: 'lib', label: 'lib', children: [{ key: 'b', label: 'b.ts' }] },
+              ],
+            },
+            { key: 'readme', label: 'README.md' },
+          ]}
+          expanded={['src']}
+          selectedKey="a"
+        />,
+      ),
+    );
+    t.ok(html.includes('<details class="ui-tree-dir" open>'), 'expanded directory is open');
+    t.ok(html.includes('<details class="ui-tree-dir"><summary>lib'), 'collapsed directory closed');
+    t.ok(html.includes('is-selected">a.ts'), 'selected leaf marked');
+    t.ok(html.includes('README.md'), 'top-level leaf renders');
+    t.ok(!html.includes('▾') && !html.includes('▸'), 'no tree glyphs leak');
+  });
+
+  it('lowers modals to dialog cards over an overlay', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <Modal title="Confirm" onDismiss={() => {}}>
+          <Text>Delete this?</Text>
+        </Modal>,
+      ),
+    );
+    t.ok(html.startsWith('<div class="ui-overlay"'), 'overlay wraps the card');
+    t.ok(html.includes('class="ui-modal" role="dialog"'), 'card is a dialog');
+    t.ok(html.includes('Delete this?'), 'body renders inside');
   });
 });
 

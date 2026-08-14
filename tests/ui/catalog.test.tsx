@@ -32,6 +32,7 @@ import type { FileTreeNode } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
+import { lowerTui } from 'internal:tty/lower';
 import { TuiDispatcher } from 'internal:tty/events';
 import type { TuiMouseEventLike } from 'internal:tty/events';
 
@@ -57,7 +58,7 @@ function live(width = 30, height = 10): Live {
   return {
     dispatcher,
     render(tree: VNode): void {
-      renderer.render(tree, root);
+      renderer.render(lowerTui(tree), root);
       const laid = layout(root.children[0]!, { width, height });
       frame = laid.rows.map((row) => row.segments.map((s) => s.text).join(''));
     },

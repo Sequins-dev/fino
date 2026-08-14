@@ -1,16 +1,20 @@
 /**
  * fino:ui/components/html — the HTML render target for the component catalog.
  *
- * `toHtml()` transforms a tree of host-neutral primitives (`box`, `text`,
- * `clickable`, `layer`, …) into ordinary HTML VNodes: flexbox `div`s, styled
- * `span`s, `fieldset`/`legend` for titled borders, `button` for clickables.
- * The result serializes with `fino:ui/html`'s `renderToHtml()` — handler
- * props are dropped here, since static markup cannot carry them.
+ * `toHtml()` transforms a `fino:ui` tree into ordinary HTML VNodes. Semantic
+ * `ui:*` nodes lower to native, web-styled markup: `ui:checkbox` becomes a
+ * real `<input type="checkbox">`, `ui:details` a `<details><summary>`,
+ * `ui:select` a `<select>`, `ui:table` a `<table>`, `ui:file-tree` nested
+ * `<details>` — so checkboxes toggle, sections expand, and selects open with
+ * zero client JavaScript. Bare primitive trees (`box`, `text`, `clickable`,
+ * `layer`, …) keep the flexbox/character-unit mapping so terminal-shaped
+ * layouts still survive on the web. Handler props are dropped — static markup
+ * cannot carry them.
  *
- * Cell geometry maps to character units: widths in `ch`, heights in `lh`, so
- * the proportions a terminal renders survive on the web. `htmlPage()` wraps a
- * transformed tree in a document shell that defines the terminal palette as
- * CSS custom properties.
+ * The result serializes with `fino:ui/html`'s `renderToHtml()`; `htmlPage()`
+ * wraps transformed markup in a document shell whose stylesheet gives the
+ * catalog a native web treatment (system-ui type, rem spacing, the terminal
+ * palette as CSS custom properties).
  *
  * ```ts no_run
  * import { toHtml, htmlPage } from 'fino:ui/components/html';
@@ -25,6 +29,40 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
+import type {
+  BadgeProps,
+  BreadcrumbsProps,
+  ButtonProps,
+  CheckboxProps,
+  ContextMenuProps,
+  DetailsProps,
+  FileTreeNode,
+  FileTreeProps,
+  KeyHintProps,
+  MenuItem,
+  MenuListProps,
+  MenuRowProps,
+  ModalProps,
+  PaginationProps,
+  PanelProps,
+  PopoverProps,
+  ProgressBarProps,
+  RadioGroupProps,
+  RadioProps,
+  SelectProps,
+  StepsProps,
+  SwitchProps,
+  TabItem,
+  TabListProps,
+  TableProps,
+  TabsProps,
+  TagProps,
+  TextInputProps,
+  TimelineProps,
+  ToastProps,
+  ToastStackProps,
+  TooltipProps,
+} from 'fino:ui/components';
 
 const NAMED_CSS: Record<string, string> = {
   black: 'var(--tui-black)',
@@ -244,14 +282,496 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
   return children.map((child) => (typeof child === 'string' ? child : toHtml(child)));
 }
 
+function emptyNode(): VNode {
+  return { type: 'fragment', props: {}, children: [], key: null };
+}
+
+function idAttr(id: unknown): Props {
+  return typeof id === 'string' ? { id } : {};
+}
+
+function tone(variant: unknown, fallback: string): string {
+  return `ui-tone-${typeof variant === 'string' ? variant : fallback}`;
+}
+
+function panelHtml(node: VNode): VNode {
+  const { title, id } = node.props as PanelProps;
+  const css: Record<string, string> = {};
+  sizeCss(node.props, css);
+  flexChildCss(node.props, css);
+  const attrs: Props = { className: 'ui-panel', ...idAttr(id) };
+  if (Object.keys(css).length > 0) attrs.style = css;
+  return h(
+    'section',
+    attrs,
+    title !== undefined ? h('header', { className: 'ui-panel-title' }, title) : null,
+    ...transformChildren(node.children),
+  );
+}
+
+function buttonHtml(node: VNode): VNode {
+  const { label, disabled, id } = node.props as ButtonProps;
+  const attrs: Props = { className: 'ui-button', type: 'button', ...idAttr(id) };
+  if (disabled === true) attrs.disabled = true;
+  return h('button', attrs, label);
+}
+
+function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
+  const props = node.props as CheckboxProps & RadioProps & SwitchProps;
+  const checked =
+    kind === 'checkbox' && node.type === 'ui:switch'
+      ? props.on === true
+      : kind === 'checkbox'
+        ? props.checked === true
+        : props.selected === true;
+  const input: Props = {
+    type: kind,
+    className: node.type === 'ui:switch' ? 'ui-switch' : 'ui-check',
+  };
+  if (checked) input.checked = true;
+  if (props.disabled === true) input.disabled = true;
+  const label = props.label;
+  return h(
+    'label',
+    { className: `ui-choice${props.disabled === true ? ' is-disabled' : ''}`, ...idAttr(props.id) },
+    h('input', input),
+    label !== undefined ? h('span', null, label) : null,
+  );
+}
+
+function radioGroupHtml(node: VNode): VNode {
+  const { value, options, id } = node.props as RadioGroupProps;
+  const name = typeof id === 'string' ? id : 'ui-radio';
+  return h(
+    'div',
+    { className: 'ui-radio-group', role: 'radiogroup', ...idAttr(id) },
+    ...options.map((option) => {
+      const input: Props = { type: 'radio', className: 'ui-check', name, value: option.key };
+      if (option.key === value) input.checked = true;
+      if (option.disabled === true) input.disabled = true;
+      return h(
+        'label',
+        { className: `ui-choice${option.disabled === true ? ' is-disabled' : ''}` },
+        h('input', input),
+        h('span', null, option.label),
+      );
+    }),
+  );
+}
+
+function textInputHtml(node: VNode): VNode {
+  const { value, placeholder, id } = node.props as TextInputProps;
+  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '', ...idAttr(id) };
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  return h('input', attrs);
+}
+
+function selectHtml(node: VNode): VNode {
+  const { value, options, placeholder, id } = node.props as SelectProps;
+  const entries: VNode[] = [];
+  if (value === null) {
+    entries.push(
+      h('option', { value: '', selected: true, disabled: true }, placeholder ?? 'Select…'),
+    );
+  }
+  for (const option of options) {
+    const attrs: Props = { value: option.key };
+    if (option.key === value) attrs.selected = true;
+    if (option.disabled === true) attrs.disabled = true;
+    entries.push(h('option', attrs, option.label));
+  }
+  return h('select', { className: 'ui-field', ...idAttr(id) }, ...entries);
+}
+
+function detailsHtml(node: VNode): VNode {
+  const { title, open, id } = node.props as DetailsProps;
+  const attrs: Props = { className: 'ui-details', ...idAttr(id) };
+  if (open === true) attrs.open = true;
+  return h(
+    'details',
+    attrs,
+    h('summary', null, title),
+    h('div', { className: 'ui-details-body' }, ...transformChildren(node.children)),
+  );
+}
+
+function tabStrip(items: TabItem[], value: string): VNode {
+  return h(
+    'nav',
+    { className: 'ui-tabs' },
+    ...items.map((item) =>
+      h(
+        'a',
+        {
+          href: '#',
+          className:
+            'ui-tab' +
+            (item.key === value ? ' is-active' : '') +
+            (item.disabled === true ? ' is-disabled' : ''),
+        },
+        item.label,
+      ),
+    ),
+  );
+}
+
+function tabListHtml(node: VNode): VNode {
+  const { items, value } = node.props as TabListProps;
+  return tabStrip(items, value);
+}
+
+function tabsHtml(node: VNode): VNode {
+  const { items, value } = node.props as TabsProps;
+  return h(
+    'div',
+    { className: 'ui-tabs-wrap' },
+    tabStrip(items, value),
+    h('div', { className: 'ui-tab-panel' }, ...transformChildren(node.children)),
+  );
+}
+
+function menuRowContent(item: {
+  label: string;
+  detail?: string;
+  glyph?: string;
+}): NormalizedChild[] {
+  const out: NormalizedChild[] = [];
+  if (item.glyph !== undefined) out.push(h('span', { className: 'ui-menu-glyph' }, item.glyph));
+  out.push(h('span', null, item.label));
+  if (item.detail !== undefined) out.push(h('span', { className: 'ui-menu-detail' }, item.detail));
+  return out;
+}
+
+function menuUl(
+  items: readonly MenuItem[],
+  selectedKey: string | null | undefined,
+  props: { top?: number; maxRows?: number; id?: string },
+): VNode {
+  const start = props.top ?? 0;
+  const end = props.maxRows !== undefined ? start + props.maxRows : items.length;
+  const visible = items.slice(start, end);
+  const remaining = items.length - end;
+  return h(
+    'ul',
+    { className: 'ui-menu', ...idAttr(props.id) },
+    ...visible.map((item) => {
+      if (item.kind === 'header') return h('li', { className: 'ui-menu-header' }, item.label);
+      if (item.kind === 'separator') return h('li', { className: 'ui-menu-sep' }, h('hr'));
+      const selected = item.key === selectedKey;
+      const disabled = item.disabled === true;
+      const button: Props = { type: 'button' };
+      if (disabled) button.disabled = true;
+      return h(
+        'li',
+        {
+          className:
+            'ui-menu-item' + (selected ? ' is-selected' : '') + (disabled ? ' is-disabled' : ''),
+        },
+        h('button', button, ...menuRowContent(item)),
+      );
+    }),
+    remaining > 0 ? h('li', { className: 'ui-menu-more' }, `… ${remaining} more`) : null,
+  );
+}
+
+function menuListHtml(node: VNode): VNode {
+  const { items, selectedKey, top, maxRows, id } = node.props as MenuListProps;
+  return menuUl(items, selectedKey, { top, maxRows, id });
+}
+
+function menuRowHtml(node: VNode): VNode {
+  const { label, detail, glyph, selected, disabled, id } = node.props as MenuRowProps;
+  const button: Props = { type: 'button', ...idAttr(id) };
+  if (disabled === true) button.disabled = true;
+  return h(
+    'div',
+    {
+      className:
+        'ui-menu-item' +
+        (selected === true ? ' is-selected' : '') +
+        (disabled === true ? ' is-disabled' : ''),
+    },
+    h('button', button, ...menuRowContent({ label, detail, glyph })),
+  );
+}
+
+function modalHtml(node: VNode): VNode {
+  const { title } = node.props as ModalProps;
+  return h(
+    'div',
+    { className: 'ui-overlay' },
+    h(
+      'div',
+      { className: 'ui-modal', role: 'dialog', 'aria-modal': 'true' },
+      title !== undefined ? h('header', { className: 'ui-modal-title' }, title) : null,
+      ...transformChildren(node.children),
+    ),
+  );
+}
+
+function contextMenuHtml(node: VNode): VNode {
+  const { items, selectedKey, id } = node.props as ContextMenuProps;
+  return h('div', { className: 'ui-context-menu' }, menuUl(items, selectedKey, { id }));
+}
+
+function popoverHtml(node: VNode): VNode {
+  const { open } = node.props as PopoverProps;
+  if (open !== true) return emptyNode();
+  return h('div', { className: 'ui-popover' }, ...transformChildren(node.children));
+}
+
+function tooltipHtml(node: VNode): VNode {
+  const { text, open } = node.props as TooltipProps;
+  if (open !== true) return emptyNode();
+  return h('span', { className: 'ui-tooltip', role: 'tooltip' }, text);
+}
+
+function toastHtml(node: VNode): VNode {
+  const { message, variant } = node.props as ToastProps;
+  return h('div', { className: `ui-toast ${tone(variant, 'info')}` }, message);
+}
+
+function toastStackHtml(node: VNode): VNode {
+  const { toasts } = node.props as ToastStackProps;
+  if (toasts.length === 0) return emptyNode();
+  return h(
+    'div',
+    { className: 'ui-toast-stack' },
+    ...toasts.map((entry) =>
+      h('div', { className: `ui-toast ${tone(entry.variant, 'info')}` }, entry.message),
+    ),
+  );
+}
+
+function progressHtml(node: VNode): VNode {
+  const { value, showPercent, id } = node.props as ProgressBarProps;
+  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return h(
+    'span',
+    { className: 'ui-progress-wrap', ...idAttr(id) },
+    h('progress', { className: 'ui-progress', max: '100', value: String(percent) }),
+    showPercent === true ? h('span', { className: 'ui-progress-percent' }, `${percent}%`) : null,
+  );
+}
+
+function spinnerHtml(node: VNode): VNode {
+  return h('span', {
+    className: 'ui-spinner',
+    role: 'status',
+    'aria-label': 'loading',
+    ...idAttr(node.props.id),
+  });
+}
+
+function badgeHtml(node: VNode): VNode {
+  const { label, variant, id } = node.props as BadgeProps;
+  return h('span', { className: `ui-badge ${tone(variant, 'accent')}`, ...idAttr(id) }, label);
+}
+
+function keyHintHtml(node: VNode): VNode {
+  const { keys, separator, id } = node.props as KeyHintProps;
+  const sep = separator ?? ' · ';
+  const parts: NormalizedChild[] = [];
+  keys.forEach((hint, index) => {
+    if (index > 0) parts.push(h('span', { className: 'ui-keyhint-sep' }, sep));
+    parts.push(h('kbd', null, hint.key));
+    parts.push(` ${hint.label}`);
+  });
+  return h('span', { className: 'ui-keyhint', ...idAttr(id) }, ...parts);
+}
+
+function tagHtml(node: VNode): VNode {
+  const { label, onRemove, color, id } = node.props as TagProps;
+  return h(
+    'span',
+    { className: `ui-tag ${tone(color, 'accent')}`, ...idAttr(id) },
+    label,
+    onRemove
+      ? h(
+          'button',
+          { type: 'button', className: 'ui-tag-remove', 'aria-label': `Remove ${label}` },
+          '×',
+        )
+      : null,
+  );
+}
+
+function breadcrumbsHtml(node: VNode): VNode {
+  const { items, id } = node.props as BreadcrumbsProps;
+  return h(
+    'nav',
+    { className: 'ui-crumbs', 'aria-label': 'breadcrumbs', ...idAttr(id) },
+    ...items.flatMap((item, index) => {
+      const entry =
+        index === items.length - 1
+          ? h('strong', null, item.label)
+          : h('a', { href: '#' }, item.label);
+      return index > 0 ? [h('span', { className: 'ui-crumbs-sep' }, '/'), entry] : [entry];
+    }),
+  );
+}
+
+function paginationHtml(node: VNode): VNode {
+  const { page, pages, id } = node.props as PaginationProps;
+  const prev: Props = { type: 'button', className: 'ui-button ui-pager-step' };
+  if (page <= 1) prev.disabled = true;
+  const next: Props = { type: 'button', className: 'ui-button ui-pager-step' };
+  if (page >= pages) next.disabled = true;
+  return h(
+    'nav',
+    { className: 'ui-pager', ...idAttr(id) },
+    h('button', prev, '‹'),
+    h('span', null, `${page} / ${pages}`),
+    h('button', next, '›'),
+  );
+}
+
+function stepsHtml(node: VNode): VNode {
+  const { steps, current, id } = node.props as StepsProps;
+  const at = steps.findIndex((step) => step.key === current);
+  return h(
+    'ol',
+    { className: 'ui-steps', ...idAttr(id) },
+    ...steps.map((step, index) => {
+      const state =
+        at !== -1 && index < at ? 'is-done' : index === at ? 'is-current' : 'is-upcoming';
+      return h(
+        'li',
+        { className: state },
+        h('span', { className: 'ui-step-dot' }),
+        h('span', null, step.label),
+      );
+    }),
+  );
+}
+
+function tableHtml(node: VNode): VNode {
+  const { columns, rows, selectedIndex } = node.props as TableProps;
+  const cellStyle = (align: 'start' | 'end' | undefined): Props =>
+    align === 'end' ? { style: { textAlign: 'right' } } : {};
+  return h(
+    'table',
+    { className: 'ui-table', ...idAttr(node.props.id) },
+    h(
+      'thead',
+      null,
+      h('tr', null, ...columns.map((column) => h('th', cellStyle(column.align), column.header))),
+    ),
+    h(
+      'tbody',
+      null,
+      ...rows.map((row, index) =>
+        h(
+          'tr',
+          index === selectedIndex ? { className: 'is-selected' } : {},
+          ...columns.map((column) => h('td', cellStyle(column.align), row[column.key] ?? '')),
+        ),
+      ),
+    ),
+  );
+}
+
+function treeNodesHtml(
+  nodes: FileTreeNode[],
+  expanded: string[],
+  selectedKey: string | null | undefined,
+): VNode[] {
+  return nodes.map((entry) => {
+    const selected = entry.key === selectedKey;
+    if (entry.children !== undefined) {
+      const attrs: Props = { className: 'ui-tree-dir' };
+      if (expanded.includes(entry.key)) attrs.open = true;
+      return h(
+        'details',
+        attrs,
+        h('summary', selected ? { className: 'is-selected' } : {}, entry.label),
+        h(
+          'div',
+          { className: 'ui-tree-children' },
+          ...treeNodesHtml(entry.children, expanded, selectedKey),
+        ),
+      );
+    }
+    return h('div', { className: `ui-tree-leaf${selected ? ' is-selected' : ''}` }, entry.label);
+  });
+}
+
+function fileTreeHtml(node: VNode): VNode {
+  const { nodes, expanded, selectedKey, id } = node.props as FileTreeProps;
+  return h(
+    'div',
+    { className: 'ui-tree', ...idAttr(id) },
+    ...treeNodesHtml(nodes, expanded ?? [], selectedKey),
+  );
+}
+
+function timelineHtml(node: VNode): VNode {
+  const { entries, id } = node.props as TimelineProps;
+  return h(
+    'ol',
+    { className: 'ui-timeline', ...idAttr(id) },
+    ...entries.map((entry) =>
+      h(
+        'li',
+        { className: tone(entry.variant, 'info') },
+        h('span', { className: 'ui-timeline-title' }, entry.title),
+        entry.detail !== undefined
+          ? h('span', { className: 'ui-timeline-detail' }, entry.detail)
+          : null,
+      ),
+    ),
+  );
+}
+
+const NATIVE: Record<string, (node: VNode) => VNode> = {
+  'ui:panel': panelHtml,
+  'ui:button': buttonHtml,
+  'ui:checkbox': (node) => choiceHtml('checkbox', node),
+  'ui:switch': (node) => choiceHtml('checkbox', node),
+  'ui:radio': (node) => choiceHtml('radio', node),
+  'ui:radio-group': radioGroupHtml,
+  'ui:text-input': textInputHtml,
+  'ui:select': selectHtml,
+  'ui:details': detailsHtml,
+  'ui:tab-list': tabListHtml,
+  'ui:tabs': tabsHtml,
+  'ui:menu-list': menuListHtml,
+  'ui:menu-row': menuRowHtml,
+  'ui:menu-header': (node) =>
+    h('div', { className: 'ui-menu-header' }, (node.props as { label: string }).label),
+  'ui:menu-separator': () => h('hr', { className: 'ui-menu-sep' }),
+  'ui:modal': modalHtml,
+  'ui:context-menu': contextMenuHtml,
+  'ui:popover': popoverHtml,
+  'ui:tooltip': tooltipHtml,
+  'ui:toast': toastHtml,
+  'ui:toast-stack': toastStackHtml,
+  'ui:progress': progressHtml,
+  'ui:spinner': spinnerHtml,
+  'ui:badge': badgeHtml,
+  'ui:key-hint': keyHintHtml,
+  'ui:tag': tagHtml,
+  'ui:breadcrumbs': breadcrumbsHtml,
+  'ui:pagination': paginationHtml,
+  'ui:steps': stepsHtml,
+  'ui:table': tableHtml,
+  'ui:file-tree': fileTreeHtml,
+  'ui:timeline': timelineHtml,
+};
+
 /**
- * Transform a host-neutral primitive tree into HTML VNodes.
+ * Transform a `fino:ui` tree into HTML VNodes.
  *
- * Handler props (`onClick`, `onKey`, …) are dropped — static HTML cannot
- * carry functions. Nodes that are already HTML elements pass through with
- * their children transformed, so mixed trees keep working.
+ * Semantic `ui:*` nodes lower to native markup built from their data —
+ * their primitive composition (if any target would use one) is never
+ * consulted. Primitive nodes map to flexbox markup, and nodes that are
+ * already HTML elements pass through with their children transformed, so
+ * mixed trees keep working. Handler props are dropped — static HTML cannot
+ * carry functions.
  */
 export function toHtml(node: VNode): VNode {
+  const native = NATIVE[node.type];
+  if (native) return native(node);
   const children = transformChildren(node.children);
   switch (node.type) {
     case 'fragment':
@@ -316,20 +836,246 @@ const PAGE_CSS = `
   --tui-bright-green: #b5cea0; --tui-bright-yellow: #f0d399;
   --tui-bright-blue: #98b8d8; --tui-bright-magenta: #c9a3bc;
   --tui-bright-cyan: #9fd1de; --tui-bright-white: #eceff4;
+  --ui-bg: var(--tui-bg); --ui-fg: var(--tui-fg);
+  --ui-surface: #1a1e26; --ui-surface-2: #232936;
+  --ui-border: #2e3440; --ui-border-strong: #3d4452;
+  --ui-accent: var(--tui-cyan); --ui-muted: var(--tui-bright-black);
+  --ui-danger: var(--tui-red); --ui-success: var(--tui-green);
+  --ui-warning: var(--tui-yellow); --ui-info: var(--tui-blue);
+  --ui-radius: 0.5rem;
 }
 * { box-sizing: border-box; margin: 0; }
 body {
-  background: var(--tui-bg); color: var(--tui-fg);
-  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
-  font-size: 14px; line-height: 1.4; padding: 1rem;
+  background: var(--ui-bg); color: var(--ui-fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-size: 15px; line-height: 1.5; padding: 1.5rem;
 }
 .ui-root { position: relative; min-height: 90vh; }
-button { border: none; background: none; padding: 0; }
-fieldset { min-width: 0; padding: 0.25lh 1ch; }
-legend { padding: 0 0.5ch; opacity: 0.8; }
-input { background: transparent; border: 1px solid var(--tui-border); color: inherit; padding: 0 0.5ch; }
-a { color: var(--tui-cyan); text-decoration: none; }
+a { color: var(--ui-accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+kbd {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.8em;
+  border: 1px solid var(--ui-border-strong); border-bottom-width: 2px;
+  border-radius: 0.25rem; padding: 0 0.375rem; background: var(--ui-surface);
+}
+button { border: none; background: none; padding: 0; color: inherit; font: inherit; }
+fieldset {
+  min-width: 0; border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); padding: 0.375rem 0.75rem;
+}
+legend { padding: 0 0.5ch; opacity: 0.8; }
+input, select {
+  font: inherit; background: var(--ui-surface); color: inherit;
+  border: 1px solid var(--ui-border); border-radius: 0.375rem;
+  padding: 0.25rem 0.5rem;
+}
+input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--ui-accent); outline-offset: 1px;
+}
+
+.ui-panel {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); padding: 0.875rem 1rem;
+}
+.ui-panel-title {
+  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ui-muted);
+}
+.ui-button {
+  display: inline-block; align-self: flex-start;
+  padding: 0.375rem 0.875rem; border-radius: 0.375rem;
+  border: 1px solid var(--ui-border-strong); background: var(--ui-surface-2);
+  cursor: pointer; transition: background 0.1s, border-color 0.1s;
+}
+.ui-button:hover:not(:disabled) { background: #2b3242; border-color: #4a5264; }
+.ui-button:active:not(:disabled) { background: #242a38; }
+.ui-button:disabled { opacity: 0.45; cursor: default; }
+.ui-choice { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; width: fit-content; }
+.ui-choice.is-disabled { opacity: 0.45; cursor: default; }
+.ui-check { width: 1rem; height: 1rem; padding: 0; accent-color: var(--ui-accent); cursor: pointer; }
+.ui-radio-group { display: flex; flex-direction: column; gap: 0.375rem; }
+.ui-switch {
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  width: 2.25rem; height: 1.25rem; padding: 0; border: none;
+  border-radius: 0.75rem; background: var(--ui-border-strong);
+  position: relative; transition: background 0.15s;
+}
+.ui-switch::before {
+  content: ''; position: absolute; top: 0.125rem; left: 0.125rem;
+  width: 1rem; height: 1rem; border-radius: 50%;
+  background: var(--ui-fg); transition: left 0.15s;
+}
+.ui-switch:checked { background: var(--ui-accent); }
+.ui-switch:checked::before { left: 1.125rem; background: var(--ui-bg); }
+.ui-field { min-width: 12rem; }
+.ui-field:focus { border-color: var(--ui-accent); }
+.ui-details {
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
+  background: var(--ui-surface); width: fit-content; min-width: 16rem;
+}
+.ui-details > summary {
+  padding: 0.5rem 0.875rem; cursor: pointer; font-weight: 600;
+  border-radius: var(--ui-radius); list-style-position: inside;
+}
+.ui-details > summary:hover { background: var(--ui-surface-2); }
+.ui-details-body {
+  display: flex; flex-direction: column; gap: 0.375rem;
+  padding: 0.25rem 0.875rem 0.75rem;
+}
+.ui-details:not([open]) .ui-details-body { display: none; }
+.ui-tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--ui-border); }
+.ui-tab {
+  padding: 0.375rem 0.875rem; border-radius: 0.375rem 0.375rem 0 0;
+  color: var(--ui-muted);
+}
+.ui-tab:hover { text-decoration: none; background: var(--ui-surface); color: var(--ui-fg); }
+.ui-tab.is-active { color: var(--ui-fg); font-weight: 600; box-shadow: inset 0 -2px 0 var(--ui-accent); }
+.ui-tab.is-disabled { opacity: 0.45; pointer-events: none; }
+.ui-tab-panel { padding: 0.75rem 0.25rem; }
+.ui-menu {
+  list-style: none; margin: 0; padding: 0.25rem; min-width: 13rem; width: fit-content;
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
+  background: var(--ui-surface);
+}
+.ui-menu-header {
+  padding: 0.375rem 0.75rem 0.125rem; font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--ui-muted);
+}
+.ui-menu-sep { padding: 0.25rem 0.5rem; }
+.ui-menu-sep hr, hr.ui-menu-sep { border: none; border-top: 1px solid var(--ui-border); }
+.ui-menu-item button {
+  display: flex; align-items: center; gap: 0.5rem; width: 100%;
+  text-align: left; padding: 0.375rem 0.75rem; border-radius: 0.375rem; cursor: pointer;
+}
+.ui-menu-item button:hover:not(:disabled) { background: var(--ui-surface-2); }
+.ui-menu-item.is-selected button { background: rgb(136 192 208 / 0.14); font-weight: 600; }
+.ui-menu-item.is-disabled button { opacity: 0.45; cursor: default; }
+.ui-menu-detail { margin-left: auto; padding-left: 1rem; color: var(--ui-muted); font-size: 0.85em; }
+.ui-menu-more { padding: 0.25rem 0.75rem; color: var(--ui-muted); font-size: 0.85em; }
+.ui-overlay {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgb(0 0 0 / 0.55);
+  display: flex; align-items: center; justify-content: center;
+}
+.ui-modal {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  min-width: 20rem; max-width: 90vw; padding: 1.25rem 1.5rem;
+  background: var(--ui-surface); border: 1px solid var(--ui-border-strong);
+  border-radius: 0.75rem; box-shadow: 0 20px 50px rgb(0 0 0 / 0.5);
+}
+.ui-modal-title { font-weight: 600; font-size: 1.05rem; }
+.ui-context-menu, .ui-popover {
+  position: absolute; z-index: 40; margin-top: 0.25rem; width: fit-content;
+}
+.ui-popover {
+  background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); padding: 0.625rem 0.875rem;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  display: flex; flex-direction: column; gap: 0.375rem;
+}
+.ui-tooltip {
+  position: absolute; z-index: 40; margin-top: 0.25rem; width: fit-content;
+  background: var(--ui-surface-2); border: 1px solid var(--ui-border);
+  border-radius: 0.375rem; padding: 0.25rem 0.625rem; font-size: 0.85rem;
+}
+.ui-toast-stack {
+  position: fixed; top: 1rem; right: 1rem; z-index: 60;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 0.5rem;
+}
+.ui-toast {
+  width: fit-content; padding: 0.5rem 0.875rem;
+  background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-left-width: 3px; border-radius: 0.375rem;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 0.35);
+}
+.ui-toast.ui-tone-info { border-left-color: var(--ui-info); }
+.ui-toast.ui-tone-success { border-left-color: var(--ui-success); }
+.ui-toast.ui-tone-danger { border-left-color: var(--ui-danger); }
+.ui-toast.ui-tone-warning { border-left-color: var(--ui-warning); }
+.ui-progress-wrap { display: inline-flex; align-items: center; gap: 0.5rem; }
+.ui-progress {
+  appearance: none; -webkit-appearance: none;
+  width: 12rem; height: 0.5rem; border: none;
+  accent-color: var(--ui-accent); background: var(--ui-surface-2);
+  border-radius: 0.25rem; overflow: hidden;
+}
+.ui-progress::-webkit-progress-bar { background: var(--ui-surface-2); border-radius: 0.25rem; }
+.ui-progress::-webkit-progress-value { background: var(--ui-accent); border-radius: 0.25rem; }
+.ui-progress::-moz-progress-bar { background: var(--ui-accent); border-radius: 0.25rem; }
+.ui-progress-percent { color: var(--ui-muted); font-size: 0.85em; }
+.ui-spinner {
+  display: inline-block; width: 1rem; height: 1rem;
+  border: 2px solid var(--ui-border-strong); border-top-color: var(--ui-accent);
+  border-radius: 50%; animation: ui-spin 0.8s linear infinite;
+}
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+.ui-badge, .ui-tag {
+  display: inline-flex; align-items: center; gap: 0.25rem; width: fit-content;
+  padding: 0.125rem 0.625rem; border-radius: 999px;
+  font-size: 0.8rem; font-weight: 600;
+}
+.ui-badge.ui-tone-accent, .ui-tag.ui-tone-accent { background: rgb(136 192 208 / 0.18); color: var(--ui-accent); }
+.ui-badge.ui-tone-muted, .ui-tag.ui-tone-muted { background: rgb(102 112 132 / 0.22); color: var(--tui-bright-white); }
+.ui-badge.ui-tone-danger, .ui-tag.ui-tone-danger { background: rgb(191 97 106 / 0.2); color: var(--tui-bright-red); }
+.ui-badge.ui-tone-success, .ui-tag.ui-tone-success { background: rgb(163 190 140 / 0.2); color: var(--ui-success); }
+.ui-badge.ui-tone-warning, .ui-tag.ui-tone-warning { background: rgb(235 203 139 / 0.2); color: var(--ui-warning); }
+.ui-tag-remove {
+  cursor: pointer; opacity: 0.7; padding: 0 0.125rem; border-radius: 50%;
+  font-size: 1em; line-height: 1;
+}
+.ui-tag-remove:hover { opacity: 1; }
+.ui-keyhint { color: var(--ui-muted); }
+.ui-keyhint-sep { padding: 0 0.25rem; }
+.ui-crumbs { display: flex; align-items: center; gap: 0.5rem; }
+.ui-crumbs a { color: var(--ui-muted); }
+.ui-crumbs a:hover { color: var(--ui-fg); text-decoration: none; }
+.ui-crumbs-sep { color: var(--ui-muted); opacity: 0.6; }
+.ui-pager { display: inline-flex; align-items: center; gap: 0.75rem; }
+.ui-pager-step { padding: 0.125rem 0.625rem; line-height: 1.4; }
+.ui-steps { display: flex; align-items: center; gap: 1rem; list-style: none; padding: 0; }
+.ui-steps li { display: flex; align-items: center; gap: 0.5rem; }
+.ui-steps li + li::before {
+  content: ''; width: 1.5rem; height: 1px; background: var(--ui-border-strong);
+  margin-right: 0.5rem;
+}
+.ui-step-dot { width: 0.625rem; height: 0.625rem; border-radius: 50%; background: var(--ui-border-strong); }
+.ui-steps .is-done .ui-step-dot { background: var(--ui-success); }
+.ui-steps .is-current .ui-step-dot { background: var(--ui-accent); box-shadow: 0 0 0 3px rgb(136 192 208 / 0.25); }
+.ui-steps .is-current { font-weight: 600; }
+.ui-steps .is-upcoming { color: var(--ui-muted); }
+.ui-table { border-collapse: collapse; width: fit-content; min-width: 20rem; }
+.ui-table th {
+  text-align: left; font-weight: 600; padding: 0.375rem 0.875rem;
+  border-bottom: 1px solid var(--ui-border-strong);
+}
+.ui-table td { padding: 0.375rem 0.875rem; border-bottom: 1px solid var(--ui-border); }
+.ui-table tbody tr:hover { background: var(--ui-surface); }
+.ui-table tr.is-selected td { background: rgb(136 192 208 / 0.14); }
+.ui-tree { width: fit-content; min-width: 14rem; }
+.ui-tree summary { cursor: pointer; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
+.ui-tree summary:hover, .ui-tree-leaf:hover { background: var(--ui-surface); }
+.ui-tree-children { margin-left: 0.875rem; border-left: 1px solid var(--ui-border); padding-left: 0.5rem; }
+.ui-tree-leaf { padding: 0.125rem 0.375rem 0.125rem 1.375rem; border-radius: 0.25rem; }
+.ui-tree .is-selected { background: rgb(136 192 208 / 0.14); font-weight: 600; }
+.ui-timeline { list-style: none; padding: 0; display: flex; flex-direction: column; }
+.ui-timeline li {
+  position: relative; padding: 0 0 0.875rem 1.375rem;
+  display: flex; flex-direction: column;
+}
+.ui-timeline li::before {
+  content: ''; position: absolute; left: 0; top: 0.4rem;
+  width: 0.625rem; height: 0.625rem; border-radius: 50%;
+  background: var(--ui-info);
+}
+.ui-timeline li:not(:last-child)::after {
+  content: ''; position: absolute; left: 0.28rem; top: 1.2rem; bottom: 0;
+  width: 1px; background: var(--ui-border);
+}
+.ui-timeline li.ui-tone-success::before { background: var(--ui-success); }
+.ui-timeline li.ui-tone-danger::before { background: var(--ui-danger); }
+.ui-timeline li.ui-tone-warning::before { background: var(--ui-warning); }
+.ui-timeline-detail { color: var(--ui-muted); font-size: 0.85em; }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

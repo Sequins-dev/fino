@@ -55,6 +55,7 @@ import { layout, measure } from 'internal:tty/layout';
 import type { BorderStyle, Constraints, Measured, WrapMode } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
+import { lowerTui } from 'internal:tty/lower';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type { Color } from 'fino:tty/style';
@@ -390,7 +391,7 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
  * `fino:tty/frame`, or use `renderFrame()` for the padded-string form.
  */
 export function layoutFrame(element: VNode, options: RenderFrameOptions): Frame {
-  return layout(element, {
+  return layout(lowerTui(element), {
     width: Math.max(0, Math.floor(options.width)),
     height: Math.max(0, Math.floor(options.height)),
   });
@@ -439,7 +440,7 @@ export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
   const renderer = createRenderer(terminalHost());
   return {
     commit(tree: VNode): Frame {
-      renderer.render(tree, root);
+      renderer.render(lowerTui(tree), root);
       const node = root.children[0];
       if (!node) {
         return {
@@ -495,7 +496,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   const sink: Sink<Frame> = {
     commit(tree: VNode): Frame {
-      renderer.render(tree, hostRoot);
+      renderer.render(lowerTui(tree), hostRoot);
       const node = hostRoot.children[0];
       const frame = node
         ? layout(node, { width, height })
