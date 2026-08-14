@@ -48,11 +48,24 @@ changes**):
 - `createRoot` re-runs the whole element thunk per signal write — the reconciler is what
   keeps host mutation proportional to change.
 
+### The semantic tree — the core rule
+
+**The tree is purely semantic; render targets own all presentation.** A catalog component
+is a thin constructor emitting a semantic node (`ui:checkbox` with `{ checked, label,
+onChange }`, `ui:details`, `ui:table`, …) carrying only data and handlers — never glyphs,
+never composed layout. Each render target has a lowering layer that decides what that
+semantics *looks like there*: the terminal lowers `ui:checkbox` to `[x] label` glyph
+composition (`internal:tty/lower`), HTML lowers it to a native `<input type="checkbox">`
+with web styling. Presentation baked into the shared tree — even as a "default" one target
+happens to use — is an architecture bug: it privileges one host and forces the others to
+transform its artifacts.
+
 ### The primitives contract
 
-Catalog components never talk to a host directly; they compose down to **six host-neutral
-primitives**. A render target implements exactly these (plus focus/events), and the whole
-catalog works. This is the wall that keeps targets from drifting.
+Beneath the semantic layer sit **the host-neutral layout primitives** — the structural
+vocabulary lowering layers and custom app trees compose with. A render target implements
+exactly these (plus focus/events), and every lowering works. This is the wall that keeps
+targets from drifting.
 
 | Primitive | Contract |
 |---|---|
