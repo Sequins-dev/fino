@@ -195,8 +195,21 @@ export class TuiDispatcher {
     return false;
   }
 
+  // With nothing focused, keys start at the last key-handling node in
+  // document order — the most recently painted overlay (a modal, a context
+  // menu) is what an unfocused Escape should reach.
+  #keyFallback(): TerminalNode | null {
+    let last: TerminalNode | null = null;
+    for (const top of this.#root.children) {
+      walk(top, (node) => {
+        if (typeof node.props.onKey === 'function') last = node;
+      });
+    }
+    return last;
+  }
+
   #dispatchKey(event: TuiKeyEventLike): boolean {
-    if (this.#bubble(this.#focused, 'onKey', event)) return true;
+    if (this.#bubble(this.#focused ?? this.#keyFallback(), 'onKey', event)) return true;
     if (
       this.#focused &&
       (event.key === 'enter' || (event.key === ' ' && event.text === ' ')) &&

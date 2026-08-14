@@ -204,6 +204,14 @@ export class Canvas {
     this.#hits.push({ id, depth, ...rect });
   }
 
+  /** Painted rect of the node that carried `id`, for anchoring layers. */
+  findHit(id: string): HitRect | undefined {
+    for (let i = this.#hits.length - 1; i >= 0; i--) {
+      if (this.#hits[i]!.id === id) return this.#hits[i];
+    }
+    return undefined;
+  }
+
   setCursor(placement: CursorPlacement): void {
     this.#cursor = placement;
   }
@@ -589,6 +597,9 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
     case 'layer':
       size = { width: 0, height: 0 };
       break;
+    case 'rule':
+      size = { width: availW, height: 1 };
+      break;
     default:
       size = measureFlex(node, constraints, boxSpec(node));
       break;
@@ -697,6 +708,8 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
     cross: number;
     marginMain: number;
     marginCross: number;
+    /** Zero-size children still get placed (they may carry layers) but never a gap. */
+    empty: boolean;
   }
 
   const items: Item[] = [];
@@ -713,8 +726,8 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
       main =
         cl.basis ?? (row ? (num(child.props, 'width') ?? 0) : (num(child.props, 'height') ?? 0));
     }
-    if (main === 0 && cross === 0 && cl.grow === 0) continue;
-    items.push({ child, cl, main, cross, marginMain, marginCross });
+    const empty = main === 0 && cross === 0 && cl.grow === 0;
+    items.push({ child, cl, main, cross, marginMain, marginCross, empty });
   }
 
   const lines: Item[][] = [];
@@ -740,7 +753,8 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
   const placed: Placed[] = [];
   let crossOffset = 0;
   for (const line of lines) {
-    const gapTotal = Math.max(0, line.length - 1) * spec.gap;
+    const occupied = line.filter((item) => !item.empty).length;
+    const gapTotal = Math.max(0, occupied - 1) * spec.gap;
     let usedMain = gapTotal;
     let growTotal = 0;
     let shrinkTotal = 0;
@@ -787,8 +801,10 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
     if (lines.length === 1 && !spec.wrap) lineCross = Math.max(lineCross, crossSize);
 
     let betweenAccum = 0;
+    let placedAny = false;
     for (let i = 0; i < line.length; i++) {
       const item = line[i]!;
+      if (!item.empty && placedAny) cursor += spec.gap;
       const alignSelf = item.cl.alignSelf ?? spec.align;
       let itemCross = item.cross;
       if (alignSelf === 'stretch')
@@ -805,7 +821,8 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
         width: row ? item.main : itemCross,
         height: row ? itemCross : item.main,
       });
-      cursor += item.main + item.marginMain * 2 + spec.gap;
+      cursor += item.main + item.marginMain * 2;
+      if (!item.empty) placedAny = true;
       if (betweenExtra > 0 && i < line.length - 1) {
         betweenAccum += betweenExtra;
         const step = Math.floor(betweenAccum);
@@ -915,6 +932,17 @@ function paintNode(
     }
     case 'spacer':
       break;
+    case 'rule': {
+      const char = str(props, 'char') ?? '─';
+      const inset = num(props, 'inset') ?? 0;
+      const cells = Math.max(0, rect.width - inset);
+      canvas.clipPush(rect);
+      canvas.draw(rect.x, rect.y, [
+        { segments: [{ text: char.repeat(cells), width: cells, style: own }], width: cells },
+      ]);
+      canvas.clipPop();
+      break;
+    }
     case 'input': {
       const focused = props.focused === true;
       const value = str(props, 'value') ?? '';
@@ -997,6 +1025,16 @@ function paintNode(
         const borderStyle =
           spec.borderColor !== undefined ? mergeStyle(own, { fg: spec.borderColor }) : own;
         paintBorder(canvas, rect, spec.border, borderStyle);
+        const title = str(props, 'borderTitle');
+        if (title && rect.width > 4) {
+          const shown = ` ${title} `;
+          const clipped = wrapSegments(
+            [{ text: shown, width: stringWidth(shown), style: own }],
+            rect.width - 4,
+            'char',
+          )[0]!;
+          canvas.draw(rect.x + 2, rect.y, [clipped]);
+        }
       }
       const innerRect: Rect = {
         x: rect.x + spec.insetX,
@@ -1086,7 +1124,12 @@ function paintLayer(
   const content = measureFlex(node, { width: canvas.width }, spec);
   const width = Math.min(num(props, 'width') ?? content.width, canvas.width);
   const height = Math.min(num(props, 'height') ?? content.height, canvas.height);
-  const anchor = props.anchor as { x: number; y: number } | undefined;
+  let anchor = props.anchor as { x: number; y: number } | undefined;
+  const anchorId = str(props, 'anchorId');
+  if (!anchor && anchorId) {
+    const target = canvas.findHit(anchorId);
+    if (target) anchor = { x: target.x, y: target.y + target.height - 1 };
+  }
   const placement = str(props, 'placement') ?? (anchor ? 'bottom-start' : 'center');
   let x: number;
   let y: number;

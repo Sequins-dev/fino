@@ -270,6 +270,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ui/web/state", "ui/web/state"),
     source_builtin!("fino:ui/jsx-runtime", "ui/jsx-runtime"),
     source_builtin!("fino:ui/slides", "ui/slides"),
+    source_builtin!("fino:ui/components", "ui/components"),
+    source_builtin!("fino:ui/components/theme", "ui/components/theme"),
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
     source_builtin!("fino:tty/style", "tty/style"),
@@ -659,6 +661,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:test/assert", "test/assert"),
     source_builtin!("fino:test/test", "test/test"),
     source_builtin!("fino:test/bench", "test/bench"),
+    source_builtin!("fino:test/pty", "test/pty"),
     source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
     // util
