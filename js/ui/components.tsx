@@ -31,6 +31,7 @@
  */
 import { h, createSignal, type Child, type Props, type VNode, type Signal } from 'fino:ui';
 import type { Color, Style } from 'fino:tty/style';
+import { stringWidth } from 'fino:tty/frame';
 import { styles } from 'fino:ui/components/theme';
 
 export type { Color, Style };
@@ -905,4 +906,620 @@ export function createDisclosure(defaultOpen = false): Disclosure {
     toggle: () => open.set(!open.get()),
     set: (next: boolean) => open.set(next),
   };
+}
+
+/** Token color variants used by `Badge` and `Tag`. */
+export type ToneVariant = 'accent' | 'muted' | 'danger' | 'success' | 'warning';
+/** Semantic status variants used by `Toast` and `Timeline`. */
+export type StatusVariant = 'info' | 'success' | 'danger' | 'warning';
+
+/** Props accepted by `Badge`. */
+export interface BadgeProps extends FlexChildProps, Props {
+  label: string;
+  variant?: ToneVariant;
+  id?: string;
+}
+/** Small inline status label: ` label ` in an inverse token color. */
+export function Badge(props: BadgeProps): VNode {
+  const { label, variant, ...rest } = props;
+  return (
+    <Text style={[styles[variant ?? 'accent'], styles.inverse]} {...rest}>{` ${label} `}</Text>
+  );
+}
+
+/** Frame set cycled by `Spinner`. */
+export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/** Props accepted by `Spinner`. */
+export interface SpinnerProps extends FlexChildProps, Props {
+  /** Current animation step — the caller owns the clock. */
+  tick: number;
+  frames?: string[];
+  id?: string;
+}
+/** Spinner glyph for the current tick. */
+export function Spinner(props: SpinnerProps): VNode {
+  const { tick, frames, ...rest } = props;
+  const set = frames !== undefined && frames.length > 0 ? frames : SPINNER_FRAMES;
+  const frame = set[((tick % set.length) + set.length) % set.length]!;
+  return (
+    <Text style={[styles.accent]} {...rest}>
+      {frame}
+    </Text>
+  );
+}
+
+/** Props accepted by `ProgressBar`. */
+export interface ProgressBarProps extends FlexChildProps, Props {
+  /** Completion fraction, 0..1. */
+  value: number;
+  width?: number;
+  showPercent?: boolean;
+  id?: string;
+}
+/** Horizontal progress: filled `█` and empty `░` cells, optional percent. */
+export function ProgressBar(props: ProgressBarProps): VNode {
+  const { value, width, showPercent, id, ...rest } = props;
+  const cells = Math.max(1, width ?? 20);
+  const fraction = Math.max(0, Math.min(1, value));
+  const filled = Math.round(fraction * cells);
+  return (
+    <Box direction="row" id={id} {...rest}>
+      <Text style={[styles.accent]}>{'█'.repeat(filled)}</Text>
+      <Text style={[styles.muted]}>{'░'.repeat(cells - filled)}</Text>
+      {showPercent ? <Text style={[styles.dim]}>{` ${Math.round(fraction * 100)}%`}</Text> : null}
+    </Box>
+  );
+}
+
+/** Props accepted by `KeyHint`. */
+export interface KeyHintProps extends FlexChildProps, Props {
+  keys: Array<{ key: string; label: string }>;
+  separator?: string;
+  id?: string;
+}
+/** Dim key legend row: `y approve · n reject`, keys bold. */
+export function KeyHint(props: KeyHintProps): VNode {
+  const { keys, separator, id, ...rest } = props;
+  const sep = separator ?? ' · ';
+  const parts: VNode[] = [];
+  keys.forEach((hint, index) => {
+    if (index > 0) {
+      parts.push(
+        <Text key={`s${index}`} style={[styles.dim]}>
+          {sep}
+        </Text>,
+      );
+    }
+    parts.push(
+      <Text key={`k${index}`} style={[styles.bold]}>
+        {hint.key}
+      </Text>,
+    );
+    parts.push(<Text key={`l${index}`} style={[styles.dim]}>{` ${hint.label}`}</Text>);
+  });
+  return (
+    <Box direction="row" id={id} {...rest}>
+      {parts}
+    </Box>
+  );
+}
+
+/** Props accepted by `Tag`. */
+export interface TagProps extends FlexChildProps, Props {
+  label: string;
+  onRemove?: () => void;
+  color?: ToneVariant;
+  id?: string;
+}
+/** Chip: ` label ` in an inverse token color, with an optional `×` remover. */
+export function Tag(props: TagProps): VNode {
+  const { label, onRemove, color, id, ...rest } = props;
+  const tone = styles[color ?? 'accent'];
+  return (
+    <Box direction="row" id={id} {...rest}>
+      <Text style={[tone, styles.inverse]}>{` ${label} `}</Text>
+      {onRemove ? (
+        <Clickable
+          id={id !== undefined ? `${id}:remove` : undefined}
+          focusable={false}
+          onClick={onRemove}
+        >
+          <Text style={[tone, styles.inverse]}>{'× '}</Text>
+        </Clickable>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Props accepted by `TagGroup`. */
+export interface TagGroupProps extends FlexChildProps, Props {
+  gap?: number;
+  id?: string;
+  children?: Child;
+}
+/** Wrapping row of tags. */
+export function TagGroup(props: TagGroupProps): VNode {
+  const { gap, children, ...rest } = props;
+  return (
+    <Box direction="row" wrap gap={gap ?? 1} {...rest}>
+      {children}
+    </Box>
+  );
+}
+
+/** Props accepted by `Breadcrumbs`. */
+export interface BreadcrumbsProps extends FlexChildProps, Props {
+  items: Array<{ key: string; label: string }>;
+  onNavigate?: (key: string) => void;
+  id?: string;
+}
+/** Path row: dim clickable ancestors, `/` separators, bold current item. */
+export function Breadcrumbs(props: BreadcrumbsProps): VNode {
+  const { items, onNavigate, id, ...rest } = props;
+  return (
+    <Box direction="row" gap={1} id={id} {...rest}>
+      {items.flatMap((item, index) => {
+        const node =
+          index === items.length - 1 ? (
+            <Text key={item.key} style={[styles.bold]}>
+              {item.label}
+            </Text>
+          ) : (
+            <Clickable
+              key={item.key}
+              id={id !== undefined ? `${id}:${item.key}` : undefined}
+              focusable={false}
+              onClick={onNavigate ? () => onNavigate(item.key) : undefined}
+            >
+              <Text style={[styles.dim]}>{item.label}</Text>
+            </Clickable>
+          );
+        const separator = (
+          <Text key={`sep:${item.key}`} style={[styles.dim]}>
+            /
+          </Text>
+        );
+        return index > 0 ? [separator, node] : [node];
+      })}
+    </Box>
+  );
+}
+
+/** Props accepted by `Pagination`. */
+export interface PaginationProps extends FlexChildProps, Props {
+  page: number;
+  pages: number;
+  onChange: (page: number) => void;
+  id?: string;
+}
+/** Pager: `‹ 2 / 14 ›`, chevrons disabled at the ends. */
+export function Pagination(props: PaginationProps): VNode {
+  const { page, pages, onChange, id, ...rest } = props;
+  const atStart = page <= 1;
+  const atEnd = page >= pages;
+  return (
+    <Box direction="row" gap={1} id={id} {...rest}>
+      <Clickable
+        id={id !== undefined ? `${id}:prev` : undefined}
+        focusable={false}
+        disabled={atStart}
+        onClick={atStart ? undefined : () => onChange(page - 1)}
+      >
+        <Text style={atStart ? [styles.dim] : [styles.accent]}>‹</Text>
+      </Clickable>
+      <Text>{`${page} / ${pages}`}</Text>
+      <Clickable
+        id={id !== undefined ? `${id}:next` : undefined}
+        focusable={false}
+        disabled={atEnd}
+        onClick={atEnd ? undefined : () => onChange(page + 1)}
+      >
+        <Text style={atEnd ? [styles.dim] : [styles.accent]}>›</Text>
+      </Clickable>
+    </Box>
+  );
+}
+
+/** Props accepted by `Steps`. */
+export interface StepsProps extends FlexChildProps, Props {
+  steps: Array<{ key: string; label: string }>;
+  current: string;
+  id?: string;
+}
+/** Step strip: success `●` done, bold accent `●` current, dim `○` upcoming. */
+export function Steps(props: StepsProps): VNode {
+  const { steps, current, id, ...rest } = props;
+  const at = steps.findIndex((step) => step.key === current);
+  return (
+    <Box direction="row" gap={1} id={id} {...rest}>
+      {steps.flatMap((step, index) => {
+        const state = at !== -1 && index < at ? 'done' : index === at ? 'current' : 'upcoming';
+        const dot = (
+          <Text
+            key={`d:${step.key}`}
+            style={
+              state === 'done'
+                ? [styles.success]
+                : state === 'current'
+                  ? [styles.bold, styles.accent]
+                  : [styles.dim]
+            }
+          >
+            {state === 'upcoming' ? '○' : '●'}
+          </Text>
+        );
+        const label = (
+          <Text
+            key={`l:${step.key}`}
+            style={state === 'current' ? [styles.bold] : state === 'upcoming' ? [styles.dim] : []}
+          >
+            {step.label}
+          </Text>
+        );
+        const joint = (
+          <Text key={`j:${step.key}`} style={[styles.dim]}>
+            ──
+          </Text>
+        );
+        return index > 0 ? [joint, dot, label] : [dot, label];
+      })}
+    </Box>
+  );
+}
+
+/** One section of an `Accordion`. */
+export interface AccordionSection {
+  key: string;
+  title: string;
+  content: Child;
+}
+/** Props accepted by `Accordion`. */
+export interface AccordionProps extends FlexChildProps, Props {
+  sections: AccordionSection[];
+  openKeys: string[];
+  onToggle?: (key: string) => void;
+  id?: string;
+}
+/**
+ * Stack of `Details` sections. The caller owns `openKeys` — pair with
+ * `createAccordion(true)` when only one section may stay open.
+ */
+export function Accordion(props: AccordionProps): VNode {
+  const { sections, openKeys, onToggle, id, ...rest } = props;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {sections.map((section) => (
+        <Details
+          key={section.key}
+          id={id !== undefined ? `${id}:${section.key}` : undefined}
+          title={section.title}
+          open={openKeys.includes(section.key)}
+          onToggle={onToggle ? () => onToggle(section.key) : undefined}
+        >
+          {section.content}
+        </Details>
+      ))}
+    </Box>
+  );
+}
+
+/** Accordion open-key state helper. */
+export interface AccordionState {
+  readonly openKeys: Signal<string[]>;
+  toggle(key: string): void;
+}
+/** Create accordion open-key state; `single` closes other sections on toggle. */
+export function createAccordion(single = false): AccordionState {
+  const openKeys = createSignal<string[]>([]);
+  return {
+    openKeys,
+    toggle(key: string): void {
+      const current = openKeys.get();
+      if (current.includes(key)) {
+        openKeys.set(current.filter((open) => open !== key));
+      } else {
+        openKeys.set(single ? [key] : [...current, key]);
+      }
+    },
+  };
+}
+
+/** Props accepted by `Popover`. */
+export interface PopoverProps extends Props {
+  open: boolean;
+  /** Hit id of the trigger the popover anchors beneath. */
+  anchorId: string;
+  onDismiss?: () => void;
+  children?: Child;
+}
+/** Bordered overlay anchored beneath a trigger. Esc dismisses; no backdrop. */
+export function Popover(props: PopoverProps): VNode {
+  const { open, anchorId, onDismiss, children } = props;
+  return (
+    <Box>
+      {open ? (
+        <Layer anchorId={anchorId}>
+          <Clickable
+            direction="column"
+            focusable={false}
+            onKey={
+              onDismiss
+                ? (event) => {
+                    if (event.key === 'escape') {
+                      onDismiss();
+                      return true;
+                    }
+                    return false;
+                  }
+                : undefined
+            }
+          >
+            <Box border paddingX={1} direction="column">
+              {children}
+            </Box>
+          </Clickable>
+        </Layer>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Props accepted by `Tooltip`. */
+export interface TooltipProps extends Props {
+  text: string;
+  /** Shown state — the app decides when; there is no hover tracking. */
+  open: boolean;
+  anchorId: string;
+}
+/** One-line dim-bordered hint anchored beneath a trigger. */
+export function Tooltip(props: TooltipProps): VNode {
+  const { text, open, anchorId } = props;
+  return (
+    <Box>
+      {open ? (
+        <Layer anchorId={anchorId}>
+          <Box border paddingX={1} style={[styles.dim]}>
+            <Text>{text}</Text>
+          </Box>
+        </Layer>
+      ) : null}
+    </Box>
+  );
+}
+
+/** Props accepted by `Toast`. */
+export interface ToastProps extends Props {
+  message: string;
+  variant?: StatusVariant;
+}
+/** One notification: a small box with a variant-colored border. */
+export function Toast(props: ToastProps): VNode {
+  const { message, variant } = props;
+  return (
+    <Box border paddingX={1} borderColor={styles[variant ?? 'info'].fg}>
+      <Text>{message}</Text>
+    </Box>
+  );
+}
+
+/** Props accepted by `ToastStack`. */
+export interface ToastStackProps extends Props {
+  toasts: Array<{ id: string; message: string; variant?: StatusVariant }>;
+}
+/** Notification column pinned to the top-right corner in a layer. */
+export function ToastStack(props: ToastStackProps): VNode {
+  const { toasts } = props;
+  return (
+    <Box>
+      {toasts.length > 0 ? (
+        <Layer anchor={{ x: 9999, y: -1 }} placement="bottom-end">
+          <Box direction="column" align="end">
+            {toasts.map((toast) => (
+              <Toast key={toast.id} message={toast.message} variant={toast.variant} />
+            ))}
+          </Box>
+        </Layer>
+      ) : null}
+    </Box>
+  );
+}
+
+/** One column of a `Table`. */
+export interface TableColumn {
+  key: string;
+  header: string;
+  /** Explicit cell width; narrower content truncates with `…`. */
+  width?: number;
+  align?: 'start' | 'end';
+}
+/** Props accepted by `Table`. */
+export interface TableProps extends FlexChildProps, Props {
+  columns: TableColumn[];
+  rows: Array<Record<string, string>>;
+  selectedIndex?: number;
+  onSelectRow?: (index: number) => void;
+  id?: string;
+}
+/** Data table: bold header over a dim rule, fitted columns, clickable rows. */
+export function Table(props: TableProps): VNode {
+  const { columns, rows, selectedIndex, onSelectRow, id, ...rest } = props;
+  const widths = columns.map((column) => {
+    if (column.width !== undefined) return column.width;
+    let widest = stringWidth(column.header);
+    for (const row of rows) widest = Math.max(widest, stringWidth(row[column.key] ?? ''));
+    return widest;
+  });
+  const cells = (row: Record<string, string>): VNode[] =>
+    columns.map((column, index) => (
+      <Text
+        key={column.key}
+        width={widths[index]}
+        align={column.align}
+        truncate={column.width !== undefined}
+      >
+        {row[column.key] ?? ''}
+      </Text>
+    ));
+  return (
+    <Box direction="column" id={id} {...rest}>
+      <Box direction="row" gap={1}>
+        {columns.map((column, index) => (
+          <Text
+            key={column.key}
+            width={widths[index]}
+            align={column.align}
+            truncate={column.width !== undefined}
+            style={[styles.bold]}
+          >
+            {column.header}
+          </Text>
+        ))}
+      </Box>
+      <Rule style={[styles.dim]} />
+      {rows.map((row, index) =>
+        onSelectRow ? (
+          <Clickable
+            key={`${index}`}
+            id={id !== undefined ? `${id}:${index}` : undefined}
+            direction="row"
+            gap={1}
+            focusable={false}
+            style={index === selectedIndex ? [styles.inverse] : []}
+            onClick={() => onSelectRow(index)}
+          >
+            {cells(row)}
+          </Clickable>
+        ) : (
+          <Box
+            key={`${index}`}
+            direction="row"
+            gap={1}
+            style={index === selectedIndex ? [styles.inverse] : []}
+          >
+            {cells(row)}
+          </Box>
+        ),
+      )}
+    </Box>
+  );
+}
+
+/** One node of a `FileTree`; `children` left undefined marks a leaf. */
+export interface FileTreeNode {
+  key: string;
+  label: string;
+  children?: FileTreeNode[];
+}
+/** Props accepted by `FileTree`. */
+export interface FileTreeProps extends FlexChildProps, Props {
+  nodes: FileTreeNode[];
+  expanded: string[];
+  selectedKey?: string | null;
+  onToggle?: (key: string) => void;
+  onSelect?: (key: string) => void;
+  id?: string;
+}
+/**
+ * Indented tree: directories carry a `▸`/`▾` toggle glyph, rows select on
+ * click. The glyph is its own `Clickable`, so a toggle never also selects.
+ */
+export function FileTree(props: FileTreeProps): VNode {
+  const { nodes, expanded, selectedKey, onToggle, onSelect, id, ...rest } = props;
+  const rows: VNode[] = [];
+  const visit = (node: FileTreeNode, depth: number): void => {
+    const dir = node.children !== undefined;
+    const open = dir && expanded.includes(node.key);
+    const selected = node.key === selectedKey;
+    rows.push(
+      <Clickable
+        key={node.key}
+        id={id !== undefined ? `${id}:${node.key}` : undefined}
+        direction="row"
+        focusable={false}
+        style={selected ? [styles.bold, styles.inverse] : []}
+        onClick={onSelect ? () => onSelect(node.key) : undefined}
+      >
+        {depth > 0 ? <Text>{' '.repeat(depth * 2)}</Text> : null}
+        {dir ? (
+          <Clickable
+            id={id !== undefined ? `${id}:${node.key}:toggle` : undefined}
+            focusable={false}
+            onClick={onToggle ? () => onToggle(node.key) : undefined}
+          >
+            <Text>{open ? '▾ ' : '▸ '}</Text>
+          </Clickable>
+        ) : (
+          <Text>{'  '}</Text>
+        )}
+        <Text>{node.label}</Text>
+      </Clickable>,
+    );
+    if (open) for (const child of node.children!) visit(child, depth + 1);
+  };
+  for (const node of nodes) visit(node, 0);
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {rows}
+    </Box>
+  );
+}
+
+/** Tree expansion state helper for `FileTree`. */
+export interface TreeState {
+  readonly expanded: Signal<string[]>;
+  toggle(key: string): void;
+  isExpanded(key: string): boolean;
+}
+/** Create tree expansion state that survives re-renders. */
+export function createTreeState(defaultExpanded: string[] = []): TreeState {
+  const expanded = createSignal<string[]>(defaultExpanded);
+  return {
+    expanded,
+    toggle(key: string): void {
+      const current = expanded.get();
+      expanded.set(
+        current.includes(key) ? current.filter((open) => open !== key) : [...current, key],
+      );
+    },
+    isExpanded: (key: string) => expanded.get().includes(key),
+  };
+}
+
+/** One entry of a `Timeline`. */
+export interface TimelineEntry {
+  key: string;
+  title: string;
+  detail?: string;
+  variant?: StatusVariant;
+}
+/** Props accepted by `Timeline`. */
+export interface TimelineProps extends FlexChildProps, Props {
+  entries: TimelineEntry[];
+  id?: string;
+}
+/** Vertical event list: variant-colored `●` titles, dim `│` connector details. */
+export function Timeline(props: TimelineProps): VNode {
+  const { entries, id, ...rest } = props;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {entries.flatMap((entry, index) => {
+        const last = index === entries.length - 1;
+        const rows = [
+          <Box key={entry.key} direction="row" gap={1}>
+            <Text style={[styles[entry.variant ?? 'info']]}>●</Text>
+            <Text>{entry.title}</Text>
+          </Box>,
+        ];
+        if (entry.detail !== undefined) {
+          rows.push(
+            <Text key={`${entry.key}:detail`} style={[styles.dim]}>
+              {`${last ? ' ' : '│'}  ${entry.detail}`}
+            </Text>,
+          );
+        }
+        return rows;
+      })}
+    </Box>
+  );
 }
