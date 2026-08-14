@@ -92,7 +92,7 @@ const command = new Task({
         description: 'Serve the gallery over HTTP instead of the terminal',
       },
       {
-        flags: '--port <port>',
+        flags: '--port',
         type: 'number',
         description: 'Port for --html mode (default 3080)',
       },

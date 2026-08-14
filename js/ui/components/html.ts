@@ -8,8 +8,18 @@
  * `<details>` — so checkboxes toggle, sections expand, and selects open with
  * zero client JavaScript. Bare primitive trees (`box`, `text`, `clickable`,
  * `layer`, …) keep the flexbox/character-unit mapping so terminal-shaped
- * layouts still survive on the web. Handler props are dropped — static markup
- * cannot carry them.
+ * layouts still survive on the web.
+ *
+ * By default markup is static and handler props are dropped. Passing
+ * `{ actions }` enables server-driven interactions: every handler-bearing
+ * semantic node is assigned a sequential action id (`a0`, `a1`, … in tree
+ * order), registered on the collector, and emitted as a plain GET `<form>` —
+ * click-likes as submit buttons carrying `do=<id>`, value-bearing controls as
+ * native inputs named `value` that auto-submit on change. The server renders
+ * the same tree, looks up the submitted `do` id, and invokes the handler.
+ * Value-bearing controls without a change handler — and click-likes without a
+ * click handler — lower as `disabled`, so state the server cannot change is
+ * never toggleable in the page.
  *
  * The result serializes with `fino:ui/html`'s `renderToHtml()`; `htmlPage()`
  * wraps transformed markup in a document shell whose stylesheet gives the
@@ -163,6 +173,21 @@ function flexChildCss(props: Props, css: Record<string, string>): void {
   }
 }
 
+function borderShorthand(style: unknown, color: string): { border: string; radius?: string } {
+  switch (style) {
+    case 'round':
+      return { border: `1px solid ${color}`, radius: '0.5rem' };
+    case 'heavy':
+      return { border: `3px solid ${color}` };
+    case 'double':
+      return { border: `4px double ${color}` };
+    case 'ascii':
+      return { border: `1px dashed ${color}` };
+    default:
+      return { border: `1px solid ${color}` };
+  }
+}
+
 function justifyCss(value: unknown): string | undefined {
   if (value === 'center') return 'center';
   if (value === 'end') return 'flex-end';
@@ -194,8 +219,11 @@ function boxNode(node: VNode, children: NormalizedChild[]): VNode {
   }
   const border = props.border;
   if (border === true || typeof border === 'string') {
-    css.border = `1px solid ${props.borderColor ? cssColor(props.borderColor as Color) : 'var(--tui-border)'}`;
-    css.borderRadius = border === 'round' ? '0.5rem' : '0';
+    const name = typeof border === 'string' ? border : props.borderStyle;
+    const color = props.borderColor ? cssColor(props.borderColor as Color) : 'var(--tui-border)';
+    const spec = borderShorthand(name, color);
+    css.border = spec.border;
+    css.borderRadius = spec.radius ?? '0';
   }
   if (props.overflow === 'hidden') css.overflow = 'hidden';
   sizeCss(props, css);
@@ -279,7 +307,7 @@ function layerNode(node: VNode, children: NormalizedChild[]): VNode {
 }
 
 function transformChildren(children: readonly NormalizedChild[]): NormalizedChild[] {
-  return children.map((child) => (typeof child === 'string' ? child : toHtml(child)));
+  return children.map((child) => (typeof child === 'string' ? child : transformNode(child)));
 }
 
 function emptyNode(): VNode {
@@ -294,11 +322,60 @@ function tone(variant: unknown, fallback: string): string {
   return `ui-tone-${typeof variant === 'string' ? variant : fallback}`;
 }
 
+/** Collector receiving `id → invoke` pairs during an interactive transform. */
+export interface ActionCollector {
+  set(id: string, invoke: (value?: string) => void): unknown;
+}
+
+/** Options accepted by `toHtml`. */
+export interface ToHtmlOptions {
+  /** Collect handler invocations by action id; enables interactive markup. */
+  actions?: ActionCollector;
+  /** Hidden fields carried by every action form (story key, control args, …). */
+  fields?: Record<string, string>;
+}
+
+interface ActionState {
+  collector: ActionCollector;
+  fields: Record<string, string>;
+  next: number;
+}
+
+let actions: ActionState | null = null;
+
+function register(invoke: (value?: string) => void): string {
+  const id = `a${actions!.next++}`;
+  actions!.collector.set(id, invoke);
+  return id;
+}
+
+function actionForm(extra: Record<string, string> | null, ...children: NormalizedChild[]): VNode {
+  const fields = { ...actions!.fields, ...extra };
+  return h(
+    'form',
+    { method: 'get', className: 'ui-action' },
+    ...Object.entries(fields).map(([name, value]) => h('input', { type: 'hidden', name, value })),
+    ...children,
+  );
+}
+
+const RESUBMIT = 'this.form.submit()';
+
+function handlerOf<T>(value: unknown): T | undefined {
+  return typeof value === 'function' ? (value as T) : undefined;
+}
+
 function panelHtml(node: VNode): VNode {
-  const { title, id } = node.props as PanelProps;
+  const { title, id, border, borderStyle } = node.props as PanelProps;
   const css: Record<string, string> = {};
   sizeCss(node.props, css);
   flexChildCss(node.props, css);
+  const styleName = typeof border === 'string' ? border : borderStyle;
+  if (typeof styleName === 'string') {
+    const spec = borderShorthand(styleName, 'var(--ui-border)');
+    css.border = spec.border;
+    if (spec.radius !== undefined) css.borderRadius = spec.radius;
+  }
   const attrs: Props = { className: 'ui-panel', ...idAttr(id) };
   if (Object.keys(css).length > 0) attrs.style = css;
   return h(
@@ -310,45 +387,78 @@ function panelHtml(node: VNode): VNode {
 }
 
 function buttonHtml(node: VNode): VNode {
-  const { label, disabled, id } = node.props as ButtonProps;
+  const { label, onClick, disabled, id } = node.props as ButtonProps;
+  const click = handlerOf<() => void>(onClick);
+  const enabled = disabled !== true && click !== undefined;
+  if (actions !== null && enabled) {
+    const act = register(() => click!());
+    return actionForm(
+      null,
+      h('button', { className: 'ui-button', name: 'do', value: act, ...idAttr(id) }, label),
+    );
+  }
   const attrs: Props = { className: 'ui-button', type: 'button', ...idAttr(id) };
-  if (disabled === true) attrs.disabled = true;
+  if (!enabled) attrs.disabled = true;
   return h('button', attrs, label);
 }
 
 function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
   const props = node.props as CheckboxProps & RadioProps & SwitchProps;
+  const isSwitch = node.type === 'ui:switch';
   const checked =
-    kind === 'checkbox' && node.type === 'ui:switch'
-      ? props.on === true
-      : kind === 'checkbox'
-        ? props.checked === true
-        : props.selected === true;
-  const input: Props = {
-    type: kind,
-    className: node.type === 'ui:switch' ? 'ui-switch' : 'ui-check',
-  };
+    kind === 'checkbox'
+      ? isSwitch
+        ? props.on === true
+        : props.checked === true
+      : props.selected === true;
+  const change =
+    kind === 'radio'
+      ? handlerOf<() => void>(props.onSelect)
+      : handlerOf<(next: boolean) => void>(props.onChange);
+  const enabled = props.disabled !== true && change !== undefined;
+  const input: Props = { type: kind, className: isSwitch ? 'ui-switch' : 'ui-check' };
   if (checked) input.checked = true;
-  if (props.disabled === true) input.disabled = true;
-  const label = props.label;
-  return h(
-    'label',
-    { className: `ui-choice${props.disabled === true ? ' is-disabled' : ''}`, ...idAttr(props.id) },
-    h('input', input),
-    label !== undefined ? h('span', null, label) : null,
-  );
+  const control = (field: Props): VNode =>
+    h(
+      'label',
+      {
+        className: `ui-choice${props.disabled === true ? ' is-disabled' : ''}`,
+        ...idAttr(props.id),
+      },
+      h('input', field),
+      props.label !== undefined ? h('span', null, props.label) : null,
+    );
+  if (actions !== null && enabled) {
+    const act =
+      kind === 'radio'
+        ? register(() => (change as () => void)())
+        : register((value) => (change as (next: boolean) => void)(value === 'true'));
+    const field: Props = { ...input, name: 'value', value: 'true', onchange: RESUBMIT };
+    return actionForm(
+      { do: act },
+      ...(kind === 'checkbox'
+        ? [h('input', { type: 'hidden', name: 'value', value: 'false' })]
+        : []),
+      control(field),
+    );
+  }
+  if (!enabled) input.disabled = true;
+  return control(input);
 }
 
 function radioGroupHtml(node: VNode): VNode {
-  const { value, options, id } = node.props as RadioGroupProps;
-  const name = typeof id === 'string' ? id : 'ui-radio';
-  return h(
+  const { value, options, onChange, id } = node.props as RadioGroupProps;
+  const change = handlerOf<(key: string) => void>(onChange);
+  const interactive = actions !== null && change !== undefined;
+  const name = interactive ? 'value' : typeof id === 'string' ? id : 'ui-radio';
+  const group = h(
     'div',
     { className: 'ui-radio-group', role: 'radiogroup', ...idAttr(id) },
     ...options.map((option) => {
       const input: Props = { type: 'radio', className: 'ui-check', name, value: option.key };
       if (option.key === value) input.checked = true;
-      if (option.disabled === true) input.disabled = true;
+      if (option.disabled === true || change === undefined) input.disabled = true;
+      else if (interactive) input.onchange = RESUBMIT;
       return h(
         'label',
         { className: `ui-choice${option.disabled === true ? ' is-disabled' : ''}` },
@@ -357,17 +467,33 @@ function radioGroupHtml(node: VNode): VNode {
       );
     }),
   );
+  if (interactive) {
+    const act = register((key) => {
+      if (typeof key === 'string' && key.length > 0) change!(key);
+    });
+    return actionForm({ do: act }, group);
+  }
+  return group;
 }
 
 function textInputHtml(node: VNode): VNode {
   const { value, placeholder, id } = node.props as TextInputProps;
-  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '', ...idAttr(id) };
+  // The semantic contract carries only key events, which a form round trip
+  // cannot deliver — the field is never interactive in HTML.
+  const attrs: Props = {
+    className: 'ui-field',
+    type: 'text',
+    value: value ?? '',
+    disabled: true,
+    ...idAttr(id),
+  };
   if (placeholder !== undefined) attrs.placeholder = placeholder;
   return h('input', attrs);
 }
 
 function selectHtml(node: VNode): VNode {
-  const { value, options, placeholder, id } = node.props as SelectProps;
+  const { value, options, placeholder, onChange, id } = node.props as SelectProps;
+  const change = handlerOf<(key: string) => void>(onChange);
   const entries: VNode[] = [];
   if (value === null) {
     entries.push(
@@ -380,52 +506,81 @@ function selectHtml(node: VNode): VNode {
     if (option.disabled === true) attrs.disabled = true;
     entries.push(h('option', attrs, option.label));
   }
-  return h('select', { className: 'ui-field', ...idAttr(id) }, ...entries);
+  if (actions !== null && change !== undefined) {
+    const act = register((key) => {
+      if (typeof key === 'string' && key.length > 0) change(key);
+    });
+    return actionForm(
+      { do: act },
+      h(
+        'select',
+        { className: 'ui-field', name: 'value', onchange: RESUBMIT, ...idAttr(id) },
+        ...entries,
+      ),
+    );
+  }
+  const attrs: Props = { className: 'ui-field', ...idAttr(id) };
+  if (change === undefined) attrs.disabled = true;
+  return h('select', attrs, ...entries);
 }
 
 function detailsHtml(node: VNode): VNode {
-  const { title, open, id } = node.props as DetailsProps;
+  const { title, open, onToggle, id } = node.props as DetailsProps;
+  const toggle = handlerOf<(next: boolean) => void>(onToggle);
   const attrs: Props = { className: 'ui-details', ...idAttr(id) };
   if (open === true) attrs.open = true;
-  return h(
-    'details',
-    attrs,
-    h('summary', null, title),
-    h('div', { className: 'ui-details-body' }, ...transformChildren(node.children)),
-  );
+  const body = h('div', { className: 'ui-details-body' }, ...transformChildren(node.children));
+  if (actions !== null && toggle !== undefined) {
+    // The summary is one big submit button: clicks round-trip instead of
+    // toggling natively, so the server's open state never desyncs.
+    const act = register(() => toggle(open !== true));
+    return h(
+      'details',
+      attrs,
+      h(
+        'summary',
+        { className: 'ui-details-summary' },
+        actionForm(
+          null,
+          h('button', { className: 'ui-details-toggle', name: 'do', value: act }, title),
+        ),
+      ),
+      body,
+    );
+  }
+  return h('details', attrs, h('summary', null, title), body);
 }
 
-function tabStrip(items: TabItem[], value: string): VNode {
-  return h(
-    'nav',
-    { className: 'ui-tabs' },
-    ...items.map((item) =>
-      h(
-        'a',
-        {
-          href: '#',
-          className:
-            'ui-tab' +
-            (item.key === value ? ' is-active' : '') +
-            (item.disabled === true ? ' is-disabled' : ''),
-        },
-        item.label,
-      ),
-    ),
-  );
+function tabStrip(items: TabItem[], value: string, onChange: unknown): VNode {
+  const change = handlerOf<(key: string) => void>(onChange);
+  const entries = items.map((item) => {
+    const className =
+      'ui-tab' +
+      (item.key === value ? ' is-active' : '') +
+      (item.disabled === true ? ' is-disabled' : '');
+    const switchable = change !== undefined && item.key !== value && item.disabled !== true;
+    if (actions !== null && switchable) {
+      const act = register(() => change!(item.key));
+      return h('button', { className, name: 'do', value: act }, item.label);
+    }
+    if (switchable) return h('a', { href: '#', className }, item.label);
+    return h('span', { className }, item.label);
+  });
+  const nav = h('nav', { className: 'ui-tabs' }, ...entries);
+  return actions !== null && change !== undefined ? actionForm(null, nav) : nav;
 }
 
 function tabListHtml(node: VNode): VNode {
-  const { items, value } = node.props as TabListProps;
-  return tabStrip(items, value);
+  const { items, value, onChange } = node.props as TabListProps;
+  return tabStrip(items, value, onChange);
 }
 
 function tabsHtml(node: VNode): VNode {
-  const { items, value } = node.props as TabsProps;
+  const { items, value, onChange } = node.props as TabsProps;
   return h(
     'div',
     { className: 'ui-tabs-wrap' },
-    tabStrip(items, value),
+    tabStrip(items, value, onChange),
     h('div', { className: 'ui-tab-panel' }, ...transformChildren(node.children)),
   );
 }
@@ -445,13 +600,14 @@ function menuRowContent(item: {
 function menuUl(
   items: readonly MenuItem[],
   selectedKey: string | null | undefined,
-  props: { top?: number; maxRows?: number; id?: string },
+  props: { top?: number; maxRows?: number; id?: string; onSelect?: unknown },
 ): VNode {
+  const select = handlerOf<(key: string) => void>(props.onSelect);
   const start = props.top ?? 0;
   const end = props.maxRows !== undefined ? start + props.maxRows : items.length;
   const visible = items.slice(start, end);
   const remaining = items.length - end;
-  return h(
+  const list = h(
     'ul',
     { className: 'ui-menu', ...idAttr(props.id) },
     ...visible.map((item) => {
@@ -459,8 +615,14 @@ function menuUl(
       if (item.kind === 'separator') return h('li', { className: 'ui-menu-sep' }, h('hr'));
       const selected = item.key === selectedKey;
       const disabled = item.disabled === true;
-      const button: Props = { type: 'button' };
-      if (disabled) button.disabled = true;
+      const button: Props = {};
+      if (actions !== null && select !== undefined && !disabled) {
+        button.name = 'do';
+        button.value = register(() => select(item.key));
+      } else {
+        button.type = 'button';
+        if (disabled || select === undefined) button.disabled = true;
+      }
       return h(
         'li',
         {
@@ -472,37 +634,58 @@ function menuUl(
     }),
     remaining > 0 ? h('li', { className: 'ui-menu-more' }, `… ${remaining} more`) : null,
   );
+  return actions !== null && select !== undefined ? actionForm(null, list) : list;
 }
 
 function menuListHtml(node: VNode): VNode {
-  const { items, selectedKey, top, maxRows, id } = node.props as MenuListProps;
-  return menuUl(items, selectedKey, { top, maxRows, id });
+  const { items, selectedKey, top, maxRows, onSelect, id } = node.props as MenuListProps;
+  return menuUl(items, selectedKey, { top, maxRows, id, onSelect });
 }
 
 function menuRowHtml(node: VNode): VNode {
-  const { label, detail, glyph, selected, disabled, id } = node.props as MenuRowProps;
-  const button: Props = { type: 'button', ...idAttr(id) };
-  if (disabled === true) button.disabled = true;
-  return h(
-    'div',
-    {
-      className:
-        'ui-menu-item' +
-        (selected === true ? ' is-selected' : '') +
-        (disabled === true ? ' is-disabled' : ''),
-    },
-    h('button', button, ...menuRowContent({ label, detail, glyph })),
+  const { label, detail, glyph, selected, disabled, onClick, id } = node.props as MenuRowProps;
+  const click = handlerOf<() => void>(onClick);
+  const button: Props = { ...idAttr(id) };
+  const row = (content: VNode): VNode =>
+    h(
+      'div',
+      {
+        className:
+          'ui-menu-item' +
+          (selected === true ? ' is-selected' : '') +
+          (disabled === true ? ' is-disabled' : ''),
+      },
+      content,
+    );
+  if (actions !== null && click !== undefined && disabled !== true) {
+    button.name = 'do';
+    button.value = register(() => click());
+    return row(actionForm(null, h('button', button, ...menuRowContent({ label, detail, glyph }))));
+  }
+  button.type = 'button';
+  if (disabled === true || click === undefined) button.disabled = true;
+  return row(h('button', button, ...menuRowContent({ label, detail, glyph })));
+}
+
+function dismissButton(onDismiss: unknown): VNode | null {
+  const dismiss = handlerOf<() => void>(onDismiss);
+  if (actions === null || dismiss === undefined) return null;
+  const act = register(() => dismiss());
+  return actionForm(
+    null,
+    h('button', { className: 'ui-dismiss', name: 'do', value: act, 'aria-label': 'Dismiss' }, '×'),
   );
 }
 
 function modalHtml(node: VNode): VNode {
-  const { title } = node.props as ModalProps;
+  const { title, onDismiss } = node.props as ModalProps;
   return h(
     'div',
     { className: 'ui-overlay' },
     h(
       'div',
       { className: 'ui-modal', role: 'dialog', 'aria-modal': 'true' },
+      dismissButton(onDismiss),
       title !== undefined ? h('header', { className: 'ui-modal-title' }, title) : null,
       ...transformChildren(node.children),
     ),
@@ -510,14 +693,24 @@ function modalHtml(node: VNode): VNode {
 }
 
 function contextMenuHtml(node: VNode): VNode {
-  const { items, selectedKey, id } = node.props as ContextMenuProps;
-  return h('div', { className: 'ui-context-menu' }, menuUl(items, selectedKey, { id }));
+  const { items, selectedKey, onSelect, onDismiss, id } = node.props as ContextMenuProps;
+  return h(
+    'div',
+    { className: 'ui-context-menu' },
+    dismissButton(onDismiss),
+    menuUl(items, selectedKey, { id, onSelect }),
+  );
 }
 
 function popoverHtml(node: VNode): VNode {
-  const { open } = node.props as PopoverProps;
+  const { open, onDismiss } = node.props as PopoverProps;
   if (open !== true) return emptyNode();
-  return h('div', { className: 'ui-popover' }, ...transformChildren(node.children));
+  return h(
+    'div',
+    { className: 'ui-popover' },
+    dismissButton(onDismiss),
+    ...transformChildren(node.children),
+  );
 }
 
 function tooltipHtml(node: VNode): VNode {
@@ -582,48 +775,74 @@ function keyHintHtml(node: VNode): VNode {
 
 function tagHtml(node: VNode): VNode {
   const { label, onRemove, color, id } = node.props as TagProps;
-  return h(
-    'span',
-    { className: `ui-tag ${tone(color, 'accent')}`, ...idAttr(id) },
-    label,
-    onRemove
-      ? h(
-          'button',
-          { type: 'button', className: 'ui-tag-remove', 'aria-label': `Remove ${label}` },
-          '×',
-        )
-      : null,
-  );
+  const remove = handlerOf<() => void>(onRemove);
+  let remover: VNode | null = null;
+  if (remove !== undefined && actions !== null) {
+    const act = register(() => remove());
+    remover = actionForm(
+      null,
+      h(
+        'button',
+        { className: 'ui-tag-remove', name: 'do', value: act, 'aria-label': `Remove ${label}` },
+        '×',
+      ),
+    );
+  } else if (remove !== undefined) {
+    remover = h(
+      'button',
+      { type: 'button', className: 'ui-tag-remove', 'aria-label': `Remove ${label}` },
+      '×',
+    );
+  }
+  return h('span', { className: `ui-tag ${tone(color, 'accent')}`, ...idAttr(id) }, label, remover);
 }
 
 function breadcrumbsHtml(node: VNode): VNode {
-  const { items, id } = node.props as BreadcrumbsProps;
-  return h(
+  const { items, onNavigate, id } = node.props as BreadcrumbsProps;
+  const navigate = handlerOf<(key: string) => void>(onNavigate);
+  const nav = h(
     'nav',
     { className: 'ui-crumbs', 'aria-label': 'breadcrumbs', ...idAttr(id) },
     ...items.flatMap((item, index) => {
-      const entry =
-        index === items.length - 1
-          ? h('strong', null, item.label)
-          : h('a', { href: '#' }, item.label);
+      let entry: VNode;
+      if (index === items.length - 1) {
+        entry = h('strong', null, item.label);
+      } else if (actions !== null && navigate !== undefined) {
+        const act = register(() => navigate(item.key));
+        entry = h('button', { className: 'ui-crumb', name: 'do', value: act }, item.label);
+      } else if (navigate !== undefined) {
+        entry = h('a', { href: '#', className: 'ui-crumb' }, item.label);
+      } else {
+        entry = h('span', { className: 'ui-crumb' }, item.label);
+      }
       return index > 0 ? [h('span', { className: 'ui-crumbs-sep' }, '/'), entry] : [entry];
     }),
   );
+  return actions !== null && navigate !== undefined ? actionForm(null, nav) : nav;
 }
 
 function paginationHtml(node: VNode): VNode {
-  const { page, pages, id } = node.props as PaginationProps;
-  const prev: Props = { type: 'button', className: 'ui-button ui-pager-step' };
-  if (page <= 1) prev.disabled = true;
-  const next: Props = { type: 'button', className: 'ui-button ui-pager-step' };
-  if (page >= pages) next.disabled = true;
-  return h(
+  const { page, pages, onChange, id } = node.props as PaginationProps;
+  const change = handlerOf<(page: number) => void>(onChange);
+  const step = (target: number, blocked: boolean, label: string): VNode => {
+    const attrs: Props = { className: 'ui-button ui-pager-step' };
+    if (actions !== null && change !== undefined && !blocked) {
+      attrs.name = 'do';
+      attrs.value = register(() => change(target));
+    } else {
+      attrs.type = 'button';
+      if (blocked || change === undefined) attrs.disabled = true;
+    }
+    return h('button', attrs, label);
+  };
+  const nav = h(
     'nav',
     { className: 'ui-pager', ...idAttr(id) },
-    h('button', prev, '‹'),
+    step(page - 1, page <= 1, '‹'),
     h('span', null, `${page} / ${pages}`),
-    h('button', next, '›'),
+    step(page + 1, page >= pages, '›'),
   );
+  return actions !== null && change !== undefined ? actionForm(null, nav) : nav;
 }
 
 function stepsHtml(node: VNode): VNode {
@@ -766,10 +985,26 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
  * their primitive composition (if any target would use one) is never
  * consulted. Primitive nodes map to flexbox markup, and nodes that are
  * already HTML elements pass through with their children transformed, so
- * mixed trees keep working. Handler props are dropped — static HTML cannot
- * carry functions.
+ * mixed trees keep working.
+ *
+ * Without options the markup is static and handler props are dropped. With
+ * `{ actions }`, handler-bearing nodes emit GET forms whose `do=<id>` field
+ * names a handler registered on the collector; `{ fields }` rides along as
+ * hidden inputs so the round trip lands back on the same page state.
  */
-export function toHtml(node: VNode): VNode {
+export function toHtml(node: VNode, options: ToHtmlOptions = {}): VNode {
+  if (options.actions !== undefined && actions === null) {
+    actions = { collector: options.actions, fields: options.fields ?? {}, next: 0 };
+    try {
+      return transformNode(node);
+    } finally {
+      actions = null;
+    }
+  }
+  return transformNode(node);
+}
+
+function transformNode(node: VNode): VNode {
   const native = NATIVE[node.type];
   if (native) return native(node);
   const children = transformChildren(node.children);
@@ -1076,6 +1311,30 @@ input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-v
 .ui-timeline li.ui-tone-danger::before { background: var(--ui-danger); }
 .ui-timeline li.ui-tone-warning::before { background: var(--ui-warning); }
 .ui-timeline-detail { color: var(--ui-muted); font-size: 0.85em; }
+.ui-action { display: contents; }
+button.ui-tab { cursor: pointer; }
+.ui-crumbs .ui-crumb { color: var(--ui-muted); }
+button.ui-crumb { cursor: pointer; }
+button.ui-crumb:hover { color: var(--ui-fg); }
+.ui-menu-item button:disabled { cursor: default; }
+.ui-check:disabled, .ui-switch:disabled { cursor: default; }
+.ui-modal { position: relative; }
+.ui-dismiss {
+  position: absolute; top: 0.5rem; right: 0.625rem; z-index: 1;
+  cursor: pointer; color: var(--ui-muted); line-height: 1;
+  padding: 0.125rem 0.375rem; border-radius: 0.25rem;
+}
+.ui-dismiss:hover { color: var(--ui-fg); background: var(--ui-surface-2); }
+summary.ui-details-summary { list-style: none; padding: 0; }
+summary.ui-details-summary::-webkit-details-marker { display: none; }
+.ui-details-toggle {
+  display: flex; justify-content: space-between; align-items: center; gap: 0.75rem;
+  width: 100%; text-align: left; font-weight: 600; cursor: pointer;
+  padding: 0.5rem 0.875rem; border-radius: var(--ui-radius);
+}
+.ui-details-toggle:hover { background: var(--ui-surface-2); }
+.ui-details-toggle::after { content: '+'; color: var(--ui-muted); }
+.ui-details[open] > summary .ui-details-toggle::after { content: '\\2212'; }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

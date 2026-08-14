@@ -16,7 +16,7 @@ import {
   Text,
   VStack,
 } from 'fino:ui/components';
-import { catalogStories, defaultArgs, galleryPage } from 'fino:ui/gallery';
+import { catalogStories, defaultArgs, galleryPage, runGalleryHtml } from 'fino:ui/gallery';
 import { renderFrame } from 'fino:tty/tui';
 import { openPty } from 'fino:test/pty';
 import { execPath } from 'fino:process';
@@ -221,6 +221,103 @@ describe('fino:ui/components/html native lowering', () => {
     t.ok(html.startsWith('<div class="ui-overlay"'), 'overlay wraps the card');
     t.ok(html.includes('class="ui-modal" role="dialog"'), 'card is a dialog');
     t.ok(html.includes('Delete this?'), 'body renders inside');
+  });
+});
+
+describe('fino:ui/components/html actions', () => {
+  it('collects actions and routes button clicks', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    let clicks = 0;
+    const html = renderToHtml(
+      toHtml(<Button label="Save" onClick={() => clicks++} />, {
+        actions,
+        fields: { story: 'buttons' },
+      }),
+    );
+    t.ok(html.includes('<form method="get" class="ui-action">'), 'button wrapped in a GET form');
+    t.ok(html.includes('name="story" value="buttons"'), 'context fields ride along hidden');
+    t.ok(html.includes('name="do" value="a0"'), 'submit button carries the action id');
+    actions.get('a0')!();
+    t.equal(clicks, 1, 'invoking the registered action fires the handler');
+    const untouched = renderToHtml(toHtml(<Button label="Save" onClick={() => {}} />));
+    t.ok(!untouched.includes('<form'), 'static lowering is unchanged without a collector');
+  });
+
+  it('coerces submitted values per role', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    let checked: boolean | null = null;
+    let picked: string | null = null;
+    const html = renderToHtml(
+      toHtml(
+        <VStack>
+          <Checkbox checked={false} label="notify" onChange={(next) => (checked = next)} />
+          <Select
+            id="model"
+            value={null}
+            open={false}
+            options={[{ key: 'fast', label: 'fast-1' }]}
+            onOpenChange={() => {}}
+            onChange={(key) => (picked = key)}
+          />
+        </VStack>,
+        { actions },
+      ),
+    );
+    t.ok(html.includes('name="value"'), 'value-bearing inputs submit under the value field');
+    t.ok(html.includes('onchange="this.form.submit()"'), 'inputs auto-submit on change');
+    actions.get('a0')!('true');
+    t.equal(checked, true, 'checkbox submission coerces to boolean true');
+    actions.get('a0')!('false');
+    t.equal(checked, false, 'unchecked submission coerces to false');
+    actions.get('a1')!('fast');
+    t.equal(picked, 'fast', 'select submission passes the option key');
+  });
+
+  it('lowers handler-less controls as non-interactive', (t) => {
+    const locked = renderToHtml(toHtml(<Switch on label="Locked on" />));
+    t.ok(locked.includes(' disabled'), 'switch without onChange comes out disabled');
+    const live = renderToHtml(toHtml(<Switch on label="Power" onChange={() => {}} />));
+    t.ok(!live.includes(' disabled'), 'switch with onChange stays enabled');
+    const inert = renderToHtml(toHtml(<Button label="Save" />));
+    t.ok(inert.includes(' disabled'), 'button without onClick is not an active button');
+  });
+
+  it('honors semantic border styles on panels', (t) => {
+    const groups = catalogStories();
+    const doubled = galleryPage(groups, 'panel', { border: 'double' });
+    t.ok(doubled.includes('double var(--ui-border)'), 'double maps to a CSS double border');
+    const dashed = galleryPage(groups, 'panel', { border: 'ascii' });
+    t.ok(dashed.includes('dashed var(--ui-border)'), 'ascii maps to a dashed border');
+    t.ok(!dashed.includes('double var(--ui-border)'), 'border styles are distinct');
+  });
+
+  it('round-trips actions over HTTP with 303 redirects', async (t) => {
+    const server = runGalleryHtml({ port: 0 });
+    await server.ready;
+    const base = `http://127.0.0.1:${server.port}`;
+    try {
+      const page = await (await fetch(`${base}/?story=checkbox`)).text();
+      t.ok(/class="ui-check"[^>]*checked/.test(page), 'checkbox starts checked');
+      const id = /name="do" value="(a\d+)"/.exec(page)![1]!;
+      const redirect = await fetch(`${base}/?story=checkbox&do=${id}&value=false`, {
+        redirect: 'manual',
+      });
+      t.equal(redirect.status, 0, 'action response is a redirect, not a page');
+      const followed = await fetch(`${base}/?story=checkbox&do=${id}&value=false`);
+      t.equal(followed.redirected, true, 'the 303 is followed back to the story');
+      t.equal(followed.status, 200, 'landing page renders');
+      const after = await followed.text();
+      t.ok(!/class="ui-check"[^>]*checked/.test(after), 'round trip unchecked the checkbox');
+
+      const tabsPage = await (await fetch(`${base}/?story=tabs`)).text();
+      t.ok(tabsPage.includes('Active panel: one'), 'first tab active initially');
+      const tabId = /name="do" value="(a\d+)">Details</.exec(tabsPage)![1]!;
+      const switched = await (await fetch(`${base}/?story=tabs&do=${tabId}`)).text();
+      t.ok(switched.includes('Active panel: two'), 'tab switch round-trips through the server');
+      t.ok(switched.includes('class="ui-tab is-active">Details'), 'active tab moves');
+    } finally {
+      await server.close();
+    }
   });
 });
 

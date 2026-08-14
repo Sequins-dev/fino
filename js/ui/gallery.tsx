@@ -665,11 +665,16 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
 /**
  * Render one gallery page: sidebar links, the selected story rendered under
  * its current control values, and a form to change them.
+ *
+ * The story tree is always lowered with an action collector so handler ids
+ * (`a0`, `a1`, …) are assigned consistently; pass `actions` to receive the
+ * id → invoke map for a `do=` request.
  */
 export function galleryPage(
   groups: StoryGroup[],
   selectedKey: string | null,
   rawArgs: Record<string, string> = {},
+  actions?: Map<string, (value?: string) => void>,
 ): string {
   const story = findStory(groups, selectedKey) ?? groups[0]?.stories[0];
   const sidebar = h(
@@ -690,11 +695,16 @@ export function galleryPage(
     ]),
   );
   const args = story ? parseArgs(story, rawArgs) : {};
+  const fields: Record<string, string> = story ? { story: story.key } : {};
+  for (const [name, value] of Object.entries(args)) fields[name] = String(value);
+  const collector = actions ?? new Map<string, (value?: string) => void>();
   const preview = h(
     'main',
     { style: { flex: '1 0 auto', position: 'relative' } },
     h('h1', { style: { fontSize: '1rem', marginBottom: '1lh' } }, story?.name ?? 'No stories'),
-    story ? toHtml(story.view(args)) : h('p', null, 'Nothing to show.'),
+    story
+      ? toHtml(story.view(args), { actions: collector, fields })
+      : h('p', null, 'Nothing to show.'),
     story?.controls ? controlsForm(story, args) : null,
   );
   const page = h('div', { style: { display: 'flex', gap: '4ch' } }, sidebar, preview);
@@ -703,7 +713,13 @@ export function galleryPage(
 
 /**
  * Serve the gallery over HTTP. Every request re-renders the requested story,
- * so signal-driven stories show their current state.
+ * so signal-driven stories show their current state — the server process is
+ * what keeps story signals alive between requests.
+ *
+ * A request carrying `do=<action id>` is an interaction round trip: the story
+ * is rendered once to rebuild the id → handler map, the named handler runs
+ * (mutating story signals), and the response is a 303 back to the story page
+ * so a refresh never re-fires the action.
  */
 export function runGalleryHtml(
   options: { port?: number; hostname?: string; groups?: StoryGroup[] } = {},
@@ -716,10 +732,27 @@ export function runGalleryHtml(
       const key = url.searchParams.get('story');
       const rawArgs: Record<string, string> = {};
       for (const name of new Set(url.searchParams.keys())) {
-        if (name === 'story') continue;
+        if (name === 'story' || name === 'do' || name === 'value') continue;
         // A hidden 'false' precedes each checkbox, so the last value wins.
         const values = url.searchParams.getAll(name);
         rawArgs[name] = values[values.length - 1]!;
+      }
+      const actionId = url.searchParams.get('do');
+      if (actionId !== null) {
+        const actions = new Map<string, (value?: string) => void>();
+        galleryPage(groups, key, rawArgs, actions);
+        const values = url.searchParams.getAll('value');
+        actions.get(actionId)?.(values.length > 0 ? values[values.length - 1] : undefined);
+        const target = new URLSearchParams();
+        const storyKey = (findStory(groups, key) ?? groups[0]?.stories[0])?.key;
+        if (storyKey !== undefined) target.set('story', storyKey);
+        for (const [name, value] of Object.entries(rawArgs)) target.set(name, value);
+        // An explicit empty body forces content-length: 0 — a bodyless 303
+        // would leave keep-alive clients waiting for an unterminated body.
+        return new Response('', {
+          status: 303,
+          headers: { location: new URL(`/?${target.toString()}`, request.url).href },
+        });
       }
       return new Response(galleryPage(groups, key, rawArgs), {
         headers: { 'content-type': 'text/html; charset=utf-8' },
