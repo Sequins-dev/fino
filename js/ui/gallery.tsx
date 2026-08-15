@@ -1030,17 +1030,29 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
     return (
       <HStack grow={1} gap={1} height={size.get().height}>
         <Panel title="Stories" width={24} height={size.get().height}>
-          <MenuList
-            id="stories"
-            items={selection.items as MenuItem[]}
-            selectedKey={selected.get()}
-            top={selection.top}
-            maxRows={selection.maxRows}
-            onSelect={(key) => {
-              selection.selectKey(key);
-              selected.set(key);
+          <Clickable
+            focusable={false}
+            direction="column"
+            onMouse={(event) => {
+              if (event.action !== 'wheel') return false;
+              if (selection.move(event.button === 'wheel-up' ? -1 : 1)) {
+                selected.set(selection.selectedKey);
+              }
+              return true;
             }}
-          />
+          >
+            <MenuList
+              id="stories"
+              items={selection.items as MenuItem[]}
+              selectedKey={selected.get()}
+              top={selection.top}
+              maxRows={selection.maxRows}
+              onSelect={(key) => {
+                selection.selectKey(key);
+                selected.set(key);
+              }}
+            />
+          </Clickable>
         </Panel>
         <Panel title={story?.name ?? '—'} grow={1} height={size.get().height}>
           <Box grow={1} direction="column">

@@ -372,6 +372,7 @@ function modal(props: Props, children: NormalizedChild[]): VNode {
       <Clickable
         direction="column"
         focusable={false}
+        captureKeys
         onKey={
           onDismiss
             ? (event) => {
@@ -411,6 +412,7 @@ function contextMenu(props: Props): VNode {
       <Layer anchor={at}>
         <Clickable
           focusable={false}
+          captureKeys
           onKey={(event) => {
             if (event.key === 'escape') {
               onDismiss();
@@ -666,6 +668,7 @@ function popover(props: Props, children: NormalizedChild[]): VNode {
           <Clickable
             direction="column"
             focusable={false}
+            captureKeys
             onKey={
               onDismiss
                 ? (event) => {

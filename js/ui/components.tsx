@@ -186,6 +186,8 @@ export interface ClickableProps extends StyleProps, FlexChildProps, Props {
   onFocus?: () => void;
   onBlur?: () => void;
   focusable?: boolean;
+  /** Receive key events while nothing is focused — for overlay surfaces. */
+  captureKeys?: boolean;
   disabled?: boolean;
   direction?: Direction;
   align?: Align;
