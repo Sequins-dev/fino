@@ -50,6 +50,7 @@ import {
 } from 'fino:ui/components';
 import type { MenuItem } from 'fino:ui/components';
 import { render, getTerminalSize } from 'fino:tty/tui';
+import { signal as processSignal } from 'fino:process';
 import { toHtml, htmlPage } from 'fino:ui/components/html';
 import { renderToHtml } from 'fino:ui/html';
 import { serveHttp } from 'fino:net/http/server';
@@ -523,9 +524,14 @@ function ControlsPane(props: ControlsPaneProps): VNode {
  * and `q` quits.
  */
 export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Promise<void> {
-  const size = getTerminalSize();
-  const selection = new ListSelection({ maxRows: Math.max(4, size.height - 6) });
+  const size = createSignal(getTerminalSize());
+  const selection = new ListSelection({ maxRows: Math.max(4, size.get().height - 6) });
   selection.setItems(storyItems(groups));
+  const winch = processSignal('SIGWINCH').subscribe(() => {
+    const next = getTerminalSize();
+    selection.setMaxRows(Math.max(4, next.height - 6));
+    size.set(next);
+  });
   const selected = createSignal<string | null>(selection.selectedKey);
   const argsByStory = new Map<string, ReturnType<typeof createSignal<StoryArgs>>>();
 
@@ -547,8 +553,8 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
     const story = findStory(groups, selected.get());
     const args = story ? argsFor(story) : null;
     return (
-      <HStack grow={1} gap={1} height={size.height}>
-        <Panel title="Stories" width={24} height={size.height}>
+      <HStack grow={1} gap={1} height={size.get().height}>
+        <Panel title="Stories" width={24} height={size.get().height}>
           <MenuList
             id="stories"
             items={selection.items as MenuItem[]}
@@ -561,7 +567,7 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
             }}
           />
         </Panel>
-        <Panel title={story?.name ?? '—'} grow={1} height={size.height}>
+        <Panel title={story?.name ?? '—'} grow={1} height={size.get().height}>
           <Box grow={1} direction="column">
             {story && args ? (
               story.view(args.get())
@@ -588,6 +594,7 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
     onEvent: (event) => {
       if (event.type !== 'key') return;
       if (event.key === 'q' || (event.key === 'c' && event.ctrl)) {
+        winch.dispose();
         app.stop();
         resolveDone();
         return;

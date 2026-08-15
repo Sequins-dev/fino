@@ -5,6 +5,7 @@ import {
   Text,
   Spacer,
   Layer,
+  Rule,
   renderFrame,
   layoutFrame,
   measure,
@@ -206,6 +207,24 @@ describe('internal:tty/layout styling and content', () => {
     t.equal(hitTest(frame, 2, 0), 'title', 'text region');
     t.equal(hitTest(frame, 2, 1), 'body', 'nested box wins over outer');
     t.equal(hitTest(frame, 9, 2), 'body', 'body spans its full rect');
+  });
+});
+
+describe('internal:tty/layout rules', () => {
+  it('measures rules at min-content so containers stay content-sized', (t) => {
+    const boxed = measure(h(Box, { border: true }, h(Rule, null)), { width: 40 });
+    t.equal(boxed.width, 3, 'a rule does not inflate its container to the constraint');
+    const frame = renderFrame(
+      h(
+        Box,
+        { direction: 'row' },
+        h(Text, null, 'side'),
+        h(Box, { border: true, grow: 1 }, h(Rule, null)),
+      ),
+      { width: 12, height: 3 },
+    ).split('\n');
+    t.equal(frame[0], 'side┌──────┐', 'grow sibling fits beside fixed content');
+    t.equal(frame[1], '    │──────│', 'rule stretches to the assigned rect');
   });
 });
 

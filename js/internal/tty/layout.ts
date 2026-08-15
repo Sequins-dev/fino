@@ -606,7 +606,9 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
       size = { width: 0, height: 0 };
       break;
     case 'rule':
-      size = { width: availW, height: 1 };
+      // Min-content: rules fill whatever rect cross-axis stretch assigns,
+      // so measuring greedy here would inflate every ancestor.
+      size = { width: 1, height: 1 };
       break;
     default:
       size = measureFlex(node, constraints, boxSpec(node));

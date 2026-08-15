@@ -37,7 +37,7 @@ import {
   type VNode,
 } from 'fino:ui';
 import { writeStdout } from '../tty.ts';
-import { stdin } from '../process.ts';
+import { stdin, signal as processSignal } from '../process.ts';
 import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
 import {
   disableAutoWrap,
@@ -484,8 +484,9 @@ export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
 export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
-  const width = options.width ?? size.width;
-  const height = options.height ?? size.height;
+  let width = options.width ?? size.width;
+  let height = options.height ?? size.height;
+  let lastTree: VNode | null = null;
   const input =
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
   const hostRoot = createTerminalRoot();
@@ -496,6 +497,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   const sink: Sink<Frame> = {
     commit(tree: VNode): Frame {
+      lastTree = tree;
       renderer.render(lowerTui(tree), hostRoot);
       const node = hostRoot.children[0];
       const frame = node
@@ -522,6 +524,22 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   let root: Root<Frame> | null = null;
   if (typeof element === 'function') root = createRoot(element, sink);
   else sink.commit(element);
+  // The viewport tracks the terminal unless the caller pinned a size.
+  const winch =
+    options.width !== undefined && options.height !== undefined
+      ? null
+      : processSignal('SIGWINCH').subscribe(() => {
+          if (stopped) return;
+          const next = queryTerminalSize();
+          const nextWidth = options.width ?? next.width;
+          const nextHeight = options.height ?? next.height;
+          if (nextWidth === width && nextHeight === height) return;
+          width = nextWidth;
+          height = nextHeight;
+          lastFrame = null;
+          void writeStdout('\x1B[2J');
+          if (lastTree) sink.commit(lastTree);
+        });
   const app: TuiApp = {
     input,
     focus: {
@@ -541,6 +559,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     },
     stop(): void {
       if (stopped) return;
+      winch?.dispose();
       root?.dispose();
       root = null;
       stopped = true;
