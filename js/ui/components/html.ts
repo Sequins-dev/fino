@@ -40,19 +40,28 @@ import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
 import { fileIcon, iconForm, paginationRange } from 'fino:ui/components';
+import { highlightLines } from 'fino:format/typescript';
 import type {
   BadgeProps,
+  BlockquoteProps,
+  BoldProps,
   BreadcrumbsProps,
   ButtonProps,
   CheckboxProps,
+  CodeProps,
   ContextMenuProps,
   DetailsProps,
   ExpanderPosition,
   ExpanderProps,
   FileTreeNode,
   FileTreeProps,
+  HeadingProps,
   IconProps,
+  InlineCodeProps,
+  ItalicProps,
   KeyHintProps,
+  LinkProps,
+  ListProps,
   MenuItem,
   MenuListProps,
   MenuRowProps,
@@ -1238,6 +1247,136 @@ function virtualListHtml(node: VNode): VNode {
   );
 }
 
+function headingHtml(node: VNode): VNode {
+  const { level, id } = node.props as HeadingProps;
+  const lvl = Math.min(6, Math.max(1, Math.floor((level as number | undefined) ?? 1)));
+  return h(
+    `h${lvl}`,
+    { className: `ui-heading ui-heading-${lvl}`, ...idAttr(id) },
+    ...transformChildren(node.children),
+  );
+}
+
+function inlineStyleAttrs(rest: Props, id: unknown): Props {
+  const css: Record<string, string> = {};
+  styleCss(resolveStyle(rest as Props), css);
+  const attrs: Props = { ...idAttr(id) };
+  if (Object.keys(css).length > 0) attrs.style = css;
+  return attrs;
+}
+
+function boldHtml(node: VNode): VNode {
+  const { id, ...rest } = node.props as BoldProps;
+  return h('strong', inlineStyleAttrs(rest as Props, id), ...transformChildren(node.children));
+}
+
+function italicHtml(node: VNode): VNode {
+  const { id, ...rest } = node.props as ItalicProps;
+  return h('em', inlineStyleAttrs(rest as Props, id), ...transformChildren(node.children));
+}
+
+// `Link` is the one catalog component allowed to navigate: a bare `href`
+// becomes a real anchor. With `onActivate` (and no collector wiring an
+// action) it degrades to a link-styled, inert-looking button — same as any
+// other handler-less control. With both, the href rides on the anchor for
+// right-click/open-in-new-tab, but an inline handler intercepts the click
+// and submits the action form instead of navigating.
+function linkHtml(node: VNode): VNode {
+  const { href, onActivate, id } = node.props as LinkProps;
+  const activate = handlerOf<() => void>(onActivate);
+  const kids = transformChildren(node.children);
+  const hasHref = typeof href === 'string' && href.length > 0;
+  if (activate !== undefined) {
+    if (actions !== null) {
+      const act = register(() => activate());
+      if (hasHref) {
+        return actionForm(
+          { act },
+          h(
+            'a',
+            {
+              className: 'ui-link',
+              href,
+              onclick: 'event.preventDefault();this.form.requestSubmit();',
+              ...idAttr(id),
+            },
+            ...kids,
+          ),
+        );
+      }
+      return actionForm(
+        {},
+        h('button', { className: 'ui-link', name: 'do', value: act, ...idAttr(id) }, ...kids),
+      );
+    }
+    return hasHref
+      ? h('a', { className: 'ui-link', href, ...idAttr(id) }, ...kids)
+      : h('button', { className: 'ui-link', type: 'button', ...idAttr(id) }, ...kids);
+  }
+  if (hasHref) return h('a', { className: 'ui-link', href, ...idAttr(id) }, ...kids);
+  return h('span', { className: 'ui-link', ...idAttr(id) }, ...kids);
+}
+
+function blockquoteHtml(node: VNode): VNode {
+  const { id } = node.props as BlockquoteProps;
+  return h(
+    'blockquote',
+    { className: 'ui-blockquote', ...idAttr(id) },
+    ...transformChildren(node.children),
+  );
+}
+
+function listHtml(node: VNode): VNode {
+  const { ordered, items, id } = node.props as ListProps;
+  const tag = ordered === true ? 'ol' : 'ul';
+  return h(
+    tag,
+    { className: 'ui-list', ...idAttr(id) },
+    ...items.map((item, index) => transformNode(h('li', { key: String(index) }, item))),
+  );
+}
+
+const CODE_TOK: Record<'keyword' | 'string' | 'number' | 'comment' | 'regexp', string> = {
+  keyword: 'tok-keyword',
+  string: 'tok-string',
+  number: 'tok-number',
+  comment: 'tok-comment',
+  regexp: 'tok-regexp',
+};
+
+function codeHtml(node: VNode): VNode {
+  const { code: source, language, showLineNumbers, id } = node.props as CodeProps;
+  const lines = highlightLines(source, language);
+  const codeClass =
+    typeof language === 'string' && language.length > 0 ? `language-${language}` : undefined;
+  const body = lines.map((runs, index) =>
+    h(
+      'span',
+      { className: 'ui-code-line' },
+      showLineNumbers === true ? h('span', { className: 'ui-code-num' }, String(index + 1)) : null,
+      h(
+        'span',
+        { className: 'ui-code-content' },
+        ...runs.map((run) =>
+          run.cls ? h('span', { className: CODE_TOK[run.cls] }, run.text) : run.text,
+        ),
+      ),
+    ),
+  );
+  return h(
+    'div',
+    { className: 'ui-code', ...idAttr(id) },
+    h('pre', null, h('code', codeClass !== undefined ? { className: codeClass } : null, ...body)),
+  );
+}
+
+function inlineCodeHtml(node: VNode): VNode {
+  const { id, ...rest } = node.props as InlineCodeProps;
+  const attrs = inlineStyleAttrs(rest as Props, id);
+  attrs.className = 'ui-inline-code';
+  return h('code', attrs, ...transformChildren(node.children));
+}
+
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
   'ui:button': buttonHtml,
@@ -1275,6 +1414,14 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:file-tree': fileTreeHtml,
   'ui:timeline': timelineHtml,
   'ui:virtual-list': virtualListHtml,
+  'ui:heading': headingHtml,
+  'ui:bold': boldHtml,
+  'ui:italic': italicHtml,
+  'ui:link': linkHtml,
+  'ui:blockquote': blockquoteHtml,
+  'ui:list': listHtml,
+  'ui:code': codeHtml,
+  'ui:inline-code': inlineCodeHtml,
 };
 
 /**
@@ -1662,6 +1809,43 @@ button.ui-tree-leaf { width: 100%; cursor: pointer; }
   display: block; width: 100%; text-align: inherit;
   cursor: pointer; padding: 0; color: inherit;
 }
+.ui-heading { font-weight: 700; line-height: 1.3; margin: 1.25rem 0 0.5rem; }
+.ui-heading:first-child { margin-top: 0; }
+.ui-heading-1 { font-size: 1.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--ui-border); }
+.ui-heading-2 { font-size: 1.4rem; }
+.ui-heading-3 { font-size: 1.15rem; }
+.ui-heading-4 { font-size: 1rem; }
+.ui-heading-5, .ui-heading-6 { font-size: 0.8rem; color: var(--ui-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.ui-link { color: var(--ui-accent); cursor: pointer; }
+.ui-link:hover { text-decoration: underline; }
+button.ui-link { background: none; border: none; padding: 0; font: inherit; }
+.ui-blockquote {
+  margin: 0.5rem 0; padding: 0.25rem 0 0.25rem 0.875rem;
+  border-left: 3px solid var(--ui-border-strong); color: var(--ui-muted);
+}
+.ui-list { margin: 0.5rem 0; padding-left: 1.5rem; display: flex; flex-direction: column; gap: 0.25rem; }
+.ui-code { margin: 0.5rem 0; }
+.ui-code pre {
+  margin: 0; background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); padding: 0.75rem 1rem; overflow-x: auto;
+}
+.ui-code code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.85rem; line-height: 1.6;
+}
+.ui-code-line { display: flex; gap: 1rem; }
+.ui-code-num { flex: none; width: 2.25rem; text-align: right; color: var(--ui-muted); user-select: none; }
+.ui-code-content { white-space: pre; }
+.ui-inline-code {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-size: 0.875em;
+  background: var(--ui-surface-2); border: 1px solid var(--ui-border);
+  border-radius: 0.25rem; padding: 0.05rem 0.35rem;
+}
+.tok-keyword { color: var(--ui-accent); }
+.tok-string { color: var(--ui-success); }
+.tok-number { color: var(--ui-info); }
+.tok-comment { color: var(--ui-muted); }
+.tok-regexp { color: var(--ui-warning); }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

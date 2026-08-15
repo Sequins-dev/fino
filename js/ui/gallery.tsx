@@ -27,19 +27,27 @@ import type { Props, VNode } from 'fino:ui';
 import {
   Accordion,
   Badge,
+  Blockquote,
+  Bold,
   Box,
   Breadcrumbs,
   Button,
   Checkbox,
   Clickable,
+  Code,
   ContextMenu,
   Details,
   Expander,
   FileTree,
   HStack,
+  Heading,
   ICONS,
   Icon,
+  InlineCode,
+  Italic,
   KeyHint,
+  Link,
+  List,
   ListSelection,
   MenuList,
   Modal,
@@ -588,6 +596,123 @@ function dataGroup(): StoryGroup {
   };
 }
 
+function typographyGroup(): StoryGroup {
+  const activated = createSignal(0);
+  const sampleCode = [
+    'function greet(name: string): string {',
+    '  // say hello',
+    "  return `Hello, ${name}!`;",
+    '}',
+  ].join('\n');
+  return {
+    title: 'Typography',
+    stories: [
+      {
+        key: 'heading',
+        name: 'Heading',
+        controls: {
+          level: { type: 'number', default: 1, min: 1, max: 6, step: 1 },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            <Heading level={Math.min(6, Math.max(1, Number(args.level))) as 1 | 2 | 3 | 4 | 5 | 6}>
+              Release notes
+            </Heading>
+            <Text style={[styles.muted]}>Body copy beneath the heading.</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'emphasis',
+        name: 'Bold & Italic',
+        view: () => (
+          <VStack gap={1}>
+            <Text>
+              Plain, <Bold>bold</Bold>, and <Italic>italic</Italic> text mixed inline.
+            </Text>
+            <HStack gap={1}>
+              <Bold>Warning:</Bold>
+              <Italic>this action cannot be undone.</Italic>
+            </HStack>
+          </VStack>
+        ),
+      },
+      {
+        key: 'link',
+        name: 'Link',
+        controls: {
+          mode: { type: 'select', options: ['href', 'handler'], default: 'href' },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            {args.mode === 'handler' ? (
+              <Link id="story-link" onActivate={() => activated.set(activated.get() + 1)}>
+                Run the build
+              </Link>
+            ) : (
+              <Link href="https://fino.dev/docs">Read the docs</Link>
+            )}
+            <Text style={[styles.muted]}>
+              {args.mode === 'handler'
+                ? `activated ${activated.get()} times`
+                : 'href renders a real <a> on the web'}
+            </Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'blockquote',
+        name: 'Blockquote',
+        view: () => (
+          <Blockquote>
+            <Text>Measure twice, cut once.</Text>
+            <Text style={[styles.dim]}>— attributed to every carpenter, ever</Text>
+          </Blockquote>
+        ),
+      },
+      {
+        key: 'list',
+        name: 'List',
+        controls: {
+          ordered: { type: 'boolean', default: false },
+        },
+        view: (args) => (
+          <List
+            ordered={args.ordered === true}
+            items={[
+              'Clone the repo',
+              'Install dependencies',
+              <Text>
+                Run <InlineCode>cargo build</InlineCode>
+              </Text>,
+            ]}
+          />
+        ),
+      },
+      {
+        key: 'code',
+        name: 'Code',
+        controls: {
+          language: { type: 'select', options: ['ts', 'js', 'plain'], default: 'ts' },
+          showLineNumbers: { type: 'boolean', default: true },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            <Code
+              code={sampleCode}
+              language={args.language === 'plain' ? undefined : String(args.language)}
+              showLineNumbers={args.showLineNumbers === true}
+            />
+            <Text>
+              Inline: <InlineCode>npm install fino</InlineCode>
+            </Text>
+          </VStack>
+        ),
+      },
+    ],
+  };
+}
+
 function layoutGroup(): StoryGroup {
   return {
     title: 'Layout',
@@ -873,6 +998,7 @@ function overlayGroup(): StoryGroup {
  */
 export function catalogStories(): StoryGroup[] {
   return [
+    typographyGroup(),
     layoutGroup(),
     formsGroup(),
     indicatorsGroup(),

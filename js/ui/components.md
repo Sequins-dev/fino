@@ -36,8 +36,9 @@ The catalog covers forms (`Button`, `Checkbox`, `Radio`, `RadioGroup`,
 `MenuSeparator`), overlays (`Modal`, `ContextMenu`, `Popover`, `Tooltip`,
 `Toast`, `ToastStack`), status (`Badge`, `Tag`, `TagGroup`, `Spinner`,
 `ProgressBar`, `KeyHint`, `Timeline`), navigation (`Breadcrumbs`,
-`Pagination`, `Steps`), and data (`Panel`, `Table`, `FileTree`, `Icon`,
-`VirtualList`).
+`Pagination`, `Steps`), typography (`Heading`, `Bold`, `Italic`, `Link`,
+`Blockquote`, `List`, `Code`, `InlineCode`), and data (`Panel`, `Table`,
+`FileTree`, `Icon`, `VirtualList`).
 
 ## The tree is purely semantic
 
@@ -152,6 +153,55 @@ registry, and unknown names fall back to the `file` icon. `FileTree` builds on
 the same registry: `fileIcon` resolves each node's icon name — an explicit
 `icon` wins, directories get the folder icons (which double as the expander),
 and file extensions map through `FILE_ICONS`.
+
+## Typography
+
+`Heading`, `Bold`, `Italic`, `Link`, `Blockquote`, `List`, `Code`, and
+`InlineCode` round out the catalog for prose content. They follow the same
+rule as everything else — the tree carries data, not glyphs:
+
+```ts no_run
+import { Heading, List, Code } from 'fino:ui/components';
+
+Heading({ level: 1, children: 'Release notes' });
+List({ items: ['Clone the repo', 'Install dependencies'] });
+Code({ code: 'const x = 1;', language: 'ts', showLineNumbers: true });
+```
+
+`List` takes its rows as `items: Child[]` rather than a `ListItem` child
+component — an entry can be a plain string or a nested tree (`Text` runs,
+`InlineCode`, anything), and both render targets lower the array directly:
+`•`/`1.` markers with a hanging indent in the terminal, a real `<ul>`/`<ol>`
+of `<li>`s on the web.
+
+`Code` reuses `fino:format/typescript`'s OXC-backed tokenizer
+(`highlightLines`) instead of shipping a highlighter of its own. The terminal
+paints tokens through the same `styles` tone tokens as the rest of the
+catalog (`accent` for keywords, `success` for strings, `info` for numbers,
+`muted` for comments, `warning` for regexes), and the web emits matching
+`tok-*` classes. Languages outside the JS/TS/JSX family — or an omitted
+`language` — render as plain monospace text; there's no attempt to guess a
+highlighter for a language the parser can't lex.
+
+`Link` is the one catalog component allowed to navigate. Its behavior
+switches on which prop is set: `href` alone renders a real `<a href>` on the
+web, and `onActivate` alone renders an in-app activator on both targets — a
+link-styled button wired through the HTML action collector, a focusable
+`Clickable` in the terminal. Passing both keeps `href` as the anchor's target,
+but the handler intercepts the click and submits the action form instead of
+navigating.
+
+Terminal hyperlinks (OSC 8: `` \x1b]8;;URL\x1b\text\x1b]8;;\x1b\ ``) were the
+original design for the `href`-only case, but they can't survive today's
+frame pipeline: any escape byte in `Text` content routes through
+`fino:tty/frame`'s `parseAnsi`, which intentionally discards non-SGR
+sequences — OSC included — to keep `Segment` text free of embedded control
+codes (see `frame.ts`'s module docs). Threading OSC 8 through cleanly would
+mean teaching `Segment`/`Row` about a new kind of non-printable payload,
+which is a frame-model change out of scope for a component lowering. An
+`href`-only `Link` therefore renders as styled, underlined, non-interactive
+text in the terminal rather than a real clickable hyperlink — reach for
+`onActivate` when the terminal needs to *do* something on activation.
 
 ## Seeing both targets
 

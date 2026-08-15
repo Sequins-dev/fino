@@ -910,6 +910,15 @@ function timeline(props: Props): VNode {
             </Text>,
           );
         }
+        // A connector row between segments, so entries breathe instead of
+        // stacking flush against each other.
+        if (!last) {
+          rows.push(
+            <Text key={`${entry.key}:gap`} style={[styles.dim]}>
+              {'│'}
+            </Text>,
+          );
+        }
         return rows;
       })}
     </Box>
