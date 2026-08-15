@@ -124,12 +124,20 @@ export interface SpacerProps extends FlexChildProps, Props {
   height?: number;
 }
 
+/** Character range of an active text selection; `start < end` after clamping. */
+export interface TextSelection {
+  start: number;
+  end: number;
+}
+
 /** Props accepted by `Input`. */
 export interface InputProps extends StyleProps, FlexChildProps, Props {
   value?: string;
   placeholder?: string;
   focused?: boolean;
   caret?: number;
+  /** Highlighted range, painted inverse by the terminal target. */
+  selection?: TextSelection | null;
 }
 
 /** Props accepted by `Layer`. */
@@ -343,13 +351,182 @@ export interface TextInputProps extends StyleProps, FlexChildProps, Props {
   value: string;
   placeholder?: string;
   caret?: number;
+  /** Active selection; the caret is the moving head. */
+  selection?: TextSelection | null;
   focused?: boolean;
+  /**
+   * Value change from editing. The render target maintains the edit — typed
+   * characters, backspace/delete, caret and selection movement — and reports
+   * the new state here; pair with `createTextField().set`.
+   */
+  onChange?: (value: string, caret?: number, selection?: TextSelection | null) => void;
+  /** Enter (terminal) or form submission (web) with the current value. */
+  onSubmit?: (value: string) => void;
+  /** Raw key hook, consulted before the edit reducer. */
   onKey?: (event: UiKeyEvent) => boolean | void;
   id?: string;
 }
-/** Single-line text field wired for focus and key routing. */
+/** Single-line editable text field. */
 export function TextInput(props: TextInputProps): VNode {
   return h('ui:text-input', props);
+}
+
+/** Value + caret + selection snapshot consumed by `applyTextEdit`. */
+export interface TextEditState {
+  value: string;
+  caret: number;
+  /** Active selection; the caret is the moving head, the other edge the anchor. */
+  selection?: TextSelection | null;
+}
+
+function isWordChar(ch: string): boolean {
+  return (
+    (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch === '_'
+  );
+}
+function wordLeft(value: string, from: number): number {
+  let i = from;
+  while (i > 0 && !isWordChar(value[i - 1]!)) i--;
+  while (i > 0 && isWordChar(value[i - 1]!)) i--;
+  return i;
+}
+function wordRight(value: string, from: number): number {
+  let i = from;
+  while (i < value.length && !isWordChar(value[i]!)) i++;
+  while (i < value.length && isWordChar(value[i]!)) i++;
+  return i;
+}
+
+/**
+ * Pure single-line edit reducer: printable characters insert at the caret
+ * (replacing any selection), backspace/delete remove the selection or around
+ * the caret, left/right/home/end move it, alt jumps and deletes by word
+ * (alt+b/alt+f included), and shift extends the selection from its anchor.
+ * Returns the next state, or `null` when the event is not an edit key.
+ */
+export function applyTextEdit(state: TextEditState, event: UiKeyEvent): TextEditState | null {
+  if (event.ctrl) return null;
+  const value = state.value;
+  const caret = Math.max(0, Math.min(value.length, state.caret));
+  const raw = state.selection ?? null;
+  const selection =
+    raw !== null && raw.start !== raw.end
+      ? {
+          start: Math.max(0, Math.min(value.length, Math.min(raw.start, raw.end))),
+          end: Math.max(0, Math.min(value.length, Math.max(raw.start, raw.end))),
+        }
+      : null;
+  const anchor =
+    selection === null ? caret : caret === selection.start ? selection.end : selection.start;
+  const alt = event.alt === true;
+  const shift = event.shift === true;
+  const key = alt && event.key === 'b' ? 'left' : alt && event.key === 'f' ? 'right' : event.key;
+
+  const moved = (target: number): TextEditState =>
+    shift
+      ? {
+          value,
+          caret: target,
+          selection:
+            target === anchor
+              ? null
+              : { start: Math.min(anchor, target), end: Math.max(anchor, target) },
+        }
+      : { value, caret: target, selection: null };
+  const removed = (start: number, end: number): TextEditState =>
+    end > start
+      ? { value: value.slice(0, start) + value.slice(end), caret: start, selection: null }
+      : { value, caret, selection: null };
+
+  switch (key) {
+    case 'left':
+      if (!shift && !alt && selection !== null) {
+        return { value, caret: selection.start, selection: null };
+      }
+      return moved(alt ? wordLeft(value, caret) : Math.max(0, caret - 1));
+    case 'right':
+      if (!shift && !alt && selection !== null) {
+        return { value, caret: selection.end, selection: null };
+      }
+      return moved(alt ? wordRight(value, caret) : Math.min(value.length, caret + 1));
+    case 'home':
+      return moved(0);
+    case 'end':
+      return moved(value.length);
+    case 'backspace':
+      if (selection !== null) return removed(selection.start, selection.end);
+      return removed(alt ? wordLeft(value, caret) : Math.max(0, caret - 1), caret);
+    case 'delete':
+      if (selection !== null) return removed(selection.start, selection.end);
+      return removed(caret, alt ? wordRight(value, caret) : Math.min(value.length, caret + 1));
+    default:
+      if (!alt && event.text !== undefined && event.text.length > 0 && key !== 'enter') {
+        const start = selection?.start ?? caret;
+        const end = selection?.end ?? caret;
+        return {
+          value: value.slice(0, start) + event.text + value.slice(end),
+          caret: start + event.text.length,
+          selection: null,
+        };
+      }
+      return null;
+  }
+}
+
+/** Text field state helper for `TextInput`: value, caret, and selection that survive re-renders. */
+export interface TextFieldState {
+  readonly value: Signal<string>;
+  readonly caret: Signal<number>;
+  readonly selection: Signal<TextSelection | null>;
+  /** Set the value, placing the caret at `caret` (default: the end) and clearing the selection. */
+  set(value: string, caret?: number, selection?: TextSelection | null): void;
+  /** Route a key event through the edit reducer; true when consumed. */
+  apply(event: UiKeyEvent): boolean;
+}
+/** Create text field state; wire `value`/`caret`/`selection` props and `onChange={field.set}`. */
+export function createTextField(initial = ''): TextFieldState {
+  const value = createSignal(initial);
+  const caret = createSignal(initial.length);
+  const selection = createSignal<TextSelection | null>(null);
+  return {
+    value,
+    caret,
+    selection,
+    set(next: string, at?: number, range?: TextSelection | null): void {
+      value.set(next);
+      caret.set(Math.max(0, Math.min(next.length, at ?? next.length)));
+      selection.set(range ?? null);
+    },
+    apply(event: UiKeyEvent): boolean {
+      const next = applyTextEdit(
+        { value: value.get(), caret: caret.get(), selection: selection.get() },
+        event,
+      );
+      if (next === null) return false;
+      value.set(next.value);
+      caret.set(next.caret);
+      selection.set(next.selection ?? null);
+      return true;
+    },
+  };
+}
+
+/** Where a disclosure component places its `Expander`. */
+export type ExpanderPosition = 'start' | 'end' | 'none';
+
+/** Props accepted by `Expander`. */
+export interface ExpanderProps extends StyleProps, FlexChildProps, Props {
+  open: boolean;
+  onToggle?: (open: boolean) => void;
+  disabled?: boolean;
+  id?: string;
+}
+/**
+ * Standalone disclosure affordance: the rotating open/closed marker,
+ * placeable anywhere in a composition. Clickable when `onToggle` is given.
+ */
+export function Expander(props: ExpanderProps): VNode {
+  return h('ui:expander', props);
 }
 
 /** Props accepted by `Details`. */
@@ -357,6 +534,8 @@ export interface DetailsProps extends StyleProps, FlexChildProps, Props {
   title: string;
   open: boolean;
   onToggle?: (open: boolean) => void;
+  /** Expander placement in the summary row; default `'start'`. */
+  expander?: ExpanderPosition;
   focused?: boolean;
   id?: string;
   children?: Child;
@@ -766,6 +945,8 @@ export interface AccordionProps extends FlexChildProps, Props {
   sections: AccordionSection[];
   openKeys: string[];
   onToggle?: (key: string) => void;
+  /** Expander placement forwarded to every section's `Details`. */
+  expander?: ExpanderPosition;
   id?: string;
 }
 /**
@@ -773,7 +954,7 @@ export interface AccordionProps extends FlexChildProps, Props {
  * `createAccordion(true)` when only one section may stay open.
  */
 export function Accordion(props: AccordionProps): VNode {
-  const { sections, openKeys, onToggle, id, ...rest } = props;
+  const { sections, openKeys, onToggle, expander, id, ...rest } = props;
   return (
     <Box direction="column" id={id} {...rest}>
       {sections.map((section) => (
@@ -782,6 +963,7 @@ export function Accordion(props: AccordionProps): VNode {
           id={id !== undefined ? `${id}:${section.key}` : undefined}
           title={section.title}
           open={openKeys.includes(section.key)}
+          expander={expander}
           onToggle={onToggle ? () => onToggle(section.key) : undefined}
         >
           {section.content}
@@ -877,10 +1059,68 @@ export function Table(props: TableProps): VNode {
   return h('ui:table', props);
 }
 
+/** Per-target representations of one registry icon. */
+export interface IconForms {
+  /** Terminal form: a character or short glyph run. */
+  tui: string;
+  /** Web form: emoji or markup a render target may inline. */
+  html: string;
+}
+
+/**
+ * Built-in icon registry: semantic names to per-target forms. The registry is
+ * data — each render target picks its own column via `iconForm`.
+ */
+// The terminal column stays monochrome width-1 glyphs — colored emoji read
+// wrong in a TUI. Folder open/closed double as the file tree's expander.
+export const ICONS: Record<string, IconForms> = {
+  folder: { tui: '▸', html: '📁' },
+  'folder-open': { tui: '▾', html: '📂' },
+  file: { tui: '·', html: '📄' },
+  code: { tui: '◆', html: '📜' },
+  doc: { tui: '¶', html: '📝' },
+  config: { tui: '⚙', html: '🔧' },
+  image: { tui: '▣', html: '🎨' },
+  lock: { tui: '∗', html: '🔒' },
+  shell: { tui: '$', html: '🐚' },
+  'chevron-right': { tui: '▸', html: '▸' },
+  'chevron-down': { tui: '▾', html: '▾' },
+};
+
+/**
+ * Resolve an icon name to its form for a target, consulting `overrides`
+ * before the built-in registry. Unknown names fall back to the `file` icon.
+ */
+export function iconForm(
+  name: string,
+  target: keyof IconForms,
+  overrides?: Record<string, IconForms>,
+): string {
+  const entry = overrides?.[name] ?? ICONS[name] ?? ICONS.file!;
+  return entry[target];
+}
+
+/** Props accepted by `Icon`. */
+export interface IconProps extends StyleProps, FlexChildProps, Props {
+  /** Registry icon name. */
+  name: string;
+  /** Accessible label; icons are decorative without one. */
+  label?: string;
+  /** Per-name registry overrides. */
+  icons?: Record<string, IconForms>;
+  id?: string;
+}
+/** Registry-backed icon; each render target draws its own form. */
+export function Icon(props: IconProps): VNode {
+  return h('ui:icon', props);
+}
+
 /** One node of a `FileTree`; `children` left undefined marks a leaf. */
 export interface FileTreeNode {
   key: string;
   label: string;
+  /** Explicit registry icon name; wins over every extension table. */
+  icon?: string;
   children?: FileTreeNode[];
 }
 /** Props accepted by `FileTree`. */
@@ -888,9 +1128,59 @@ export interface FileTreeProps extends FlexChildProps, Props {
   nodes: FileTreeNode[];
   expanded: string[];
   selectedKey?: string | null;
+  /** Extension → registry icon name (no dot, lowercased), layered over `FILE_ICONS`. */
+  icons?: Record<string, string>;
+  /** Directory icon names; the icon doubles as the expander. */
+  folderIcons?: { open: string; closed: string };
   onToggle?: (key: string) => void;
   onSelect?: (key: string) => void;
   id?: string;
+}
+
+/** Built-in extension → icon-name table consulted by `fileIcon` after the user table. */
+export const FILE_ICONS: Record<string, string> = {
+  ts: 'code',
+  tsx: 'code',
+  js: 'code',
+  jsx: 'code',
+  mjs: 'code',
+  cjs: 'code',
+  md: 'doc',
+  json: 'config',
+  yaml: 'config',
+  yml: 'config',
+  toml: 'config',
+  png: 'image',
+  jpg: 'image',
+  jpeg: 'image',
+  gif: 'image',
+  svg: 'image',
+  webp: 'image',
+  lock: 'lock',
+  sh: 'shell',
+  bash: 'shell',
+  zsh: 'shell',
+};
+
+/**
+ * Resolve a tree node's icon name: an explicit `icon` wins, directories get
+ * the folder icons (open variant when `open`), then the file extension maps
+ * through the user table and `FILE_ICONS`; anything else is `file`. The
+ * result is a registry name — pass it through `iconForm` for a target form.
+ */
+export function fileIcon(
+  node: { label: string; icon?: string; children?: unknown },
+  icons?: Record<string, string>,
+  open = false,
+  folderIcons?: { open: string; closed: string },
+): string {
+  if (node.icon !== undefined) return node.icon;
+  if (node.children !== undefined) {
+    return open ? (folderIcons?.open ?? 'folder-open') : (folderIcons?.closed ?? 'folder');
+  }
+  const dot = node.label.lastIndexOf('.');
+  const ext = dot > 0 ? node.label.slice(dot + 1).toLowerCase() : '';
+  return icons?.[ext] ?? FILE_ICONS[ext] ?? 'file';
 }
 /**
  * Tree of expandable directories and selectable rows. Expanding never also

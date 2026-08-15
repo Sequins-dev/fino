@@ -340,8 +340,8 @@ async function readSse(response) {
   }
 }
 
-function submitAction(form) {
-  const fields = new FormData(form);
+function submitAction(form, submitter) {
+  const fields = new FormData(form, submitter && form.contains(submitter) ? submitter : undefined);
   const action = form.__finoAction || {
     url: form.action,
     view: fields.get('_view'),
@@ -389,6 +389,17 @@ document.addEventListener('submit', (event) => {
   if (form.dataset.fiBusy !== undefined) return;
   const confirmation = (form.__finoAction || {}).confirm;
   if (confirmation && !globalThis.confirm(confirmation)) return;
+  void submitAction(form, event.submitter);
+});
+
+// Forms marked data-fi-change submit when any of their controls change, so
+// checkboxes, selects, and text inputs act without a dedicated submit button.
+document.addEventListener('change', (event) => {
+  const control = event.target;
+  const form = control && control.form;
+  if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
+  if (form.dataset.fiChange === undefined) return;
+  if (form.dataset.fiBusy !== undefined) return;
   void submitAction(form);
 });
 

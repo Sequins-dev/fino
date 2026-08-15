@@ -968,12 +968,26 @@ function paintNode(
       const shown = value.length > 0 ? value : placeholder;
       const prefix = focused ? '> ' : '  ';
       const textStyle = value.length > 0 ? own : mergeStyle(own, { dim: true });
+      const selection = props.selection as { start: number; end: number } | null | undefined;
+      const clampIndex = (index: number): number => Math.max(0, Math.min(value.length, index));
+      const spanStart =
+        value.length > 0 && selection ? clampIndex(Math.min(selection.start, selection.end)) : 0;
+      const spanEnd =
+        value.length > 0 && selection ? clampIndex(Math.max(selection.start, selection.end)) : 0;
+      const runs =
+        spanEnd > spanStart
+          ? [
+              { text: shown.slice(0, spanStart), style: textStyle },
+              { text: shown.slice(spanStart, spanEnd), style: mergeStyle(textStyle, { inverse: true }) },
+              { text: shown.slice(spanEnd), style: textStyle },
+            ].filter((run) => run.text.length > 0)
+          : [{ text: shown, style: textStyle }];
       canvas.clipPush(rect);
       canvas.draw(rect.x, rect.y, [
         {
           segments: [
             { text: prefix, width: 2, style: own },
-            { text: shown, width: stringWidth(shown), style: textStyle },
+            ...runs.map((run) => ({ text: run.text, width: stringWidth(run.text), style: run.style })),
           ],
           width: 2 + stringWidth(shown),
         },

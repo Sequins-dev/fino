@@ -7,6 +7,7 @@ import {
   Checkbox,
   ContextMenu,
   Details,
+  Expander,
   HStack,
   ListSelection,
   MenuList,
@@ -19,10 +20,12 @@ import {
   Switch,
   Tabs,
   Text,
+  TextInput,
   VStack,
   createDisclosure,
+  createTextField,
 } from 'fino:ui/components';
-import { renderFrame } from 'fino:tty/tui';
+import { layoutFrame, renderFrame } from 'fino:tty/tui';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
 import { lowerTui } from 'internal:tty/lower';
@@ -136,6 +139,112 @@ describe('fino:ui/components layout and forms', () => {
     t.equal(checked.get(), false, 'click on the glyph toggles back off');
   });
 
+  it('reduces text edits through createTextField', (t) => {
+    const field = createTextField('abc');
+    t.equal(field.caret.get(), 3, 'caret starts at the end');
+    t.equal(field.apply({ type: 'key', key: 'home' }), true, 'home is consumed');
+    t.equal(field.caret.get(), 0, 'home moves the caret to the start');
+    field.apply({ type: 'key', key: 'x', text: 'x' });
+    t.equal(field.value.get(), 'xabc', 'printable characters insert at the caret');
+    t.equal(field.caret.get(), 1, 'caret follows the insertion');
+    field.apply({ type: 'key', key: 'delete' });
+    t.equal(field.value.get(), 'xbc', 'delete removes after the caret');
+    field.apply({ type: 'key', key: 'end' });
+    field.apply({ type: 'key', key: 'backspace' });
+    t.equal(field.value.get(), 'xb', 'backspace removes before the caret');
+    t.equal(field.apply({ type: 'key', key: 'up' }), false, 'non-edit keys are not consumed');
+    field.set('hi');
+    t.deepEqual([field.value.get(), field.caret.get()], ['hi', 2], 'set defaults caret to the end');
+  });
+
+  it('jumps and deletes by word with alt', (t) => {
+    const field = createTextField('foo bar_baz qux');
+    field.apply({ type: 'key', key: 'left', alt: true });
+    t.equal(field.caret.get(), 12, 'alt+left jumps to the start of the last word');
+    field.apply({ type: 'key', key: 'b', alt: true });
+    t.equal(field.caret.get(), 4, 'alt+b jumps over the underscore word');
+    field.apply({ type: 'key', key: 'f', alt: true });
+    t.equal(field.caret.get(), 11, 'alt+f jumps to the end of the word');
+    field.apply({ type: 'key', key: 'backspace', alt: true });
+    t.equal(field.value.get(), 'foo  qux', 'alt+backspace deletes the word before the caret');
+    t.equal(field.caret.get(), 4, 'caret lands at the deletion point');
+    field.apply({ type: 'key', key: 'delete', alt: true });
+    t.equal(field.value.get(), 'foo ', 'alt+delete removes separators and the next word');
+  });
+
+  it('extends, collapses, and edits selections', (t) => {
+    const field = createTextField('hello world');
+    field.apply({ type: 'key', key: 'home' });
+    field.apply({ type: 'key', key: 'right', shift: true });
+    field.apply({ type: 'key', key: 'right', shift: true });
+    t.deepEqual(field.selection.get(), { start: 0, end: 2 }, 'shift+right extends from the anchor');
+    t.equal(field.caret.get(), 2, 'caret is the moving head');
+    field.apply({ type: 'key', key: 'right', shift: true, alt: true });
+    t.deepEqual(field.selection.get(), { start: 0, end: 5 }, 'shift+alt+right extends by word');
+    field.apply({ type: 'key', key: 'left', shift: true, alt: true });
+    t.equal(field.selection.get(), null, 'shrinking back to the anchor collapses');
+    field.apply({ type: 'key', key: 'end', shift: true });
+    t.deepEqual(field.selection.get(), { start: 0, end: 11 }, 'shift+end selects to the end');
+    field.apply({ type: 'key', key: 'left' });
+    t.equal(field.caret.get(), 0, 'plain left collapses to the left edge');
+    t.equal(field.selection.get(), null, 'collapse clears the selection');
+    field.apply({ type: 'key', key: 'right', shift: true, alt: true });
+    field.apply({ type: 'key', key: 'x', text: 'x' });
+    t.equal(field.value.get(), 'x world', 'typing replaces the selection');
+    t.equal(field.caret.get(), 1, 'caret follows the replacement');
+    field.apply({ type: 'key', key: 'end', shift: true });
+    field.apply({ type: 'key', key: 'backspace' });
+    t.equal(field.value.get(), 'x', 'backspace deletes the selection');
+  });
+
+  it('paints the selected range inverse', (t) => {
+    const frame = layoutFrame(
+      <TextInput value="hello world" selection={{ start: 6, end: 11 }} />,
+      { width: 20, height: 1 },
+    );
+    const segments = frame.rows[0]!.segments;
+    const selected = segments.find((segment) => segment.text === 'world');
+    t.ok(selected !== undefined, 'selection splits into its own segment');
+    t.equal(
+      (selected!.style as { inverse?: boolean }).inverse,
+      true,
+      'selected range renders inverse',
+    );
+    const plain = segments.find((segment) => segment.text.includes('hello'));
+    t.ok(
+      plain !== undefined && (plain.style as { inverse?: boolean }).inverse !== true,
+      'unselected text stays plain',
+    );
+  });
+
+  it('edits a text input through the semantic value contract', (t) => {
+    const app = live();
+    const field = createTextField('hi');
+    const submitted: string[] = [];
+    const view = (): VNode => (
+      <TextInput
+        value={field.value.get()}
+        caret={field.caret.get()}
+        focused
+        onChange={field.set}
+        onSubmit={(value) => submitted.push(value)}
+      />
+    );
+    app.render(view());
+    app.dispatcher.dispatch({ type: 'key', key: '!', text: '!' });
+    t.equal(field.value.get(), 'hi!', 'typed character lands through onChange');
+    app.render(view());
+    app.dispatcher.dispatch({ type: 'key', key: 'left' });
+    app.render(view());
+    t.equal(field.caret.get(), 2, 'arrow moves the caret through onChange');
+    app.dispatcher.dispatch({ type: 'key', key: 'backspace' });
+    app.render(view());
+    t.equal(field.value.get(), 'h!', 'backspace edits at the moved caret');
+    app.dispatcher.dispatch({ type: 'key', key: 'enter' });
+    t.deepEqual(submitted, ['h!'], 'enter fires onSubmit with the current value');
+    t.ok(app.text()[0]!.includes('h!'), 'frame shows the edited value');
+  });
+
   it('drives a radio group by click', (t) => {
     const app = live();
     const value = createSignal('a');
@@ -175,6 +284,38 @@ describe('fino:ui/components disclosure', () => {
     );
     t.equal(strip(open[0]!), '▾ Advanced', 'open summary');
     t.equal(strip(open[1]!), '  secret', 'content indented beneath');
+  });
+
+  it('places the details expander by position', (t) => {
+    const at = (expander: 'start' | 'end' | 'none'): string =>
+      strip(
+        lines(
+          <Details title="More" open={false} expander={expander}>
+            <Text>body</Text>
+          </Details>,
+          20,
+          2,
+        )[0]!,
+      );
+    t.equal(at('start'), '▸ More', 'start leads the title');
+    t.equal(at('end'), 'More ▸', 'end trails the title');
+    t.equal(at('none'), 'More', 'none renders no affordance');
+  });
+
+  it('toggles a standalone expander by click', (t) => {
+    const app = live();
+    const open = createSignal(false);
+    const view = (): VNode => (
+      <Expander open={open.get()} onToggle={(next) => open.set(next)} />
+    );
+    app.render(view());
+    t.equal(strip(app.text()[0]!), '▸', 'closed glyph');
+    click(app, 0, 0);
+    t.equal(open.get(), true, 'click toggles open');
+    app.render(view());
+    t.equal(strip(app.text()[0]!), '▾', 'open glyph');
+    click(app, 0, 0);
+    t.equal(open.get(), false, 'click toggles closed');
   });
 
   it('toggles details by clicking the summary bar', (t) => {

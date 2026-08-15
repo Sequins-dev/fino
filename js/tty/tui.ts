@@ -225,7 +225,21 @@ function decodeCsi(sequence: string): TuiEvent | null {
       shift,
     };
   }
-  const tilde = /^\x1b\[(\d+)~$/.exec(sequence);
+  const modified = /^\x1b\[1;(\d+)([A-DHF])$/.exec(sequence);
+  if (modified) {
+    const name = (
+      {
+        A: 'up',
+        B: 'down',
+        C: 'right',
+        D: 'left',
+        H: 'home',
+        F: 'end',
+      } as Record<string, string>
+    )[modified[2]!]!;
+    return keyEvent(name, modifierBits(Number(modified[1])));
+  }
+  const tilde = /^\x1b\[(\d+)(?:;(\d+))?~$/.exec(sequence);
   if (tilde) {
     const name = (
       {
@@ -236,9 +250,20 @@ function decodeCsi(sequence: string): TuiEvent | null {
         '6': 'pagedown',
       } as Record<string, string>
     )[tilde[1]!];
-    if (name) return keyEvent(name);
+    if (name) {
+      return keyEvent(name, tilde[2] !== undefined ? modifierBits(Number(tilde[2])) : {});
+    }
   }
   return null;
+}
+// xterm modifier parameter: value - 1 is a bitfield of 1=shift, 2=alt, 4=ctrl.
+function modifierBits(parameter: number): Partial<TuiKeyEvent> {
+  const bits = parameter - 1;
+  const extra: Partial<TuiKeyEvent> = {};
+  if (bits & 1) extra.shift = true;
+  if (bits & 2) extra.alt = true;
+  if (bits & 4) extra.ctrl = true;
+  return extra;
 }
 /**
  * Decode one terminal input byte chunk into TUI input events.
@@ -254,7 +279,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
-      const csi = sgr ?? /^\x1b\[(?:\d+~|[A-Za-z])/.exec(text.slice(i));
+      const csi = sgr ?? /^\x1b\[(?:\d+(?:;\d+)?~|(?:\d+;\d+)?[A-Za-z])/.exec(text.slice(i));
       if (csi) {
         const event = decodeCsi(csi[0]);
         if (event) events.push(event);
@@ -262,7 +287,13 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
         continue;
       }
       if (i + 1 < text.length) {
-        events.push(keyEvent(text[i + 1]!, { alt: true }));
+        const following = text.charCodeAt(i + 1);
+        // macOS Terminal sends ESC+DEL for option-delete.
+        if (following === 127 || following === 8) {
+          events.push(keyEvent('backspace', { alt: true }));
+        } else {
+          events.push(keyEvent(text[i + 1]!, { alt: true }));
+        }
         i += 2;
         continue;
       }

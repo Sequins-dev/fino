@@ -22,8 +22,8 @@
  * await runGalleryHtml({ port: 3080 }); // then open http://localhost:3080
  * ```
  */
-import { createSignal, h } from 'fino:ui';
-import type { VNode } from 'fino:ui';
+import { Signal, createSignal, h } from 'fino:ui';
+import type { Props, VNode } from 'fino:ui';
 import {
   Box,
   Button,
@@ -31,6 +31,7 @@ import {
   Clickable,
   ContextMenu,
   Details,
+  FileTree,
   HStack,
   ListSelection,
   MenuList,
@@ -41,20 +42,26 @@ import {
   Select,
   Spacer,
   Switch,
+  Table,
   Tabs,
   Text,
   TextInput,
   VStack,
   createDisclosure,
+  createTextField,
+  createTreeState,
   styles,
 } from 'fino:ui/components';
-import type { MenuItem } from 'fino:ui/components';
+import type { ExpanderPosition, FileTreeNode, MenuItem } from 'fino:ui/components';
 import { render, getTerminalSize } from 'fino:tty/tui';
 import { signal as processSignal } from 'fino:process';
-import { toHtml, htmlPage } from 'fino:ui/components/html';
-import { renderToHtml } from 'fino:ui/html';
-import { serveHttp } from 'fino:net/http/server';
+import { PAGE_CSS, toHtml, htmlPage } from 'fino:ui/components/html';
+import { rawHtml, renderToHtml } from 'fino:ui/html';
 import type { ServeServer } from 'fino:net/http/server';
+import { App, cookies, sessions } from 'fino:net/http/app';
+import { memoryCache } from 'fino:cache';
+import { ViewActionError, clientScriptPath, page, view, webUI } from 'fino:ui/web';
+import { InMemoryViewStore } from 'fino:ui/web/state';
 
 /** A value a story control can hold. */
 export type ControlValue = string | number | boolean;
@@ -126,7 +133,7 @@ function formsGroup(): StoryGroup {
   const checked = createSignal(true);
   const radio = createSignal('b');
   const power = createSignal(false);
-  const text = createSignal('hello');
+  const text = createTextField('hello');
   return {
     title: 'Forms',
     stories: [
@@ -191,9 +198,76 @@ function formsGroup(): StoryGroup {
         name: 'TextInput',
         view: () => (
           <VStack gap={1}>
-            <TextInput value={text.get()} focused caret={text.get().length} />
+            <TextInput
+              value={text.value.get()}
+              caret={text.caret.get()}
+              selection={text.selection.get()}
+              focused
+              onChange={text.set}
+            />
             <TextInput value="" placeholder="Type here…" />
           </VStack>
+        ),
+      },
+    ],
+  };
+}
+
+function dataGroup(): StoryGroup {
+  const tree = createTreeState(['src']);
+  const picked = createSignal<string | null>('a');
+  const row = createSignal(0);
+  const nodes: FileTreeNode[] = [
+    {
+      key: 'src',
+      label: 'src',
+      children: [
+        { key: 'a', label: 'main.ts' },
+        { key: 'theme', label: 'theme.json' },
+        { key: 'lib', label: 'lib', children: [{ key: 'b', label: 'util.js' }] },
+        { key: 'logo', label: 'logo.png' },
+        { key: 'data', label: 'data.bin' },
+      ],
+    },
+    { key: 'docs', label: 'docs', children: [{ key: 'guide', label: 'guide.md' }] },
+    { key: 'readme', label: 'README.md' },
+    { key: 'lock', label: 'deps.lock' },
+  ];
+  return {
+    title: 'Data views',
+    stories: [
+      {
+        key: 'file-tree',
+        name: 'FileTree',
+        view: () => (
+          <FileTree
+            id="gallery-tree"
+            nodes={nodes}
+            expanded={tree.expanded.get()}
+            selectedKey={picked.get()}
+            onToggle={tree.toggle}
+            onSelect={(key) => picked.set(key)}
+          />
+        ),
+      },
+      {
+        key: 'table',
+        name: 'Table',
+        view: () => (
+          <Table
+            id="gallery-table"
+            columns={[
+              { key: 'name', header: 'Name' },
+              { key: 'size', header: 'Size', align: 'end' },
+            ]}
+            rows={[
+              { name: 'a.ts', size: '120' },
+              { name: 'lib/b.ts', size: '48' },
+              { name: 'README.md', size: '1024' },
+            ]}
+            selectedIndex={row.get()}
+            onSelectRow={(index) => row.set(index)}
+          />
         ),
       },
     ],
@@ -267,10 +341,14 @@ function disclosureGroup(): StoryGroup {
       {
         key: 'details',
         name: 'Details',
-        view: () => (
+        controls: {
+          expander: { type: 'select', options: ['start', 'end', 'none'], default: 'start' },
+        },
+        view: (args) => (
           <Details
             title="Advanced options"
             open={details.open.get()}
+            expander={args.expander as ExpanderPosition}
             onToggle={(next) => details.set(next)}
           >
             <Text>Hidden until expanded.</Text>
@@ -395,7 +473,7 @@ function overlayGroup(): StoryGroup {
  * story state, so two galleries never share signals.
  */
 export function catalogStories(): StoryGroup[] {
-  return [layoutGroup(), formsGroup(), disclosureGroup(), overlayGroup()];
+  return [layoutGroup(), formsGroup(), disclosureGroup(), overlayGroup(), dataGroup()];
 }
 
 function storyItems(groups: StoryGroup[]): MenuItem[] {
@@ -605,9 +683,11 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
   await done;
 }
 
-function controlsForm(story: Story, args: StoryArgs): VNode {
-  // Controls re-render on change; the Apply button stays as the no-JS path.
-  const resubmit = 'this.form.submit()';
+function controlsForm(story: Story, args: StoryArgs, action?: unknown): VNode {
+  // With a fino:ui/web action descriptor the form posts as a JSON envelope
+  // and the page updates over SSE; the client's change listener handles
+  // auto-submit. Without one, plain GET forms with inline resubmission.
+  const change: Props = action === undefined ? { onchange: 'this.form.submit()' } : {};
   const rows = Object.entries(story.controls ?? {}).map(([name, control]) => {
     const label = control.label ?? name;
     const value = args[name] ?? control.default;
@@ -622,13 +702,13 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
           name,
           value: 'true',
           checked: value === true,
-          onchange: resubmit,
+          ...change,
         }),
       );
     } else if (control.type === 'select') {
       field = h(
         'select',
-        { name, onchange: resubmit },
+        { name, ...change },
         ...control.options.map((option) =>
           h('option', { value: option, selected: option === value }, option),
         ),
@@ -641,10 +721,10 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
         step: String(control.step ?? 1),
         ...(control.min !== undefined ? { min: String(control.min) } : {}),
         ...(control.max !== undefined ? { max: String(control.max) } : {}),
-        onchange: resubmit,
+        ...change,
       });
     } else {
-      field = h('input', { type: 'text', name, value: String(value), onchange: resubmit });
+      field = h('input', { type: 'text', name, value: String(value), ...change });
     }
     return h(
       'label',
@@ -653,14 +733,14 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
       field,
     );
   });
+  const formProps: Props =
+    action === undefined ? { method: 'get' } : { action, method: 'post', 'data-fi-change': '' };
+  formProps.style = { display: 'flex', flexDirection: 'column', gap: '0.25rem', marginTop: '1rem' };
   return h(
     'form',
-    {
-      method: 'get',
-      style: { display: 'flex', flexDirection: 'column', gap: '0.25lh', marginTop: '1lh' },
-    },
+    formProps,
     h('div', { style: { opacity: '0.55', fontWeight: 'bold' } }, 'controls'),
-    h('input', { type: 'hidden', name: 'story', value: story.key }),
+    action === undefined ? h('input', { type: 'hidden', name: 'story', value: story.key }) : null,
     ...rows,
     h(
       'button',
@@ -669,12 +749,32 @@ function controlsForm(story: Story, args: StoryArgs): VNode {
         style: {
           alignSelf: 'flex-start',
           border: '1px solid var(--tui-border)',
-          padding: '0 1ch',
+          padding: '0 0.5rem',
           cursor: 'pointer',
         },
       },
       'Apply',
     ),
+  );
+}
+
+function sidebarNav(groups: StoryGroup[], activeKey: string | undefined): VNode {
+  return h(
+    'nav',
+    { style: { minWidth: '12rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' } },
+    ...groups.flatMap((group) => [
+      h('div', { style: { opacity: '0.55', marginTop: '0.75rem' } }, group.title),
+      ...group.stories.map((entry) =>
+        h(
+          'a',
+          {
+            href: `?story=${entry.key}`,
+            style: entry.key === activeKey ? { fontWeight: 'bold' } : {},
+          },
+          entry.name,
+        ),
+      ),
+    ]),
   );
 }
 
@@ -693,23 +793,7 @@ export function galleryPage(
   actions?: Map<string, (value?: string) => void>,
 ): string {
   const story = findStory(groups, selectedKey) ?? groups[0]?.stories[0];
-  const sidebar = h(
-    'nav',
-    { style: { minWidth: '18ch', display: 'flex', flexDirection: 'column', gap: '0.25lh' } },
-    ...groups.flatMap((group) => [
-      h('div', { style: { opacity: '0.55', marginTop: '0.5lh' } }, group.title),
-      ...group.stories.map((entry) =>
-        h(
-          'a',
-          {
-            href: `?story=${entry.key}`,
-            style: entry.key === story?.key ? { fontWeight: 'bold' } : {},
-          },
-          entry.name,
-        ),
-      ),
-    ]),
-  );
+  const sidebar = sidebarNav(groups, story?.key);
   const args = story ? parseArgs(story, rawArgs) : {};
   const fields: Record<string, string> = story ? { story: story.key } : {};
   for (const [name, value] of Object.entries(args)) fields[name] = String(value);
@@ -727,52 +811,141 @@ export function galleryPage(
   return htmlPage(renderToHtml(page), { title: `fino ui — ${story?.name ?? 'gallery'}` });
 }
 
+let galleryAppCounter = 0;
+
 /**
- * Serve the gallery over HTTP. Every request re-renders the requested story,
- * so signal-driven stories show their current state — the server process is
- * what keeps story signals alive between requests.
- *
- * A request carrying `do=<action id>` is an interaction round trip: the story
- * is rendered once to rebuild the id → handler map, the named handler runs
- * (mutating story signals), and the response is a 303 back to the story page
- * so a refresh never re-fires the action.
+ * Build the gallery's HTTP application on `fino:ui/web`: the page loads once,
+ * interactions POST JSON action envelopes (no navigation), the server invokes
+ * the story handler against its signals, and the updated tree returns over
+ * SSE for in-place DOM patching. Only sidebar story links navigate. Without
+ * JavaScript, the same forms fall back to POST-redirect-GET.
+ */
+export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
+  const instance = galleryAppCounter++;
+  const secret = `fino-gallery-${instance}-${Math.random().toString(36).slice(2)}`;
+  const app = new App();
+  const routes = app
+    .value('cookies', cookies())
+    .value(
+      'session',
+      sessions({
+        store: memoryCache({ namespace: `gallery-sessions-${instance}` }),
+        keys: [{ id: 'gallery', secret: `${secret}-session` }],
+        // The gallery is a localhost dev tool served over plain http; a
+        // Secure cookie would be dropped by the browser, minting a fresh
+        // session per request and looping the live view's navigate fallback.
+        cookieOptions: { secure: false },
+        ttlMs: 24 * 36e5,
+      }),
+    )
+    .layer(webUI({ store: new InMemoryViewStore(), secret, sweepIntervalMs: false }));
+
+  const storyView = view({
+    id: `fino:gallery/story-${instance}`,
+    state: () => ({
+      story: new Signal(''),
+      args: new Signal<Record<string, string>>({}),
+    }),
+    actions: {
+      // One generic action per interaction: the story tree is re-lowered to
+      // rebuild the tree-order id map, then the submitted id's handler runs
+      // against the story's own signals.
+      invoke: {
+        handler({ state }, input) {
+          const story = findStory(groups, state.story.get() as string);
+          if (story === undefined) {
+            throw new ViewActionError('action_not_found', { status: 404, recoverable: false });
+          }
+          const args = parseArgs(story, state.args.get() as Record<string, string>);
+          const collector = new Map<string, (value?: string) => void>();
+          toHtml(story.view(args), { actions: collector });
+          const body = input as { do?: unknown; value?: unknown };
+          const invoke = typeof body.do === 'string' ? collector.get(body.do) : undefined;
+          if (invoke === undefined) {
+            throw new ViewActionError('action_not_found', { status: 404, recoverable: true });
+          }
+          invoke(typeof body.value === 'string' ? body.value : undefined);
+        },
+      },
+      configure: {
+        handler({ state }, input) {
+          const next: Record<string, string> = {};
+          for (const [name, value] of Object.entries(input as Record<string, unknown>)) {
+            if (typeof value === 'string') next[name] = value;
+          }
+          state.args.set(next);
+        },
+      },
+    },
+    render({ state, actions: refs }) {
+      const story = findStory(groups, state.story.get() as string) ?? groups[0]?.stories[0];
+      if (story === undefined) return h('p', null, 'No stories');
+      const args = parseArgs(story, state.args.get() as Record<string, string>);
+      const collector = new Map<string, (value?: string) => void>();
+      return h(
+        'main',
+        { style: { flex: '1 1 auto', position: 'relative' } },
+        h('h1', { style: { fontSize: '1rem', marginBottom: '1rem' } }, story.name),
+        toHtml(story.view(args), { actions: collector, action: refs.invoke }),
+        story.controls ? controlsForm(story, args, refs.configure) : null,
+      );
+    },
+  });
+
+  routes.get('/').handle(async (ctx) => {
+    const url = new URL(ctx.request.url);
+    const story = findStory(groups, url.searchParams.get('story')) ?? groups[0]?.stories[0];
+    const rawArgs: Record<string, string> = {};
+    for (const name of new Set(url.searchParams.keys())) {
+      if (name === 'story') continue;
+      // A hidden 'false' precedes each checkbox, so the last value wins.
+      const values = url.searchParams.getAll(name);
+      rawArgs[name] = values[values.length - 1]!;
+    }
+    return page((inner) =>
+      h(
+        'html',
+        null,
+        h(
+          'head',
+          null,
+          h('meta', { charset: 'utf-8' }),
+          h('title', null, `fino ui — ${story?.name ?? 'gallery'}`),
+          h('style', null, rawHtml(PAGE_CSS)),
+        ),
+        h(
+          'body',
+          null,
+          h(
+            'div',
+            { className: 'ui-root', style: { display: 'flex', gap: '3rem' } },
+            sidebarNav(groups, story?.key),
+            h(
+              'div',
+              { style: { flex: '1 1 auto' } },
+              story !== undefined
+                ? storyView.mount(inner, { story: story.key, args: rawArgs })
+                : h('p', null, 'No stories'),
+            ),
+          ),
+          h('script', { src: clientScriptPath(), defer: true }),
+        ),
+      ),
+    )(ctx);
+  });
+  return app;
+}
+
+/**
+ * Serve the gallery over HTTP. The story signals live in this process, so
+ * every interaction round trip renders their current state.
  */
 export function runGalleryHtml(
   options: { port?: number; hostname?: string; groups?: StoryGroup[] } = {},
 ): ServeServer {
-  const groups = options.groups ?? catalogStories();
-  return serveHttp(
-    { port: options.port ?? 3080, hostname: options.hostname ?? '127.0.0.1' },
-    (request) => {
-      const url = new URL(request.url);
-      const key = url.searchParams.get('story');
-      const rawArgs: Record<string, string> = {};
-      for (const name of new Set(url.searchParams.keys())) {
-        if (name === 'story' || name === 'do' || name === 'value') continue;
-        // A hidden 'false' precedes each checkbox, so the last value wins.
-        const values = url.searchParams.getAll(name);
-        rawArgs[name] = values[values.length - 1]!;
-      }
-      const actionId = url.searchParams.get('do');
-      if (actionId !== null) {
-        const actions = new Map<string, (value?: string) => void>();
-        galleryPage(groups, key, rawArgs, actions);
-        const values = url.searchParams.getAll('value');
-        actions.get(actionId)?.(values.length > 0 ? values[values.length - 1] : undefined);
-        const target = new URLSearchParams();
-        const storyKey = (findStory(groups, key) ?? groups[0]?.stories[0])?.key;
-        if (storyKey !== undefined) target.set('story', storyKey);
-        for (const [name, value] of Object.entries(rawArgs)) target.set(name, value);
-        // An explicit empty body forces content-length: 0 — a bodyless 303
-        // would leave keep-alive clients waiting for an unterminated body.
-        return new Response('', {
-          status: 303,
-          headers: { location: new URL(`/?${target.toString()}`, request.url).href },
-        });
-      }
-      return new Response(galleryPage(groups, key, rawArgs), {
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-      });
-    },
-  );
+  const app = createGalleryApp(options.groups ?? catalogStories());
+  return app.listen({
+    port: options.port ?? 3080,
+    hostname: options.hostname ?? '127.0.0.1',
+  }) as ServeServer;
 }

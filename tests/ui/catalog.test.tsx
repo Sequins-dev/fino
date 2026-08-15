@@ -27,6 +27,8 @@ import {
   VStack,
   createAccordion,
   createTreeState,
+  fileIcon,
+  iconForm,
 } from 'fino:ui/components';
 import type { FileTreeNode } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
@@ -371,7 +373,7 @@ describe('fino:ui/components catalog data views', () => {
     t.ok(app.text()[3]!.includes('b.ts'), 'selected row still renders its cells');
   });
 
-  it('renders an indented file tree', (t) => {
+  it('renders an indented file tree with registry icons', (t) => {
     const nodes: FileTreeNode[] = [
       {
         key: 'src',
@@ -383,14 +385,33 @@ describe('fino:ui/components catalog data views', () => {
       },
       { key: 'readme', label: 'README.md' },
     ];
-    const frame = lines(<FileTree nodes={nodes} expanded={['src']} selectedKey="a" />, 20, 4);
-    t.equal(strip(frame[0]!), '▾ src', 'expanded directory glyph');
-    t.equal(strip(frame[1]!), '    a.ts', 'leaf indented beneath its directory');
-    t.equal(strip(frame[2]!), '  ▸ lib', 'collapsed nested directory');
-    t.equal(strip(frame[3]!), '  README.md', 'top-level leaf gets two spaces');
+    const frame = lines(<FileTree nodes={nodes} expanded={['src']} selectedKey="a" />, 24, 4);
+    t.equal(strip(frame[0]!), '📂 src', 'expanded directory shows the open folder icon');
+    t.equal(strip(frame[1]!), '  📜 a.ts', 'leaf shows its extension icon, indented');
+    t.equal(strip(frame[2]!), '  📁 lib', 'collapsed nested directory shows the closed folder');
+    t.equal(strip(frame[3]!), '📝 README.md', 'top-level leaf aligns icon-then-name');
   });
 
-  it('toggles directories on the glyph and selects on the row', (t) => {
+  it('resolves icons by precedence: explicit, user table, built-in, default', (t) => {
+    t.equal(fileIcon({ label: 'x.ts' }), 'code', 'built-in extension table');
+    t.equal(fileIcon({ label: 'x.ts', icon: 'lock' }), 'lock', 'explicit node icon wins');
+    t.equal(fileIcon({ label: 'x.ts' }, { ts: 'image' }), 'image', 'user table beats built-in');
+    t.equal(fileIcon({ label: 'x.weird' }), 'file', 'unknown extension defaults');
+    t.equal(fileIcon({ label: 'Makefile' }), 'file', 'extensionless defaults');
+    t.equal(fileIcon({ label: 'dir', children: [] }), 'folder', 'closed directory');
+    t.equal(fileIcon({ label: 'dir', children: [] }, undefined, true), 'folder-open', 'open directory');
+    t.equal(
+      fileIcon({ label: 'dir', children: [] }, undefined, true, { open: 'code', closed: 'doc' }),
+      'code',
+      'folderIcons override the folder names',
+    );
+    t.equal(iconForm('code', 'tui'), '📜', 'registry resolves the terminal form');
+    t.equal(iconForm('code', 'html'), '📜', 'registry resolves the web form');
+    t.equal(iconForm('code', 'tui', { code: { tui: 'C', html: 'C' } }), 'C', 'overrides win');
+    t.equal(iconForm('no-such-icon', 'tui'), '📄', 'unknown names fall back to the file icon');
+  });
+
+  it('toggles directories on the icon and selects on the name', (t) => {
     const app = live();
     const tree = createTreeState();
     const picked: string[] = [];
@@ -408,17 +429,30 @@ describe('fino:ui/components catalog data views', () => {
       />
     );
     app.render(view());
-    t.equal(strip(app.text()[0]!), '▸ src', 'starts collapsed');
+    t.equal(strip(app.text()[0]!), '📁 src', 'starts collapsed with the closed folder icon');
     click(app, 0, 0);
-    t.equal(tree.isExpanded('src'), true, 'glyph click expands');
-    t.deepEqual(picked, [], 'glyph click does not select');
+    t.equal(tree.isExpanded('src'), true, 'icon click expands');
+    t.deepEqual(picked, [], 'icon click does not select');
     app.render(view());
-    t.equal(strip(app.text()[1]!), '    a.ts', 'child row appears');
-    click(app, 3, 0);
-    click(app, 5, 1);
-    t.deepEqual(picked, ['src', 'a'], 'row clicks select directory and leaf');
+    t.equal(strip(app.text()[0]!), '📂 src', 'open directory switches to the open folder icon');
+    t.equal(strip(app.text()[1]!), '  📜 a.ts', 'child row appears');
+    click(app, 4, 0);
+    click(app, 6, 1);
+    t.deepEqual(picked, ['src', 'a'], 'name clicks select directory and leaf');
     click(app, 0, 0);
-    t.equal(tree.isExpanded('src'), false, 'glyph click collapses again');
+    t.equal(tree.isExpanded('src'), false, 'icon click collapses again');
+  });
+
+  it('toggles the whole row when only onToggle exists', (t) => {
+    const app = live();
+    const tree = createTreeState();
+    const nodes: FileTreeNode[] = [{ key: 'src', label: 'src', children: [] }];
+    const view = (): VNode => (
+      <FileTree nodes={nodes} expanded={tree.expanded.get()} onToggle={tree.toggle} />
+    );
+    app.render(view());
+    click(app, 4, 0);
+    t.equal(tree.isExpanded('src'), true, 'name click toggles without a select handler');
   });
 
   it('renders accordion sections from open keys', (t) => {

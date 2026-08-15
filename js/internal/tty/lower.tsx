@@ -15,8 +15,12 @@ import { h } from 'fino:ui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import {
+  applyTextEdit,
   Box,
   Clickable,
+  Expander,
+  fileIcon,
+  iconForm,
   Input,
   Layer,
   MenuHeader,
@@ -39,8 +43,10 @@ import type {
   CheckboxProps,
   ContextMenuProps,
   DetailsProps,
+  ExpanderProps,
   FileTreeNode,
   FileTreeProps,
+  IconProps,
   KeyHintProps,
   MenuListProps,
   MenuRowProps,
@@ -173,16 +179,74 @@ function switchNode(props: Props): VNode {
 }
 
 function textInput(props: Props): VNode {
-  const { value, placeholder, caret, focused, onKey, id, ...rest } = props as TextInputProps;
+  const { value, placeholder, caret, selection, focused, onKey, onChange, onSubmit, id, ...rest } =
+    props as TextInputProps;
+  const editKey =
+    onChange !== undefined || onSubmit !== undefined
+      ? (event: Parameters<NonNullable<TextInputProps['onKey']>>[0]): boolean | void => {
+          if (onKey?.(event) === true) return true;
+          if (event.key === 'enter' && !event.ctrl && !event.alt) {
+            if (onSubmit === undefined) return false;
+            onSubmit(value);
+            return true;
+          }
+          if (onChange === undefined) return false;
+          const next = applyTextEdit({ value, caret: caret ?? value.length, selection }, event);
+          if (next === null) return false;
+          onChange(next.value, next.caret, next.selection);
+          return true;
+        }
+      : onKey;
   return (
-    <Clickable id={id} onKey={onKey} {...rest}>
-      <Input value={value} placeholder={placeholder} caret={caret} focused={focused} />
+    <Clickable id={id} onKey={editKey} {...rest}>
+      <Input
+        value={value}
+        placeholder={placeholder}
+        caret={caret}
+        selection={selection}
+        focused={focused}
+      />
+    </Clickable>
+  );
+}
+
+function iconNode(props: Props): VNode {
+  const { name, label: _label, icons, id, ...rest } = props as IconProps;
+  return (
+    <Text id={id} {...rest}>
+      {iconForm(name, 'tui', icons)}
+    </Text>
+  );
+}
+
+function expanderNode(props: Props): VNode {
+  const { open, onToggle, disabled, id, style, ...rest } = props as ExpanderProps;
+  const glyph = iconForm(open ? 'chevron-down' : 'chevron-right', 'tui');
+  if (onToggle === undefined) {
+    return (
+      <Text id={id} style={style} {...rest}>
+        {glyph}
+      </Text>
+    );
+  }
+  return (
+    <Clickable
+      id={id}
+      focusable={false}
+      disabled={disabled}
+      onClick={() => onToggle(!open)}
+      {...rest}
+    >
+      <Text style={style}>{glyph}</Text>
     </Clickable>
   );
 }
 
 function details(props: Props, children: NormalizedChild[]): VNode {
-  const { title, open, onToggle, focused, id, ...rest } = props as DetailsProps;
+  const { title, open, onToggle, expander, focused, id, ...rest } = props as DetailsProps;
+  const where = expander ?? 'start';
+  const summaryStyle = focused ? [styles.bold, styles.accent] : [styles.bold];
+  const marker = <Expander open={open} style={summaryStyle} />;
   return (
     <Box direction="column" {...rest}>
       <Clickable
@@ -191,10 +255,9 @@ function details(props: Props, children: NormalizedChild[]): VNode {
         gap={1}
         onClick={onToggle ? () => onToggle(!open) : undefined}
       >
-        <Text style={focused ? [styles.bold, styles.accent] : [styles.bold]}>
-          {open ? '▾' : '▸'}
-        </Text>
-        <Text style={focused ? [styles.bold, styles.accent] : [styles.bold]}>{title}</Text>
+        {where === 'start' ? marker : null}
+        <Text style={summaryStyle}>{title}</Text>
+        {where === 'end' ? marker : null}
       </Clickable>
       {open ? (
         <Box direction="column" paddingX={2}>
@@ -729,12 +792,22 @@ function table(props: Props): VNode {
 }
 
 function fileTree(props: Props): VNode {
-  const { nodes, expanded, selectedKey, onToggle, onSelect, id, ...rest } = props as FileTreeProps;
+  const { nodes, expanded, selectedKey, icons, folderIcons, onToggle, onSelect, id, ...rest } =
+    props as FileTreeProps;
   const rows: VNode[] = [];
   const visit = (node: FileTreeNode, depth: number): void => {
     const dir = node.children !== undefined;
     const open = dir && expanded.includes(node.key);
     const selected = node.key === selectedKey;
+    const glyph = iconForm(fileIcon(node, icons, open, folderIcons), 'tui');
+    // The icon IS the expander: a directory's icon toggles it, the rest of
+    // the row selects. With no select handler the whole row toggles.
+    const rowClick =
+      onSelect !== undefined
+        ? () => onSelect(node.key)
+        : dir && onToggle !== undefined
+          ? () => onToggle(node.key)
+          : undefined;
     rows.push(
       <Clickable
         key={node.key}
@@ -742,7 +815,7 @@ function fileTree(props: Props): VNode {
         direction="row"
         focusable={false}
         style={selected ? [styles.bold, styles.inverse] : []}
-        onClick={onSelect ? () => onSelect(node.key) : undefined}
+        onClick={rowClick}
       >
         {depth > 0 ? <Text>{' '.repeat(depth * 2)}</Text> : null}
         {dir ? (
@@ -751,12 +824,12 @@ function fileTree(props: Props): VNode {
             focusable={false}
             onClick={onToggle ? () => onToggle(node.key) : undefined}
           >
-            <Text>{open ? '▾ ' : '▸ '}</Text>
+            <Text>{glyph}</Text>
           </Clickable>
         ) : (
-          <Text>{'  '}</Text>
+          <Text>{glyph}</Text>
         )}
-        <Text>{node.label}</Text>
+        <Text>{` ${node.label}`}</Text>
       </Clickable>,
     );
     if (open) for (const child of node.children!) visit(child, depth + 1);
@@ -803,6 +876,8 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:switch': switchNode,
   'ui:text-input': textInput,
   'ui:details': details,
+  'ui:expander': expanderNode,
+  'ui:icon': iconNode,
   'ui:tab-list': tabList,
   'ui:tabs': tabs,
   'ui:menu-row': menuRow,

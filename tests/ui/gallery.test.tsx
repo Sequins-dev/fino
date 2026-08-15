@@ -7,16 +7,19 @@ import {
   Button,
   Checkbox,
   Details,
+  Expander,
   FileTree,
+  Icon,
   Modal,
   Panel,
   Select,
   Switch,
   Table,
   Text,
+  TextInput,
   VStack,
 } from 'fino:ui/components';
-import { catalogStories, defaultArgs, galleryPage, runGalleryHtml } from 'fino:ui/gallery';
+import { catalogStories, createGalleryApp, defaultArgs, galleryPage } from 'fino:ui/gallery';
 import { renderFrame } from 'fino:tty/tui';
 import { openPty } from 'fino:test/pty';
 import { execPath } from 'fino:process';
@@ -157,11 +160,69 @@ describe('fino:ui/components/html native lowering', () => {
     );
     t.ok(open.startsWith('<details'), 'native details element');
     t.ok(open.includes(' open'), 'open state carries');
-    t.ok(open.includes('<summary>Advanced</summary>'), 'title becomes the summary');
+    t.ok(
+      open.includes('<span class="ui-details-title">Advanced</span></summary>'),
+      'title lands in the summary row',
+    );
     t.ok(open.includes('secret'), 'content renders in the body');
     const closed = renderToHtml(toHtml(<Details title="Advanced" open={false} />));
     t.ok(!closed.includes(' open'), 'closed details stays closed');
     t.ok(!closed.includes('▸'), 'no toggle glyph leaks');
+  });
+
+  it('honors expander positions in details markup', (t) => {
+    const start = renderToHtml(
+      toHtml(
+        <Details title="T" open={false}>
+          <Text>x</Text>
+        </Details>,
+      ),
+    );
+    t.ok(
+      /<span class="ui-expander"[^>]*><\/span><span class="ui-details-title">T</.test(start),
+      'start places the marker before the title',
+    );
+    const end = renderToHtml(
+      toHtml(
+        <Details title="T" open={false} expander="end">
+          <Text>x</Text>
+        </Details>,
+      ),
+    );
+    t.ok(
+      /<span class="ui-details-title">T<\/span><span class="ui-expander"/.test(end),
+      'end places the marker after the title',
+    );
+    const none = renderToHtml(
+      toHtml(
+        <Details title="T" open={false} expander="none">
+          <Text>x</Text>
+        </Details>,
+      ),
+    );
+    t.ok(!none.includes('ui-expander'), 'none renders no affordance');
+    const opened = renderToHtml(
+      toHtml(
+        <Details title="T" open>
+          <Text>x</Text>
+        </Details>,
+      ),
+    );
+    t.ok(opened.includes('ui-expander is-open'), 'open state marks the expander');
+  });
+
+  it('lowers icons through the registry', (t) => {
+    t.equal(
+      renderToHtml(toHtml(<Icon name="folder" />)),
+      '<span class="ui-icon" aria-hidden="true">📁</span>',
+      'plain icon span from the registry html column',
+    );
+    const labeled = renderToHtml(toHtml(<Icon name="code" label="Source" />));
+    t.ok(labeled.includes('title="Source"'), 'label becomes a title');
+    const overridden = renderToHtml(
+      toHtml(<Icon name="code" icons={{ code: { tui: 'C', html: 'C' } }} />),
+    );
+    t.ok(overridden.includes('>C</span>'), 'per-name overrides pick the html column');
   });
 
   it('lowers tables to real table markup', (t) => {
@@ -204,8 +265,22 @@ describe('fino:ui/components/html native lowering', () => {
       ),
     );
     t.ok(html.includes('<details class="ui-tree-dir" open>'), 'expanded directory is open');
-    t.ok(html.includes('<details class="ui-tree-dir"><summary>lib'), 'collapsed directory closed');
-    t.ok(html.includes('is-selected">a.ts'), 'selected leaf marked');
+    t.ok(
+      html.includes(
+        '<summary class="ui-tree-row"><span class="ui-tree-icon">📂</span><span class="ui-tree-name">src</span></summary>',
+      ),
+      'open directory row is icon then name, with the open folder icon',
+    );
+    t.ok(
+      html.includes('<span class="ui-tree-icon">📁</span><span class="ui-tree-name">lib</span>'),
+      'collapsed directory shows the closed folder icon',
+    );
+    t.ok(
+      html.includes(
+        'is-selected"><span class="ui-tree-icon">📜</span><span class="ui-tree-name">a.ts</span>',
+      ),
+      'selected leaf marked, icon before name',
+    );
     t.ok(html.includes('README.md'), 'top-level leaf renders');
     t.ok(!html.includes('▾') && !html.includes('▸'), 'no tree glyphs leak');
   });
@@ -273,6 +348,152 @@ describe('fino:ui/components/html actions', () => {
     t.equal(picked, 'fast', 'select submission passes the option key');
   });
 
+  it('round-trips text input edits through the value contract', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    const got: string[] = [];
+    const html = renderToHtml(
+      toHtml(<TextInput value="hi" onChange={(next) => got.push(next)} />, { actions }),
+    );
+    t.ok(html.includes('name="value"'), 'input submits under the value field');
+    t.ok(html.includes('onchange="this.form.submit()"'), 'input auto-submits on change');
+    t.ok(!html.includes(' disabled'), 'input with onChange is enabled');
+    actions.get('a0')!('hello');
+    t.deepEqual(got, ['hello'], 'submission delivers the new value to onChange');
+    const both = new Map<string, (value?: string) => void>();
+    const submits: string[] = [];
+    renderToHtml(
+      toHtml(<TextInput value="hi" onChange={() => {}} onSubmit={(next) => submits.push(next)} />, {
+        actions: both,
+      }),
+    );
+    both.get('a0')!('go');
+    t.deepEqual(submits, ['go'], 'onSubmit wins the round trip when both handlers exist');
+    const inert = renderToHtml(toHtml(<TextInput value="" placeholder="Type…" />));
+    t.ok(inert.includes(' disabled'), 'handler-less input stays non-interactive');
+  });
+
+  it('round-trips file tree toggles and selection', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    const toggled: string[] = [];
+    const chosen: string[] = [];
+    const html = renderToHtml(
+      toHtml(
+        <FileTree
+          nodes={[
+            { key: 'src', label: 'src', children: [{ key: 'a', label: 'a.ts' }] },
+            { key: 'readme', label: 'README.md' },
+          ]}
+          expanded={['src']}
+          selectedKey="a"
+          onToggle={(key) => toggled.push(key)}
+          onSelect={(key) => chosen.push(key)}
+        />,
+        { actions },
+      ),
+    );
+    t.ok(
+      html.includes('<button class="ui-tree-icon" name="do" value="a0" aria-label="Collapse">📂'),
+      'the directory icon is the toggle affordance',
+    );
+    t.ok(
+      html.includes('<button class="ui-tree-name" name="do" value="a1">src'),
+      'the directory name selects',
+    );
+    t.ok(
+      html.includes('class="ui-tree-leaf ui-tree-row is-selected" name="do" value="a2"'),
+      'leaf rows are select submit buttons',
+    );
+    actions.get('a0')!();
+    t.deepEqual(toggled, ['src'], 'icon action toggles the directory');
+    actions.get('a1')!();
+    actions.get('a2')!();
+    t.deepEqual(chosen, ['src', 'a'], 'name and leaf actions select their keys');
+    const static_ = renderToHtml(
+      toHtml(
+        <FileTree
+          nodes={[{ key: 'src', label: 'src', children: [] }]}
+          expanded={[]}
+          onToggle={() => {}}
+        />,
+      ),
+    );
+    t.ok(!static_.includes('<form'), 'without a collector the native details fallback stays');
+    const toggleOnly = new Map<string, (value?: string) => void>();
+    const onlyToggled: string[] = [];
+    const rowHtml = renderToHtml(
+      toHtml(
+        <FileTree
+          nodes={[{ key: 'src', label: 'src', children: [] }]}
+          expanded={[]}
+          onToggle={(key) => onlyToggled.push(key)}
+        />,
+        { actions: toggleOnly },
+      ),
+    );
+    t.ok(
+      rowHtml.includes('<button class="ui-tree-name" name="do" value="a0">src'),
+      'with only onToggle the name toggles too',
+    );
+    toggleOnly.get('a0')!();
+    t.deepEqual(onlyToggled, ['src'], 'whole-row toggle fires the toggle handler');
+  });
+
+  it('emits web action forms when a descriptor is supplied', (t) => {
+    const ref = { action: 'invoke', url: '/?_action=v.invoke', view: 'view_1', revision: 0, request: 'r' };
+    const tree = toHtml(<Checkbox checked={false} label="n" onChange={() => {}} />, {
+      actions: new Map<string, (value?: string) => void>(),
+      action: ref,
+    });
+    t.equal(tree.type, 'form', 'value control wrapped in a form');
+    t.equal(tree.props.action, ref, 'form carries the action descriptor');
+    t.equal(tree.props.method, 'post', 'descriptor forms POST');
+    t.ok('data-fi-change' in tree.props, 'value forms submit on change through the client');
+    t.ok(!JSON.stringify(tree).includes('this.form.submit()'), 'no inline resubmit in web mode');
+    const button = toHtml(<Button label="Go" onClick={() => {}} />, {
+      actions: new Map<string, (value?: string) => void>(),
+      action: ref,
+    });
+    t.equal(button.props.method, 'post', 'click forms POST the descriptor too');
+    t.ok(!('data-fi-change' in button.props), 'click forms submit only on click');
+  });
+
+  it('collects standalone expander toggles', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    let open = false;
+    const html = renderToHtml(
+      toHtml(<Expander open={false} onToggle={(next) => (open = next)} />, { actions }),
+    );
+    t.ok(
+      html.includes('<button class="ui-expander" name="do" value="a0"'),
+      'expander renders as a submit affordance',
+    );
+    actions.get('a0')!();
+    t.equal(open, true, 'invoking the action toggles');
+  });
+
+  it('round-trips table row selection', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    const picked: number[] = [];
+    const html = renderToHtml(
+      toHtml(
+        <Table
+          columns={[{ key: 'name', header: 'Name' }]}
+          rows={[{ name: 'a.ts' }, { name: 'b.ts' }]}
+          selectedIndex={0}
+          onSelectRow={(index) => picked.push(index)}
+        />,
+        { actions },
+      ),
+    );
+    t.ok(
+      html.includes('class="ui-row-select" name="do" value="a0">a.ts'),
+      'row cells are submit buttons sharing the row action',
+    );
+    t.ok(html.includes('value="a1">b.ts'), 'each row registers its own action');
+    actions.get('a1')!();
+    t.deepEqual(picked, [1], 'row action reports its index');
+  });
+
   it('lowers handler-less controls as non-interactive', (t) => {
     const locked = renderToHtml(toHtml(<Switch on label="Locked on" />));
     t.ok(locked.includes(' disabled'), 'switch without onChange comes out disabled');
@@ -291,33 +512,99 @@ describe('fino:ui/components/html actions', () => {
     t.ok(!dashed.includes('double var(--ui-border)'), 'border styles are distinct');
   });
 
-  it('round-trips actions over HTTP with 303 redirects', async (t) => {
-    const server = runGalleryHtml({ port: 0 });
-    await server.ready;
-    const base = `http://127.0.0.1:${server.port}`;
-    try {
-      const page = await (await fetch(`${base}/?story=checkbox`)).text();
-      t.ok(/class="ui-check"[^>]*checked/.test(page), 'checkbox starts checked');
-      const id = /name="do" value="(a\d+)"/.exec(page)![1]!;
-      const redirect = await fetch(`${base}/?story=checkbox&do=${id}&value=false`, {
-        redirect: 'manual',
-      });
-      t.equal(redirect.status, 0, 'action response is a redirect, not a page');
-      const followed = await fetch(`${base}/?story=checkbox&do=${id}&value=false`);
-      t.equal(followed.redirected, true, 'the 303 is followed back to the story');
-      t.equal(followed.status, 200, 'landing page renders');
-      const after = await followed.text();
-      t.ok(!/class="ui-check"[^>]*checked/.test(after), 'round trip unchecked the checkbox');
+  it('applies actions over SSE without navigation', async (t) => {
+    const app = createGalleryApp();
+    const jar = new Map<string, string>();
+    const absorb = (response: Response): void => {
+      const raw =
+        (response.headers as Headers & { getSetCookie?: () => string[] }).getSetCookie?.() ?? [];
+      for (const line of raw) {
+        const pair = line.split(';')[0]!;
+        const eq = pair.indexOf('=');
+        if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1));
+      }
+    };
+    const cookieHeader = (): string =>
+      [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+    const loadStory = async (key: string) => {
+      const response = (await app.handle(
+        new Request(`http://local/?story=${key}`, {
+          headers: jar.size > 0 ? { cookie: cookieHeader() } : {},
+        }),
+      )) as Response;
+      absorb(response);
+      const html = await response.text();
+      return {
+        html,
+        url: /<form action="([^"]*)"/.exec(html)![1]!.replace(/&amp;/g, '&'),
+        view: /name="_view" value="([^"]*)"/.exec(html)![1]!,
+        ver: /name="_ver" value="([^"]*)"/.exec(html)![1]!,
+        nonce: /name="_nonce" value="([^"]*)"/.exec(html)![1]!,
+      };
+    };
+    const post = (
+      fields: Awaited<ReturnType<typeof loadStory>>,
+      input: Record<string, string>,
+    ): Promise<Response> =>
+      app.handle(
+        new Request(`http://local${fields.url}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', cookie: cookieHeader() },
+          body: JSON.stringify({
+            version: 1,
+            view: fields.view,
+            revision: Number(fields.ver),
+            request: fields.nonce,
+            input,
+          }),
+        }),
+      ) as Promise<Response>;
 
-      const tabsPage = await (await fetch(`${base}/?story=tabs`)).text();
-      t.ok(tabsPage.includes('Active panel: one'), 'first tab active initially');
-      const tabId = /name="do" value="(a\d+)">Details</.exec(tabsPage)![1]!;
-      const switched = await (await fetch(`${base}/?story=tabs&do=${tabId}`)).text();
-      t.ok(switched.includes('Active panel: two'), 'tab switch round-trips through the server');
-      t.ok(switched.includes('class="ui-tab is-active">Details'), 'active tab moves');
-    } finally {
-      await server.close();
-    }
+    const checkbox = await loadStory('checkbox');
+    t.ok(checkbox.html.includes('data-fi-action'), 'forms are wired to the web action layer');
+    t.ok(checkbox.html.includes('/_fino/client.'), 'the page loads the SSE client');
+    t.ok(/class="ui-check"[^>]*checked/.test(checkbox.html), 'checkbox starts checked');
+    const doId = /name="do" value="(a\d+)"/.exec(checkbox.html)![1]!;
+    const acted = await post(checkbox, { do: doId, value: 'false' });
+    t.equal(acted.status, 200, 'action answers 200 — no redirect, no navigation');
+    t.ok(
+      (acted.headers.get('content-type') ?? '').includes('text/event-stream'),
+      'action response is an SSE stream',
+    );
+    const events = await acted.text();
+    t.ok(events.includes('"kind":"render"'), 'the stream pushes a render event');
+    t.ok(!events.includes('"checked":true'), 'the pushed tree shows the unchecked state');
+    const after = await loadStory('checkbox');
+    t.ok(
+      !/class="ui-check"[^>]*checked/.test(after.html),
+      'story signals persisted the toggle server-side',
+    );
+
+    const tabs = await loadStory('tabs');
+    t.ok(tabs.html.includes('Active panel: one'), 'first tab active initially');
+    const tabId = /name="do" value="(a\d+)">Details</.exec(tabs.html)![1]!;
+    const switched = await (await post(tabs, { do: tabId })).text();
+    t.ok(switched.includes('Active panel: two'), 'tab switch arrives in the SSE render');
+    t.ok(switched.includes('ui-tab is-active'), 'active tab styling updates in the pushed tree');
+
+    const text = await loadStory('text-input');
+    t.ok(text.html.includes('value="hello"'), 'text input starts with the story value');
+    const textDo = /name="do" value="(a\d+)"/.exec(text.html)![1]!;
+    const edited = await (await post(text, { do: textDo, value: 'world' })).text();
+    t.ok(edited.includes('world'), 'submitted text arrives in the pushed tree');
+
+    const tree = await loadStory('file-tree');
+    t.ok(tree.html.includes('class="ui-tree-dir" open'), 'src starts expanded');
+    const treeToggle = /<button class="ui-tree-icon" name="do" value="(a\d+)"/.exec(
+      tree.html,
+    )![1]!;
+    const collapsed = await (await post(tree, { do: treeToggle })).text();
+    t.ok(collapsed.includes('"kind":"render"'), 'tree toggle pushes a render');
+    const reloaded = await loadStory('file-tree');
+    t.ok(
+      !reloaded.html.includes('class="ui-tree-dir" open'),
+      'icon-click toggle collapsed src server-side',
+    );
   });
 });
 
@@ -367,6 +654,34 @@ describe('fino:ui/gallery', () => {
       const code = await pty.waitExit();
       t.equal(code, 0, 'q quits cleanly');
       t.ok(!pty.term.altScreen, 'alternate screen restored on exit');
+    } finally {
+      await pty.close();
+    }
+  });
+
+  it('reaches story controls by keyboard in the TUI', async (t) => {
+    const dir = `/tmp/fino-gallery-keys-${Date.now().toString(36)}`;
+    await fs.mkdir(dir);
+    const script = `${dir}/gallery.ts`;
+    await fs.writeFile(
+      script,
+      encoder.encode("import { runGalleryTui } from 'fino:ui/gallery';\nawait runGalleryTui();\n"),
+    );
+    const pty = await openPty(execPath, [script], { cols: 90, rows: 26 });
+    try {
+      await pty.waitFor((term) => term.text().some((line) => line.includes('Stories')));
+      for (let i = 0; i < 3; i++) await pty.sendKey('down');
+      await pty.waitFor((term) => term.text().some((line) => line.includes('[x] Notifications')));
+      await pty.sendKey('tab');
+      await pty.sendKey('enter');
+      await pty.waitFor((term) => term.text().some((line) => line.includes('[ ] Notifications')));
+      t.ok(true, 'tab focuses the checkbox and enter toggles it off');
+      await pty.sendKey('enter');
+      await pty.waitFor((term) => term.text().some((line) => line.includes('[x] Notifications')));
+      t.ok(true, 'enter toggles it back on');
+      await pty.sendKey('q');
+      const code = await pty.waitExit();
+      t.equal(code, 0, 'q quits with a focused control');
     } finally {
       await pty.close();
     }

@@ -191,6 +191,59 @@ describe('fino:tty/tui input decoding', () => {
       'shift-tab',
     );
   });
+  it('decodes modified arrows, home/end, delete, and option-delete', (t) => {
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2D')),
+      [{ type: 'key', key: 'left', shift: true }],
+      'shift-left',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;3D')),
+      [{ type: 'key', key: 'left', alt: true }],
+      'alt-left',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;4C')),
+      [{ type: 'key', key: 'right', shift: true, alt: true }],
+      'shift-alt-right',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;5C')),
+      [{ type: 'key', key: 'right', ctrl: true }],
+      'ctrl-right',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2H')),
+      [{ type: 'key', key: 'home', shift: true }],
+      'shift-home',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2F')),
+      [{ type: 'key', key: 'end', shift: true }],
+      'shift-end',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[3;3~')),
+      [{ type: 'key', key: 'delete', alt: true }],
+      'alt-delete',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[3~')),
+      [{ type: 'key', key: 'delete' }],
+      'plain delete still decodes',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B\x7F')),
+      [{ type: 'key', key: 'backspace', alt: true }],
+      'ESC+DEL is option-delete',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1Bb')),
+      [{ type: 'key', key: 'b', alt: true }],
+      'ESC b stays the alt-b word convention',
+    );
+  });
   it('decodes SGR mouse events', (t) => {
     t.deepEqual(
       decodeTuiInput(new TextEncoder().encode('\x1B[<0;12;5M')),
