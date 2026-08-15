@@ -5,16 +5,24 @@ import type { VNode } from 'fino:ui';
 import {
   Accordion,
   Badge,
+  Box,
   Breadcrumbs,
+  Button,
+  Card,
   Clickable,
+  EmptyState,
   FileTree,
+  FloatingActionBar,
   HStack,
+  HoverCard,
   KeyHint,
   Pagination,
   Popover,
   ProgressBar,
   SPINNER_FRAMES,
   Spinner,
+  Stat,
+  StatusDot,
   Steps,
   Table,
   Tag,
@@ -33,6 +41,8 @@ import {
 } from 'fino:ui/components';
 import type { FileTreeNode } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
+import { renderToHtml } from 'fino:ui/html';
+import { toHtml } from 'fino:ui/components/html';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
 import { lowerTui } from 'internal:tty/lower';
@@ -585,5 +595,308 @@ describe('fino:ui/components catalog data views', () => {
     );
     click(app, 2, 1);
     t.deepEqual(acc.openKeys.get(), [], 'toggling the open section closes it');
+  });
+});
+
+describe('fino:ui/components catalog display — terminal', () => {
+  it('renders a card with an image placeholder, title, subtitle, body, and an actions row', (t) => {
+    const frame = lines(
+      <Card
+        title="Notebook sync"
+        subtitle="Last synced 2 minutes ago"
+        image={{ src: 'https://example.com/cover.png', alt: 'cover art' }}
+        actions={<Text>[ Sync ]</Text>}
+      >
+        <Text>Body text here</Text>
+      </Card>,
+      40,
+      7,
+    );
+    t.equal(
+      strip(frame[1]!),
+      '│ [ cover art ]                        │',
+      'image renders as a dim [ alt ] line',
+    );
+    t.equal(strip(frame[2]!), '│ Notebook sync                        │', 'title row');
+    t.equal(strip(frame[3]!), '│ Last synced 2 minutes ago            │', 'subtitle row');
+    t.equal(strip(frame[4]!), '│ Body text here                       │', 'body content');
+    t.equal(
+      strip(frame[5]!),
+      '│                             [ Sync ] │',
+      'actions right-aligned in a footer row',
+    );
+  });
+
+  it('omits the image line and header when a card has neither', (t) => {
+    const frame = lines(
+      <Card>
+        <Text>Just body</Text>
+      </Card>,
+      20,
+      3,
+    );
+    t.equal(
+      strip(frame[1]!),
+      '│ Just body        │',
+      'no image/title/subtitle rows precede the body',
+    );
+  });
+
+  it('fires a card action button through the terminal dispatcher', (t) => {
+    const app = live(30, 6);
+    let synced = 0;
+    app.render(
+      <Card title="Sync" actions={<Button id="sync" label="Sync" onClick={() => synced++} />}>
+        <Text>idle</Text>
+      </Card>,
+    );
+    const row = app.text().findIndex((line) => line.includes('Sync ]'));
+    t.ok(row >= 0, 'the action button renders in the footer row');
+    const x = app.text()[row]!.indexOf('[');
+    click(app, x, row);
+    t.equal(synced, 1, 'clicking the action button fires its onClick');
+  });
+
+  it('renders a stat with a dim label, bold value, and colored trend glyph', (t) => {
+    const up = lines(
+      <Stat label="Active sessions" value="1,204" hint="last 24h" trend="up" />,
+      30,
+      3,
+    );
+    t.equal(strip(up[0]!), 'Active sessions', 'dim label leads');
+    t.equal(strip(up[1]!), '1,204 ▲', 'bold value followed by the up trend glyph');
+    t.equal(strip(up[2]!), 'last 24h', 'dim hint beneath');
+    t.equal(
+      strip(lines(<Stat label="x" value="1" trend="down" />, 10, 2)[1]!),
+      '1 ▼',
+      'down trend glyph',
+    );
+    t.equal(
+      strip(lines(<Stat label="x" value="1" trend="flat" />, 10, 2)[1]!),
+      '1 –',
+      'flat trend glyph',
+    );
+    t.equal(
+      strip(lines(<Stat label="x" value="1" />, 10, 2)[1]!),
+      '1',
+      'no trend glyph when trend is omitted',
+    );
+  });
+
+  it('renders a status dot with an optional label', (t) => {
+    t.equal(strip(lines(<StatusDot status="ok" />, 5, 1)[0]!), '●', 'dot alone without a label');
+    t.equal(
+      strip(lines(<StatusDot status="busy" label="worker-1" />, 20, 1)[0]!),
+      '● worker-1',
+      'dot plus label',
+    );
+  });
+
+  it('centers an empty state within its container and fires its action', (t) => {
+    const app = live(26, 10);
+    let cleared = 0;
+    app.render(
+      <Box border width={26} height={10}>
+        <EmptyState
+          grow={1}
+          icon="doc"
+          title="No results"
+          description="Try again"
+          action={<Button id="clear" label="Clear" onClick={() => cleared++} />}
+        />
+      </Box>,
+    );
+    t.equal(strip(app.text()[1]!), '│           ¶            │', 'registry icon centered');
+    t.equal(strip(app.text()[3]!), '│       No results       │', 'title centered');
+    t.equal(strip(app.text()[5]!), '│       Try again        │', 'dim description centered');
+    const row = app.text().findIndex((line) => line.includes('Clear'));
+    t.ok(row >= 0, 'the action renders');
+    const x = app.text()[row]!.indexOf('[');
+    click(app, x, row);
+    t.equal(cleared, 1, 'clicking the empty state action fires its onClick');
+  });
+
+  it('shows a hover card with structured content only while open', (t) => {
+    const view = (open: boolean): VNode => (
+      <VStack gap={1}>
+        <Text id="hc-anchor">trigger</Text>
+        <HoverCard open={open} anchorId="hc-anchor" title="Release 1.4.0">
+          <Text>line one</Text>
+        </HoverCard>
+      </VStack>
+    );
+    const shown = lines(view(true), 30, 8);
+    t.equal(strip(shown[0]!), 'trigger', 'anchor text renders in normal flow');
+    t.equal(strip(shown[1]!), '┌───────────────┐', 'bordered card beneath the anchor');
+    t.equal(strip(shown[2]!), '│ Release 1.4.0 │', 'title renders bold inside the card');
+    t.equal(strip(shown[3]!), '│               │', 'gap row between title and content');
+    t.equal(strip(shown[4]!), '│ line one      │', 'children render inside the card');
+    t.equal(strip(shown[5]!), '└───────────────┘', 'card closes with a border');
+    const hidden = lines(view(false), 30, 8);
+    t.equal(strip(hidden[1]!), '', 'nothing painted when closed');
+  });
+
+  it('floats an action bar near the bottom of its anchored container', (t) => {
+    const frame = lines(
+      <Box id="fab-container" border direction="column" gap={1} width={30} height={8} padding={1}>
+        <Text>content</Text>
+        <FloatingActionBar anchorId="fab-container" placement="bottom-center">
+          <Button label="Jump" onClick={() => {}} />
+        </FloatingActionBar>
+      </Box>,
+      30,
+      8,
+    );
+    t.ok(
+      frame.some((line) => strip(line).includes('[ Jump ]')),
+      'the bar content paints somewhere in the frame',
+    );
+    t.equal(
+      strip(frame[4]!),
+      '┌──────────┐                 │',
+      'the bar lands just inside the container, above its last row — overlapping the ' +
+        'container border, since Layer anchors to the raw hit rect',
+    );
+    t.equal(strip(frame[5]!), '│ [ Jump ] │                 │', 'bar content row');
+  });
+});
+
+describe('fino:ui/components catalog display — html', () => {
+  it('renders a card as an article with a real image, heading, and footer actions', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <Card
+          title="Notebook sync"
+          subtitle="Last synced 2 minutes ago"
+          image={{ src: 'https://example.com/cover.png', alt: 'cover art' }}
+          actions={<Button label="Sync" onClick={() => {}} />}
+        >
+          <Text>Body text here</Text>
+        </Card>,
+      ),
+    );
+    t.ok(html.startsWith('<article class="ui-card">'), 'renders a real <article>');
+    t.ok(
+      html.includes('<img src="https://example.com/cover.png" alt="cover art">'),
+      'a real <img> with src/alt',
+    );
+    t.ok(html.includes('<h3 class="ui-card-title">Notebook sync</h3>'), 'title becomes an <h3>');
+    t.ok(
+      html.includes('<p class="ui-card-subtitle">Last synced 2 minutes ago</p>'),
+      'subtitle becomes a <p>',
+    );
+    t.ok(html.includes('class="ui-card-actions"'), 'actions render in a footer div');
+  });
+
+  it('rejects a javascript: image src instead of emitting a live <img>', (t) => {
+    const html = renderToHtml(
+      toHtml(<Card title="x" image={{ src: 'javascript:alert(1)', alt: 'evil' }} />),
+    );
+    t.ok(!html.includes('<img'), 'unsafe image src never reaches markup');
+    t.ok(!html.includes('javascript:'), 'the raw scheme does not leak into the page either');
+  });
+
+  it('accepts http(s) and relative image sources', (t) => {
+    t.ok(
+      renderToHtml(
+        toHtml(<Card image={{ src: 'https://cdn.example.com/a.png', alt: 'a' }} />),
+      ).includes('<img src="https://cdn.example.com/a.png"'),
+      'https accepted',
+    );
+    t.ok(
+      renderToHtml(toHtml(<Card image={{ src: '/static/a.png', alt: 'a' }} />)).includes(
+        '<img src="/static/a.png"',
+      ),
+      'relative path accepted',
+    );
+  });
+
+  it('renders a stat with dt/dd semantics and an accessible trend label', (t) => {
+    const html = renderToHtml(
+      toHtml(<Stat label="Active sessions" value="1,204" hint="last 24h" trend="up" />),
+    );
+    t.ok(html.includes('<dl class="ui-stat">'), 'wraps in a definition list');
+    t.ok(html.includes('<dt>Active sessions</dt>'), 'label becomes a <dt>');
+    t.ok(html.includes('class="ui-stat-value"'), 'value renders in a <dd>');
+    t.ok(
+      html.includes('aria-label="trending up"'),
+      'trend carries a text alternative, not color alone',
+    );
+    t.ok(html.includes('class="ui-stat-hint"'), 'hint renders in its own <dd>');
+    t.ok(
+      !renderToHtml(toHtml(<Stat label="x" value="1" />)).includes('ui-stat-trend'),
+      'no trend markup when trend is omitted',
+    );
+  });
+
+  it('conveys status as text on a status dot, never color alone', (t) => {
+    const labeled = renderToHtml(toHtml(<StatusDot status="ok" label="worker-1" />));
+    t.ok(
+      labeled.includes('aria-hidden="true"'),
+      'the dot is decorative once a visible label exists',
+    );
+    t.ok(labeled.includes('>worker-1<'), 'the label renders as visible text');
+    const unlabeled = renderToHtml(toHtml(<StatusDot status="busy" />));
+    t.ok(
+      unlabeled.includes('aria-label="busy"'),
+      'without a label the status still names itself for assistive tech',
+    );
+  });
+
+  it('renders an empty state as a centered flex column with a muted description', (t) => {
+    const html = renderToHtml(
+      toHtml(
+        <EmptyState
+          icon="doc"
+          title="No results"
+          description="Try again"
+          action={<Button label="Clear" onClick={() => {}} />}
+        />,
+      ),
+    );
+    t.ok(html.includes('class="ui-empty-state"'), 'centered flex column wrapper');
+    t.ok(html.includes('class="ui-empty-state-title"'), 'title renders');
+    t.ok(html.includes('class="ui-empty-state-desc"'), 'description renders');
+    t.ok(html.includes('class="ui-empty-state-action"'), 'action renders in its own wrapper');
+  });
+
+  it('renders a hover card with structured content only while open', (t) => {
+    const open = renderToHtml(
+      toHtml(
+        <HoverCard open anchorId="anchor" title="Release 1.4.0">
+          <Text>line one</Text>
+        </HoverCard>,
+      ),
+    );
+    t.ok(open.includes('class="ui-hover-card"'), 'renders the floating card');
+    t.ok(open.includes('class="ui-hover-card-title">Release 1.4.0<'), 'title renders');
+    t.ok(open.includes('line one'), 'children render');
+    const closed = renderToHtml(
+      toHtml(
+        <HoverCard open={false} anchorId="anchor">
+          <Text>line one</Text>
+        </HoverCard>,
+      ),
+    );
+    t.ok(!closed.includes('ui-hover-card'), 'nothing renders when closed');
+  });
+
+  it('renders a floating action bar centered or end-aligned with flexbox', (t) => {
+    const center = renderToHtml(
+      toHtml(
+        <FloatingActionBar anchorId="container">
+          <Button label="Jump" onClick={() => {}} />
+        </FloatingActionBar>,
+      ),
+    );
+    t.ok(center.includes('class="ui-fab ui-fab-center"'), 'default placement centers');
+    const end = renderToHtml(
+      toHtml(
+        <FloatingActionBar anchorId="container" placement="bottom-end">
+          <Button label="Jump" onClick={() => {}} />
+        </FloatingActionBar>,
+      ),
+    );
+    t.ok(end.includes('class="ui-fab ui-fab-end"'), 'bottom-end end-aligns');
   });
 });

@@ -35,11 +35,12 @@ The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
 `Select`, `ComboBox`, `Field`, `Fieldset`), disclosure (`Expander`, `Details`,
 `Tabs`, `TabList`, `Accordion`), menus (`MenuList`, `MenuRow`, `MenuHeader`,
 `MenuSeparator`), overlays (`Modal`, `ContextMenu`, `Popover`, `Tooltip`,
-`Toast`, `ToastStack`), status (`Badge`, `Tag`, `TagGroup`, `Spinner`,
-`ProgressBar`, `KeyHint`, `Timeline`), navigation (`Breadcrumbs`,
-`Pagination`, `Steps`), typography (`Heading`, `Bold`, `Italic`, `Link`,
-`Blockquote`, `List`, `Code`, `InlineCode`), and data (`Panel`, `Table`,
-`FileTree`, `Icon`, `VirtualList`).
+`HoverCard`, `Toast`, `ToastStack`, `FloatingActionBar`), status (`Badge`,
+`Tag`, `TagGroup`, `Spinner`, `ProgressBar`, `KeyHint`, `Timeline`,
+`StatusDot`), navigation (`Breadcrumbs`, `Pagination`, `Steps`), typography
+(`Heading`, `Bold`, `Italic`, `Link`, `Blockquote`, `List`, `Code`,
+`InlineCode`), and data/display (`Panel`, `Card`, `Stat`, `Table`, `FileTree`,
+`Icon`, `VirtualList`, `EmptyState`).
 
 ## The tree is purely semantic
 
@@ -235,6 +236,83 @@ registry, and unknown names fall back to the `file` icon. `FileTree` builds on
 the same registry: `fileIcon` resolves each node's icon name — an explicit
 `icon` wins, directories get the folder icons (which double as the expander),
 and file extensions map through `FILE_ICONS`.
+
+## Display and layout
+
+`Card` is a content container: an optional media slot, `title`/`subtitle`, a
+body (`children`), and a footer row of `actions`. The terminal cannot paint
+images, so `image` renders as a dim `[ alt ]` placeholder line instead — the
+alt text is the only thing a terminal user gets, so write it as if the image
+were absent. The web renders a real `<img src alt>`, and — since an image URL
+is exactly as app-controlled as a `Link` `href` (chat attachments, agent
+output, user profiles) — `src` passes through the same `safeHref` allowlist
+`Link` uses (`http:`, `https:`, and relative forms; `javascript:`/`data:`/
+unknown schemes are dropped, and the `<img>` simply doesn't render rather than
+carrying a stripped `src`).
+
+`Stat` is a named statistic: a dim label above a bold value, with an optional
+`trend` (`'up' | 'down' | 'flat'`) rendered as `▲`/`▼`/`–` in
+success/danger/muted. The glyph shape carries the direction on its own — not
+just the color — and the web target additionally names it through
+`aria-label` (`"trending up"`, …) on top of the tone color, so the signal
+never rests on color alone. `StatusDot` is the point version of the same
+idea: a colored `●` plus an optional `label`; on the web the status is always
+in the accessibility tree too, either through the visible `label` (the dot
+becomes `aria-hidden`) or, when there is no label, an `aria-label` naming the
+status directly on the dot.
+
+`EmptyState` centers an icon (from the same registry `Icon` uses),
+`title`, a dim `description`, and an optional `action` inside its container.
+Centering is ordinary `Box` `justify`/`align` under the hood — give it room to
+fill (`grow`, an explicit `height`, a parent that stretches it) or there is
+nothing to center within.
+
+`HoverCard` is a third point on the anchored-overlay spectrum alongside
+`Tooltip` and `Popover`, all three built on the same `Layer`/`anchorId`
+mechanism: `Tooltip` is a one-line text hint, `HoverCard` is structured
+content (a `title` plus arbitrary `children` — release notes, a preview
+card, …) with no dismissal of its own, and `Popover` is interactive content
+with `onDismiss` wired to Esc and outside clicks. `HoverCard`'s `open` is
+app-driven exactly like `Tooltip`'s — there is no hover tracking in either.
+
+`FloatingActionBar` floats a row of controls at the bottom of its
+*container* — not the viewport, unlike `ToastStack` — for affordances like
+"jump to latest" in a scrolling transcript. The web target does this exactly
+as CSS intends: `position: sticky` within the container, `justify-content`
+centered or end-aligned. The terminal target ran into a real limit of the
+`Layer` primitive while building this one, worth documenting precisely:
+
+`Layer`'s `anchorId` resolves to a *point*, not a rect — `internal:tty/layout`
+looks up the anchor id's hit rect and keeps only its bottom-left corner
+(`{ x: target.x, y: target.y + target.height - 1 }`); `target.width` is
+discarded entirely. An `-end`-suffixed placement computes
+`x = anchor.x - layerWidth + 1`, i.e. it right-aligns the layer against the
+anchor's own *left* edge — which is the right behavior when the anchor is a
+small trigger (a button, an input) sitting near where the popup should end,
+but not when the anchor is a wide container: subtracting the layer's width
+from the container's left edge almost always goes negative and clamps to 0,
+landing in the same place `-start` would. There is also no anchored-*center*
+placement at all — only start/end relative to the anchor point — so
+`'bottom-center'` has nothing truer to fall back to either. Concretely: **in
+the terminal, `FloatingActionBar`'s `'bottom-center'` and `'bottom-end'`
+currently render identically** — both land left-aligned, just inside the
+container's bottom edge — whenever the container is wider than the bar,
+which is the common case. `internal:tty/lower`'s `floatingActionBar` composer
+still requests `top-start`/`top-end` from `Layer` (the semantically correct
+primitive for "start" vs. "end") rather than hand-rolling positioning math of
+its own, so a future fix to `Layer` — capturing `target.width` and giving
+`-end` a real `anchor.x + target.width - layerWidth` calculation, plus adding
+an anchored-center mode — would make both placements correct with no change
+needed here. Until then, this is a known gap in the anchor primitive, not
+something `FloatingActionBar` works around.
+
+(Separately, `top-start`/`top-end` — rather than `bottom-start`/`bottom-end`
+— are what "just inside the container's bottom edge" means today: an anchor
+at the container's own bottom-left corner, with the layer's *bottom* edge
+landing one row above it. Since the layer paints as an opaque overlay, it
+also visually overlaps the container's own border/last row at that spot —
+there's no engine concept of "inset the floating layer within its anchor's
+padding", so the caller sees a real seam where the bar meets the border.)
 
 ## Typography
 

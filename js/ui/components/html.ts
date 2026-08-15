@@ -34,8 +34,8 @@
  * const page = htmlPage(markup, { title: 'Preview' });
  * ```
  */
-import { h } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import { Fragment, h } from 'fino:ui';
+import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
@@ -47,18 +47,22 @@ import type {
   BoldProps,
   BreadcrumbsProps,
   ButtonProps,
+  CardProps,
   CheckboxProps,
   CodeProps,
   ComboBoxProps,
   ContextMenuProps,
   DetailsProps,
+  EmptyStateProps,
   ExpanderPosition,
   ExpanderProps,
   FieldProps,
   FieldsetProps,
   FileTreeNode,
   FileTreeProps,
+  FloatingActionBarProps,
   HeadingProps,
+  HoverCardProps,
   IconButtonProps,
   IconProps,
   InlineCodeProps,
@@ -79,6 +83,9 @@ import type {
   RadioProps,
   SelectProps,
   SliderProps,
+  StatProps,
+  StatusDotProps,
+  StatusDotStatus,
   StepsProps,
   SwitchProps,
   TabItem,
@@ -92,6 +99,7 @@ import type {
   ToastProps,
   ToastStackProps,
   TooltipProps,
+  Trend,
   VirtualListProps,
 } from 'fino:ui/components';
 
@@ -336,6 +344,15 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 
 function emptyNode(): VNode {
   return { type: 'fragment', props: {}, children: [], key: null };
+}
+
+// Normalize a raw `Child`-typed prop (e.g. `Card`'s `actions`, `EmptyState`'s
+// `action`) the same way JSX children are normalized — flattening arrays and
+// dropping `null`/`undefined`/booleans — so it can be transformed and
+// spliced into markup like any other child list. `h(Fragment, …)` already
+// does exactly this normalization; reusing it here avoids reimplementing it.
+function slotChildren(value: unknown): NormalizedChild[] {
+  return h(Fragment, null, value as Child).children;
 }
 
 function idAttr(id: unknown): Props {
@@ -1682,6 +1699,119 @@ function inlineCodeHtml(node: VNode): VNode {
   return h('code', attrs, ...transformChildren(node.children));
 }
 
+function cardHtml(node: VNode): VNode {
+  const { title, subtitle, image, actions, id } = node.props as CardProps;
+  const safeSrc = image !== undefined ? safeHref(image.src) : undefined;
+  const media =
+    image !== undefined && safeSrc !== undefined
+      ? h('div', { className: 'ui-card-media' }, h('img', { src: safeSrc, alt: image.alt }))
+      : null;
+  const header =
+    title !== undefined || subtitle !== undefined
+      ? h(
+          'div',
+          { className: 'ui-card-header' },
+          title !== undefined ? h('h3', { className: 'ui-card-title' }, title) : null,
+          subtitle !== undefined ? h('p', { className: 'ui-card-subtitle' }, subtitle) : null,
+        )
+      : null;
+  const body = h('div', { className: 'ui-card-body' }, ...transformChildren(node.children));
+  const footer =
+    actions !== undefined
+      ? h('div', { className: 'ui-card-actions' }, ...transformChildren(slotChildren(actions)))
+      : null;
+  return h('article', { className: 'ui-card', ...idAttr(id) }, media, header, body, footer);
+}
+
+const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
+const TREND_LABEL: Record<Trend, string> = {
+  up: 'trending up',
+  down: 'trending down',
+  flat: 'no change',
+};
+const TREND_TONE: Record<Trend, string> = { up: 'success', down: 'danger', flat: 'muted' };
+
+function statHtml(node: VNode): VNode {
+  const { label, value, hint, trend, id } = node.props as StatProps;
+  const trendSpan =
+    trend !== undefined
+      ? h(
+          'span',
+          {
+            className: `ui-stat-trend ui-tone-${TREND_TONE[trend]}`,
+            'aria-label': TREND_LABEL[trend],
+          },
+          TREND_GLYPH[trend],
+        )
+      : null;
+  return h(
+    'dl',
+    { className: 'ui-stat', ...idAttr(id) },
+    h('dt', null, label),
+    h('dd', { className: 'ui-stat-value' }, value, trendSpan),
+    hint !== undefined ? h('dd', { className: 'ui-stat-hint' }, hint) : null,
+  );
+}
+
+const STATUS_TONE: Record<StatusDotStatus, string> = {
+  ok: 'success',
+  busy: 'info',
+  error: 'danger',
+  idle: 'muted',
+  warning: 'warning',
+};
+
+function statusDotHtml(node: VNode): VNode {
+  const { status, label, id } = node.props as StatusDotProps;
+  const dot = h('span', {
+    className: `ui-status-dot ui-tone-${STATUS_TONE[status]}`,
+    ...(label !== undefined ? { 'aria-hidden': 'true' } : { role: 'img', 'aria-label': status }),
+  });
+  return h(
+    'span',
+    { className: 'ui-row', ...idAttr(id) },
+    dot,
+    label !== undefined ? h('span', null, label) : null,
+  );
+}
+
+function emptyStateHtml(node: VNode): VNode {
+  const { icon, title, description, action, icons, id } = node.props as EmptyStateProps;
+  return h(
+    'div',
+    { className: 'ui-empty-state', ...idAttr(id) },
+    icon !== undefined
+      ? h(
+          'span',
+          { className: 'ui-empty-state-icon', 'aria-hidden': 'true' },
+          iconForm(icon, 'html', icons),
+        )
+      : null,
+    h('p', { className: 'ui-empty-state-title' }, title),
+    description !== undefined ? h('p', { className: 'ui-empty-state-desc' }, description) : null,
+    action !== undefined
+      ? h('div', { className: 'ui-empty-state-action' }, ...transformChildren(slotChildren(action)))
+      : null,
+  );
+}
+
+function hoverCardHtml(node: VNode): VNode {
+  const { open, title } = node.props as HoverCardProps;
+  if (open !== true) return emptyNode();
+  return h(
+    'div',
+    { className: 'ui-hover-card' },
+    title !== undefined ? h('div', { className: 'ui-hover-card-title' }, title) : null,
+    ...transformChildren(node.children),
+  );
+}
+
+function floatingActionBarHtml(node: VNode): VNode {
+  const { placement } = node.props as FloatingActionBarProps;
+  const align = placement === 'bottom-end' ? 'ui-fab-end' : 'ui-fab-center';
+  return h('div', { className: `ui-fab ${align}` }, ...transformChildren(node.children));
+}
+
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
   'ui:field': fieldHtml,
@@ -1734,6 +1864,12 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:list': listHtml,
   'ui:code': codeHtml,
   'ui:inline-code': inlineCodeHtml,
+  'ui:card': cardHtml,
+  'ui:stat': statHtml,
+  'ui:status-dot': statusDotHtml,
+  'ui:empty-state': emptyStateHtml,
+  'ui:hover-card': hoverCardHtml,
+  'ui:floating-action-bar': floatingActionBarHtml,
 };
 
 /**
@@ -2202,6 +2338,61 @@ button.ui-link { background: none; border: none; padding: 0; font: inherit; }
   border-radius: 0.375rem; padding: 0.25rem 0.5rem; cursor: pointer; color: var(--ui-muted);
 }
 .ui-combo-popover { top: 100%; left: 0; margin-top: 0.25rem; }
+.ui-card {
+  display: flex; flex-direction: column; gap: 0.625rem;
+  background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); overflow: hidden; width: fit-content; min-width: 16rem;
+}
+.ui-card-media { width: 100%; }
+.ui-card-media img { display: block; width: 100%; max-height: 12rem; object-fit: cover; }
+.ui-card-header { display: flex; flex-direction: column; gap: 0.125rem; padding: 0.875rem 1rem 0; }
+.ui-card-title { font-size: 1rem; font-weight: 700; margin: 0; }
+.ui-card-subtitle { font-size: 0.85rem; color: var(--ui-muted); margin: 0; }
+.ui-card-body { padding: 0 1rem; color: var(--ui-fg); }
+.ui-card-actions { display: flex; justify-content: flex-end; gap: 0.5rem; padding: 0 1rem 0.875rem; }
+.ui-stat { display: flex; flex-direction: column; gap: 0.125rem; margin: 0; width: fit-content; }
+.ui-stat dt { color: var(--ui-muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.ui-stat dd {
+  margin: 0; font-size: 1.5rem; font-weight: 700;
+  display: flex; align-items: baseline; gap: 0.5rem;
+}
+.ui-stat-hint { font-size: 0.8rem; font-weight: 400; color: var(--ui-muted); }
+.ui-stat-trend { font-size: 1rem; }
+.ui-stat-trend.ui-tone-success { color: var(--ui-success); }
+.ui-stat-trend.ui-tone-danger { color: var(--ui-danger); }
+.ui-stat-trend.ui-tone-muted { color: var(--ui-muted); }
+.ui-status-dot {
+  display: inline-block; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+  background: var(--ui-info);
+}
+.ui-status-dot.ui-tone-success { background: var(--ui-success); }
+.ui-status-dot.ui-tone-danger { background: var(--ui-danger); }
+.ui-status-dot.ui-tone-warning { background: var(--ui-warning); }
+.ui-status-dot.ui-tone-muted { background: var(--ui-muted); }
+.ui-status-dot.ui-tone-info { background: var(--ui-info); }
+.ui-empty-state {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 0.5rem; text-align: center; padding: 2.5rem 1.5rem; color: var(--ui-muted);
+}
+.ui-empty-state-icon { font-size: 1.75rem; opacity: 0.7; }
+.ui-empty-state-title { margin: 0; font-weight: 600; color: var(--ui-fg); }
+.ui-empty-state-desc { margin: 0; font-size: 0.85rem; }
+.ui-empty-state-action { margin-top: 0.25rem; }
+.ui-hover-card {
+  position: absolute; z-index: 40; margin-top: 0.25rem; width: fit-content; max-width: 22rem;
+  background: var(--ui-surface); border: 1px solid var(--ui-border);
+  border-radius: var(--ui-radius); padding: 0.625rem 0.875rem;
+  box-shadow: 0 10px 30px rgb(0 0 0 / 0.4);
+  display: flex; flex-direction: column; gap: 0.375rem;
+}
+.ui-hover-card-title { font-weight: 600; }
+.ui-fab {
+  position: sticky; bottom: 0.75rem; z-index: 20;
+  display: flex; gap: 0.5rem; width: 100%; pointer-events: none;
+}
+.ui-fab > * { pointer-events: auto; }
+.ui-fab-center { justify-content: center; }
+.ui-fab-end { justify-content: flex-end; }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

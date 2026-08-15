@@ -47,17 +47,21 @@ import type {
   BoldProps,
   BreadcrumbsProps,
   ButtonProps,
+  CardProps,
   CheckboxProps,
   CodeProps,
   ComboBoxProps,
   ContextMenuProps,
   DetailsProps,
+  EmptyStateProps,
   ExpanderProps,
   FieldProps,
   FieldsetProps,
   FileTreeNode,
   FileTreeProps,
+  FloatingActionBarProps,
   HeadingProps,
+  HoverCardProps,
   IconButtonProps,
   IconProps,
   InlineCodeProps,
@@ -79,6 +83,9 @@ import type {
   SelectProps,
   SliderProps,
   SpinnerProps,
+  StatProps,
+  StatusDotProps,
+  StatusDotStatus,
   StepsProps,
   SwitchProps,
   TabListProps,
@@ -91,10 +98,12 @@ import type {
   ToastProps,
   ToastStackProps,
   TooltipProps,
+  Trend,
   UiKeyEvent,
   UiMouseEvent,
   VirtualListProps,
 } from 'fino:ui/components';
+import type { Style } from 'fino:tty/style';
 
 type Composer = (props: Props, children: NormalizedChild[]) => VNode;
 
@@ -1432,6 +1441,121 @@ function inlineCode(props: Props, children: NormalizedChild[]): VNode {
   );
 }
 
+function card(props: Props, children: NormalizedChild[]): VNode {
+  const { title, subtitle, image, actions, id, ...rest } = props as CardProps;
+  return (
+    <Box border direction="column" paddingX={1} id={id} {...rest}>
+      {image !== undefined ? <Text style={[styles.dim]}>{`[ ${image.alt} ]`}</Text> : null}
+      {title !== undefined ? <Text bold>{title}</Text> : null}
+      {subtitle !== undefined ? <Text style={[styles.dim]}>{subtitle}</Text> : null}
+      {children}
+      {actions !== undefined ? (
+        <Box direction="row" gap={1} justify="end">
+          {actions}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
+const TREND_TONE: Record<Trend, Style> = {
+  up: styles.success,
+  down: styles.danger,
+  flat: styles.muted,
+};
+
+function stat(props: Props): VNode {
+  const { label, value, hint, trend, id, ...rest } = props as StatProps;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      <Text style={[styles.dim]}>{label}</Text>
+      <Box direction="row" gap={1}>
+        <Text bold>{value}</Text>
+        {trend !== undefined ? <Text style={[TREND_TONE[trend]]}>{TREND_GLYPH[trend]}</Text> : null}
+      </Box>
+      {hint !== undefined ? <Text style={[styles.dim]}>{hint}</Text> : null}
+    </Box>
+  );
+}
+
+const STATUS_TONE: Record<StatusDotStatus, Style> = {
+  ok: styles.success,
+  busy: styles.info,
+  error: styles.danger,
+  idle: styles.muted,
+  warning: styles.warning,
+};
+
+function statusDot(props: Props): VNode {
+  const { status, label, id, ...rest } = props as StatusDotProps;
+  return (
+    <Box direction="row" gap={1} id={id} {...rest}>
+      <Text style={[STATUS_TONE[status]]}>●</Text>
+      {label !== undefined ? <Text>{label}</Text> : null}
+    </Box>
+  );
+}
+
+function emptyState(props: Props): VNode {
+  const { icon, title, description, action, icons, id, ...rest } = props as EmptyStateProps;
+  return (
+    <Box direction="column" align="center" justify="center" gap={1} id={id} {...rest}>
+      {icon !== undefined ? <Text style={[styles.dim]}>{iconForm(icon, 'tui', icons)}</Text> : null}
+      <Text bold align="center">
+        {title}
+      </Text>
+      {description !== undefined ? (
+        <Text style={[styles.dim]} align="center">
+          {description}
+        </Text>
+      ) : null}
+      {action !== undefined ? (
+        <Box direction="row" justify="center">
+          {action}
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
+function hoverCard(props: Props, children: NormalizedChild[]): VNode {
+  const { open, anchorId, title } = props as HoverCardProps;
+  return (
+    <Box>
+      {open ? (
+        <Layer anchorId={anchorId}>
+          <Box border paddingX={1} direction="column" gap={1}>
+            {title !== undefined ? <Text bold>{title}</Text> : null}
+            {children}
+          </Box>
+        </Layer>
+      ) : null}
+    </Box>
+  );
+}
+
+// `Layer` has no notion of "this node's own enclosing container" — anchoring
+// always means anchoring to a known hit id (the container must expose one
+// via `anchorId`), and its placement model offers only start/end alignment
+// relative to that anchor point, never centering. `top-start`/`top-end`
+// (rather than `bottom-start`/`bottom-end`) land the bar just inside the
+// anchor's bottom edge instead of pushed below it entirely — the closest
+// approximation of "floating over the container's bottom" the engine
+// currently supports. `'bottom-center'` has no anchored-center counterpart
+// to fall back on, so it renders with the same left alignment as
+// `'top-start'` here; the web target centers it for real with flexbox.
+function floatingActionBar(props: Props, children: NormalizedChild[]): VNode {
+  const { placement, anchorId } = props as FloatingActionBarProps;
+  return (
+    <Layer anchorId={anchorId} placement={placement === 'bottom-end' ? 'top-end' : 'top-start'}>
+      <Box border paddingX={1} direction="row" gap={1}>
+        {children}
+      </Box>
+    </Layer>
+  );
+}
+
 const COMPOSERS: Record<string, Composer> = {
   'ui:panel': panel,
   'ui:field': field,
@@ -1483,6 +1607,12 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:list': list,
   'ui:code': code,
   'ui:inline-code': inlineCode,
+  'ui:card': card,
+  'ui:stat': stat,
+  'ui:status-dot': statusDot,
+  'ui:empty-state': emptyState,
+  'ui:hover-card': hoverCard,
+  'ui:floating-action-bar': floatingActionBar,
 };
 
 /**

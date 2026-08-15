@@ -1910,3 +1910,138 @@ export interface InlineCodeProps extends StyleProps, FlexChildProps, Props {
 export function InlineCode(props: InlineCodeProps): VNode {
   return h('ui:inline-code', props);
 }
+
+/** Props accepted by `Card`. */
+export interface CardProps extends FlexChildProps, Props {
+  title?: string;
+  subtitle?: string;
+  /**
+   * Media slot. The web renders a real `<img src alt>` — `src` passes
+   * through the HTML target's `safeHref` allowlist the same as a `Link`
+   * `href`, since an image URL is just as app-controlled. The terminal
+   * cannot paint images, so it paints a dim `[ alt ]` placeholder line
+   * instead.
+   */
+  image?: { src: string; alt: string };
+  /** Footer row of control buttons. */
+  actions?: Child;
+  id?: string;
+  children?: Child;
+}
+/**
+ * Content container: an optional media slot, title/subtitle, body, and a
+ * footer row of `actions`. A bordered box in the terminal, a real
+ * `<article>` on the web.
+ */
+export function Card(props: CardProps): VNode {
+  return h('ui:card', props);
+}
+
+/** Trend direction shown by `Stat`. */
+export type Trend = 'up' | 'down' | 'flat';
+
+/** Props accepted by `Stat`. */
+export interface StatProps extends FlexChildProps, Props {
+  label: string;
+  value: string;
+  hint?: string;
+  trend?: Trend;
+  id?: string;
+}
+/**
+ * Named statistic: a dim label above a bold value, with an optional trend
+ * indicator (`▲`/`▼`/`–`, colored success/danger/muted). The trend glyph
+ * itself carries the direction — not just its color — and the web target
+ * additionally names it through `aria-label`, so the signal never rests on
+ * color alone.
+ */
+export function Stat(props: StatProps): VNode {
+  return h('ui:stat', props);
+}
+
+/** Status values shown by `StatusDot`. */
+export type StatusDotStatus = 'ok' | 'busy' | 'error' | 'idle' | 'warning';
+
+/** Props accepted by `StatusDot`. */
+export interface StatusDotProps extends FlexChildProps, Props {
+  status: StatusDotStatus;
+  label?: string;
+  id?: string;
+}
+/**
+ * Status indicator: a colored `●` plus an optional `label`. On the web the
+ * status is always conveyed as text too — the visible `label` when given, an
+ * `aria-label` naming the status when not — never color alone.
+ */
+export function StatusDot(props: StatusDotProps): VNode {
+  return h('ui:status-dot', props);
+}
+
+/** Props accepted by `EmptyState`. */
+export interface EmptyStateProps extends FlexChildProps, Props {
+  /** Registry icon name; see `ICONS`/`iconForm`. */
+  icon?: string;
+  title: string;
+  description?: string;
+  action?: Child;
+  /** Per-name registry overrides, forwarded to `iconForm`. */
+  icons?: Record<string, IconForms>;
+  id?: string;
+}
+/**
+ * Centered indicator for an empty content area: an optional icon, a title, a
+ * dim description, and an optional `action`. Centering is ordinary
+ * `justify`/`align` on a `Box` — give it room to fill (`grow`, an explicit
+ * `height`, …) for the centering to be visible.
+ */
+export function EmptyState(props: EmptyStateProps): VNode {
+  return h('ui:empty-state', props);
+}
+
+/** Props accepted by `HoverCard`. */
+export interface HoverCardProps extends Props {
+  /** Shown state — the app decides when, like `Tooltip`; there is no hover tracking. */
+  open: boolean;
+  /** Hit id of the trigger the card anchors beneath. */
+  anchorId: string;
+  title?: string;
+  children?: Child;
+}
+/**
+ * Structured floating card anchored beneath a trigger, built on the same
+ * `Layer`/`anchorId` mechanism as `Tooltip` and `Popover`. The three overlays
+ * differ in what they carry and how they leave: `Tooltip` is a one-line text
+ * hint, `HoverCard` is structured content (a `title` plus arbitrary
+ * `children`) with no dismissal of its own — the app drives `open` exactly
+ * like `Tooltip` — and `Popover` is interactive content with `onDismiss`
+ * wired to Esc and outside clicks.
+ */
+export function HoverCard(props: HoverCardProps): VNode {
+  return h('ui:hover-card', props);
+}
+
+/** Props accepted by `FloatingActionBar`. */
+export interface FloatingActionBarProps extends Props {
+  /**
+   * Hit id of the container the bar floats within. `Layer` — the terminal's
+   * only overlay primitive — has no notion of "this component's own
+   * enclosing container": anchoring always means anchoring to a known hit
+   * id, the same mechanism `Popover` and `Tooltip` use for their trigger. Give
+   * the container itself an `id` and pass it here.
+   */
+  anchorId: string;
+  placement?: 'bottom-center' | 'bottom-end';
+  children?: Child;
+}
+/**
+ * Action bar floating at the bottom of its container (not the viewport) —
+ * for affordances like "jump to latest". `Layer`'s placement model has no
+ * anchored-center option (only start/end alignment relative to an anchor),
+ * so in the terminal `'bottom-center'` renders left-aligned, same as
+ * `'bottom-end'` minus the right offset — see `internal:tty/lower`'s
+ * `floatingActionBar` composer for the documented gap. The web target
+ * centers it for real with flexbox.
+ */
+export function FloatingActionBar(props: FloatingActionBarProps): VNode {
+  return h('ui:floating-action-bar', props);
+}
