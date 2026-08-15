@@ -439,13 +439,24 @@ describe('fino:ui/components/html actions', () => {
   });
 
   it('emits web action forms when a descriptor is supplied', (t) => {
-    const ref = { action: 'invoke', url: '/?_action=v.invoke', view: 'view_1', revision: 0, request: 'r' };
+    const ref = {
+      action: 'invoke',
+      url: '/?_action=v.invoke',
+      view: 'view_1',
+      revision: 0,
+      request: 'r',
+    };
     const tree = toHtml(<Checkbox checked={false} label="n" onChange={() => {}} />, {
       actions: new Map<string, (value?: string) => void>(),
       action: ref,
     });
     t.equal(tree.type, 'form', 'value control wrapped in a form');
-    t.equal(tree.props.action, ref, 'form carries the action descriptor');
+    t.equal(tree.props.action, ref.url, 'form action is the descriptor URL');
+    t.equal(tree.props['data-fi-action'], 'invoke', 'truthy marker enables client interception');
+    const hidden = JSON.stringify(tree);
+    for (const field of ['_view', '_ver', '_nonce']) {
+      t.ok(hidden.includes(`"${field}"`), `${field} rides as a hidden envelope field`);
+    }
     t.equal(tree.props.method, 'post', 'descriptor forms POST');
     t.ok('data-fi-change' in tree.props, 'value forms submit on change through the client');
     t.ok(!JSON.stringify(tree).includes('this.form.submit()'), 'no inline resubmit in web mode');
@@ -561,7 +572,10 @@ describe('fino:ui/components/html actions', () => {
       ) as Promise<Response>;
 
     const checkbox = await loadStory('checkbox');
-    t.ok(checkbox.html.includes('data-fi-action'), 'forms are wired to the web action layer');
+    t.ok(
+      /<form[^>]*data-fi-action="[^"]/.test(checkbox.html),
+      'action forms carry a truthy data-fi-action for client interception',
+    );
     t.ok(checkbox.html.includes('/_fino/client.'), 'the page loads the SSE client');
     t.ok(/class="ui-check"[^>]*checked/.test(checkbox.html), 'checkbox starts checked');
     const doId = /name="do" value="(a\d+)"/.exec(checkbox.html)![1]!;
@@ -595,9 +609,7 @@ describe('fino:ui/components/html actions', () => {
 
     const tree = await loadStory('file-tree');
     t.ok(tree.html.includes('class="ui-tree-dir" open'), 'src starts expanded');
-    const treeToggle = /<button class="ui-tree-icon" name="do" value="(a\d+)"/.exec(
-      tree.html,
-    )![1]!;
+    const treeToggle = /<button class="ui-tree-icon" name="do" value="(a\d+)"/.exec(tree.html)![1]!;
     const collapsed = await (await post(tree, { do: treeToggle })).text();
     t.ok(collapsed.includes('"kind":"render"'), 'tree toggle pushes a render');
     const reloaded = await loadStory('file-tree');

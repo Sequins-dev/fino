@@ -377,9 +377,23 @@ function actionForm(opts: FormOptions, ...children: NormalizedChild[]): VNode {
   if (actions!.ref !== undefined && actions!.ref !== null) {
     // The web client reads the envelope from these reserved fields when a
     // form was server-rendered rather than mounted from a portable tree.
-    const ref = actions!.ref as { url: string; view: string; revision: number; request: string };
-    const props: Props = { action: ref.url, method: 'post', className: 'ui-action' };
-    if (opts.change === true) props['data-fi-change'] = '';
+    const ref = actions!.ref as {
+      url: string;
+      view: string;
+      revision: number;
+      request: string;
+      action?: string;
+    };
+    // The client's submit/change listeners intercept only forms whose
+    // data-fi-action is truthy; without it the browser navigates natively
+    // and the CSRF gate rejects the post.
+    const props: Props = {
+      action: ref.url,
+      method: 'post',
+      className: 'ui-action',
+      'data-fi-action': ref.action ?? 'invoke',
+    };
+    if (opts.change === true) props['data-fi-change'] = '1';
     return h(
       'form',
       props,
