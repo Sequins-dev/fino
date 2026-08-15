@@ -503,6 +503,22 @@ function childLayoutProps(node: LayoutNode | string): ChildLayout {
   };
 }
 
+type MeasuredRender = (size: { width: number; height: number }) => LayoutNode | null;
+
+function renderMeasured(
+  node: LayoutNode,
+  width: number,
+  height: number | undefined,
+): LayoutNode | null {
+  const render = node.props.render;
+  if (typeof render !== 'function') return null;
+  const produced = (render as MeasuredRender)({
+    width: Math.max(0, width),
+    height: Math.max(0, height ?? 0),
+  });
+  return produced ?? null;
+}
+
 const measureCache = new WeakMap<object, Map<string, Measured>>();
 const nodeRects = new WeakMap<object, Rect>();
 
@@ -655,6 +671,20 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
       // so measuring greedy here would inflate every ancestor.
       size = { width: 1, height: 1 };
       break;
+    case 'measured': {
+      // Content that depends on its own width — charts, sparklines — cannot
+      // be built before layout assigns a rect. `render(size)` runs here with
+      // the constraint, and again at paint time with the resolved rect.
+      const produced = renderMeasured(node, availW, explicitH);
+      size =
+        produced === null
+          ? { width: 0, height: 0 }
+          : measure(produced, {
+              width: availW,
+              ...(explicitH !== undefined ? { height: explicitH } : {}),
+            });
+      break;
+    }
     default:
       size = measureFlex(node, constraints, boxSpec(node));
       break;
@@ -995,6 +1025,15 @@ function paintNode(
     }
     case 'spacer':
       break;
+    case 'measured': {
+      const produced = renderMeasured(node, rect.width, rect.height);
+      if (produced !== null) {
+        canvas.clipPush(rect);
+        paintNode(produced, ctx, rect, own);
+        canvas.clipPop();
+      }
+      break;
+    }
     case 'rule': {
       const char = str(props, 'char') ?? '─';
       const inset = num(props, 'inset') ?? 0;
@@ -1023,7 +1062,10 @@ function paintNode(
         spanEnd > spanStart
           ? [
               { text: shown.slice(0, spanStart), style: textStyle },
-              { text: shown.slice(spanStart, spanEnd), style: mergeStyle(textStyle, { inverse: true }) },
+              {
+                text: shown.slice(spanStart, spanEnd),
+                style: mergeStyle(textStyle, { inverse: true }),
+              },
               { text: shown.slice(spanEnd), style: textStyle },
             ].filter((run) => run.text.length > 0)
           : [{ text: shown, style: textStyle }];
@@ -1032,7 +1074,11 @@ function paintNode(
         {
           segments: [
             { text: prefix, width: 2, style: own },
-            ...runs.map((run) => ({ text: run.text, width: stringWidth(run.text), style: run.style })),
+            ...runs.map((run) => ({
+              text: run.text,
+              width: stringWidth(run.text),
+              style: run.style,
+            })),
           ],
           width: 2 + stringWidth(shown),
         },

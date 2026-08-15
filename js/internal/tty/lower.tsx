@@ -2067,7 +2067,51 @@ function lineChart(props: Props): VNode {
       ? niceScale(Math.min(...allValues), Math.max(...allValues))
       : niceScale(0, 1);
   const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
-  const width = Math.max(10, Math.ceil(maxPoints / 2));
+  const minWidth = Math.max(10, Math.ceil(maxPoints / 2));
+
+  // The plot spans whatever width layout assigns, so a chart fills its
+  // container instead of collapsing to its sample count.
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {h('measured', {
+        height: rows + (showLegend === true ? 2 : 0),
+        render: ({ width: available }: { width: number }) =>
+          linePlot({
+            series,
+            rows,
+            width: Math.max(minWidth, available - axisGutter(series, scale, showAxis)),
+            scale,
+            truecolor,
+            showAxis,
+            showLegend,
+          }),
+      })}
+    </Box>
+  );
+}
+
+function axisGutter(
+  series: readonly Series[],
+  scale: NiceScale,
+  showAxis: boolean | undefined,
+): number {
+  if (showAxis !== true) return 0;
+  // Tick label column plus the gap between it and the plot.
+  return Math.max(0, ...scale.ticks.map((t) => formatChartValue(t).length)) + 1;
+}
+
+interface LinePlotOptions {
+  series: readonly Series[];
+  rows: number;
+  width: number;
+  scale: NiceScale;
+  truecolor: boolean;
+  showAxis: boolean | undefined;
+  showLegend: boolean | undefined;
+}
+
+function linePlot(options: LinePlotOptions): VNode {
+  const { series, rows, width, scale, truecolor, showAxis, showLegend } = options;
 
   const composite: ChartCell[][] = Array.from({ length: rows }, () =>
     Array.from({ length: width }, () => ({ char: ' ', color: null })),
@@ -2126,7 +2170,7 @@ function lineChart(props: Props): VNode {
   });
 
   return (
-    <Box direction="column" gap={1} id={id} {...rest}>
+    <Box direction="column" gap={1}>
       <Box direction="column">{chartRows}</Box>
       {showLegend === true ? (
         <Box direction="row" gap={2}>
