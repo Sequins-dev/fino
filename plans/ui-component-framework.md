@@ -195,12 +195,18 @@ interaction tests run inside the normal `fino test` suite:
 
 ## Phase 1 validation gate
 
-Phase 2 does not start until: every catalog component has unit + HTML + TUI tests and
-interactive ones have PTY tests; a non-trivial demo app (a file browser: FileTree + Tabs +
-ContextMenu + Modal + status bar) runs in both targets from one component tree; the
-component API has passed an ergonomics review on that demo's source; docs are written
-(`js/ui.md` updated, components guide added) and every new `fino:*` specifier is registered
-in `src/loader.rs` and `benchmarks/COVERAGE.md`.
+Phase 2 does not start until: every catalog component has unit + HTML + TUI
+tests, with PTY tests for interactive ones; the gallery renders every story in
+both targets from one component tree (this is the conformance surface — a
+separate demo app was considered and dropped as redundant); docs are written
+(`js/ui.md` updated, `js/ui/components.md` added) and every new `fino:*`
+specifier is registered in `src/loader.rs` and `benchmarks/COVERAGE.md`; and
+the component API has passed an ergonomics review over the gallery.
+
+Decided and not pursued: clickable terminal hyperlinks (OSC 8). They cannot
+survive the frame pipeline without teaching `Segment`/`Row` about
+non-printable payloads, so `href`-only links are styled text in the terminal
+and real anchors on the web.
 
 ---
 

@@ -1329,13 +1329,10 @@ function italic(props: Props, children: NormalizedChild[]): VNode {
 
 // `Link` is the one catalog component allowed to navigate. With `onActivate`
 // it becomes a focusable Clickable, same as any other click-like control.
-// An `href`-only link would ideally emit an OSC 8 terminal hyperlink
-// (`\x1b]8;;URL\x1b\\text\x1b]8;;\x1b\\`), but that can't survive this
-// pipeline: `Text` content routes through fino:tty/frame's `parseAnsi`
-// whenever it contains an escape byte, and `parseAnsi` intentionally
-// discards non-SGR sequences — OSC included — to keep `Segment` text free of
-// embedded control codes (see frame.ts). So an `href`-only `Link` renders as
-// styled, underlined, non-interactive text instead.
+// Terminals get no clickable hyperlinks: OSC 8 cannot survive the frame
+// pipeline (parseAnsi drops non-SGR escapes so segments stay free of control
+// codes), and carrying links through Segment/Row is a frame-model change we
+// chose not to make. An href-only link renders as styled, underlined text.
 function link(props: Props, children: NormalizedChild[]): VNode {
   const { href: _href, onActivate, id, ...rest } = props as LinkProps;
   const style = [styles.accent, styles.underline];

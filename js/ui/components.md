@@ -565,17 +565,15 @@ link-styled button wired through the HTML action collector, a focusable
 but the handler intercepts the click and submits the action form instead of
 navigating.
 
-Terminal hyperlinks (OSC 8: `` \x1b]8;;URL\x1b\text\x1b]8;;\x1b\ ``) were the
-original design for the `href`-only case, but they can't survive today's
-frame pipeline: any escape byte in `Text` content routes through
+Terminals do not get clickable hyperlinks. OSC 8 was the original design for
+the `href`-only case, but any escape byte in `Text` content routes through
 `fino:tty/frame`'s `parseAnsi`, which intentionally discards non-SGR
-sequences — OSC included — to keep `Segment` text free of embedded control
-codes (see `frame.ts`'s module docs). Threading OSC 8 through cleanly would
-mean teaching `Segment`/`Row` about a new kind of non-printable payload,
-which is a frame-model change out of scope for a component lowering. An
-`href`-only `Link` therefore renders as styled, underlined, non-interactive
-text in the terminal rather than a real clickable hyperlink — reach for
-`onActivate` when the terminal needs to *do* something on activation.
+sequences to keep `Segment` text free of embedded control codes — and
+threading a link through would mean teaching `Segment`/`Row` about a new kind
+of non-printable payload. That is a frame-model change we have decided not to
+make, so an `href`-only `Link` renders as styled, underlined text in the
+terminal: informative, not activatable. Use `onActivate` when the terminal
+needs to *do* something.
 
 `href` is app-controlled data — chat messages, agent output, file metadata —
 so the HTML target validates it before it ever reaches an `<a>`: `safeHref`
