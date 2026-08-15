@@ -20,7 +20,15 @@ import {
   VStack,
 } from 'fino:ui/components';
 import { catalogStories, createGalleryApp, defaultArgs, galleryPage } from 'fino:ui/gallery';
+import type { Story } from 'fino:ui/gallery';
 import { renderFrame } from 'fino:tty/tui';
+import { createRenderer } from 'fino:ui';
+import type { VNode } from 'fino:ui';
+import { createTerminalRoot, terminalHost } from 'internal:tty/host';
+import { layout } from 'internal:tty/layout';
+import { lowerTui } from 'internal:tty/lower';
+import { TuiDispatcher } from 'internal:tty/events';
+import type { TuiMouseEventLike } from 'internal:tty/events';
 import { openPty } from 'fino:test/pty';
 import { execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
@@ -620,10 +628,53 @@ describe('fino:ui/components/html actions', () => {
   });
 });
 
+interface LiveStory {
+  dispatcher: TuiDispatcher;
+  render(tree: VNode): void;
+  text(): string[];
+}
+
+function liveStory(width = 60, height = 20): LiveStory {
+  const root = createTerminalRoot();
+  const renderer = createRenderer(terminalHost());
+  const dispatcher = new TuiDispatcher(root);
+  let frame: string[] = [];
+  return {
+    dispatcher,
+    render(tree: VNode): void {
+      renderer.render(lowerTui(tree), root);
+      const laid = layout(root.children[0]!, { width, height });
+      frame = laid.rows.map((row) => row.segments.map((s) => s.text).join(''));
+    },
+    text(): string[] {
+      return frame;
+    },
+  };
+}
+
+function storyByKey(key: string): Story {
+  for (const group of catalogStories()) {
+    for (const story of group.stories) if (story.key === key) return story;
+  }
+  throw new Error(`no story ${key}`);
+}
+
+function mouse(
+  action: 'press' | 'release' | 'wheel',
+  button: string,
+  x: number,
+  y: number,
+): TuiMouseEventLike {
+  return { type: 'mouse', action, button, x, y, ctrl: false, alt: false, shift: false };
+}
+
 describe('fino:ui/gallery', () => {
   it('renders every catalog story in both targets without throwing', (t) => {
+    const seen = new Set<string>();
     for (const group of catalogStories()) {
       for (const story of group.stories) {
+        t.ok(!seen.has(story.key), `${story.key} is a unique story key`);
+        seen.add(story.key);
         const args = defaultArgs(story);
         const tui = renderFrame(story.view(args), { width: 60, height: 20 });
         t.ok(tui.split('\n').length === 20, `${story.key} renders to a TUI frame`);
@@ -631,6 +682,67 @@ describe('fino:ui/gallery', () => {
         t.ok(html.length > 0, `${story.key} renders to HTML`);
       }
     }
+  });
+
+  it('scrolls the VirtualList story with the wheel through the TUI dispatcher', (t) => {
+    const story = storyByKey('virtual-list');
+    const args = defaultArgs(story);
+    const app = liveStory();
+    app.render(story.view(args));
+    t.ok(
+      app.text().some((line) => line.includes('item 000')),
+      'window starts at the top of the list',
+    );
+    t.ok(
+      app.text().some((line) => line.includes('offset 0/500')),
+      'offset readout shows the full extent',
+    );
+    t.equal(
+      app.dispatcher.dispatch(mouse('wheel', 'wheel-down', 2, 2)),
+      true,
+      'the list consumes the wheel event',
+    );
+    app.render(story.view(args));
+    t.ok(
+      app.text().some((line) => line.includes('offset 3/500')),
+      'one notch moves the window three rows',
+    );
+    t.ok(
+      app.text().some((line) => line.includes('item 003')),
+      'the windowed slice follows the offset',
+    );
+    app.dispatcher.dispatch(mouse('wheel', 'wheel-up', 2, 2));
+    app.render(story.view(args));
+    t.ok(
+      app.text().some((line) => line.includes('offset 0/500')),
+      'wheel-up scrolls back to the top',
+    );
+  });
+
+  it('removes a tag from the story list through its remover', (t) => {
+    const story = storyByKey('tags');
+    const args = defaultArgs(story);
+    const app = liveStory();
+    app.render(story.view(args));
+    t.ok(
+      app.text().some((line) => line.includes('4 tags')),
+      'the story starts with four tags',
+    );
+    const row = app.text().findIndex((line) => line.includes('alpha'));
+    t.ok(row >= 0, 'the alpha tag renders');
+    const x = app.text()[row]!.indexOf('×');
+    t.ok(x >= 0, 'the removable tag carries a remover');
+    app.dispatcher.dispatch(mouse('press', 'left', x, row));
+    app.dispatcher.dispatch(mouse('release', 'left', x, row));
+    app.render(story.view(args));
+    t.ok(
+      !app.text().some((line) => line.includes('alpha')),
+      'removing deletes the tag from the signal-held list',
+    );
+    t.ok(
+      app.text().some((line) => line.includes('3 tags')),
+      'the count reflects the removal',
+    );
   });
 
   it('builds gallery pages with a sidebar and the selected story', (t) => {

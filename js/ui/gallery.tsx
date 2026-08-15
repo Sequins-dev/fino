@@ -25,34 +25,61 @@
 import { Signal, createSignal, h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import {
+  Accordion,
+  Badge,
   Box,
+  Breadcrumbs,
   Button,
   Checkbox,
   Clickable,
   ContextMenu,
   Details,
+  Expander,
   FileTree,
   HStack,
+  ICONS,
+  Icon,
+  KeyHint,
   ListSelection,
   MenuList,
   Modal,
+  Pagination,
   Panel,
+  Popover,
+  ProgressBar,
   RadioGroup,
   Rule,
   Select,
   Spacer,
+  Spinner,
+  Steps,
   Switch,
   Table,
   Tabs,
+  Tag,
+  TagGroup,
   Text,
   TextInput,
+  Timeline,
+  Toast,
+  ToastStack,
+  Tooltip,
   VStack,
+  VirtualList,
+  VirtualScroll,
+  createAccordion,
   createDisclosure,
   createTextField,
   createTreeState,
   styles,
 } from 'fino:ui/components';
-import type { ExpanderPosition, FileTreeNode, MenuItem } from 'fino:ui/components';
+import type {
+  ExpanderPosition,
+  FileTreeNode,
+  MenuItem,
+  StatusVariant,
+  ToneVariant,
+} from 'fino:ui/components';
 import { render, getTerminalSize } from 'fino:tty/tui';
 import { signal as processSignal } from 'fino:process';
 import { PAGE_CSS, toHtml, htmlPage } from 'fino:ui/components/html';
@@ -213,10 +240,228 @@ function formsGroup(): StoryGroup {
   };
 }
 
+const TONE_VARIANTS: ToneVariant[] = ['accent', 'muted', 'danger', 'success', 'warning'];
+
+function indicatorsGroup(): StoryGroup {
+  const tagLabels = ['alpha', 'beta', 'gamma', 'delta'];
+  const tagColors: Record<string, ToneVariant> = {
+    alpha: 'accent',
+    beta: 'success',
+    gamma: 'warning',
+    delta: 'muted',
+  };
+  const tags = createSignal(tagLabels);
+  return {
+    title: 'Indicators',
+    stories: [
+      {
+        key: 'badge',
+        name: 'Badge',
+        controls: {
+          label: { type: 'text', default: 'beta' },
+          variant: { type: 'select', options: [...TONE_VARIANTS], default: 'accent' },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            <Badge label={String(args.label)} variant={args.variant as ToneVariant} />
+            <HStack gap={1}>
+              {TONE_VARIANTS.map((variant) => (
+                <Badge key={variant} label={variant} variant={variant} />
+              ))}
+            </HStack>
+          </VStack>
+        ),
+      },
+      {
+        key: 'icons',
+        name: 'Icon',
+        view: () => (
+          <Box direction="row" wrap gap={2} width={54}>
+            {Object.keys(ICONS).map((name) => (
+              <HStack key={name} gap={1} width={16}>
+                <Icon name={name} label={name} />
+                <Text style={[styles.muted]}>{name}</Text>
+              </HStack>
+            ))}
+          </Box>
+        ),
+      },
+      {
+        key: 'key-hint',
+        name: 'KeyHint',
+        controls: {
+          separator: { type: 'text', default: '·' },
+        },
+        view: (args) => (
+          <KeyHint
+            separator={String(args.separator)}
+            keys={[
+              { key: 'y', label: 'approve' },
+              { key: 'n', label: 'reject' },
+              { key: 'q', label: 'quit' },
+            ]}
+          />
+        ),
+      },
+      {
+        key: 'tags',
+        name: 'Tag & TagGroup',
+        view: () => (
+          <VStack gap={1}>
+            <TagGroup>
+              {tags.get().map((label) => (
+                <Tag
+                  key={label}
+                  id={`tag:${label}`}
+                  label={label}
+                  color={tagColors[label]}
+                  onRemove={() => tags.set(tags.get().filter((tag) => tag !== label))}
+                />
+              ))}
+            </TagGroup>
+            <HStack gap={1}>
+              <Button label="Reset" onClick={() => tags.set(tagLabels)} />
+              <Text style={[styles.muted]}>{`${tags.get().length} tags`}</Text>
+            </HStack>
+          </VStack>
+        ),
+      },
+    ],
+  };
+}
+
+function feedbackGroup(): StoryGroup {
+  const toasts = createSignal<Array<{ id: string; message: string; variant?: StatusVariant }>>([]);
+  let toastId = 0;
+  const pushToast = (variant: StatusVariant, message: string): void => {
+    toastId += 1;
+    toasts.set([
+      ...toasts.get(),
+      { id: String(toastId), message: `${message} #${toastId}`, variant },
+    ]);
+  };
+  return {
+    title: 'Feedback',
+    stories: [
+      {
+        key: 'spinner',
+        name: 'Spinner',
+        controls: {
+          tick: { type: 'number', default: 0, min: 0 },
+        },
+        view: (args) => (
+          <HStack gap={1}>
+            <Spinner tick={Number(args.tick)} />
+            <Text style={[styles.muted]}>{`tick ${String(args.tick)}`}</Text>
+          </HStack>
+        ),
+      },
+      {
+        key: 'progress',
+        name: 'ProgressBar',
+        controls: {
+          value: { type: 'number', default: 40, step: 10, min: 0, max: 100 },
+          showPercent: { type: 'boolean', default: true },
+        },
+        view: (args) => (
+          <ProgressBar
+            value={Number(args.value) / 100}
+            width={24}
+            showPercent={args.showPercent === true}
+          />
+        ),
+      },
+      {
+        key: 'toasts',
+        name: 'Toast & ToastStack',
+        view: () => (
+          <VStack gap={1}>
+            <HStack gap={1}>
+              <Button label="Info" onClick={() => pushToast('info', 'Heads up')} />
+              <Button label="Success" onClick={() => pushToast('success', 'Saved')} />
+              <Button label="Danger" onClick={() => pushToast('danger', 'Failed')} />
+              <Button label="Clear" onClick={() => toasts.set([])} />
+            </HStack>
+            <Toast message="Standalone toast" variant="warning" />
+            <Text style={[styles.muted]}>{`${toasts.get().length} stacked`}</Text>
+            <ToastStack toasts={toasts.get()} />
+          </VStack>
+        ),
+      },
+    ],
+  };
+}
+
+function navigationGroup(): StoryGroup {
+  const crumbTrail = [
+    { key: 'root', label: '~' },
+    { key: 'src', label: 'src' },
+    { key: 'ui', label: 'ui' },
+    { key: 'gallery', label: 'gallery.tsx' },
+  ];
+  const crumb = createSignal('gallery');
+  const pageAt = createSignal(1);
+  return {
+    title: 'Navigation',
+    stories: [
+      {
+        key: 'breadcrumbs',
+        name: 'Breadcrumbs',
+        view: () => (
+          <VStack gap={1}>
+            <Breadcrumbs items={crumbTrail} onNavigate={(key) => crumb.set(key)} />
+            <Text style={[styles.muted]}>{`navigated: ${crumb.get()}`}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'pagination',
+        name: 'Pagination',
+        controls: {
+          pages: { type: 'number', default: 5, min: 1, max: 12 },
+        },
+        view: (args) => {
+          const pages = Math.max(1, Number(args.pages));
+          const page = Math.min(pageAt.get(), pages);
+          return (
+            <VStack gap={1}>
+              <Pagination page={page} pages={pages} onChange={(next) => pageAt.set(next)} />
+              <Text style={[styles.muted]}>{`page ${page} of ${pages}`}</Text>
+            </VStack>
+          );
+        },
+      },
+      {
+        key: 'steps',
+        name: 'Steps',
+        controls: {
+          current: { type: 'select', options: ['plan', 'build', 'test', 'ship'], default: 'build' },
+        },
+        view: (args) => (
+          <Steps
+            current={String(args.current)}
+            steps={[
+              { key: 'plan', label: 'Plan' },
+              { key: 'build', label: 'Build' },
+              { key: 'test', label: 'Test' },
+              { key: 'ship', label: 'Ship' },
+            ]}
+          />
+        ),
+      },
+    ],
+  };
+}
+
 function dataGroup(): StoryGroup {
   const tree = createTreeState(['src']);
   const picked = createSignal<string | null>('a');
   const row = createSignal(0);
+  const virtualRows = 10;
+  const virtual = new VirtualScroll();
+  virtual.setCount(500);
+  const virtualVersion = createSignal(0);
+  const virtualBump = (): void => virtualVersion.set(virtualVersion.get() + 1);
   const nodes: FileTreeNode[] = [
     {
       key: 'src',
@@ -269,6 +514,64 @@ function dataGroup(): StoryGroup {
             onSelectRow={(index) => row.set(index)}
           />
         ),
+      },
+      {
+        key: 'timeline',
+        name: 'Timeline',
+        view: () => (
+          <Timeline
+            entries={[
+              { key: 'boot', title: 'Runtime booted', detail: '12ms' },
+              { key: 'build', title: 'Build finished', detail: '420ms', variant: 'success' },
+              { key: 'cache', title: 'Cache miss', detail: 'cold start', variant: 'warning' },
+              { key: 'deploy', title: 'Deploy failed', detail: 'rolled back', variant: 'danger' },
+              { key: 'retry', title: 'Retry scheduled', variant: 'info' },
+            ]}
+          />
+        ),
+      },
+      {
+        key: 'virtual-list',
+        name: 'VirtualList',
+        view: () => {
+          virtualVersion.get();
+          const slice = virtual.window(virtualRows);
+          return (
+            <VStack gap={1}>
+              <VirtualList
+                height={virtualRows}
+                window={slice}
+                offset={virtual.offset}
+                onMouse={(event) => {
+                  if (virtual.handleWheel(event, virtualRows)) {
+                    virtualBump();
+                    return true;
+                  }
+                  return false;
+                }}
+              >
+                {Array.from({ length: slice.end - slice.start }, (_, i) => {
+                  const index = slice.start + i;
+                  return (
+                    <Text key={String(index)}>{`item ${String(index).padStart(3, '0')}`}</Text>
+                  );
+                })}
+              </VirtualList>
+              <HStack gap={1}>
+                <Button
+                  label="Jump to end"
+                  onClick={() => {
+                    virtual.scrollToEnd(virtualRows);
+                    virtualBump();
+                  }}
+                />
+                <Text
+                  style={[styles.muted]}
+                >{`offset ${virtual.offset}/${virtual.totalRows}`}</Text>
+              </HStack>
+            </VStack>
+          );
+        },
       },
     ],
   };
@@ -335,9 +638,55 @@ function layoutGroup(): StoryGroup {
 function disclosureGroup(): StoryGroup {
   const details = createDisclosure(true);
   const tab = createSignal('one');
+  const expanded = createSignal(false);
+  const accordionSingle = createAccordion(true);
+  const accordionMulti = createAccordion();
   return {
     title: 'Disclosure',
     stories: [
+      {
+        key: 'expander',
+        name: 'Expander',
+        view: () => (
+          <VStack gap={1}>
+            <HStack gap={1}>
+              <Expander open={expanded.get()} onToggle={(next) => expanded.set(next)} />
+              <Text>marker before the label</Text>
+            </HStack>
+            <HStack gap={1}>
+              <Text>marker after the label</Text>
+              <Expander open={expanded.get()} onToggle={(next) => expanded.set(next)} />
+            </HStack>
+            <Text style={[styles.muted]}>{expanded.get() ? 'open' : 'closed'}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'accordion',
+        name: 'Accordion',
+        controls: {
+          single: { type: 'boolean', default: true },
+        },
+        view: (args) => {
+          const state = args.single === true ? accordionSingle : accordionMulti;
+          return (
+            <Accordion
+              id="gallery-accordion"
+              sections={[
+                { key: 'general', title: 'General', content: <Text>Session defaults.</Text> },
+                { key: 'network', title: 'Network', content: <Text>Proxy and TLS.</Text> },
+                {
+                  key: 'advanced',
+                  title: 'Advanced',
+                  content: <Text style={[styles.muted]}>Debug flags.</Text>,
+                },
+              ]}
+              openKeys={state.openKeys.get()}
+              onToggle={state.toggle}
+            />
+          );
+        },
+      },
       {
         key: 'details',
         name: 'Details',
@@ -383,9 +732,48 @@ function overlayGroup(): StoryGroup {
   const model = createSignal<string | null>(null);
   const menu = createDisclosure(false);
   const menuAt = createSignal({ x: 4, y: 1 });
+  const popover = createDisclosure(false);
   return {
     title: 'Menus & overlays',
     stories: [
+      {
+        key: 'tooltip',
+        name: 'Tooltip',
+        controls: {
+          open: { type: 'boolean', default: true },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            <Text id="tooltip-anchor">Save (anchor)</Text>
+            <Tooltip
+              text="Writes the buffer to disk"
+              open={args.open === true}
+              anchorId="tooltip-anchor"
+            />
+          </VStack>
+        ),
+      },
+      {
+        key: 'popover',
+        name: 'Popover',
+        view: () => (
+          <VStack gap={1}>
+            <Button
+              id="popover-trigger"
+              label={popover.open.get() ? 'Close popover' : 'Open popover'}
+              onClick={() => popover.set(!popover.open.get())}
+            />
+            <Popover
+              open={popover.open.get()}
+              anchorId="popover-trigger"
+              onDismiss={() => popover.set(false)}
+            >
+              <Text>Anchored beneath the trigger.</Text>
+              <Text style={[styles.dim]}>esc dismisses</Text>
+            </Popover>
+          </VStack>
+        ),
+      },
       {
         key: 'menu-list',
         name: 'MenuList',
@@ -473,7 +861,16 @@ function overlayGroup(): StoryGroup {
  * story state, so two galleries never share signals.
  */
 export function catalogStories(): StoryGroup[] {
-  return [layoutGroup(), formsGroup(), disclosureGroup(), overlayGroup(), dataGroup()];
+  return [
+    layoutGroup(),
+    formsGroup(),
+    indicatorsGroup(),
+    feedbackGroup(),
+    navigationGroup(),
+    disclosureGroup(),
+    overlayGroup(),
+    dataGroup(),
+  ];
 }
 
 function storyItems(groups: StoryGroup[]): MenuItem[] {
