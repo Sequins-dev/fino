@@ -11,7 +11,8 @@
  * before layout and reconciliation, so the retained tree and the event
  * dispatcher only ever see primitives.
  */
-import { h } from 'fino:ui';
+import { h, createSignal } from 'fino:ui';
+import { timeout as loopTimeout } from '../runtime/loop.ts';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import {
@@ -705,8 +706,8 @@ function tooltip(props: Props): VNode {
 function toast(props: Props): VNode {
   const { message, variant } = props as ToastProps;
   return (
-    <Box border paddingX={1} borderColor={styles[variant ?? 'info'].fg}>
-      <Text>{message}</Text>
+    <Box border borderColor={styles[variant ?? 'info'].fg}>
+      <Text>{` ${message} `}</Text>
     </Box>
   );
 }
@@ -716,7 +717,7 @@ function toastStack(props: Props): VNode {
   return (
     <Box>
       {toasts.length > 0 ? (
-        <Layer anchor={{ x: 9999, y: -1 }} placement="bottom-end">
+        <Layer anchor={{ x: 9999, y: -1 }} placement="bottom-end" transparent>
           <Box direction="column" align="end">
             {toasts.map((entry) => (
               <Toast key={entry.id} message={entry.message} variant={entry.variant} />

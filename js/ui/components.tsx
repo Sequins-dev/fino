@@ -838,8 +838,8 @@ export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', 
 
 /** Props accepted by `Spinner`. */
 export interface SpinnerProps extends FlexChildProps, Props {
-  /** Current animation step — the caller owns the clock. */
-  tick: number;
+  /** Optional fixed frame index; omitted, the render target animates. */
+  tick?: number;
   frames?: string[];
   id?: string;
 }
