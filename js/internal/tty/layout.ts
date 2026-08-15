@@ -864,15 +864,22 @@ function placeFlex(node: LayoutNode, spec: BoxSpec, innerW: number, innerH: numb
         weightLeft -= item.cl.grow;
       }
       free = 0;
-    } else if (free < 0 && shrinkTotal > 0) {
+    } else if (free < 0) {
+      // A child that asked to grow has also accepted being flexible, so when
+      // the line overflows and nobody opted into shrinking, those children
+      // give the space back rather than pushing the row off screen.
+      const weightOf = (item: Item): number => (shrinkTotal > 0 ? item.cl.shrink : item.cl.grow);
+      let weightLeft = shrinkTotal > 0 ? shrinkTotal : growTotal;
       let deficit = -free;
-      let weightLeft = shrinkTotal;
-      for (const item of line) {
-        if (item.cl.shrink <= 0) continue;
-        const share = Math.min(item.main, Math.floor((deficit * item.cl.shrink) / weightLeft));
-        item.main -= share;
-        deficit -= share;
-        weightLeft -= item.cl.shrink;
+      if (weightLeft > 0) {
+        for (const item of line) {
+          const weight = weightOf(item);
+          if (weight <= 0) continue;
+          const share = Math.min(item.main, Math.floor((deficit * weight) / weightLeft));
+          item.main -= share;
+          deficit -= share;
+          weightLeft -= weight;
+        }
       }
       free = -deficit;
     }

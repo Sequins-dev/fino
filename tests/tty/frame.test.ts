@@ -72,9 +72,9 @@ describe('fino:tty/frame', () => {
     const before = frameOf([textRow('one'), textRow('two'), textRow('three')], 10);
     const after = frameOf([textRow('one'), textRow('TWO'), textRow('three')], 10);
     const paint = frameToScreen(after, before);
-    t.equal(paint, '\x1b[2;1HTWO\x1b[K', 'only the changed row is written');
+    t.equal(paint, '\x1b[2;1H\x1b[KTWO', 'only the changed row is written, erased before write');
     t.ok(
-      frameToScreen(after, null).includes('\x1b[1;1Hone\x1b[K'),
+      frameToScreen(after, null).includes('\x1b[1;1H\x1b[Kone'),
       'no previous frame paints everything',
     );
     const shrunk = frameOf([textRow('one')], 10);
@@ -83,7 +83,7 @@ describe('fino:tty/frame', () => {
       'rows beyond the new height are erased',
     );
     const offset = frameToScreen(after, before, { row: 5, column: 3 });
-    t.equal(offset, '\x1b[6;3HTWO\x1b[K', 'origin offsets addressing');
+    t.equal(offset, '\x1b[6;3H\x1b[KTWO', 'origin offsets addressing');
   });
 
   it('repaints everything when the width changes', (t) => {

@@ -448,7 +448,13 @@ document.addEventListener('click', (event) => {
   if (!button) return;
   const code = button.closest('.ui-code')?.querySelector('code');
   if (!code || !navigator.clipboard) return;
-  navigator.clipboard.writeText(code.textContent || '').then(() => {
+  // Line numbers live inside <code>, so copy the content spans when present
+  // — otherwise the clipboard would carry "1const a = 1;2const b = 2;".
+  const parts = code.querySelectorAll('.ui-code-content');
+  const text = parts.length
+    ? Array.from(parts).map((part) => part.textContent || '').join(String.fromCharCode(10))
+    : code.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
     const label = button.textContent;
     button.textContent = 'Copied';
     button.classList.add('is-copied');

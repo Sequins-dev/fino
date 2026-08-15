@@ -206,7 +206,10 @@ export function frameToScreen(
   for (let i = 0; i < frame.rows.length; i++) {
     const encoded = rowToAnsi(frame.rows[i]!, { clip: frame.width });
     if (before && before[i] === encoded) continue;
-    out += `\x1b[${origin.row + i};${origin.column}H${encoded}\x1b[K`;
+    // Erase before writing: on a row that fills the terminal the cursor stays
+    // parked in the last column with a wrap pending, so a trailing erase would
+    // delete the character just written.
+    out += `\x1b[${origin.row + i};${origin.column}H\x1b[K${encoded}`;
   }
   if (previous) {
     for (let i = frame.rows.length; i < previous.rows.length; i++) {

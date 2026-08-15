@@ -1690,27 +1690,37 @@ function codeHtml(node: VNode): VNode {
   // The copy button reads its sibling <code>'s textContent client-side
   // (internal:ui/web/client's `[data-fi-copy]` listener) rather than
   // duplicating the (potentially large) source into a data-* attribute.
+  const copyButton =
+    copyable === true
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'ui-copy',
+            'aria-label': 'Copy code',
+            'data-fi-copy': '1',
+          },
+          'Copy',
+        )
+      : null;
+  // The bar exists only to carry a filename. Without one the copy button
+  // overlays the code area instead, so an unnamed block keeps its full height.
   const bar =
-    filename !== undefined || copyable === true
+    filename !== undefined
       ? h(
           'figcaption',
           { className: 'ui-code-bar' },
-          h('span', { className: 'ui-code-filename' }, filename ?? ''),
-          copyable === true
-            ? h(
-                'button',
-                {
-                  type: 'button',
-                  className: 'ui-copy',
-                  'aria-label': 'Copy code',
-                  'data-fi-copy': '1',
-                },
-                'Copy',
-              )
-            : null,
+          h('span', { className: 'ui-code-filename' }, filename),
+          copyButton,
         )
       : null;
-  return h('figure', { className: 'ui-code', ...idAttr(id) }, bar, pre);
+  return h(
+    'figure',
+    { className: 'ui-code', ...idAttr(id) },
+    bar,
+    bar === null ? copyButton : null,
+    pre,
+  );
 }
 
 function inlineCodeHtml(node: VNode): VNode {
@@ -2749,12 +2759,15 @@ button.ui-link { background: none; border: none; padding: 0; font: inherit; }
 }
 .ui-code-bar + pre { border-top-left-radius: 0; border-top-right-radius: 0; }
 .ui-code-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-code { position: relative; }
 .ui-copy {
   opacity: 0; flex: none; background: var(--ui-surface);
   border: 1px solid var(--ui-border-strong); border-radius: 0.25rem;
-  padding: 0.125rem 0.5rem; font: inherit; color: inherit; cursor: pointer;
-  transition: opacity 0.1s;
+  padding: 0.125rem 0.5rem; font: inherit; font-size: 0.8rem; color: inherit;
+  cursor: pointer; transition: opacity 0.1s;
 }
+/* With no filename bar to sit in, the button floats over the code's top-right. */
+.ui-code > .ui-copy { position: absolute; top: 0.375rem; right: 0.375rem; z-index: 1; }
 .ui-code:hover .ui-copy, .ui-code:focus-within .ui-copy, .ui-copy:focus-visible { opacity: 1; }
 .ui-copy.is-copied { opacity: 1; }
 .ui-field { display: flex; flex-direction: column; gap: 0.25rem; width: fit-content; cursor: default; }
