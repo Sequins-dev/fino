@@ -128,6 +128,19 @@ This is what makes a component's location a deployment decision. A theme, a
 plugin, or a page template that stays inside the portable contract runs
 in-process, in a sandboxed realm, or in a browser without changing.
 
+## The component catalog
+
+The vocabulary components are written in lives in
+[`fino:ui/components`](./ui/components.md): structural primitives (`Box`,
+`Text`, `Clickable`, …) and a semantic catalog (`Checkbox`, `Details`,
+`Select`, …). The tree they build is purely semantic — a checkbox is a
+`ui:checkbox` node carrying its values, and each render target owns the
+presentation. The terminal is a retained host in `fino:tty/tui` with its own
+lowering to glyph compositions, and `fino:ui/components/html` lowers the same
+nodes to native web markup. `fino:ui/gallery` — run as `fino gallery` —
+renders the catalog's stories in both targets, so a component can be seen (and
+tested) everywhere it will ship.
+
 ## Choosing
 
 | You want | Use |
@@ -136,7 +149,9 @@ in-process, in a sandboxed realm, or in a browser without changing.
 | Output that tracks state | `createRoot()` + a sink |
 | Untrusted or async-loading components | `renderRealm()` |
 | Many pages from one component | `renderRealmAll()` |
-| A mutable host (DOM, terminal cells) | `hostSink()` |
+| A live terminal app | `render()` in `fino:tty/tui` |
+| A mutable host (the DOM) | `hostSink()` |
 
-See [Server-Driven Web UI](./ui/web.md) for the hypermedia application layer
+See [The Component Catalog](./ui/components.md) for the component vocabulary
+and [Server-Driven Web UI](./ui/web.md) for the hypermedia application layer
 built on these pieces.
