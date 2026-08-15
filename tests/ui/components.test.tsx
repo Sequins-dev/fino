@@ -116,7 +116,7 @@ describe('fino:ui/components layout and forms', () => {
     );
     t.equal(strip(on[0]!), '[x] alpha', 'checked box');
     t.equal(strip(on[1]!), '[ ] beta', 'unchecked box');
-    t.equal(strip(on[2]!), '(•) one', 'selected radio');
+    t.equal(strip(on[2]!), '● one', 'selected radio');
     t.equal(strip(on[3]!), '──● power', 'switch on');
     t.equal(strip(on[4]!), '●── power', 'switch off');
     t.equal(strip(on[5]!), '[ Save ]', 'button');
@@ -198,10 +198,10 @@ describe('fino:ui/components layout and forms', () => {
   });
 
   it('paints the selected range inverse', (t) => {
-    const frame = layoutFrame(
-      <TextInput value="hello world" selection={{ start: 6, end: 11 }} />,
-      { width: 20, height: 1 },
-    );
+    const frame = layoutFrame(<TextInput value="hello world" selection={{ start: 6, end: 11 }} />, {
+      width: 20,
+      height: 1,
+    });
     const segments = frame.rows[0]!.segments;
     const selected = segments.find((segment) => segment.text === 'world');
     t.ok(selected !== undefined, 'selection splits into its own segment');
@@ -305,9 +305,7 @@ describe('fino:ui/components disclosure', () => {
   it('toggles a standalone expander by click', (t) => {
     const app = live();
     const open = createSignal(false);
-    const view = (): VNode => (
-      <Expander open={open.get()} onToggle={(next) => open.set(next)} />
-    );
+    const view = (): VNode => <Expander open={open.get()} onToggle={(next) => open.set(next)} />;
     app.render(view());
     t.equal(strip(app.text()[0]!), '▸', 'closed glyph');
     click(app, 0, 0);

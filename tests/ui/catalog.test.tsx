@@ -386,10 +386,10 @@ describe('fino:ui/components catalog data views', () => {
       { key: 'readme', label: 'README.md' },
     ];
     const frame = lines(<FileTree nodes={nodes} expanded={['src']} selectedKey="a" />, 24, 4);
-    t.equal(strip(frame[0]!), '📂 src', 'expanded directory shows the open folder icon');
-    t.equal(strip(frame[1]!), '  📜 a.ts', 'leaf shows its extension icon, indented');
-    t.equal(strip(frame[2]!), '  📁 lib', 'collapsed nested directory shows the closed folder');
-    t.equal(strip(frame[3]!), '📝 README.md', 'top-level leaf aligns icon-then-name');
+    t.equal(strip(frame[0]!), '▾ src', 'expanded directory shows the open folder icon');
+    t.equal(strip(frame[1]!), '  ◆ a.ts', 'leaf shows its extension icon, indented');
+    t.equal(strip(frame[2]!), '  ▸ lib', 'collapsed nested directory shows the closed folder');
+    t.equal(strip(frame[3]!), '¶ README.md', 'top-level leaf aligns icon-then-name');
   });
 
   it('resolves icons by precedence: explicit, user table, built-in, default', (t) => {
@@ -399,16 +399,20 @@ describe('fino:ui/components catalog data views', () => {
     t.equal(fileIcon({ label: 'x.weird' }), 'file', 'unknown extension defaults');
     t.equal(fileIcon({ label: 'Makefile' }), 'file', 'extensionless defaults');
     t.equal(fileIcon({ label: 'dir', children: [] }), 'folder', 'closed directory');
-    t.equal(fileIcon({ label: 'dir', children: [] }, undefined, true), 'folder-open', 'open directory');
+    t.equal(
+      fileIcon({ label: 'dir', children: [] }, undefined, true),
+      'folder-open',
+      'open directory',
+    );
     t.equal(
       fileIcon({ label: 'dir', children: [] }, undefined, true, { open: 'code', closed: 'doc' }),
       'code',
       'folderIcons override the folder names',
     );
-    t.equal(iconForm('code', 'tui'), '📜', 'registry resolves the terminal form');
+    t.equal(iconForm('code', 'tui'), '◆', 'registry resolves the terminal form');
     t.equal(iconForm('code', 'html'), '📜', 'registry resolves the web form');
     t.equal(iconForm('code', 'tui', { code: { tui: 'C', html: 'C' } }), 'C', 'overrides win');
-    t.equal(iconForm('no-such-icon', 'tui'), '📄', 'unknown names fall back to the file icon');
+    t.equal(iconForm('no-such-icon', 'tui'), '·', 'unknown names fall back to the file icon');
   });
 
   it('toggles directories on the icon and selects on the name', (t) => {
@@ -429,13 +433,13 @@ describe('fino:ui/components catalog data views', () => {
       />
     );
     app.render(view());
-    t.equal(strip(app.text()[0]!), '📁 src', 'starts collapsed with the closed folder icon');
+    t.equal(strip(app.text()[0]!), '▸ src', 'starts collapsed with the closed folder icon');
     click(app, 0, 0);
     t.equal(tree.isExpanded('src'), true, 'icon click expands');
     t.deepEqual(picked, [], 'icon click does not select');
     app.render(view());
-    t.equal(strip(app.text()[0]!), '📂 src', 'open directory switches to the open folder icon');
-    t.equal(strip(app.text()[1]!), '  📜 a.ts', 'child row appears');
+    t.equal(strip(app.text()[0]!), '▾ src', 'open directory switches to the open folder icon');
+    t.equal(strip(app.text()[1]!), '  ◆ a.ts', 'child row appears');
     click(app, 4, 0);
     click(app, 6, 1);
     t.deepEqual(picked, ['src', 'a'], 'name clicks select directory and leaf');

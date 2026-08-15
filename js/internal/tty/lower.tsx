@@ -6,7 +6,7 @@
  * checkbox is `ui:checkbox` carrying `checked`/`label`/`onChange`, with no
  * presentation attached. This module owns the terminal look: each semantic
  * node lowers to the box/text/clickable composition the layout engine paints
- * (`[x]`, `(•)`, `▸`, `[ label ]`, `──●`, …), forwarding handlers onto the
+ * (`[x]`, `●`, `▸`, `[ label ]`, `──●`, …), forwarding handlers onto the
  * lowered `Clickable`s. `fino:tty/tui` runs `lowerTui()` over every tree
  * before layout and reconciliation, so the retained tree and the event
  * dispatcher only ever see primitives.
@@ -124,7 +124,7 @@ function radio(props: Props): VNode {
   return (
     <Clickable id={id} direction="row" gap={1} disabled={disabled} onClick={onSelect} {...rest}>
       <Text style={disabled ? [styles.dim] : focused ? [styles.bold, styles.accent] : []}>
-        {selected ? '(•)' : '( )'}
+        {selected ? '●' : '○'}
       </Text>
       {label !== undefined ? <Text dim={disabled}>{label}</Text> : null}
     </Clickable>

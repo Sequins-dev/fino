@@ -375,9 +375,20 @@ function actionForm(opts: FormOptions, ...children: NormalizedChild[]): VNode {
   const hidden =
     opts.act !== undefined ? [h('input', { type: 'hidden', name: 'do', value: opts.act })] : [];
   if (actions!.ref !== undefined && actions!.ref !== null) {
-    const props: Props = { action: actions!.ref, method: 'post', className: 'ui-action' };
+    // The web client reads the envelope from these reserved fields when a
+    // form was server-rendered rather than mounted from a portable tree.
+    const ref = actions!.ref as { url: string; view: string; revision: number; request: string };
+    const props: Props = { action: ref.url, method: 'post', className: 'ui-action' };
     if (opts.change === true) props['data-fi-change'] = '';
-    return h('form', props, ...hidden, ...children);
+    return h(
+      'form',
+      props,
+      h('input', { type: 'hidden', name: '_view', value: ref.view }),
+      h('input', { type: 'hidden', name: '_ver', value: String(ref.revision) }),
+      h('input', { type: 'hidden', name: '_nonce', value: ref.request }),
+      ...hidden,
+      ...children,
+    );
   }
   return h(
     'form',
@@ -774,7 +785,7 @@ function dismissButton(onDismiss: unknown): VNode | null {
   if (actions === null || dismiss === undefined) return null;
   const act = register(() => dismiss());
   return actionForm(
-    null,
+    {},
     h('button', { className: 'ui-dismiss', name: 'do', value: act, 'aria-label': 'Dismiss' }, '×'),
   );
 }
@@ -1108,7 +1119,6 @@ function fileTreeHtml(node: VNode): VNode {
     ? actionForm({}, tree)
     : tree;
 }
-
 
 function timelineHtml(node: VNode): VNode {
   const { entries, id } = node.props as TimelineProps;
@@ -1482,7 +1492,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-v
 .ui-table tbody tr:hover { background: var(--ui-surface); }
 .ui-table tr.is-selected td { background: rgb(136 192 208 / 0.14); }
 .ui-tree { width: fit-content; min-width: 14rem; }
-.ui-tree summary { cursor: pointer; }
+.ui-tree summary { cursor: pointer; }\n.ui-tree-row { display: flex; align-items: center; gap: 0.375rem; text-align: left; justify-content: flex-start; width: 100%; }\nbutton.ui-tree-row { background: none; border: none; color: inherit; font: inherit; cursor: pointer; }
 .ui-tree summary:hover, .ui-tree-leaf:hover { background: var(--ui-surface); }
 .ui-tree-children { margin-left: 0.875rem; border-left: 1px solid var(--ui-border); padding-left: 0.5rem; }
 .ui-tree .is-selected { background: rgb(136 192 208 / 0.14); font-weight: 600; }
