@@ -35,6 +35,7 @@ import {
   TabList,
   Text,
   Toast,
+  paginationRange,
   styles,
 } from 'fino:ui/components';
 import type {
@@ -71,6 +72,7 @@ import type {
   ToastProps,
   ToastStackProps,
   TooltipProps,
+  VirtualListProps,
 } from 'fino:ui/components';
 
 type Composer = (props: Props, children: NormalizedChild[]) => VNode;
@@ -593,29 +595,72 @@ function breadcrumbs(props: Props): VNode {
 }
 
 function pagination(props: Props): VNode {
-  const { page, pages, onChange, id, ...rest } = props as PaginationProps;
-  const atStart = page <= 1;
-  const atEnd = page >= pages;
+  const { page, pages, onChange, siblings, id, ...rest } = props as PaginationProps;
+  const total = Math.max(1, Math.floor(pages));
+  const current = Math.min(Math.max(1, Math.floor(page)), total);
+  const atStart = current <= 1;
+  const atEnd = current >= total;
+  const range = paginationRange(current, total, siblings);
   return (
     <Box direction="row" gap={1} id={id} {...rest}>
       <Clickable
         id={id !== undefined ? `${id}:prev` : undefined}
         focusable={false}
         disabled={atStart}
-        onClick={atStart ? undefined : () => onChange(page - 1)}
+        onClick={atStart ? undefined : () => onChange(current - 1)}
       >
         <Text style={atStart ? [styles.dim] : [styles.accent]}>‹</Text>
       </Clickable>
-      <Text>{`${page} / ${pages}`}</Text>
+      {range.map((entry, index) =>
+        entry === 'ellipsis' ? (
+          <Text key={`ellipsis:${index}`} style={[styles.dim]}>
+            …
+          </Text>
+        ) : (
+          <Clickable
+            key={String(entry)}
+            id={id !== undefined ? `${id}:${entry}` : undefined}
+            focusable={false}
+            disabled={entry === current}
+            onClick={entry === current ? undefined : () => onChange(entry)}
+          >
+            <Text style={entry === current ? [styles.bold, styles.accent] : [styles.dim]}>
+              {String(entry)}
+            </Text>
+          </Clickable>
+        ),
+      )}
       <Clickable
         id={id !== undefined ? `${id}:next` : undefined}
         focusable={false}
         disabled={atEnd}
-        onClick={atEnd ? undefined : () => onChange(page + 1)}
+        onClick={atEnd ? undefined : () => onChange(current + 1)}
       >
         <Text style={atEnd ? [styles.dim] : [styles.accent]}>›</Text>
       </Clickable>
     </Box>
+  );
+}
+
+function virtualList(props: Props, children: NormalizedChild[]): VNode {
+  const {
+    height,
+    window: slice,
+    offset,
+    onMouse,
+    onScroll: _onScroll,
+    ...rest
+  } = props as VirtualListProps;
+  return h(
+    'clickable',
+    { direction: 'column', height, onMouse, focusable: false, ...rest },
+    h(
+      'scrollview',
+      { height, offset },
+      slice.topPad > 0 ? h('spacer', { height: slice.topPad }) : null,
+      children,
+      slice.bottomPad > 0 ? h('spacer', { height: slice.bottomPad }) : null,
+    ),
   );
 }
 
@@ -906,6 +951,7 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:table': table,
   'ui:file-tree': fileTree,
   'ui:timeline': timeline,
+  'ui:virtual-list': virtualList,
 };
 
 /**

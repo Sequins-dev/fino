@@ -418,14 +418,21 @@ function navigationGroup(): StoryGroup {
         key: 'pagination',
         name: 'Pagination',
         controls: {
-          pages: { type: 'number', default: 5, min: 1, max: 12 },
+          pages: { type: 'number', default: 20, min: 1, max: 30 },
+          siblings: { type: 'number', label: 'Siblings', default: 1, min: 0, max: 3 },
         },
         view: (args) => {
           const pages = Math.max(1, Number(args.pages));
+          const siblings = Math.max(0, Number(args.siblings));
           const page = Math.min(pageAt.get(), pages);
           return (
             <VStack gap={1}>
-              <Pagination page={page} pages={pages} onChange={(next) => pageAt.set(next)} />
+              <Pagination
+                page={page}
+                pages={pages}
+                siblings={siblings}
+                onChange={(next) => pageAt.set(next)}
+              />
               <Text style={[styles.muted]}>{`page ${page} of ${pages}`}</Text>
             </VStack>
           );
@@ -548,6 +555,10 @@ function dataGroup(): StoryGroup {
                     return true;
                   }
                   return false;
+                }}
+                onScroll={(offset) => {
+                  virtual.scrollTo(offset, virtualRows);
+                  virtualBump();
                 }}
               >
                 {Array.from({ length: slice.end - slice.start }, (_, i) => {

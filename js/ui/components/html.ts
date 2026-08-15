@@ -39,7 +39,7 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
-import { fileIcon, iconForm } from 'fino:ui/components';
+import { fileIcon, iconForm, paginationRange } from 'fino:ui/components';
 import type {
   BadgeProps,
   BreadcrumbsProps,
@@ -76,6 +76,7 @@ import type {
   ToastProps,
   ToastStackProps,
   TooltipProps,
+  VirtualListProps,
 } from 'fino:ui/components';
 
 const NAMED_CSS: Record<string, string> = {
@@ -949,8 +950,11 @@ function breadcrumbsHtml(node: VNode): VNode {
 }
 
 function paginationHtml(node: VNode): VNode {
-  const { page, pages, onChange, id } = node.props as PaginationProps;
+  const { page, pages, onChange, siblings, id } = node.props as PaginationProps;
   const change = handlerOf<(page: number) => void>(onChange);
+  const total = Math.max(1, Math.floor(pages));
+  const current = Math.min(Math.max(1, Math.floor(page)), total);
+  const range = paginationRange(current, total, siblings);
   const step = (target: number, blocked: boolean, label: string): VNode => {
     const attrs: Props = { className: 'ui-button ui-pager-step' };
     if (actions !== null && change !== undefined && !blocked) {
@@ -962,12 +966,29 @@ function paginationHtml(node: VNode): VNode {
     }
     return h('button', attrs, label);
   };
+  const pageButton = (target: number): VNode => {
+    const isCurrent = target === current;
+    const attrs: Props = {
+      className: `ui-button ui-pager-page${isCurrent ? ' is-current' : ''}`,
+    };
+    if (isCurrent) attrs['aria-current'] = 'page';
+    if (actions !== null && change !== undefined && !isCurrent) {
+      attrs.name = 'do';
+      attrs.value = register(() => change(target));
+    } else {
+      attrs.type = 'button';
+      if (isCurrent || change === undefined) attrs.disabled = true;
+    }
+    return h('button', attrs, String(target));
+  };
   const nav = h(
     'nav',
     { className: 'ui-pager', ...idAttr(id) },
-    step(page - 1, page <= 1, '‹'),
-    h('span', null, `${page} / ${pages}`),
-    step(page + 1, page >= pages, '›'),
+    step(current - 1, current <= 1, '‹'),
+    ...range.map((entry) =>
+      entry === 'ellipsis' ? h('span', { className: 'ui-pager-ellipsis' }, '…') : pageButton(entry),
+    ),
+    step(current + 1, current >= total, '›'),
   );
   return actions !== null && change !== undefined ? actionForm({}, nav) : nav;
 }
@@ -1152,6 +1173,71 @@ function timelineHtml(node: VNode): VNode {
   );
 }
 
+// Fixed row height (px) for `ui:virtual-list` in the HTML target. The
+// container's height and its top/bottom spacers all size off this same
+// constant, and it rides along as `data-fi-row-height` so the client can
+// convert a scroll container's `scrollTop` back into the row-offset unit
+// `VirtualScroll` works in — see internal:ui/web/client's scroll listener.
+const VIRTUAL_ROW_PX = 24;
+
+function virtualSpacerHtml(rows: number): VNode {
+  return h('div', {
+    style: { height: `${rows * VIRTUAL_ROW_PX}px`, flex: '0 0 auto' },
+    'aria-hidden': 'true',
+  });
+}
+
+/**
+ * `ui:virtual-list` on the web: there is no wheel event to hook, so instead
+ * of `onMouse` this wires `onScroll` to a real scrollable `<div>` — marked
+ * `data-fi-scroll` with its row height, and (when interactive) wrapped in an
+ * action form carrying a hidden `value` field the client fills in with the
+ * scrolled-to row before submitting. Without an `onScroll` handler the
+ * container renders inert, same as any other handler-less control.
+ */
+function virtualListHtml(node: VNode): VNode {
+  const {
+    height,
+    window: slice,
+    offset,
+    onMouse: _onMouse,
+    onScroll,
+    id,
+    ...rest
+  } = node.props as VirtualListProps;
+  const scroll = handlerOf<(offset: number) => void>(onScroll);
+  const css: Record<string, string> = {
+    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+  };
+  sizeCss(rest, css);
+  flexChildCss(rest, css);
+  styleCss(resolveStyle(rest as Props), css);
+  css.height = `${Math.max(1, Math.floor(height)) * VIRTUAL_ROW_PX}px`;
+  const children = transformChildren(node.children);
+  const attrs: Props = { className: 'ui-virtual', style: css, ...idAttr(id) };
+  const interactive = actions !== null && scroll !== undefined;
+  if (interactive) {
+    attrs['data-fi-scroll'] = '1';
+    attrs['data-fi-row-height'] = String(VIRTUAL_ROW_PX);
+  }
+  const container = h(
+    'div',
+    attrs,
+    slice.topPad > 0 ? virtualSpacerHtml(slice.topPad) : null,
+    ...children,
+    slice.bottomPad > 0 ? virtualSpacerHtml(slice.bottomPad) : null,
+  );
+  if (!interactive) return container;
+  const act = register((value) => scroll!(Number(value ?? 0)));
+  return actionForm(
+    { act, change: true },
+    h('input', { type: 'hidden', name: 'value', value: String(Math.max(0, Math.floor(offset))) }),
+    container,
+  );
+}
+
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
   'ui:button': buttonHtml,
@@ -1188,6 +1274,7 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:table': tableHtml,
   'ui:file-tree': fileTreeHtml,
   'ui:timeline': timelineHtml,
+  'ui:virtual-list': virtualListHtml,
 };
 
 /**
@@ -1484,8 +1571,11 @@ input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-v
 .ui-crumbs a { color: var(--ui-muted); }
 .ui-crumbs a:hover { color: var(--ui-fg); text-decoration: none; }
 .ui-crumbs-sep { color: var(--ui-muted); opacity: 0.6; }
-.ui-pager { display: inline-flex; align-items: center; gap: 0.75rem; }
+.ui-pager { display: inline-flex; align-items: center; gap: 0.375rem; }
 .ui-pager-step { padding: 0.125rem 0.625rem; line-height: 1.4; }
+.ui-pager-page { min-width: 2rem; padding: 0.125rem 0.5rem; line-height: 1.4; text-align: center; }
+.ui-pager-page.is-current { background: var(--ui-accent); color: var(--tui-bg); border-color: var(--ui-accent); cursor: default; }
+.ui-pager-ellipsis { padding: 0 0.25rem; color: var(--ui-muted); }
 .ui-steps { display: flex; align-items: center; gap: 1rem; list-style: none; padding: 0; }
 .ui-steps li { display: flex; align-items: center; gap: 0.5rem; }
 .ui-steps li + li::before {
@@ -1528,6 +1618,7 @@ input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-v
 .ui-timeline li.ui-tone-danger::before { background: var(--ui-danger); }
 .ui-timeline li.ui-tone-warning::before { background: var(--ui-warning); }
 .ui-timeline-detail { color: var(--ui-muted); font-size: 0.85em; }
+.ui-virtual { border: 1px solid var(--ui-border); border-radius: var(--ui-radius); }
 .ui-action { display: contents; }
 button.ui-tab { cursor: pointer; }
 .ui-crumbs .ui-crumb { color: var(--ui-muted); }

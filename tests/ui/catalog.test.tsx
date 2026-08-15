@@ -29,6 +29,7 @@ import {
   createTreeState,
   fileIcon,
   iconForm,
+  paginationRange,
 } from 'fino:ui/components';
 import type { FileTreeNode } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
@@ -218,7 +219,11 @@ describe('fino:ui/components catalog chips and navigation', () => {
       <Pagination page={page.get()} pages={3} onChange={(next) => page.set(next)} />
     );
     app.render(view());
-    t.equal(strip(app.text()[0]!), '‹ 2 / 3 ›', 'pager row');
+    t.equal(
+      strip(app.text()[0]!),
+      '‹ 1 2 3 ›',
+      'pager row: direct page buttons, no ellipses to fit',
+    );
     click(app, 0, 0);
     t.equal(page.get(), 1, 'left chevron pages back');
     app.render(view());
@@ -231,6 +236,80 @@ describe('fino:ui/components catalog chips and navigation', () => {
     app.render(view());
     click(app, 8, 0);
     t.equal(page.get(), 3, 'right chevron is disabled at the last page');
+  });
+
+  it('jumps to a middle page directly and keeps the current page and ellipses inert', (t) => {
+    const app = live(30, 1);
+    const page = createSignal(7);
+    const view = (): VNode => (
+      <Pagination page={page.get()} pages={20} siblings={1} onChange={(next) => page.set(next)} />
+    );
+    app.render(view());
+    // '‹ 1 … 6 7 8 … 20 ›' — indices: ‹0 1sp 2'1' 3sp 4… 5sp 6'6' 7sp 8'7' 9sp 10'8' 11sp 12… 13sp 14-15'20' 16sp 17›
+    t.equal(
+      strip(app.text()[0]!),
+      '‹ 1 … 6 7 8 … 20 ›',
+      'window sits around the current page with boundary anchors',
+    );
+    click(app, 4, 0);
+    t.equal(page.get(), 7, 'clicking an ellipsis does nothing');
+    click(app, 8, 0);
+    t.equal(page.get(), 7, 'clicking the current page does nothing');
+    click(app, 10, 0);
+    t.equal(page.get(), 8, 'clicking a middle page jumps straight to it');
+  });
+});
+
+describe('fino:ui/components paginationRange', () => {
+  it('windows a middle page with anchors and ellipses on both sides', (t) => {
+    t.deepEqual(
+      paginationRange(7, 20, 1),
+      [1, 'ellipsis', 6, 7, 8, 'ellipsis', 20],
+      'siblings around the current page, anchors, and both ellipses',
+    );
+  });
+
+  it('drops the left ellipsis when the window touches the first page', (t) => {
+    t.deepEqual(
+      paginationRange(2, 20, 1),
+      [1, 2, 3, 'ellipsis', 20],
+      'near the start only the right side needs an ellipsis',
+    );
+  });
+
+  it('drops the right ellipsis when the window touches the last page', (t) => {
+    t.deepEqual(
+      paginationRange(19, 20, 1),
+      [1, 'ellipsis', 18, 19, 20],
+      'near the end only the left side needs an ellipsis',
+    );
+  });
+
+  it('collapses a one-page gap into the page instead of an ellipsis', (t) => {
+    t.deepEqual(
+      paginationRange(4, 10, 1),
+      [1, 2, 3, 4, 5, 'ellipsis', 10],
+      'page 2 is the only page hidden left of the window, so it is shown directly',
+    );
+  });
+
+  it('degenerates to a single page for a one-page (or clamped) pager', (t) => {
+    t.deepEqual(paginationRange(1, 1), [1], 'one page needs no anchors or ellipses');
+    t.deepEqual(paginationRange(-5, -3), [1], 'negative page and pages clamp to a single page 1');
+    t.deepEqual(paginationRange(9, 1), [1], 'an out-of-range page clamps into range');
+  });
+
+  it('honors a wider or narrower sibling count', (t) => {
+    t.deepEqual(
+      paginationRange(5, 10, 0),
+      [1, 'ellipsis', 5, 'ellipsis', 10],
+      'siblings=0 windows to just the current page',
+    );
+    t.deepEqual(
+      paginationRange(10, 20, 2),
+      [1, 'ellipsis', 8, 9, 10, 11, 12, 'ellipsis', 20],
+      'siblings=2 widens the window on both sides',
+    );
   });
 });
 

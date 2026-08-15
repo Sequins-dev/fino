@@ -13,7 +13,11 @@
  * SSE event used by other hosts. If any element carries a `data-fi-view`
  * attribute it opens a long-lived `EventSource` to `/_fino/live`; the first
  * event is the current render, followed by later renders or navigation
- * instructions.
+ * instructions. A `data-fi-scroll` container (a virtualized list) has no
+ * native change event to hook, so its scroll offset is bridged by hand: a
+ * debounced listener converts `scrollTop` to a row offset via the
+ * container's `data-fi-row-height` and submits it like any other
+ * value-bearing control.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -402,6 +406,33 @@ document.addEventListener('change', (event) => {
   if (form.dataset.fiBusy !== undefined) return;
   void submitAction(form);
 });
+
+// Virtual-list containers (data-fi-scroll) have no form control to fire a
+// native change event, so scrolling is bridged by hand: debounce the scroll
+// a little so a drag or momentum fling posts once it settles, convert the
+// pixel scrollTop into a row offset with the container's own
+// data-fi-row-height, stash it in the form's hidden "value" field, and submit
+// like any other value-bearing control. The scroll event does not bubble, so
+// the listener has to run on the capture phase at the document.
+document.addEventListener(
+  'scroll',
+  (event) => {
+    const el = event.target;
+    if (!(el instanceof Element) || el.dataset.fiScroll === undefined) return;
+    const form = el.closest('form[data-fi-action]');
+    if (!(form instanceof HTMLFormElement)) return;
+    if (el.__fiScrollTimer) clearTimeout(el.__fiScrollTimer);
+    el.__fiScrollTimer = setTimeout(() => {
+      el.__fiScrollTimer = null;
+      if (form.dataset.fiBusy !== undefined) return;
+      const rowHeight = Number(el.dataset.fiRowHeight) || 1;
+      const field = form.elements.namedItem('value');
+      if (field) field.value = String(Math.max(0, Math.round(el.scrollTop / rowHeight)));
+      void submitAction(form);
+    }, 60);
+  },
+  true,
+);
 
 function connectLive() {
   const views = Array.from(document.querySelectorAll('[data-fi-view]')).map((el) => el.id).filter(Boolean);

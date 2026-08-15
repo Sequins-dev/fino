@@ -11,12 +11,15 @@ import {
   FileTree,
   Icon,
   Modal,
+  Pagination,
   Panel,
   Select,
   Switch,
   Table,
   Text,
   TextInput,
+  VirtualList,
+  VirtualScroll,
   VStack,
 } from 'fino:ui/components';
 import { catalogStories, createGalleryApp, defaultArgs, galleryPage } from 'fino:ui/gallery';
@@ -305,6 +308,47 @@ describe('fino:ui/components/html native lowering', () => {
     t.ok(html.includes('class="ui-modal" role="dialog"'), 'card is a dialog');
     t.ok(html.includes('Delete this?'), 'body renders inside');
   });
+
+  it('lowers pagination to a nav of direct page buttons with ellipses', (t) => {
+    const html = renderToHtml(toHtml(<Pagination page={7} pages={20} onChange={() => {}} />));
+    t.ok(html.startsWith('<nav class="ui-pager"'), 'pager becomes a nav');
+    t.ok(
+      html.includes('<span class="ui-pager-ellipsis">…</span>'),
+      'skipped pages become ellipsis spans',
+    );
+    t.ok(
+      html.includes('>6<') && html.includes('>7<') && html.includes('>8<'),
+      'the sibling window renders',
+    );
+    t.ok(html.includes('>1<') && html.includes('>20<'), 'first and last page are always shown');
+    t.ok(
+      /class="ui-button ui-pager-page is-current"[^>]*>7</.test(html),
+      'the current page carries the is-current class',
+    );
+    t.ok(!html.includes('[ 6 ]'), 'no terminal brackets leak');
+    const withoutHandler = renderToHtml(
+      toHtml(<Pagination page={2} pages={5} onChange={() => {}} />),
+    );
+    t.ok(!withoutHandler.includes('name="do"'), 'static lowering carries no action wiring');
+  });
+
+  it('lowers virtual lists to a scrollable div without wiring a scroll handler by default', (t) => {
+    const model = new VirtualScroll();
+    model.setCount(50);
+    const slice = model.window(5);
+    const html = renderToHtml(
+      toHtml(
+        <VirtualList height={5} window={slice} offset={model.offset}>
+          {Array.from({ length: slice.end - slice.start }, (_, i) => (
+            <Text key={String(i)}>{`row ${slice.start + i}`}</Text>
+          ))}
+        </VirtualList>,
+      ),
+    );
+    t.ok(html.startsWith('<div class="ui-virtual"'), 'renders as a plain scrollable div');
+    t.ok(!html.includes('data-fi-scroll'), 'no onScroll handler means no scroll wiring');
+    t.ok(html.includes('row 0'), 'windowed rows render');
+  });
 });
 
 describe('fino:ui/components/html actions', () => {
@@ -522,6 +566,99 @@ describe('fino:ui/components/html actions', () => {
     t.ok(inert.includes(' disabled'), 'button without onClick is not an active button');
   });
 
+  it('registers page-button actions and keeps the current page and chevron bounds locked', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    const jumped: number[] = [];
+    const html = renderToHtml(
+      toHtml(<Pagination page={1} pages={20} onChange={(next) => jumped.push(next)} />, {
+        actions,
+      }),
+    );
+    t.ok(html.startsWith('<form'), 'pagination round-trips through an action form');
+    t.ok(
+      /class="ui-button ui-pager-step"[^>]*disabled/.test(html.split('ui-pager-page')[0]!),
+      'prev chevron is disabled on the first page',
+    );
+    t.ok(
+      /class="ui-button ui-pager-page is-current"[^>]*disabled/.test(html),
+      'the current page button is inert',
+    );
+    const jumpTo2 = /name="do" value="(a\d+)">2</.exec(html)![1]!;
+    actions.get(jumpTo2)!();
+    t.deepEqual(jumped, [2], 'clicking a page button invokes onChange with that page directly');
+  });
+
+  it('jumps straight to a middle page, past the ellipsis, in one click', (t) => {
+    const actions = new Map<string, (value?: string) => void>();
+    const jumped: number[] = [];
+    const html = renderToHtml(
+      toHtml(<Pagination page={7} pages={20} onChange={(next) => jumped.push(next)} />, {
+        actions,
+      }),
+    );
+    t.ok(!/name="do"[^>]*>…</.test(html), 'the ellipsis span carries no action');
+    const jumpTo8 = /name="do" value="(a\d+)">8</.exec(html)![1]!;
+    actions.get(jumpTo8)!();
+    t.deepEqual(jumped, [8], 'a middle page jumps directly, not through the chevrons');
+  });
+
+  it('wires VirtualList scroll containers to an action when onScroll is given', (t) => {
+    // Mirrors how the real gallery renders interactive views: an actions
+    // collector plus a web action descriptor, which is what turns on the
+    // client-facing data-fi-action/data-fi-scroll markers (the plain GET
+    // fallback used when no descriptor is given intentionally carries none —
+    // there is no client JS to intercept it).
+    const ref = {
+      action: 'invoke',
+      url: '/?_action=v.invoke',
+      view: 'view_1',
+      revision: 0,
+      request: 'r',
+    };
+    const actions = new Map<string, (value?: string) => void>();
+    const model = new VirtualScroll();
+    model.setCount(500);
+    const scrolled: number[] = [];
+    const slice = model.window(10);
+    const html = renderToHtml(
+      toHtml(
+        <VirtualList
+          height={10}
+          window={slice}
+          offset={model.offset}
+          onScroll={(offset) => scrolled.push(offset)}
+        >
+          {Array.from({ length: slice.end - slice.start }, (_, i) => (
+            <Text key={String(i)}>{`row ${slice.start + i}`}</Text>
+          ))}
+        </VirtualList>,
+        { actions, action: ref },
+      ),
+    );
+    t.ok(html.startsWith('<form'), 'an interactive virtual list rides an action form');
+    t.ok(
+      /data-fi-action="invoke"/.test(html),
+      'a truthy data-fi-action lets the client intercept the form',
+    );
+    t.ok(html.includes('data-fi-scroll="1"'), 'the scroll container carries the scroll marker');
+    t.ok(
+      html.includes('data-fi-row-height="'),
+      'a row-height rides along for the client to convert scrollTop',
+    );
+    t.ok(
+      /name="_view"/.test(html) && /name="_nonce"/.test(html),
+      'the envelope fields ride the form',
+    );
+    t.ok(/name="value" value="0"/.test(html), 'the current offset seeds the hidden value field');
+    const doId = /name="do" value="(a\d+)"/.exec(html)![1]!;
+    actions.get(doId)!('20');
+    t.deepEqual(
+      scrolled,
+      [20],
+      'invoking the action with a row offset reaches onScroll as a number',
+    );
+  });
+
   it('honors semantic border styles on panels', (t) => {
     const groups = catalogStories();
     const doubled = galleryPage(groups, 'panel', { border: 'double' });
@@ -625,6 +762,43 @@ describe('fino:ui/components/html actions', () => {
       !reloaded.html.includes('class="ui-tree-dir" open'),
       'icon-click toggle collapsed src server-side',
     );
+
+    const pagination = await loadStory('pagination');
+    t.ok(
+      /class="ui-button ui-pager-page is-current"[^>]*>1</.test(pagination.html),
+      'pagination starts on page 1',
+    );
+    const jumpDo = /name="do" value="(a\d+)">2</.exec(pagination.html)![1]!;
+    const jumped = await (await post(pagination, { do: jumpDo })).text();
+    t.ok(jumped.includes('"kind":"render"'), 'the page jump pushes a render');
+    t.ok(
+      jumped.includes('"ui-button ui-pager-page is-current"'),
+      'a page is marked current in the pushed tree',
+    );
+    const paginationReloaded = await loadStory('pagination');
+    t.ok(
+      /class="ui-button ui-pager-page is-current"[^>]*>2</.test(paginationReloaded.html),
+      'the page jump persisted server-side',
+    );
+
+    const virtual = await loadStory('virtual-list');
+    t.ok(virtual.html.includes('data-fi-scroll="1"'), 'the virtual list carries the scroll marker');
+    t.ok(
+      virtual.html.includes('data-fi-row-height="'),
+      'a row height rides along for the client to convert scrollTop',
+    );
+    t.ok(virtual.html.includes('item 000'), 'the story starts windowed at the top');
+    t.ok(!virtual.html.includes('item 020'), 'row 20 is not in the initial window');
+    const scrollMarkerAt = virtual.html.indexOf('data-fi-scroll');
+    const scrollFormStart = virtual.html.lastIndexOf('<form', scrollMarkerAt);
+    const scrollFormEnd = virtual.html.indexOf('</form>', scrollMarkerAt);
+    const scrollForm = virtual.html.slice(scrollFormStart, scrollFormEnd);
+    const scrollDo = /name="do" value="(a\d+)"/.exec(scrollForm)![1]!;
+    const scrolled = await (await post(virtual, { do: scrollDo, value: '20' })).text();
+    t.ok(scrolled.includes('"kind":"render"'), 'the scroll action pushes a render');
+    t.ok(scrolled.includes('item 020'), 'scrolling moved the window to reveal later rows');
+    const virtualReloaded = await loadStory('virtual-list');
+    t.ok(virtualReloaded.html.includes('item 020'), 'the scrolled offset persisted server-side');
   });
 });
 
