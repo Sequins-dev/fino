@@ -15,6 +15,7 @@ import { h, createSignal } from 'fino:ui';
 import { timeout as loopTimeout } from '../runtime/loop.ts';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
+import { highlightLines } from 'fino:format/typescript';
 import {
   applyTextEdit,
   Box,
@@ -40,16 +41,24 @@ import {
 } from 'fino:ui/components';
 import type {
   BadgeProps,
+  BlockquoteProps,
+  BoldProps,
   BreadcrumbsProps,
   ButtonProps,
   CheckboxProps,
+  CodeProps,
   ContextMenuProps,
   DetailsProps,
   ExpanderProps,
   FileTreeNode,
   FileTreeProps,
+  HeadingProps,
   IconProps,
+  InlineCodeProps,
+  ItalicProps,
   KeyHintProps,
+  LinkProps,
+  ListProps,
   MenuListProps,
   MenuRowProps,
   ModalProps,
@@ -925,6 +934,153 @@ function timeline(props: Props): VNode {
   );
 }
 
+function heading(props: Props, children: NormalizedChild[]): VNode {
+  const { level, id, ...rest } = props as HeadingProps;
+  const lvl = Math.min(6, Math.max(1, Math.floor(level ?? 1)));
+  const style = [styles.bold, ...(lvl <= 2 ? [styles.accent] : [])];
+  const text = (
+    <Text id={id} style={style} {...rest}>
+      {children}
+    </Text>
+  );
+  if (lvl !== 1) return text;
+  return (
+    <Box direction="column">
+      {text}
+      <Rule style={[styles.dim]} />
+    </Box>
+  );
+}
+
+function bold(props: Props, children: NormalizedChild[]): VNode {
+  const { id, ...rest } = props as BoldProps;
+  return (
+    <Text id={id} {...rest} bold>
+      {children}
+    </Text>
+  );
+}
+
+function italic(props: Props, children: NormalizedChild[]): VNode {
+  const { id, ...rest } = props as ItalicProps;
+  return (
+    <Text id={id} {...rest} italic>
+      {children}
+    </Text>
+  );
+}
+
+// `Link` is the one catalog component allowed to navigate. With `onActivate`
+// it becomes a focusable Clickable, same as any other click-like control.
+// An `href`-only link would ideally emit an OSC 8 terminal hyperlink
+// (`\x1b]8;;URL\x1b\\text\x1b]8;;\x1b\\`), but that can't survive this
+// pipeline: `Text` content routes through fino:tty/frame's `parseAnsi`
+// whenever it contains an escape byte, and `parseAnsi` intentionally
+// discards non-SGR sequences — OSC included — to keep `Segment` text free of
+// embedded control codes (see frame.ts). So an `href`-only `Link` renders as
+// styled, underlined, non-interactive text instead.
+function link(props: Props, children: NormalizedChild[]): VNode {
+  const { href: _href, onActivate, id, ...rest } = props as LinkProps;
+  const style = [styles.accent, styles.underline];
+  if (onActivate !== undefined) {
+    return (
+      <Clickable id={id} onClick={onActivate} {...rest}>
+        <Text style={style}>{children}</Text>
+      </Clickable>
+    );
+  }
+  return (
+    <Text id={id} style={style} {...rest}>
+      {children}
+    </Text>
+  );
+}
+
+// Each child gets its own gutter row, so a quote built from several `Text`
+// lines carries `│` beside every one of them — matching Markdown's `>` on
+// every quoted line. A single child that word-wraps internally still only
+// carries one gutter for that block: how many rows it wraps to is a
+// layout-time decision made after this composer runs, and repeating the
+// gutter per wrapped row would mean teaching the frame/cell layer about a
+// tiling left border, which is out of scope for a component lowering.
+function blockquote(props: Props, children: NormalizedChild[]): VNode {
+  const { id, ...rest } = props as BlockquoteProps;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {children.map((child, index) => (
+        <Box key={String(index)} direction="row" gap={1}>
+          <Text style={[styles.dim]}>│</Text>
+          <Box direction="column" grow={1} style={[styles.dim]}>
+            {child}
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+function list(props: Props): VNode {
+  const { ordered, items, id, ...rest } = props as ListProps;
+  const width = (ordered ? `${items.length}.` : '•').length;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      {items.map((item, index) => (
+        <Box key={String(index)} direction="row" gap={1}>
+          <Text width={width} align="end" style={[styles.dim]}>
+            {ordered ? `${index + 1}.` : '•'}
+          </Text>
+          <Box direction="column" grow={1}>
+            {typeof item === 'string' || typeof item === 'number' ? <Text wrap>{item}</Text> : item}
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+const CODE_TONE = {
+  keyword: styles.accent,
+  string: styles.success,
+  number: styles.info,
+  comment: styles.muted,
+  regexp: styles.warning,
+} as const;
+
+function code(props: Props): VNode {
+  const { code: source, language, showLineNumbers, id, ...rest } = props as CodeProps;
+  const rows = highlightLines(source, language);
+  const gutterWidth = String(rows.length).length;
+  return (
+    <Box direction="column" border paddingX={1} id={id} {...rest}>
+      {rows.map((runs, index) => (
+        <Box key={String(index)} direction="row" gap={showLineNumbers ? 1 : 0} minHeight={1}>
+          {showLineNumbers ? (
+            <Text width={gutterWidth} align="end" style={[styles.dim]}>
+              {String(index + 1)}
+            </Text>
+          ) : null}
+          <Box direction="row">
+            {runs.map((run, runIndex) => (
+              <Text key={String(runIndex)} style={run.cls ? [CODE_TONE[run.cls]] : []}>
+                {run.text}
+              </Text>
+            ))}
+          </Box>
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+function inlineCode(props: Props, children: NormalizedChild[]): VNode {
+  const { id, ...rest } = props as InlineCodeProps;
+  return (
+    <Text id={id} {...rest} style={[styles.dim, styles.inverse]}>
+      {children}
+    </Text>
+  );
+}
+
 const COMPOSERS: Record<string, Composer> = {
   'ui:panel': panel,
   'ui:button': button,
@@ -961,6 +1117,14 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:file-tree': fileTree,
   'ui:timeline': timeline,
   'ui:virtual-list': virtualList,
+  'ui:heading': heading,
+  'ui:bold': bold,
+  'ui:italic': italic,
+  'ui:link': link,
+  'ui:blockquote': blockquote,
+  'ui:list': list,
+  'ui:code': code,
+  'ui:inline-code': inlineCode,
 };
 
 /**

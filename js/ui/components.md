@@ -168,11 +168,30 @@ List({ items: ['Clone the repo', 'Install dependencies'] });
 Code({ code: 'const x = 1;', language: 'ts', showLineNumbers: true });
 ```
 
+`Bold`, `Italic`, `Link`, and `InlineCode` are inline, but the terminal's
+`Text` primitive is a flattening leaf — it renders everything beneath it as
+one plain, single-styled run (`childText()` in `internal:tty/layout`
+concatenates descendant text and ignores any styling on nested nodes). So
+mixing them *inside* a `Text` (`<Text>plain <Bold>bold</Bold></Text>`)
+silently drops the nested styling in the terminal, even though the same tree
+renders correctly nested on the web. Compose mixed inline runs as **row
+siblings** instead — `<HStack gap={0}><Text>plain </Text><Bold>bold</Bold></HStack>`
+— which both targets render correctly; the gallery's Typography stories use
+this pattern throughout.
+
 `List` takes its rows as `items: Child[]` rather than a `ListItem` child
 component — an entry can be a plain string or a nested tree (`Text` runs,
 `InlineCode`, anything), and both render targets lower the array directly:
 `•`/`1.` markers with a hanging indent in the terminal, a real `<ul>`/`<ol>`
 of `<li>`s on the web.
+
+`Blockquote` gives every child its own `│` gutter row in the terminal —
+pass one line per child (as the gallery story does) and each carries the
+gutter, matching Markdown's `>` on every quoted line. A single child that
+word-wraps internally only gets one gutter for that block, since how many
+rows it wraps to is decided by layout, after the terminal composer has
+already run. The web target doesn't share this limit: `<blockquote>`'s CSS
+left border spans wrapped content automatically.
 
 `Code` reuses `fino:format/typescript`'s OXC-backed tokenizer
 (`highlightLines`) instead of shipping a highlighter of its own. The terminal
@@ -202,6 +221,15 @@ which is a frame-model change out of scope for a component lowering. An
 `href`-only `Link` therefore renders as styled, underlined, non-interactive
 text in the terminal rather than a real clickable hyperlink — reach for
 `onActivate` when the terminal needs to *do* something on activation.
+
+`href` is app-controlled data — chat messages, agent output, file metadata —
+so the HTML target validates it before it ever reaches an `<a>`: `safeHref`
+in `fino:ui/components/html` strips ASCII control characters (closing off the
+`java\tscript:` bypass), then allows only `http:`, `https:`, `mailto:`,
+`tel:`, and relative forms (`/…`, `./…`, `../…`, `#…`, `?…`). Anything else —
+`javascript:`, `data:`, `vbscript:`, unknown schemes — is dropped; the link
+still renders its text and styling, just without an `href` attribute, so it
+degrades to inert rather than becoming an XSS vector.
 
 ## Seeing both targets
 

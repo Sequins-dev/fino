@@ -1455,7 +1455,13 @@ export function Heading(props: HeadingProps): VNode {
 export interface BoldProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
-/** Bold inline emphasis. */
+/**
+ * Bold inline emphasis. Compose it as a row sibling of surrounding `Text`
+ * (e.g. inside an `HStack`) rather than nesting it inside a `Text` — the
+ * terminal's `Text` flattens descendant nodes to one plain styled run, so
+ * styling on a `Bold` nested inside it is silently dropped there (see the
+ * module guide's Typography section).
+ */
 export function Bold(props: BoldProps): VNode {
   return h('ui:bold', props);
 }
@@ -1464,7 +1470,7 @@ export function Bold(props: BoldProps): VNode {
 export interface ItalicProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
-/** Italic inline emphasis. */
+/** Italic inline emphasis. Compose it as a row sibling, not nested inside a `Text` — see `Bold`. */
 export function Italic(props: ItalicProps): VNode {
   return h('ui:italic', props);
 }
@@ -1473,7 +1479,10 @@ export function Italic(props: ItalicProps): VNode {
 export interface LinkProps extends FlexChildProps, Props {
   /**
    * Navigation target. On the web this becomes a real `<a href>` — `Link` is
-   * the one catalog component allowed to navigate. In the terminal it is
+   * the one catalog component allowed to navigate — once the HTML target's
+   * `safeHref` scheme allowlist (`http(s):`, `mailto:`, `tel:`, and relative
+   * forms) accepts it; anything else, e.g. `javascript:`, renders as text
+   * with no `href` attribute rather than a live anchor. In the terminal it is
    * rendered as styled, underlined text (see the module guide for why OSC 8
    * terminal hyperlinks aren't used).
    */
@@ -1485,7 +1494,8 @@ export interface LinkProps extends FlexChildProps, Props {
 }
 /**
  * Link: navigational with `href`, an in-app activator with `onActivate`, or
- * both — see `href` and `onActivate` for how they combine.
+ * both — see `href` and `onActivate` for how they combine. Compose it as a
+ * row sibling, not nested inside a `Text` — see `Bold`.
  */
 export function Link(props: LinkProps): VNode {
   return h('ui:link', props);
@@ -1535,7 +1545,7 @@ export function Code(props: CodeProps): VNode {
 export interface InlineCodeProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
-/** Inline code span. */
+/** Inline code span. Compose it as a row sibling, not nested inside a `Text` — see `Bold`. */
 export function InlineCode(props: InlineCodeProps): VNode {
   return h('ui:inline-code', props);
 }

@@ -1275,17 +1275,45 @@ function italicHtml(node: VNode): VNode {
   return h('em', inlineStyleAttrs(rest as Props, id), ...transformChildren(node.children));
 }
 
+// Schemes and relative forms an <a href> may carry. Anything else — most
+// dangerously `javascript:`/`vbscript:`/`data:` — is app-controlled content
+// (chat messages, agent output, file metadata) that must never reach a live
+// anchor, so it is dropped rather than escaped.
+const SAFE_HREF_SCHEME = /^(?:https?|mailto|tel):/i;
+const SAFE_HREF_RELATIVE = /^(?:\/|\.\/|\.\.\/|#|\?)/;
+
+/**
+ * Validate a `Link` `href` before it reaches markup. Browsers ignore ASCII
+ * control characters (tabs, newlines, NUL) inside a URL scheme, so
+ * `java\tscript:` parses as `javascript:` — control characters are stripped
+ * first so that bypass can't slip past the scheme check. Returns the
+ * cleaned href when it is `http(s):`, `mailto:`, `tel:`, or a relative form
+ * (`/…`, `./…`, `../…`, `#…`, `?…`); anything else — including unrecognized
+ * schemes — returns `undefined`.
+ */
+function safeHref(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- stripping is the point
+  const cleaned = raw.replace(/[\x00-\x1f\x7f]+/g, '').trim();
+  if (cleaned.length === 0) return undefined;
+  if (SAFE_HREF_RELATIVE.test(cleaned) || SAFE_HREF_SCHEME.test(cleaned)) return cleaned;
+  return undefined;
+}
+
 // `Link` is the one catalog component allowed to navigate: a bare `href`
-// becomes a real anchor. With `onActivate` (and no collector wiring an
-// action) it degrades to a link-styled, inert-looking button — same as any
-// other handler-less control. With both, the href rides on the anchor for
-// right-click/open-in-new-tab, but an inline handler intercepts the click
-// and submits the action form instead of navigating.
+// becomes a real anchor, once it passes `safeHref`. With `onActivate` (and
+// no collector wiring an action) it degrades to a link-styled, inert-looking
+// button — same as any other handler-less control. With both, the href
+// rides on the anchor for right-click/open-in-new-tab, but an inline
+// handler intercepts the click and submits the action form instead of
+// navigating. A rejected href never reaches markup — the link still renders
+// its text, styled, just without a `href` attribute.
 function linkHtml(node: VNode): VNode {
   const { href, onActivate, id } = node.props as LinkProps;
   const activate = handlerOf<() => void>(onActivate);
   const kids = transformChildren(node.children);
-  const hasHref = typeof href === 'string' && href.length > 0;
+  const safe = safeHref(href);
+  const hasHref = safe !== undefined;
   if (activate !== undefined) {
     if (actions !== null) {
       const act = register(() => activate());
@@ -1296,7 +1324,7 @@ function linkHtml(node: VNode): VNode {
             'a',
             {
               className: 'ui-link',
-              href,
+              href: safe,
               onclick: 'event.preventDefault();this.form.requestSubmit();',
               ...idAttr(id),
             },
@@ -1310,10 +1338,10 @@ function linkHtml(node: VNode): VNode {
       );
     }
     return hasHref
-      ? h('a', { className: 'ui-link', href, ...idAttr(id) }, ...kids)
+      ? h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids)
       : h('button', { className: 'ui-link', type: 'button', ...idAttr(id) }, ...kids);
   }
-  if (hasHref) return h('a', { className: 'ui-link', href, ...idAttr(id) }, ...kids);
+  if (hasHref) return h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids);
   return h('span', { className: 'ui-link', ...idAttr(id) }, ...kids);
 }
 

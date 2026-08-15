@@ -151,12 +151,13 @@ describe('fino:ui/components catalog indicators', () => {
         ]}
       />,
       20,
-      4,
+      5,
     );
     t.equal(strip(frame[0]!), '● created', 'entry dot and title');
     t.equal(strip(frame[1]!), '│  by sam', 'detail beneath a connector');
-    t.equal(strip(frame[2]!), '● deployed', 'next entry');
-    t.equal(strip(frame[3]!), '   to prod', 'last entry has no trailing connector');
+    t.equal(strip(frame[2]!), '│', 'a connector row separates the two entries');
+    t.equal(strip(frame[3]!), '● deployed', 'next entry');
+    t.equal(strip(frame[4]!), '   to prod', 'last entry has no trailing connector');
   });
 });
 

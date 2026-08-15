@@ -2,7 +2,18 @@
 import { describe, it } from 'fino:test/test';
 import { createRenderer } from 'fino:ui';
 import type { VNode } from 'fino:ui';
-import { Blockquote, Bold, Code, Heading, InlineCode, Italic, Link, List, Text } from 'fino:ui/components';
+import {
+  Blockquote,
+  Bold,
+  Code,
+  HStack,
+  Heading,
+  InlineCode,
+  Italic,
+  Link,
+  List,
+  Text,
+} from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';
 import { toHtml } from 'fino:ui/components/html';
@@ -60,16 +71,19 @@ function click(app: Live, x: number, y: number): void {
 }
 
 describe('fino:ui/components typography — terminal', () => {
-  it('renders a level-1 heading bold with a rule beneath it', (t) => {
+  it('renders a level-1 heading bold, accented, with a rule beneath it', (t) => {
     const frame = lines(<Heading level={1}>Guide</Heading>, 20, 2);
     t.equal(strip(frame[0]!), 'Guide', 'heading text renders');
+    t.ok(frame[0]!.includes('\x1b[1;36m'), 'level 1 is bold and accent-colored');
     const rule = strip(frame[1]!);
     t.ok(rule.length > 0 && [...rule].every((ch) => ch === '─'), 'rule beneath a level-1 heading');
   });
 
-  it('renders a level-3 heading without a rule', (t) => {
+  it('renders a level-3 heading bold, without accent or a rule', (t) => {
     const frame = lines(<Heading level={3}>Section</Heading>, 20, 2);
     t.equal(strip(frame[0]!), 'Section', 'heading text renders');
+    t.ok(frame[0]!.includes('\x1b[1m'), 'still bold');
+    t.ok(!frame[0]!.includes('36m'), 'levels below 3 drop the accent color');
     t.equal(strip(frame[1]!), '', 'no rule beneath a lower-level heading');
   });
 
@@ -78,7 +92,22 @@ describe('fino:ui/components typography — terminal', () => {
     t.equal(strip(frame[0]!), 'X', 'still renders with a clamped level');
   });
 
-  it('renders bold and italic as plain inline text', (t) => {
+  it('applies the bold/italic SGR codes to Bold and Italic on their own', (t) => {
+    t.ok(lines(<Bold>hi</Bold>, 10, 1)[0]!.includes('\x1b[1m'), 'Bold carries the bold SGR code');
+    t.ok(
+      lines(<Italic>hi</Italic>, 10, 1)[0]!.includes('\x1b[3m'),
+      'Italic carries the italic code',
+    );
+  });
+
+  // `Text` is a flattening leaf in the terminal target: `childText()` in
+  // internal:tty/layout concatenates every descendant's text into one plain,
+  // single-styled run, so styling on a `Bold`/`Italic` nested *inside* a
+  // `Text` is silently dropped — the same tree renders correctly nested on
+  // the web, where `<strong>`/`<em>` compose natively. This is a documented
+  // limitation (see components.md's Typography section), not something a
+  // component lowering can fix without changing the shared text primitive.
+  it('drops nested Bold/Italic styling when nested inside a Text (documented limitation)', (t) => {
     const frame = lines(
       <Text>
         plain <Bold>bold</Bold> <Italic>italic</Italic>
@@ -86,12 +115,40 @@ describe('fino:ui/components typography — terminal', () => {
       30,
       1,
     );
-    t.equal(strip(frame[0]!), 'plain bold italic', 'text content unaffected by inline styling');
+    t.equal(strip(frame[0]!), 'plain bold italic', 'text content still renders correctly');
+    t.ok(!frame[0]!.includes('\x1b[1m'), 'but the nested bold styling does not survive');
+  });
+
+  it('keeps distinct styling when Bold/Italic compose as row siblings instead', (t) => {
+    const frame = lines(
+      <HStack gap={0}>
+        <Text>plain </Text>
+        <Bold>bold</Bold>
+        <Text> </Text>
+        <Italic>italic</Italic>
+      </HStack>,
+      30,
+      1,
+    );
+    t.equal(strip(frame[0]!), 'plain bold italic', 'text reads the same end to end');
+    t.ok(frame[0]!.includes('\x1b[1mbold'), 'the bold run keeps its own SGR code as a row sibling');
+    t.ok(
+      frame[0]!.includes('\x1b[3mitalic'),
+      'the italic run keeps its own SGR code as a row sibling',
+    );
   });
 
   it('renders an href-only link as styled, non-interactive text', (t) => {
     const frame = lines(<Link href="https://fino.dev">docs</Link>, 20, 1);
     t.equal(strip(frame[0]!), 'docs', 'link text renders');
+    t.ok(frame[0]!.includes('\x1b[4;36m'), 'underline + accent styling');
+    t.ok(!frame[0]!.includes('\x1b]8'), 'no OSC 8 hyperlink escape leaks into the frame');
+  });
+
+  it('never emits an OSC 8 hyperlink for a dangerous href, since the terminal never emits one at all', (t) => {
+    const frame = lines(<Link href="javascript:alert(1)">click me</Link>, 20, 1);
+    t.equal(strip(frame[0]!), 'click me', 'text still renders, styled');
+    t.ok(!frame[0]!.includes('\x1b]8'), 'no OSC 8 escape for any href, safe or not');
   });
 
   it('fires onActivate for a handler link on click', (t) => {
@@ -118,6 +175,23 @@ describe('fino:ui/components typography — terminal', () => {
     t.equal(strip(frame[0]!), '│ quoted', 'gutter then content');
   });
 
+  it('gives every blockquote child its own gutter row', (t) => {
+    const frame = lines(
+      <Blockquote>
+        <Text>Measure twice, cut once.</Text>
+        <Text>— every carpenter, ever</Text>
+      </Blockquote>,
+      30,
+      2,
+    );
+    t.equal(strip(frame[0]!), '│ Measure twice, cut once.', 'first line carries the gutter');
+    t.equal(
+      strip(frame[1]!),
+      '│ — every carpenter, ever',
+      'second line carries its own gutter too',
+    );
+  });
+
   it('renders an unordered list with bullet markers', (t) => {
     const frame = lines(<List items={['first', 'second']} />, 20, 2);
     t.equal(strip(frame[0]!), '• first', 'bullet marker on the first item');
@@ -131,26 +205,44 @@ describe('fino:ui/components typography — terminal', () => {
     t.equal(strip(frame[2]!), '3. c', 'third item is numbered 3');
   });
 
+  it('hangs wrapped list item lines past the marker instead of repeating it', (t) => {
+    const frame = lines(<List items={['This item wraps onto a hanging indent line']} />, 16, 3);
+    t.ok(strip(frame[0]!).startsWith('• '), 'the marker appears once, on the first row');
+    t.ok(!strip(frame[1]!).includes('•'), 'the marker does not repeat on continuation rows');
+    t.ok(strip(frame[1]!).startsWith('  '), 'continuation rows indent to align under the text');
+  });
+
   it('highlights a TS code block and numbers its lines', (t) => {
     const frame = lines(
       <Code code={'const x = 1;\nconst y = 2;'} language="ts" showLineNumbers />,
       40,
       4,
     );
-    const first = strip(frame[0]!);
-    const second = strip(frame[1]!);
-    t.ok(first.includes('1') && first.includes('const x = 1;'), 'first line carries its number and code');
-    t.ok(second.includes('2') && second.includes('const y = 2;'), 'second line carries its number and code');
+    // Code renders inside a bordered box, so row 0 is the top border and
+    // content starts at row 1.
+    const first = strip(frame[1]!);
+    const second = strip(frame[2]!);
+    t.ok(
+      first.includes('1') && first.includes('const x = 1;'),
+      'first line carries its number and code',
+    );
+    t.ok(
+      second.includes('2') && second.includes('const y = 2;'),
+      'second line carries its number and code',
+    );
   });
 
   it('renders a code block without a gutter by default', (t) => {
     const frame = lines(<Code code="const x = 1;" language="ts" />, 40, 3);
-    t.ok(strip(frame[0]!).includes('const x = 1;'), 'code renders without line numbers');
+    t.ok(strip(frame[1]!).includes('const x = 1;'), 'code renders without line numbers');
   });
 
   it('renders plain text for an unrecognized language', (t) => {
     const frame = lines(<Code code={'hello world'} language="made-up" />, 40, 3);
-    t.ok(strip(frame[0]!).includes('hello world'), 'unrecognized language still renders the code as text');
+    t.ok(
+      strip(frame[1]!).includes('hello world'),
+      'unrecognized language still renders the code as text',
+    );
   });
 
   it('renders inline code inline with the surrounding text', (t) => {
@@ -162,6 +254,22 @@ describe('fino:ui/components typography — terminal', () => {
       1,
     );
     t.equal(strip(frame[0]!), 'run cargo build', 'inline code text renders inline');
+  });
+
+  it('applies dim + inverse styling to InlineCode composed as a row sibling', (t) => {
+    const frame = lines(
+      <HStack gap={0}>
+        <Text>run </Text>
+        <InlineCode>cargo build</InlineCode>
+      </HStack>,
+      30,
+      1,
+    );
+    t.equal(strip(frame[0]!), 'run cargo build', 'text reads the same end to end');
+    t.ok(
+      frame[0]!.includes('\x1b[2;7mcargo build'),
+      'the code span keeps its dim + inverse styling',
+    );
   });
 });
 
@@ -190,7 +298,55 @@ describe('fino:ui/components typography — html', () => {
 
   it('renders a real anchor for an href-only link', (t) => {
     const html = renderToHtml(toHtml(<Link href="https://fino.dev">docs</Link>));
-    t.equal(html, '<a class="ui-link" href="https://fino.dev">docs</a>', 'plain navigational anchor');
+    t.equal(
+      html,
+      '<a class="ui-link" href="https://fino.dev">docs</a>',
+      'plain navigational anchor',
+    );
+  });
+
+  it('accepts every allowed href scheme and relative form', (t) => {
+    const allowed = [
+      'https://example.com',
+      'http://example.com',
+      'mailto:a@b.c',
+      'tel:+15551234567',
+      '/relative',
+      './relative',
+      '../relative',
+      '#anchor',
+      '?query=1',
+    ];
+    for (const href of allowed) {
+      const html = renderToHtml(toHtml(<Link href={href}>go</Link>));
+      t.ok(html.includes(`href="${href}"`), `${href} keeps its href attribute`);
+    }
+  });
+
+  it('drops a javascript: href instead of emitting a live anchor (XSS)', (t) => {
+    const html = renderToHtml(toHtml(<Link href="javascript:alert(1)">click me</Link>));
+    t.ok(!html.includes('href='), 'no href attribute at all');
+    t.ok(!html.includes('javascript:'), 'the dangerous scheme never reaches markup');
+    t.ok(html.includes('click me'), 'the link text still renders');
+    t.equal(html, '<span class="ui-link">click me</span>', 'falls back to an inert styled span');
+  });
+
+  it('strips control characters before the scheme check, closing the tab-bypass hole', (t) => {
+    const html = renderToHtml(toHtml(<Link href={'java\tscript:alert(1)'}>click me</Link>));
+    t.ok(!html.includes('href='), 'the control-character bypass is still rejected');
+    t.ok(!html.includes('javascript:'), 'stripping the tab does not let the scheme sneak through');
+  });
+
+  it('rejects other dangerous or unrecognized schemes', (t) => {
+    for (const href of ['data:text/html,<script>1</script>', 'vbscript:msgbox(1)', 'ftp://x/y']) {
+      const html = renderToHtml(toHtml(<Link href={href}>go</Link>));
+      t.ok(!html.includes('href='), `${href} is rejected`);
+    }
+  });
+
+  it('rejects a non-string href without throwing', (t) => {
+    const html = renderToHtml(toHtml(<Link href={42 as unknown as string}>go</Link>));
+    t.ok(!html.includes('href='), 'non-string href is rejected, not coerced');
   });
 
   it('renders a link-styled button for a handler-only link and routes clicks', (t) => {
@@ -243,7 +399,10 @@ describe('fino:ui/components typography — html', () => {
   it('renders real ul/ol markup for lists', (t) => {
     const bullets = renderToHtml(toHtml(<List items={['a', 'b']} />));
     t.ok(bullets.startsWith('<ul class="ui-list"'), 'unordered list becomes a <ul>');
-    t.ok(bullets.includes('<li>a</li>') && bullets.includes('<li>b</li>'), 'items become <li> elements');
+    t.ok(
+      bullets.includes('<li>a</li>') && bullets.includes('<li>b</li>'),
+      'items become <li> elements',
+    );
     const numbers = renderToHtml(toHtml(<List ordered items={['a', 'b']} />));
     t.ok(numbers.startsWith('<ol class="ui-list"'), 'ordered list becomes an <ol>');
   });

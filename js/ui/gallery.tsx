@@ -601,7 +601,7 @@ function typographyGroup(): StoryGroup {
   const sampleCode = [
     'function greet(name: string): string {',
     '  // say hello',
-    "  return `Hello, ${name}!`;",
+    '  return `Hello, ${name}!`;',
     '}',
   ].join('\n');
   return {
@@ -627,9 +627,15 @@ function typographyGroup(): StoryGroup {
         name: 'Bold & Italic',
         view: () => (
           <VStack gap={1}>
-            <Text>
-              Plain, <Bold>bold</Bold>, and <Italic>italic</Italic> text mixed inline.
-            </Text>
+            {/* Text flattens descendant nodes to plain text in the terminal —
+                mixed inline styling composes as row siblings instead. */}
+            <HStack gap={0}>
+              <Text>Plain, </Text>
+              <Bold>bold</Bold>
+              <Text>, and </Text>
+              <Italic>italic</Italic>
+              <Text> text mixed inline.</Text>
+            </HStack>
             <HStack gap={1}>
               <Bold>Warning:</Bold>
               <Italic>this action cannot be undone.</Italic>
@@ -682,9 +688,10 @@ function typographyGroup(): StoryGroup {
             items={[
               'Clone the repo',
               'Install dependencies',
-              <Text>
-                Run <InlineCode>cargo build</InlineCode>
-              </Text>,
+              <HStack gap={0}>
+                <Text>Run </Text>
+                <InlineCode>cargo build</InlineCode>
+              </HStack>,
             ]}
           />
         ),
@@ -703,9 +710,10 @@ function typographyGroup(): StoryGroup {
               language={args.language === 'plain' ? undefined : String(args.language)}
               showLineNumbers={args.showLineNumbers === true}
             />
-            <Text>
-              Inline: <InlineCode>npm install fino</InlineCode>
-            </Text>
+            <HStack gap={0}>
+              <Text>Inline: </Text>
+              <InlineCode>npm install fino</InlineCode>
+            </HStack>
           </VStack>
         ),
       },
@@ -998,7 +1006,6 @@ function overlayGroup(): StoryGroup {
  */
 export function catalogStories(): StoryGroup[] {
   return [
-    typographyGroup(),
     layoutGroup(),
     formsGroup(),
     indicatorsGroup(),
@@ -1007,6 +1014,7 @@ export function catalogStories(): StoryGroup[] {
     disclosureGroup(),
     overlayGroup(),
     dataGroup(),
+    typographyGroup(),
   ];
 }
 
