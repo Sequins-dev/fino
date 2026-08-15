@@ -16,7 +16,7 @@ import {
 } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';
-import { toHtml } from 'fino:ui/components/html';
+import { PAGE_CSS, toHtml } from 'fino:ui/components/html';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
 import { lowerTui } from 'internal:tty/lower';
@@ -100,14 +100,10 @@ describe('fino:ui/components typography — terminal', () => {
     );
   });
 
-  // `Text` is a flattening leaf in the terminal target: `childText()` in
-  // internal:tty/layout concatenates every descendant's text into one plain,
-  // single-styled run, so styling on a `Bold`/`Italic` nested *inside* a
-  // `Text` is silently dropped — the same tree renders correctly nested on
-  // the web, where `<strong>`/`<em>` compose natively. This is a documented
-  // limitation (see components.md's Typography section), not something a
-  // component lowering can fix without changing the shared text primitive.
-  it('drops nested Bold/Italic styling when nested inside a Text (documented limitation)', (t) => {
+  // `Text` composes nested styled runs (see `internal:tty/layout`'s
+  // `collectRuns`), so a `Bold`/`Italic` nested *inside* a `Text` keeps its
+  // own styling — same as the web, where `<strong>`/`<em>` compose natively.
+  it('keeps nested Bold/Italic styling when nested inside a Text', (t) => {
     const frame = lines(
       <Text>
         plain <Bold>bold</Bold> <Italic>italic</Italic>
@@ -116,7 +112,7 @@ describe('fino:ui/components typography — terminal', () => {
       1,
     );
     t.equal(strip(frame[0]!), 'plain bold italic', 'text content still renders correctly');
-    t.ok(!frame[0]!.includes('\x1b[1m'), 'but the nested bold styling does not survive');
+    t.ok(frame[0]!.includes('\x1b[1m'), 'the nested bold styling survives');
   });
 
   it('keeps distinct styling when Bold/Italic compose as row siblings instead', (t) => {
@@ -446,5 +442,89 @@ describe('fino:ui/components typography — html', () => {
   it('renders a <code> element for inline code', (t) => {
     const html = renderToHtml(toHtml(<InlineCode>npm i</InlineCode>));
     t.equal(html, '<code class="ui-inline-code">npm i</code>', 'inline code element');
+  });
+});
+
+describe('fino:ui/components Code filename + copy — terminal', () => {
+  it('renders no header bar without filename or copyable', (t) => {
+    const frame = lines(<Code code="const x = 1;" language="ts" />, 40, 3);
+    t.ok(strip(frame[0]!).startsWith('┌'), 'the border is the first row — no header bar');
+  });
+
+  it('renders a dim filename header row above a rule, above the code', (t) => {
+    const frame = lines(<Code code="const x = 1;" language="ts" filename="a.ts" />, 40, 5);
+    t.ok(strip(frame[1]!).includes('a.ts'), 'filename renders in its own row');
+    t.ok(strip(frame[2]!).includes('──────'), 'a rule separates the header from the code');
+    t.ok(strip(frame[3]!).includes('const x = 1;'), 'code follows beneath the rule');
+  });
+
+  it('shows the copy affordance in the header even without a filename', (t) => {
+    const frame = lines(<Code code="const x = 1;" language="ts" copyable />, 40, 4);
+    t.ok(
+      frame.some((row) => strip(row).includes('copy')),
+      'the copy affordance still gets a header row',
+    );
+  });
+
+  it('calls onCopy with the source when the copy affordance is clicked', (t) => {
+    const app = live(40, 5);
+    const copied: string[] = [];
+    app.render(
+      <Code
+        code="const x = 1;"
+        language="ts"
+        filename="a.ts"
+        copyable
+        onCopy={(code) => copied.push(code)}
+      />,
+    );
+    const row = app.text().findIndex((line) => strip(line).includes('copy'));
+    t.ok(row >= 0, 'the copy affordance is painted');
+    const col = strip(app.text()[row]!).indexOf('copy');
+    click(app, col, row);
+    t.deepEqual(copied, ['const x = 1;'], 'onCopy fires with the raw source');
+  });
+});
+
+describe('fino:ui/components Code filename + copy — html', () => {
+  it('renders no figcaption without filename or copyable', (t) => {
+    const html = renderToHtml(toHtml(<Code code="const x = 1;" language="ts" />));
+    t.ok(html.startsWith('<figure class="ui-code"'), 'still a figure, for a stable base element');
+    t.ok(!html.includes('<figcaption'), 'no header bar when neither prop is set');
+  });
+
+  it('renders a figcaption bar with the filename above the code', (t) => {
+    const html = renderToHtml(toHtml(<Code code="const x = 1;" language="ts" filename="a.ts" />));
+    t.ok(html.includes('<figcaption class="ui-code-bar">'), 'figcaption header bar');
+    t.ok(html.includes('class="ui-code-filename">a.ts<'), 'filename renders in the bar');
+    t.ok(html.indexOf('figcaption') < html.indexOf('<pre>'), 'the bar sits above the code');
+  });
+
+  it('renders an always-in-the-tab-order copy button with an aria-label', (t) => {
+    const html = renderToHtml(
+      toHtml(<Code code="const x = 1;" language="ts" filename="a.ts" copyable />),
+    );
+    t.ok(html.includes('data-fi-copy="1"'), 'the button carries the client copy marker');
+    t.ok(html.includes('aria-label="Copy code"'), 'accessible name for the icon-only button');
+    t.ok(
+      !html.includes('display:none') && !html.includes('display: none'),
+      'never display:none — stays reachable by keyboard',
+    );
+  });
+
+  it('renders a home for the copy button even without a filename', (t) => {
+    const html = renderToHtml(toHtml(<Code code="const x = 1;" language="ts" copyable />));
+    t.ok(html.includes('<figcaption class="ui-code-bar">'), 'bar still renders');
+    t.ok(html.includes('class="ui-code-filename"></span>'), 'empty filename label');
+    t.ok(html.includes('data-fi-copy="1"'), 'copy button renders right-aligned in the bar');
+  });
+
+  it('reveals the copy button on hover/focus via CSS, not markup toggling', (t) => {
+    t.ok(PAGE_CSS.includes('.ui-copy {') && PAGE_CSS.includes('opacity: 0;'), 'hidden by default');
+    t.ok(
+      PAGE_CSS.includes('.ui-code:hover .ui-copy') &&
+        PAGE_CSS.includes('.ui-code:focus-within .ui-copy'),
+      'revealed on hover or focus-within, so keyboard users see it too',
+    );
   });
 });

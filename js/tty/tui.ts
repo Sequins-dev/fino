@@ -415,6 +415,24 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
   return fallback;
 }
 /**
+ * Copy `text` to the system clipboard via an OSC 52 clipboard-set request —
+ * the terminal-native mechanism most modern emulators honor (iTerm2, kitty,
+ * WezTerm, tmux with `set-clipboard on`, …). Fire-and-forget: the terminal
+ * applies it silently, with no confirmation reported back to the app, and
+ * emulators that don't support OSC 52 simply ignore the sequence.
+ *
+ * ```ts no_run
+ * import { copyToClipboard } from 'fino:tty/tui';
+ * copyToClipboard('kubectl get pods -A');
+ * ```
+ */
+export function copyToClipboard(text: string): void {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  void writeStdout(`\x1b]52;c;${btoa(binary)}\x07`);
+}
+/**
  * Lay a tree out into a styled-cell frame without touching a terminal.
  *
  * This is the one-shot path: the tree is laid out fresh with no retained

@@ -39,7 +39,7 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
-import { fileIcon, iconForm, paginationRange } from 'fino:ui/components';
+import { defaultComboBoxFilter, fileIcon, iconForm, paginationRange } from 'fino:ui/components';
 import { highlightLines } from 'fino:format/typescript';
 import type {
   BadgeProps,
@@ -49,13 +49,17 @@ import type {
   ButtonProps,
   CheckboxProps,
   CodeProps,
+  ComboBoxProps,
   ContextMenuProps,
   DetailsProps,
   ExpanderPosition,
   ExpanderProps,
+  FieldProps,
+  FieldsetProps,
   FileTreeNode,
   FileTreeProps,
   HeadingProps,
+  IconButtonProps,
   IconProps,
   InlineCodeProps,
   ItalicProps,
@@ -66,6 +70,7 @@ import type {
   MenuListProps,
   MenuRowProps,
   ModalProps,
+  NumberInputProps,
   PaginationProps,
   PanelProps,
   PopoverProps,
@@ -73,6 +78,7 @@ import type {
   RadioGroupProps,
   RadioProps,
   SelectProps,
+  SliderProps,
   StepsProps,
   SwitchProps,
   TabItem,
@@ -80,6 +86,7 @@ import type {
   TableProps,
   TabsProps,
   TagProps,
+  TextAreaProps,
   TextInputProps,
   TimelineProps,
   ToastProps,
@@ -458,6 +465,81 @@ function panelHtml(node: VNode): VNode {
   );
 }
 
+const ARIA_CONTROL_TYPES = new Set(['input', 'select', 'textarea']);
+
+// Finds the first native form control among a field's transformed children
+// and merges `attrs` onto it — the only way to wire `aria-invalid`/
+// `aria-describedby` onto a control `Field` does not own and cannot know the
+// shape of. Stops at the first match, matching the "the control" (singular)
+// framing of one field around one control.
+function injectFirstControlAria(
+  nodes: NormalizedChild[],
+  attrs: Props,
+): { nodes: NormalizedChild[]; applied: boolean } {
+  let applied = false;
+  const out = nodes.map((node) => {
+    if (applied || typeof node === 'string') return node;
+    if (ARIA_CONTROL_TYPES.has(node.type)) {
+      applied = true;
+      return { ...node, props: { ...node.props, ...attrs } };
+    }
+    const nested = injectFirstControlAria(node.children, attrs);
+    if (!nested.applied) return node;
+    applied = true;
+    return { ...node, children: nested.nodes };
+  });
+  return { nodes: out, applied };
+}
+
+function fieldHtml(node: VNode): VNode {
+  const { label, hint, error, required, htmlFor, id } = node.props as FieldProps;
+  const hintId = id !== undefined ? `${id}-hint` : undefined;
+  const errorId = id !== undefined ? `${id}-error` : undefined;
+  const describedBy = [
+    hint !== undefined ? hintId : undefined,
+    error !== undefined ? errorId : undefined,
+  ].filter((entry): entry is string => entry !== undefined);
+  const controlAttrs: Props = {};
+  if (error !== undefined) controlAttrs['aria-invalid'] = 'true';
+  if (describedBy.length > 0) controlAttrs['aria-describedby'] = describedBy.join(' ');
+  let kids = transformChildren(node.children);
+  if (Object.keys(controlAttrs).length > 0) kids = injectFirstControlAria(kids, controlAttrs).nodes;
+  const labelText = h(
+    'span',
+    { className: 'ui-field-label' },
+    label,
+    required === true
+      ? h('span', { className: 'ui-field-required', 'aria-hidden': 'true' }, ' *')
+      : null,
+  );
+  const body = [
+    ...kids,
+    hint !== undefined ? h('small', { className: 'ui-field-hint', id: hintId }, hint) : null,
+    error !== undefined
+      ? h('small', { className: 'ui-field-error', role: 'alert', id: errorId }, error)
+      : null,
+  ];
+  if (typeof htmlFor === 'string') {
+    return h(
+      'div',
+      { className: 'ui-field', ...idAttr(id) },
+      h('label', { className: 'ui-field-label-row', for: htmlFor }, labelText),
+      ...body,
+    );
+  }
+  return h('label', { className: 'ui-field ui-field-wrap', ...idAttr(id) }, labelText, ...body);
+}
+
+function fieldsetHtml(node: VNode): VNode {
+  const { legend, id } = node.props as FieldsetProps;
+  return h(
+    'fieldset',
+    { className: 'ui-fieldset', ...idAttr(id) },
+    h('legend', null, legend),
+    ...transformChildren(node.children),
+  );
+}
+
 function buttonHtml(node: VNode): VNode {
   const { label, onClick, disabled, id } = node.props as ButtonProps;
   const click = handlerOf<() => void>(onClick);
@@ -549,10 +631,15 @@ function radioGroupHtml(node: VNode): VNode {
 }
 
 function textInputHtml(node: VNode): VNode {
-  const { value, placeholder, onChange, onSubmit, id } = node.props as TextInputProps;
+  const { value, placeholder, onChange, onSubmit, password, id } = node.props as TextInputProps;
   const change = handlerOf<(value: string, caret?: number) => void>(onChange);
   const submit = handlerOf<(value: string) => void>(onSubmit);
-  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '', ...idAttr(id) };
+  const attrs: Props = {
+    className: 'ui-field',
+    type: password === true ? 'password' : 'text',
+    value: value ?? '',
+    ...idAttr(id),
+  };
   if (placeholder !== undefined) attrs.placeholder = placeholder;
   if (actions !== null && (change !== undefined || submit !== undefined)) {
     // Change-submit and Enter-submit are the same GET round trip; Enter's
@@ -601,6 +688,165 @@ function selectHtml(node: VNode): VNode {
   const attrs: Props = { className: 'ui-field', ...idAttr(id) };
   if (change === undefined) attrs.disabled = true;
   return h('select', attrs, ...entries);
+}
+
+function numberInputHtml(node: VNode): VNode {
+  const { value, min, max, step, onChange, disabled, id } = node.props as NumberInputProps;
+  const change = handlerOf<(value: number) => void>(onChange);
+  const attrs: Props = {
+    className: 'ui-field',
+    type: 'number',
+    value: String(value),
+    ...idAttr(id),
+  };
+  if (min !== undefined) attrs.min = String(min);
+  if (max !== undefined) attrs.max = String(max);
+  if (step !== undefined) attrs.step = String(step);
+  if (actions !== null && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) change(parsed);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
+}
+
+function textAreaHtml(node: VNode): VNode {
+  const { value, rows, onChange, id } = node.props as TextAreaProps;
+  const change = handlerOf<(value: string, caret?: number) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', rows: String(rows ?? 4), ...idAttr(id) };
+  if (actions !== null && change !== undefined) {
+    const act = register((next) => change(next ?? ''));
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('textarea', attrs, value ?? ''));
+  }
+  if (change === undefined) attrs.disabled = true;
+  return h('textarea', attrs, value ?? '');
+}
+
+function sliderHtml(node: VNode): VNode {
+  const { value, min, max, step, onChange, orientation, disabled, id } = node.props as SliderProps;
+  const change = handlerOf<(value: number) => void>(onChange);
+  const attrs: Props = {
+    className: 'ui-field ui-slider',
+    type: 'range',
+    value: String(value),
+    min: String(min ?? 0),
+    max: String(max ?? 100),
+    ...idAttr(id),
+  };
+  if (step !== undefined) attrs.step = String(step);
+  if (orientation === 'vertical') attrs.style = { writingMode: 'vertical-lr', direction: 'rtl' };
+  if (actions !== null && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) change(parsed);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
+}
+
+function comboBoxHtml(node: VNode): VNode {
+  const {
+    value,
+    options,
+    open,
+    onOpenChange,
+    onInput,
+    onSelect,
+    activeKey,
+    placeholder,
+    filter,
+    disabled,
+    id,
+  } = node.props as ComboBoxProps;
+  const input = handlerOf<(value: string) => void>(onInput);
+  const openChange = handlerOf<(open: boolean) => void>(onOpenChange);
+  const filtered = (filter ?? defaultComboBoxFilter)(options, value ?? '');
+  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '' };
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  let field: VNode;
+  if (actions !== null && input !== undefined && disabled !== true) {
+    const act = register((next) => {
+      input(next ?? '');
+      openChange?.(true);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    field = actionForm({ act, change: true }, h('input', attrs));
+  } else {
+    if (input === undefined || disabled === true) attrs.disabled = true;
+    field = h('input', attrs);
+  }
+  let toggle: VNode | null = null;
+  if (actions !== null && openChange !== undefined && disabled !== true) {
+    const act = register(() => openChange(open !== true));
+    toggle = actionForm(
+      {},
+      h(
+        'button',
+        {
+          className: 'ui-combo-toggle',
+          name: 'do',
+          value: act,
+          'aria-label': open === true ? 'Close options' : 'Open options',
+        },
+        open === true ? '▴' : '▾',
+      ),
+    );
+  }
+  const popover =
+    open === true
+      ? h(
+          'div',
+          { className: 'ui-popover ui-combo-popover' },
+          menuUl(
+            filtered.length > 0 ? filtered : [{ kind: 'header', label: 'No matches' } as MenuItem],
+            activeKey ?? null,
+            { onSelect },
+          ),
+        )
+      : null;
+  return h('div', { className: 'ui-combo', ...idAttr(id) }, field, toggle, popover);
+}
+
+function iconButtonHtml(node: VNode): VNode {
+  const { icon, label, onClick, disabled, icons, id } = node.props as IconButtonProps;
+  const click = handlerOf<() => void>(onClick);
+  const enabled = disabled !== true && click !== undefined;
+  const glyph = h(
+    'span',
+    { className: 'ui-icon', 'aria-hidden': 'true' },
+    iconForm(icon, 'html', icons),
+  );
+  if (actions !== null && enabled) {
+    const act = register(() => click!());
+    return actionForm(
+      {},
+      h(
+        'button',
+        { className: 'ui-icon-button', name: 'do', value: act, 'aria-label': label, ...idAttr(id) },
+        glyph,
+      ),
+    );
+  }
+  const attrs: Props = {
+    className: 'ui-icon-button',
+    type: 'button',
+    'aria-label': label,
+    ...idAttr(id),
+  };
+  if (!enabled) attrs.disabled = true;
+  return h('button', attrs, glyph);
 }
 
 function iconHtml(node: VNode): VNode {
@@ -1373,7 +1619,14 @@ const CODE_TOK: Record<'keyword' | 'string' | 'number' | 'comment' | 'regexp', s
 };
 
 function codeHtml(node: VNode): VNode {
-  const { code: source, language, showLineNumbers, id } = node.props as CodeProps;
+  const {
+    code: source,
+    language,
+    showLineNumbers,
+    filename,
+    copyable,
+    id,
+  } = node.props as CodeProps;
   const lines = highlightLines(source, language);
   const codeClass =
     typeof language === 'string' && language.length > 0 ? `language-${language}` : undefined;
@@ -1391,11 +1644,35 @@ function codeHtml(node: VNode): VNode {
       ),
     ),
   );
-  return h(
-    'div',
-    { className: 'ui-code', ...idAttr(id) },
-    h('pre', null, h('code', codeClass !== undefined ? { className: codeClass } : null, ...body)),
+  const pre = h(
+    'pre',
+    null,
+    h('code', codeClass !== undefined ? { className: codeClass } : null, ...body),
   );
+  // The copy button reads its sibling <code>'s textContent client-side
+  // (internal:ui/web/client's `[data-fi-copy]` listener) rather than
+  // duplicating the (potentially large) source into a data-* attribute.
+  const bar =
+    filename !== undefined || copyable === true
+      ? h(
+          'figcaption',
+          { className: 'ui-code-bar' },
+          h('span', { className: 'ui-code-filename' }, filename ?? ''),
+          copyable === true
+            ? h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'ui-copy',
+                  'aria-label': 'Copy code',
+                  'data-fi-copy': '1',
+                },
+                'Copy',
+              )
+            : null,
+        )
+      : null;
+  return h('figure', { className: 'ui-code', ...idAttr(id) }, bar, pre);
 }
 
 function inlineCodeHtml(node: VNode): VNode {
@@ -1407,12 +1684,19 @@ function inlineCodeHtml(node: VNode): VNode {
 
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
+  'ui:field': fieldHtml,
+  'ui:fieldset': fieldsetHtml,
   'ui:button': buttonHtml,
+  'ui:icon-button': iconButtonHtml,
   'ui:checkbox': (node) => choiceHtml('checkbox', node),
   'ui:switch': (node) => choiceHtml('checkbox', node),
   'ui:radio': (node) => choiceHtml('radio', node),
   'ui:radio-group': radioGroupHtml,
   'ui:text-input': textInputHtml,
+  'ui:text-area': textAreaHtml,
+  'ui:number-input': numberInputHtml,
+  'ui:slider': sliderHtml,
+  'ui:combobox': comboBoxHtml,
   'ui:select': selectHtml,
   'ui:details': detailsHtml,
   'ui:expander': expanderHtml,
@@ -1874,6 +2158,50 @@ button.ui-link { background: none; border: none; padding: 0; font: inherit; }
 .tok-number { color: var(--ui-info); }
 .tok-comment { color: var(--ui-muted); }
 .tok-regexp { color: var(--ui-warning); }
+.ui-code-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+  padding: 0.375rem 0.75rem; background: var(--ui-surface-2);
+  border: 1px solid var(--ui-border); border-bottom: none;
+  border-radius: var(--ui-radius) var(--ui-radius) 0 0;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.8rem; color: var(--ui-muted);
+}
+.ui-code-bar + pre { border-top-left-radius: 0; border-top-right-radius: 0; }
+.ui-code-filename { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-copy {
+  opacity: 0; flex: none; background: var(--ui-surface);
+  border: 1px solid var(--ui-border-strong); border-radius: 0.25rem;
+  padding: 0.125rem 0.5rem; font: inherit; color: inherit; cursor: pointer;
+  transition: opacity 0.1s;
+}
+.ui-code:hover .ui-copy, .ui-code:focus-within .ui-copy, .ui-copy:focus-visible { opacity: 1; }
+.ui-copy.is-copied { opacity: 1; }
+.ui-field { display: flex; flex-direction: column; gap: 0.25rem; width: fit-content; cursor: default; }
+.ui-field-wrap { cursor: pointer; }
+.ui-field-wrap :is(input, select, textarea, button) { cursor: auto; }
+.ui-field-label { font-weight: 600; font-size: 0.85rem; }
+.ui-field-required { color: var(--ui-danger); }
+.ui-field-hint { color: var(--ui-muted); font-size: 0.8rem; }
+.ui-field-error { color: var(--ui-danger); font-size: 0.8rem; }
+.ui-fieldset {
+  border: 1px solid var(--ui-border); border-radius: var(--ui-radius);
+  padding: 0.75rem 1rem; display: flex; flex-direction: column; gap: 0.625rem;
+}
+.ui-fieldset > legend { padding: 0 0.5ch; color: var(--ui-muted); font-weight: 600; }
+.ui-icon-button {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 2rem; height: 2rem; border-radius: 0.375rem;
+  border: 1px solid var(--ui-border-strong); background: var(--ui-surface-2); cursor: pointer;
+}
+.ui-icon-button:hover:not(:disabled) { background: #2b3242; border-color: #4a5264; }
+.ui-icon-button:disabled { opacity: 0.45; cursor: default; }
+.ui-slider { width: 12rem; accent-color: var(--ui-accent); cursor: pointer; }
+.ui-combo { position: relative; display: inline-flex; align-items: center; gap: 0.25rem; }
+.ui-combo-toggle {
+  border: 1px solid var(--ui-border-strong); background: var(--ui-surface-2);
+  border-radius: 0.375rem; padding: 0.25rem 0.5rem; cursor: pointer; color: var(--ui-muted);
+}
+.ui-combo-popover { top: 100%; left: 0; margin-top: 0.25rem; }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

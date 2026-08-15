@@ -176,6 +176,15 @@ export interface UiMouseEvent {
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
+  /**
+   * `x`/`y` relative to the deepest hit node's own painted rect — the
+   * terminal target sets this (from the same rect hit-testing already
+   * resolves), so a control like `Slider` can compute click-to-position
+   * without knowing its own screen offset. Absent on targets that have no
+   * such concept, and absent when nothing was hit.
+   */
+  localX?: number;
+  localY?: number;
 }
 
 /** Props accepted by `Clickable`. */
@@ -278,6 +287,40 @@ export function Panel(props: PanelProps): VNode {
   return h('ui:panel', props);
 }
 
+/** Props accepted by `Field`. */
+export interface FieldProps extends FlexChildProps, Props {
+  label: string;
+  hint?: string;
+  error?: string;
+  required?: boolean;
+  /** DOM id of the control this field labels; becomes the web `<label for>`. Unused in the terminal. */
+  htmlFor?: string;
+  /** Hit-region id for the field's own wrapper, distinct from `htmlFor`. */
+  id?: string;
+  children?: Child;
+}
+/**
+ * Form field wrapper: a label (with a `required` marker) above the control,
+ * an optional dim hint, and an optional error line. In the terminal these
+ * stack as plain rows; on the web the label wraps the control natively
+ * (associating it with no explicit `for` needed) unless `htmlFor` names the
+ * control's id explicitly, and `error` wires `role="alert"` plus
+ * `aria-invalid`/`aria-describedby` onto the first native form control found
+ * among `children`.
+ */
+export function Field(props: FieldProps): VNode {
+  return h('ui:field', props);
+}
+
+/** Props accepted by `Fieldset`. */
+export interface FieldsetProps extends BoxProps {
+  legend: string;
+}
+/** Group of fields under a legend: a bordered box with the legend in the border (terminal), a real `<fieldset><legend>` (web). */
+export function Fieldset(props: FieldsetProps): VNode {
+  return h('ui:fieldset', props);
+}
+
 /** Props accepted by `Button`. */
 export interface ButtonProps extends StyleProps, FlexChildProps, Props {
   label: string;
@@ -366,6 +409,13 @@ export interface TextInputProps extends StyleProps, FlexChildProps, Props {
   onSubmit?: (value: string) => void;
   /** Raw key hook, consulted before the edit reducer. */
   onKey?: (event: UiKeyEvent) => boolean | void;
+  /**
+   * Mask the displayed characters (`•` in the terminal, `type="password"` on
+   * the web) without touching `value` — the real text is what `onChange`
+   * reports and what the caret/selection math operates on; only the paint
+   * step masks.
+   */
+  password?: boolean;
   id?: string;
 }
 /** Single-line editable text field. */
@@ -511,6 +561,229 @@ export function createTextField(initial = ''): TextFieldState {
       return true;
     },
   };
+}
+
+function lineStart(value: string, from: number): number {
+  const at = value.lastIndexOf('\n', from - 1);
+  return at === -1 ? 0 : at + 1;
+}
+function lineEnd(value: string, from: number): number {
+  const at = value.indexOf('\n', from);
+  return at === -1 ? value.length : at;
+}
+function moveVertical(value: string, pos: number, dir: 1 | -1): number {
+  const column = pos - lineStart(value, pos);
+  if (dir === -1) {
+    const start = lineStart(value, pos);
+    if (start === 0) return pos;
+    const prevStart = lineStart(value, start - 1);
+    return prevStart + Math.min(column, start - 1 - prevStart);
+  }
+  const end = lineEnd(value, pos);
+  if (end === value.length) return pos;
+  const nextStart = end + 1;
+  const nextEnd = lineEnd(value, nextStart);
+  return nextStart + Math.min(column, nextEnd - nextStart);
+}
+
+/**
+ * Pure multi-line edit reducer for `TextArea`: everything `applyTextEdit`
+ * does, plus Enter inserts a newline (there is no single-line submit key to
+ * reserve it for), Home/End move to the start/end of the *current* line
+ * rather than the whole value, and Up/Down move the caret to the same column
+ * on the line above/below, clamping short lines. `TextArea` gets its own
+ * reducer instead of overloading `applyTextEdit` because those meanings
+ * genuinely diverge per line — sharing one function would mean every
+ * single-line caller paying for a `value.indexOf('\n', …)` scan, and Home/End
+ * would need a mode flag to pick "line" vs "value" boundaries.
+ */
+export function applyTextAreaEdit(state: TextEditState, event: UiKeyEvent): TextEditState | null {
+  if (event.ctrl) return null;
+  const value = state.value;
+  const caret = Math.max(0, Math.min(value.length, state.caret));
+  const raw = state.selection ?? null;
+  const selection =
+    raw !== null && raw.start !== raw.end
+      ? {
+          start: Math.max(0, Math.min(value.length, Math.min(raw.start, raw.end))),
+          end: Math.max(0, Math.min(value.length, Math.max(raw.start, raw.end))),
+        }
+      : null;
+  const anchor =
+    selection === null ? caret : caret === selection.start ? selection.end : selection.start;
+  const alt = event.alt === true;
+  const shift = event.shift === true;
+  const key = alt && event.key === 'b' ? 'left' : alt && event.key === 'f' ? 'right' : event.key;
+
+  const moved = (target: number): TextEditState =>
+    shift
+      ? {
+          value,
+          caret: target,
+          selection:
+            target === anchor
+              ? null
+              : { start: Math.min(anchor, target), end: Math.max(anchor, target) },
+        }
+      : { value, caret: target, selection: null };
+  const removed = (start: number, end: number): TextEditState =>
+    end > start
+      ? { value: value.slice(0, start) + value.slice(end), caret: start, selection: null }
+      : { value, caret, selection: null };
+  const inserted = (text: string): TextEditState => {
+    const start = selection?.start ?? caret;
+    const end = selection?.end ?? caret;
+    return {
+      value: value.slice(0, start) + text + value.slice(end),
+      caret: start + text.length,
+      selection: null,
+    };
+  };
+
+  switch (key) {
+    case 'left':
+      if (!shift && !alt && selection !== null) {
+        return { value, caret: selection.start, selection: null };
+      }
+      return moved(alt ? wordLeft(value, caret) : Math.max(0, caret - 1));
+    case 'right':
+      if (!shift && !alt && selection !== null) {
+        return { value, caret: selection.end, selection: null };
+      }
+      return moved(alt ? wordRight(value, caret) : Math.min(value.length, caret + 1));
+    case 'up':
+      return moved(moveVertical(value, caret, -1));
+    case 'down':
+      return moved(moveVertical(value, caret, 1));
+    case 'home':
+      return moved(lineStart(value, caret));
+    case 'end':
+      return moved(lineEnd(value, caret));
+    case 'backspace':
+      if (selection !== null) return removed(selection.start, selection.end);
+      return removed(alt ? wordLeft(value, caret) : Math.max(0, caret - 1), caret);
+    case 'delete':
+      if (selection !== null) return removed(selection.start, selection.end);
+      return removed(caret, alt ? wordRight(value, caret) : Math.min(value.length, caret + 1));
+    case 'enter':
+      return alt ? null : inserted('\n');
+    default:
+      if (!alt && event.text !== undefined && event.text.length > 0) return inserted(event.text);
+      return null;
+  }
+}
+
+/** Text area state helper for `TextArea`: value, caret, and selection that survive re-renders. */
+export interface TextAreaState {
+  readonly value: Signal<string>;
+  readonly caret: Signal<number>;
+  readonly selection: Signal<TextSelection | null>;
+  /** Set the value, placing the caret at `caret` (default: the end) and clearing the selection. */
+  set(value: string, caret?: number, selection?: TextSelection | null): void;
+  /** Route a key event through `applyTextAreaEdit`; true when consumed. */
+  apply(event: UiKeyEvent): boolean;
+}
+/** Create text area state; wire `value`/`caret`/`selection` props and `onChange={area.set}`. */
+export function createTextArea(initial = ''): TextAreaState {
+  const value = createSignal(initial);
+  const caret = createSignal(initial.length);
+  const selection = createSignal<TextSelection | null>(null);
+  return {
+    value,
+    caret,
+    selection,
+    set(next: string, at?: number, range?: TextSelection | null): void {
+      value.set(next);
+      caret.set(Math.max(0, Math.min(next.length, at ?? next.length)));
+      selection.set(range ?? null);
+    },
+    apply(event: UiKeyEvent): boolean {
+      const next = applyTextAreaEdit(
+        { value: value.get(), caret: caret.get(), selection: selection.get() },
+        event,
+      );
+      if (next === null) return false;
+      value.set(next.value);
+      caret.set(next.caret);
+      selection.set(next.selection ?? null);
+      return true;
+    },
+  };
+}
+
+/** Props accepted by `TextArea`. */
+export interface TextAreaProps extends StyleProps, FlexChildProps, Props {
+  value: string;
+  caret?: number;
+  selection?: TextSelection | null;
+  /** Visible row count; default 4. */
+  rows?: number;
+  focused?: boolean;
+  /**
+   * Value change from editing, via `applyTextAreaEdit` in the terminal.
+   * Pair with `createTextArea().set`.
+   */
+  onChange?: (value: string, caret?: number, selection?: TextSelection | null) => void;
+  /**
+   * Explicit submit, e.g. ctrl+enter — plain Enter always inserts a newline
+   * since there is no other line-insertion key. The web target has no
+   * native gesture for this (a `<textarea>` inside a `<form>` never submits
+   * on Enter), so `onSubmit` only fires from the terminal.
+   */
+  onSubmit?: (value: string) => void;
+  onKey?: (event: UiKeyEvent) => boolean | void;
+  id?: string;
+}
+/** Multi-line editable text field. */
+export function TextArea(props: TextAreaProps): VNode {
+  return h('ui:text-area', props);
+}
+
+/** Props accepted by `NumberInput`. */
+export interface NumberInputProps extends StyleProps, FlexChildProps, Props {
+  value: number;
+  min?: number;
+  max?: number;
+  /** Increment per step; default 1. */
+  step?: number;
+  onChange?: (value: number) => void;
+  focused?: boolean;
+  disabled?: boolean;
+  id?: string;
+}
+/**
+ * Numeric stepper: decrement/increment affordances flank the value, clamped
+ * to `min`/`max`. In the terminal, clicking either affordance or pressing
+ * left/right while focused steps the value; on the web it is a native
+ * `<input type="number">`.
+ */
+export function NumberInput(props: NumberInputProps): VNode {
+  return h('ui:number-input', props);
+}
+
+/** Props accepted by `Slider`. */
+export interface SliderProps extends StyleProps, FlexChildProps, Props {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  onChange?: (value: number) => void;
+  orientation?: 'horizontal' | 'vertical';
+  /** Track length in cells (horizontal) or rows (vertical); default 20/8. */
+  width?: number;
+  focused?: boolean;
+  disabled?: boolean;
+  id?: string;
+}
+/**
+ * Continuous value picker: a track with a handle. In the terminal, left/down
+ * decrement and right/up increment while focused, and pressing or dragging
+ * anywhere on the track jumps the handle there (via the mouse event's
+ * `localX`/`localY`, relative to the track's own painted rect); on the web
+ * it is a native `<input type="range">`, which gets dragging for free.
+ */
+export function Slider(props: SliderProps): VNode {
+  return h('ui:slider', props);
 }
 
 /** Where a disclosure component places its `Expander`. */
@@ -801,6 +1074,65 @@ export interface SelectProps extends Props {
 /** Select box: a trigger and an option list that opens beneath it. */
 export function Select(props: SelectProps): VNode {
   return h('ui:select', props);
+}
+
+/** One option in a `ComboBox` list. */
+export interface ComboBoxOption {
+  key: string;
+  label: string;
+  disabled?: boolean;
+}
+
+/**
+ * Default `ComboBox` filter: a case-insensitive substring match over
+ * `label`. An empty (or whitespace-only) query keeps every option.
+ */
+export function defaultComboBoxFilter(
+  options: readonly ComboBoxOption[],
+  query: string,
+): ComboBoxOption[] {
+  const needle = query.trim().toLowerCase();
+  if (needle.length === 0) return [...options];
+  return options.filter((option) => option.label.toLowerCase().includes(needle));
+}
+
+/** Props accepted by `ComboBox`. */
+export interface ComboBoxProps extends Props {
+  /** The typed text — free-form, not necessarily an option's label or key. */
+  value: string;
+  options: readonly ComboBoxOption[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Typed-text change from editing, via `applyTextEdit` in the terminal. */
+  onInput: (value: string, caret?: number, selection?: TextSelection | null) => void;
+  onSelect: (key: string) => void;
+  /**
+   * The row highlighted while browsing the open list with arrow keys.
+   * Separate from `value`, which is free-typed text rather than a picked
+   * option — unlike `Select`, where the selected key doubles as the
+   * highlighted row, `ComboBox` has no such value to borrow, so browsing
+   * needs its own piece of state.
+   */
+  activeKey?: string | null;
+  onActiveChange?: (key: string | null) => void;
+  placeholder?: string;
+  caret?: number;
+  selection?: TextSelection | null;
+  focused?: boolean;
+  disabled?: boolean;
+  /** Overrides the default substring match; see `defaultComboBoxFilter`. */
+  filter?: (options: readonly ComboBoxOption[], query: string) => ComboBoxOption[];
+  /** Required for anchoring the popover to the input. */
+  id: string;
+}
+/**
+ * Text input filtering a selectable list: typing narrows `options` (through
+ * `filter`, defaulting to `defaultComboBoxFilter`) and opens an anchored
+ * list beneath the input, built on `MenuList` the same way `Select` anchors
+ * its popover.
+ */
+export function ComboBox(props: ComboBoxProps): VNode {
+  return h('ui:combobox', props);
 }
 
 /** Disclosure state helper for `Details`, `Modal`, `Select`, and menus. */
@@ -1163,6 +1495,24 @@ export interface IconProps extends StyleProps, FlexChildProps, Props {
 /** Registry-backed icon; each render target draws its own form. */
 export function Icon(props: IconProps): VNode {
   return h('ui:icon', props);
+}
+
+/** Props accepted by `IconButton`. */
+export interface IconButtonProps extends StyleProps, FlexChildProps, Props {
+  /** Registry icon name. */
+  icon: string;
+  /** Accessible name — the icon alone carries no text, so this is required. */
+  label: string;
+  onClick?: () => void;
+  focused?: boolean;
+  disabled?: boolean;
+  /** Per-name registry overrides, forwarded to `iconForm`. */
+  icons?: Record<string, IconForms>;
+  id?: string;
+}
+/** Icon-only button: a focusable click target whose accessible name comes from `label`, not visible text. */
+export function IconButton(props: IconButtonProps): VNode {
+  return h('ui:icon-button', props);
 }
 
 /** One node of a `FileTree`; `children` left undefined marks a leaf. */
@@ -1530,6 +1880,17 @@ export interface CodeProps extends FlexChildProps, Props {
   /** Highlighting language; unrecognized or omitted languages render plain. */
   language?: string;
   showLineNumbers?: boolean;
+  /** Shown in a header bar above the code; also gives `copyable` a home when there is no filename. */
+  filename?: string;
+  /**
+   * Show a copy-to-clipboard affordance. On the web it copies client-side
+   * (a server round trip cannot write the clipboard); in the terminal it
+   * calls `onCopy` — the lowering only emits nodes, it cannot itself write to
+   * the terminal — so pass `onCopy` (e.g. `fino:tty/tui`'s
+   * `copyToClipboard`) for the affordance to do anything there.
+   */
+  copyable?: boolean;
+  onCopy?: (code: string) => void;
   id?: string;
 }
 /**

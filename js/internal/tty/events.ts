@@ -34,6 +34,14 @@ export interface TuiMouseEventLike {
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
+  /**
+   * `x`/`y` relative to the deepest hit node's own painted rect — the
+   * component-level equivalent of a DOM event's `offsetX`/`offsetY`. Set by
+   * `#dispatchMouse` from the same `nodeRect` lookup hit-testing already
+   * uses; absent when nothing was hit (e.g. a click outside all content).
+   */
+  localX?: number;
+  localY?: number;
 }
 
 type Handler<E> = (event: E) => boolean | void;
@@ -180,7 +188,9 @@ export class TuiDispatcher {
       }
       if (focusable) this.#setFocus(focusable);
     }
-    const handled = this.#bubble(target, 'onMouse', event);
+    const rect = target ? nodeRect(target) : undefined;
+    const local = rect ? { localX: event.x - rect.x, localY: event.y - rect.y } : {};
+    const handled = this.#bubble(target, 'onMouse', { ...event, ...local });
     if (handled) {
       if (event.action === 'release') this.#pressed = null;
       return true;

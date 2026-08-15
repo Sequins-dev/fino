@@ -35,14 +35,18 @@ import {
   Checkbox,
   Clickable,
   Code,
+  ComboBox,
   ContextMenu,
   Details,
   Expander,
+  Field,
+  Fieldset,
   FileTree,
   HStack,
   Heading,
   ICONS,
   Icon,
+  IconButton,
   InlineCode,
   Italic,
   KeyHint,
@@ -51,6 +55,7 @@ import {
   ListSelection,
   MenuList,
   Modal,
+  NumberInput,
   Pagination,
   Panel,
   Popover,
@@ -58,6 +63,7 @@ import {
   RadioGroup,
   Rule,
   Select,
+  Slider,
   Spacer,
   Spinner,
   Steps,
@@ -67,6 +73,7 @@ import {
   Tag,
   TagGroup,
   Text,
+  TextArea,
   TextInput,
   Timeline,
   Toast,
@@ -77,18 +84,20 @@ import {
   VirtualScroll,
   createAccordion,
   createDisclosure,
+  createTextArea,
   createTextField,
   createTreeState,
   styles,
 } from 'fino:ui/components';
 import type {
+  ComboBoxOption,
   ExpanderPosition,
   FileTreeNode,
   MenuItem,
   StatusVariant,
   ToneVariant,
 } from 'fino:ui/components';
-import { render, getTerminalSize } from 'fino:tty/tui';
+import { render, getTerminalSize, copyToClipboard } from 'fino:tty/tui';
 import { signal as processSignal } from 'fino:process';
 import { PAGE_CSS, toHtml, htmlPage } from 'fino:ui/components/html';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
@@ -164,11 +173,28 @@ export function parseArgs(story: Story, raw: Record<string, string>): StoryArgs 
   return args;
 }
 
+const COMBO_OPTIONS: ComboBoxOption[] = [
+  { key: 'js', label: 'JavaScript' },
+  { key: 'ts', label: 'TypeScript' },
+  { key: 'py', label: 'Python' },
+  { key: 'rs', label: 'Rust' },
+  { key: 'go', label: 'Go' },
+];
+
 function formsGroup(): StoryGroup {
   const checked = createSignal(true);
   const radio = createSignal('b');
   const power = createSignal(false);
   const text = createTextField('hello');
+  const password = createTextField('');
+  const notes = createTextArea('Line one\nLine two');
+  const age = createSignal(28);
+  const volume = createSignal(40);
+  const combo = createTextField('');
+  const comboOpen = createSignal(false);
+  const comboActive = createSignal<string | null>(null);
+  const comboPicked = createSignal<string | null>(null);
+  const starred = createSignal(false);
   return {
     title: 'Forms',
     stories: [
@@ -242,6 +268,142 @@ function formsGroup(): StoryGroup {
             />
             <TextInput value="" placeholder="Type here…" />
           </VStack>
+        ),
+      },
+      {
+        key: 'password',
+        name: 'TextInput (password)',
+        view: () => (
+          <VStack gap={1}>
+            <TextInput
+              value={password.value.get()}
+              caret={password.caret.get()}
+              selection={password.selection.get()}
+              password
+              focused
+              onChange={password.set}
+            />
+            <Text style={[styles.muted]}>{`real value: ${password.value.get() || '(empty)'}`}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'text-area',
+        name: 'TextArea',
+        view: () => (
+          <TextArea
+            value={notes.value.get()}
+            caret={notes.caret.get()}
+            selection={notes.selection.get()}
+            rows={4}
+            focused
+            onChange={notes.set}
+          />
+        ),
+      },
+      {
+        key: 'field',
+        name: 'Field',
+        controls: {
+          required: { type: 'boolean', default: true },
+          error: { type: 'text', default: '' },
+        },
+        view: (args) => (
+          <Field
+            id="field-email"
+            htmlFor="field-email-input"
+            label="Email"
+            hint="We only use this for release notes."
+            error={String(args.error).length > 0 ? String(args.error) : undefined}
+            required={args.required === true}
+          >
+            <TextInput id="field-email-input" value="" placeholder="you@example.com" />
+          </Field>
+        ),
+      },
+      {
+        key: 'fieldset',
+        name: 'Fieldset',
+        view: () => (
+          <Fieldset legend="Preferences" width={30}>
+            <Checkbox
+              checked={checked.get()}
+              label="Product updates"
+              onChange={(next) => checked.set(next)}
+            />
+            <Checkbox checked={false} label="Marketing" disabled />
+          </Fieldset>
+        ),
+      },
+      {
+        key: 'number-input',
+        name: 'NumberInput',
+        view: () => (
+          <VStack gap={1}>
+            <NumberInput value={age.get()} min={0} max={120} onChange={(next) => age.set(next)} />
+            <Text style={[styles.muted]}>{`age: ${age.get()}`}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'slider',
+        name: 'Slider',
+        controls: {
+          orientation: {
+            type: 'select',
+            options: ['horizontal', 'vertical'],
+            default: 'horizontal',
+          },
+        },
+        view: (args) => (
+          <VStack gap={1}>
+            <Slider
+              id="gallery-slider"
+              value={volume.get()}
+              orientation={args.orientation as 'horizontal' | 'vertical'}
+              onChange={(next) => volume.set(next)}
+            />
+            <Text style={[styles.muted]}>{`volume: ${volume.get()}`}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'combobox',
+        name: 'ComboBox',
+        view: () => (
+          <VStack gap={1} width={26}>
+            <ComboBox
+              id="gallery-combo"
+              value={combo.value.get()}
+              options={COMBO_OPTIONS}
+              open={comboOpen.get()}
+              activeKey={comboActive.get()}
+              onActiveChange={(key) => comboActive.set(key)}
+              onOpenChange={(open) => comboOpen.set(open)}
+              onInput={combo.set}
+              onSelect={(key) => {
+                comboPicked.set(key);
+                const picked = COMBO_OPTIONS.find((option) => option.key === key);
+                if (picked) combo.set(picked.label);
+              }}
+            />
+            <Text style={[styles.muted]}>{`picked: ${comboPicked.get() ?? '—'}`}</Text>
+          </VStack>
+        ),
+      },
+      {
+        key: 'icon-button',
+        name: 'IconButton',
+        view: () => (
+          <HStack gap={1}>
+            <IconButton
+              id="gallery-icon-button"
+              icon={starred.get() ? 'lock' : 'file'}
+              label={starred.get() ? 'Unstar' : 'Star'}
+              onClick={() => starred.set(!starred.get())}
+            />
+            <Text style={[styles.muted]}>{starred.get() ? 'starred' : 'not starred'}</Text>
+          </HStack>
         ),
       },
     ],
@@ -702,6 +864,8 @@ function typographyGroup(): StoryGroup {
         controls: {
           language: { type: 'select', options: ['ts', 'js', 'plain'], default: 'ts' },
           showLineNumbers: { type: 'boolean', default: true },
+          filename: { type: 'text', default: 'greet.ts' },
+          copyable: { type: 'boolean', default: true },
         },
         view: (args) => (
           <VStack gap={1}>
@@ -709,6 +873,9 @@ function typographyGroup(): StoryGroup {
               code={sampleCode}
               language={args.language === 'plain' ? undefined : String(args.language)}
               showLineNumbers={args.showLineNumbers === true}
+              filename={String(args.filename).length > 0 ? String(args.filename) : undefined}
+              copyable={args.copyable === true}
+              onCopy={(code) => copyToClipboard(code)}
             />
             <HStack gap={0}>
               <Text>Inline: </Text>

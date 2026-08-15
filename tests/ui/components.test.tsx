@@ -231,6 +231,10 @@ describe('fino:ui/components layout and forms', () => {
       />
     );
     app.render(view());
+    // Key routing only reaches a focused node (captureKeys is for overlays
+    // catching Escape while nothing is focused) — click the field first, the
+    // same way a real terminal app's Tab/click focus flow would.
+    click(app, 1, 0);
     app.dispatcher.dispatch({ type: 'key', key: '!', text: '!' });
     t.equal(field.value.get(), 'hi!', 'typed character lands through onChange');
     app.render(view());

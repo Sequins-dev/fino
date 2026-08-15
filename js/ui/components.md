@@ -30,9 +30,10 @@ Checkbox({ checked: true, label: 'Ship it' });
 // → { type: 'ui:checkbox', props: { checked: true, label: 'Ship it' } }
 ```
 
-The catalog covers forms (`Button`, `Checkbox`, `Radio`, `RadioGroup`,
-`Switch`, `TextInput`, `Select`), disclosure (`Expander`, `Details`, `Tabs`,
-`TabList`, `Accordion`), menus (`MenuList`, `MenuRow`, `MenuHeader`,
+The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
+`RadioGroup`, `Switch`, `TextInput`, `TextArea`, `NumberInput`, `Slider`,
+`Select`, `ComboBox`, `Field`, `Fieldset`), disclosure (`Expander`, `Details`,
+`Tabs`, `TabList`, `Accordion`), menus (`MenuList`, `MenuRow`, `MenuHeader`,
 `MenuSeparator`), overlays (`Modal`, `ContextMenu`, `Popover`, `Tooltip`,
 `Toast`, `ToastStack`), status (`Badge`, `Tag`, `TagGroup`, `Spinner`,
 `ProgressBar`, `KeyHint`, `Timeline`), navigation (`Breadcrumbs`,
@@ -73,6 +74,8 @@ the state helpers:
   and menus.
 - `createTextField()` — value, caret, and selection for `TextInput`, with the
   `applyTextEdit` reducer behind an `apply(event)` method.
+- `createTextArea()` — the same shape for `TextArea`, behind `applyTextAreaEdit`
+  (see "Form controls" for why it is a separate reducer).
 - `createAccordion(single)` — open keys for `Accordion`; `single` closes other
   sections on toggle.
 - `createTreeState()` — expanded keys for `FileTree`.
@@ -132,6 +135,85 @@ app = render(view, { input: true });
 
 The HTML target ignores `focused` entirely — the browser owns real focus, and
 native `<input>` elements already render it.
+
+## Form controls
+
+`Field` wraps a control with a label, an optional dim `hint`, and an optional
+`error` line; `required` adds a red `*` after the label. `Field` never owns
+the control — it takes it as `children` — so on the web it wires
+accessibility onto whatever native form element it finds inside: `error`
+turns into `role="alert"` on the error line plus `aria-invalid` and
+`aria-describedby` injected onto the first `<input>`/`<select>`/`<textarea>`
+among the children. Give it `htmlFor` (naming the control's own `id`) for an
+explicit `<label for>` pairing, or leave it out and the `<label>` wraps the
+control instead — natively associated with no `for` needed:
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Field, TextInput } from 'fino:ui/components';
+
+const view = () => (
+  <Field label="Email" hint="We only use this for release notes." required>
+    <TextInput value="" onChange={() => {}} />
+  </Field>
+);
+```
+
+`Fieldset` groups fields under a `legend` — a bordered box with the legend
+set into the border in the terminal (the same `borderTitle` mechanism as
+`Panel`), a real `<fieldset><legend>` on the web.
+
+`NumberInput` and `Slider` are both draggable/steppable numeric controls, and
+both lower to native `<input type="number">`/`<input type="range">` on the
+web — dragging and the native spinner arrows come for free there. In the
+terminal, arrow keys step both while focused, and `NumberInput` additionally
+gets click targets for its `‹`/`›` affordances. `Slider`'s click-to-position
+needed a piece of infrastructure neither the primitives nor the dispatcher
+had: a component has no way to know its own painted screen offset, so a
+mouse event's `x`/`y` (frame-absolute) can't by itself say *where on the
+track* a click landed. `UiMouseEvent` (and the dispatcher's
+`TuiMouseEventLike`) now also carries `localX`/`localY` — the same
+coordinates relative to the deepest hit node's own rect, computed once in
+`TuiDispatcher#dispatchMouse` from the same `nodeRect` lookup hit-testing
+already uses. It is the terminal-component equivalent of a DOM event's
+`offsetX`/`offsetY`, and any future component that needs "where inside me
+was this click" can reuse it instead of re-deriving its own screen position.
+
+`TextInput` gained `password`: the terminal paints `•` per character and the
+web renders `type="password"`, but in both targets the masking is purely a
+paint-time transform — `value` (and every caret/selection index derived from
+it) is always the real text, since a mask of matching length keeps the index
+math correct without the edit reducer ever seeing it.
+
+`TextArea` is multi-line editing, and it gets its own reducer,
+`applyTextAreaEdit`, rather than an `applyTextEdit` mode flag: Enter inserts a
+newline instead of doing nothing (there is no submit key left to reserve),
+Home/End move to the current *line's* boundaries instead of the whole value's,
+and Up/Down move the caret to the same column on the adjacent line, clamping
+short lines — none of which single-line callers should pay for. `createTextArea()`
+pairs with it the same way `createTextField()` pairs with `TextInput`. An
+explicit `onSubmit` still exists for an app-chosen combination like
+ctrl+enter; the web target has no native gesture for it (a `<textarea>` in a
+`<form>` never submits on Enter), so it only ever fires from the terminal.
+
+`ComboBox` is a text input that filters a list as you type. The default
+filter (`defaultComboBoxFilter`) is a case-insensitive substring match over
+each option's `label`; pass `filter` to replace it entirely. Reaching for the
+existing `Select`-anchoring pattern (`Layer anchorId` in the terminal, the
+same popover shape on the web) turned up one prop `Select` gets for free that
+`ComboBox` needs to ask for explicitly: `Select`'s `value` *is* the picked
+option's key, so it doubles as the row to highlight while browsing with arrow
+keys. `ComboBox`'s `value` is free-typed text, not a key, so browsing needs
+its own piece of state — `activeKey`/`onActiveChange` — held by the caller
+like every other piece of catalog state. On the web, `ComboBox` deliberately
+does not use `<datalist>` (too limited — no control over filtering, no rich
+rows) or `<select>` (wrong interaction model for free text); it reuses the
+same `.ui-popover`/`.ui-menu` markup `Popover` and `ContextMenu` already
+established, so the three overlays look and behave alike.
+
+`IconButton` is an icon-only click target: `label` is the accessible name,
+never visible text, so on the web it becomes a `<button aria-label>` around
+an `aria-hidden` icon span — nothing for a screen reader to read twice.
 
 ## Icons
 
@@ -201,6 +283,25 @@ catalog (`accent` for keywords, `success` for strings, `info` for numbers,
 `tok-*` classes. Languages outside the JS/TS/JSX family — or an omitted
 `language` — render as plain monospace text; there's no attempt to guess a
 highlighter for a language the parser can't lex.
+
+`Code` optionally gets a header bar: `filename` shows it, `copyable` adds a
+copy affordance, and either alone still gives the bar a home (an empty label,
+a right-aligned copy button) rather than leaving `copyable` nowhere to live.
+In the terminal that bar is a dim row followed by a rule — always visible,
+never hover-revealed, since the terminal has no hover here (mouse tracking is
+button-event only, not motion). Its copy button cannot write to the
+terminal's clipboard itself — a lowering only emits nodes, it performs no
+effects — so it calls `onCopy`, which the app wires to whatever it wants,
+typically `fino:tty/tui`'s `copyToClipboard` (an OSC 52 clipboard-set
+request). On the web the bar is a `<figcaption>` above the `<pre><code>`
+inside a `<figure>`, and the copy button copies client-side — the Clipboard
+API needs a user gesture, so a server round trip could never drive it — via a
+`[data-fi-copy]` delegated listener in `internal:ui/web/client` that reads
+the sibling `<code>` element's `textContent` (rather than duplicating the
+source into a `data-*` attribute) and calls `navigator.clipboard.writeText`.
+It is hidden by default and revealed with plain CSS on `:hover`/
+`:focus-within`, never `display:none`, so it stays reachable by keyboard
+regardless of hover state.
 
 `Link` is the one catalog component allowed to navigate. Its behavior
 switches on which prop is set: `href` alone renders a real `<a href>` on the

@@ -392,22 +392,67 @@ function childText(node: LayoutNode): string {
   return out;
 }
 
-function textSegments(node: LayoutNode, base: Style): { rows: Row[]; multiline: boolean } {
-  const content = childText(node);
-  if (content.includes('\x1b')) {
-    return { rows: parseAnsi(content, base), multiline: true };
+interface TextRun {
+  text: string;
+  style: Style;
+}
+
+// Text is not a flattening leaf: nested nodes contribute their own styled
+// runs, so `<Text>plain <Text bold>loud</Text></Text>` keeps the emphasis
+// instead of collapsing to one style.
+function collectRuns(node: LayoutNode, inherited: Style, out: TextRun[]): void {
+  if (node.type === '#text') {
+    out.push({ text: node.text ?? '', style: inherited });
+    return;
   }
-  const lines = content.split('\n');
-  return {
-    rows: lines.map((line) => {
-      const width = stringWidth(line);
-      return {
-        segments: line.length > 0 ? [{ text: line, width, style: base }] : [],
-        width,
-      } as Row;
-    }),
-    multiline: lines.length > 1,
-  };
+  for (const child of nodeChildren(node)) {
+    if (typeof child === 'string') {
+      out.push({ text: child, style: inherited });
+      continue;
+    }
+    const own =
+      child.type === '#text' ? inherited : mergeStyle(inherited, styleFromProps(child.props));
+    collectRuns(child, own, out);
+  }
+}
+
+function textSegments(node: LayoutNode, base: Style): { rows: Row[]; multiline: boolean } {
+  const runs: TextRun[] = [];
+  collectRuns(node, base, runs);
+  const rows: Row[] = [];
+  let segments: Segment[] = [];
+  let width = 0;
+
+  function pushRow(): void {
+    rows.push({ segments, width });
+    segments = [];
+    width = 0;
+  }
+
+  for (const run of runs) {
+    if (run.text.length === 0) continue;
+    if (run.text.includes('\x1b')) {
+      const parsed = parseAnsi(run.text, run.style);
+      parsed.forEach((row, index) => {
+        if (index > 0) pushRow();
+        for (const segment of row.segments) {
+          segments.push(segment);
+          width += segment.width;
+        }
+      });
+      continue;
+    }
+    const parts = run.text.split('\n');
+    parts.forEach((part, index) => {
+      if (index > 0) pushRow();
+      if (part.length === 0) return;
+      const partWidth = stringWidth(part);
+      segments.push({ text: part, width: partWidth, style: run.style });
+      width += partWidth;
+    });
+  }
+  pushRow();
+  return { rows, multiline: rows.length > 1 };
 }
 
 function wrapMode(props: Record<string, unknown>): WrapMode {

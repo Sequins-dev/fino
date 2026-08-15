@@ -17,7 +17,10 @@
  * native change event to hook, so its scroll offset is bridged by hand: a
  * debounced listener converts `scrollTop` to a row offset via the
  * container's `data-fi-row-height` and submits it like any other
- * value-bearing control.
+ * value-bearing control. A `[data-fi-copy]` button (a `Code` block's copy
+ * affordance) is handled entirely client-side and never touches the action
+ * collector — the clipboard API needs a user gesture, so a server round
+ * trip cannot write to it.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -433,6 +436,29 @@ document.addEventListener(
   },
   true,
 );
+
+// Code blocks' copy button (fino:ui/components' Code, copyable: true) copies
+// client-side: the clipboard API needs a user gesture and a server round
+// trip cannot write to it. Never routed through the action collector. Reads
+// the button's nearest ".ui-code" figure and copies its <code> element's
+// textContent, so the source is not duplicated into a data-* attribute.
+document.addEventListener('click', (event) => {
+  const target = event.target;
+  const button = target instanceof Element ? target.closest('[data-fi-copy]') : null;
+  if (!button) return;
+  const code = button.closest('.ui-code')?.querySelector('code');
+  if (!code || !navigator.clipboard) return;
+  navigator.clipboard.writeText(code.textContent || '').then(() => {
+    const label = button.textContent;
+    button.textContent = 'Copied';
+    button.classList.add('is-copied');
+    clearTimeout(button.__fiCopyTimer);
+    button.__fiCopyTimer = setTimeout(() => {
+      button.textContent = label;
+      button.classList.remove('is-copied');
+    }, 1500);
+  }, () => {});
+});
 
 function connectLive() {
   const views = Array.from(document.querySelectorAll('[data-fi-view]')).map((el) => el.id).filter(Boolean);

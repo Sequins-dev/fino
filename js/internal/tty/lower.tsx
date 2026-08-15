@@ -17,9 +17,11 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import { highlightLines } from 'fino:format/typescript';
 import {
+  applyTextAreaEdit,
   applyTextEdit,
   Box,
   Clickable,
+  defaultComboBoxFilter,
   Expander,
   fileIcon,
   iconForm,
@@ -47,21 +49,27 @@ import type {
   ButtonProps,
   CheckboxProps,
   CodeProps,
+  ComboBoxProps,
   ContextMenuProps,
   DetailsProps,
   ExpanderProps,
+  FieldProps,
+  FieldsetProps,
   FileTreeNode,
   FileTreeProps,
   HeadingProps,
+  IconButtonProps,
   IconProps,
   InlineCodeProps,
   ItalicProps,
   KeyHintProps,
   LinkProps,
   ListProps,
+  MenuItem,
   MenuListProps,
   MenuRowProps,
   ModalProps,
+  NumberInputProps,
   PaginationProps,
   PanelProps,
   PopoverProps,
@@ -69,6 +77,7 @@ import type {
   RadioGroupProps,
   RadioProps,
   SelectProps,
+  SliderProps,
   SpinnerProps,
   StepsProps,
   SwitchProps,
@@ -76,11 +85,14 @@ import type {
   TableProps,
   TabsProps,
   TagProps,
+  TextAreaProps,
   TextInputProps,
   TimelineProps,
   ToastProps,
   ToastStackProps,
   TooltipProps,
+  UiKeyEvent,
+  UiMouseEvent,
   VirtualListProps,
 } from 'fino:ui/components';
 
@@ -98,6 +110,30 @@ function panel(props: Props, children: NormalizedChild[]): VNode {
       ...(title !== undefined ? { borderTitle: title } : {}),
     },
     children,
+  );
+}
+
+function field(props: Props, children: NormalizedChild[]): VNode {
+  const { label, hint, error, required, htmlFor: _htmlFor, id, ...rest } = props as FieldProps;
+  return (
+    <Box direction="column" id={id} {...rest}>
+      <Box direction="row">
+        <Text style={[styles.bold]}>{label}</Text>
+        {required === true ? <Text style={[styles.danger, styles.bold]}>{' *'}</Text> : null}
+      </Box>
+      {children}
+      {hint !== undefined ? <Text style={[styles.dim]}>{hint}</Text> : null}
+      {error !== undefined ? <Text style={[styles.danger]}>{error}</Text> : null}
+    </Box>
+  );
+}
+
+function fieldset(props: Props, children: NormalizedChild[]): VNode {
+  const { legend, ...rest } = props as FieldsetProps;
+  return (
+    <Box border paddingX={1} direction="column" borderTitle={legend} {...rest}>
+      {children}
+    </Box>
   );
 }
 
@@ -191,8 +227,19 @@ function switchNode(props: Props): VNode {
 }
 
 function textInput(props: Props): VNode {
-  const { value, placeholder, caret, selection, focused, onKey, onChange, onSubmit, id, ...rest } =
-    props as TextInputProps;
+  const {
+    value,
+    placeholder,
+    caret,
+    selection,
+    focused,
+    onKey,
+    onChange,
+    onSubmit,
+    password,
+    id,
+    ...rest
+  } = props as TextInputProps;
   const editKey =
     onChange !== undefined || onSubmit !== undefined
       ? (event: Parameters<NonNullable<TextInputProps['onKey']>>[0]): boolean | void => {
@@ -209,15 +256,177 @@ function textInput(props: Props): VNode {
           return true;
         }
       : onKey;
+  // Masking happens only at paint: the caret and selection indices are
+  // computed against the real `value`, so a same-length run of `•` keeps
+  // that math correct without the reducer ever seeing the masked form.
+  const shown = password === true ? '•'.repeat(value.length) : value;
   return (
     <Clickable id={id} onKey={editKey} {...rest}>
       <Input
-        value={value}
+        value={shown}
         placeholder={placeholder}
         caret={caret}
         selection={selection}
         focused={focused}
       />
+    </Clickable>
+  );
+}
+
+function clampNumber(value: number, min: number | undefined, max: number | undefined): number {
+  let out = value;
+  if (max !== undefined) out = Math.min(out, max);
+  if (min !== undefined) out = Math.max(out, min);
+  return out;
+}
+
+function numberInput(props: Props): VNode {
+  const { value, min, max, step, onChange, focused, disabled, id, ...rest } =
+    props as NumberInputProps;
+  const s = step ?? 1;
+  const canDec = onChange !== undefined && disabled !== true && (min === undefined || value > min);
+  const canInc = onChange !== undefined && disabled !== true && (max === undefined || value < max);
+  const stepBy = (delta: number): void => onChange!(clampNumber(value + delta, min, max));
+  return (
+    <Clickable
+      id={id}
+      direction="row"
+      gap={1}
+      disabled={disabled}
+      onKey={
+        onChange !== undefined && disabled !== true
+          ? (event) => {
+              if (event.ctrl || event.alt) return false;
+              if (event.key === 'left' || event.key === 'down') {
+                stepBy(-s);
+                return true;
+              }
+              if (event.key === 'right' || event.key === 'up') {
+                stepBy(s);
+                return true;
+              }
+              return false;
+            }
+          : undefined
+      }
+      {...rest}
+    >
+      <Clickable
+        id={id !== undefined ? `${id}:dec` : undefined}
+        focusable={false}
+        disabled={!canDec}
+        onClick={canDec ? () => stepBy(-s) : undefined}
+      >
+        <Text style={canDec ? [styles.accent] : [styles.dim]}>‹</Text>
+      </Clickable>
+      <Text style={disabled === true ? [styles.dim] : focused === true ? [styles.bold] : []}>
+        {String(value)}
+      </Text>
+      <Clickable
+        id={id !== undefined ? `${id}:inc` : undefined}
+        focusable={false}
+        disabled={!canInc}
+        onClick={canInc ? () => stepBy(s) : undefined}
+      >
+        <Text style={canInc ? [styles.accent] : [styles.dim]}>›</Text>
+      </Clickable>
+    </Clickable>
+  );
+}
+
+function textArea(props: Props): VNode {
+  const { value, caret, selection, rows, focused, onChange, onSubmit, onKey, id, ...rest } =
+    props as TextAreaProps;
+  const editKey =
+    onChange !== undefined || onSubmit !== undefined
+      ? (event: Parameters<NonNullable<TextAreaProps['onKey']>>[0]): boolean | void => {
+          if (onKey?.(event) === true) return true;
+          if (event.key === 'enter' && event.ctrl === true && !event.alt) {
+            if (onSubmit === undefined) return false;
+            onSubmit(value);
+            return true;
+          }
+          if (onChange === undefined) return false;
+          const next = applyTextAreaEdit({ value, caret: caret ?? value.length, selection }, event);
+          if (next === null) return false;
+          onChange(next.value, next.caret, next.selection);
+          return true;
+        }
+      : onKey;
+  return (
+    <Clickable id={id} onKey={editKey} {...rest}>
+      <Box border paddingX={1} height={(rows ?? 4) + 2}>
+        <Text wrap={false} caret={focused === true ? (caret ?? value.length) : undefined}>
+          {value}
+        </Text>
+      </Box>
+    </Clickable>
+  );
+}
+
+function slider(props: Props): VNode {
+  const { value, min, max, step, onChange, orientation, width, focused, disabled, id, ...rest } =
+    props as SliderProps;
+  const lo = min ?? 0;
+  const hi = max ?? 100;
+  const s = step ?? 1;
+  const span = Math.max(1e-9, hi - lo);
+  const vertical = orientation === 'vertical';
+  const cells = Math.max(3, width ?? (vertical ? 8 : 20));
+  const fraction = Math.max(0, Math.min(1, (clampNumber(value, lo, hi) - lo) / span));
+  const handleAt = Math.round(fraction * (cells - 1));
+  const enabled = onChange !== undefined && disabled !== true;
+  const commit = (frac: number): void => {
+    const raw = lo + Math.max(0, Math.min(1, frac)) * span;
+    onChange!(clampNumber(Math.round(raw / s) * s, lo, hi));
+  };
+  const onMouse = enabled
+    ? (event: UiMouseEvent): boolean => {
+        if (event.action !== 'press' && event.action !== 'drag') return false;
+        const local = vertical ? event.localY : event.localX;
+        if (local === undefined) return false;
+        commit(vertical ? 1 - local / (cells - 1) : local / (cells - 1));
+        return true;
+      }
+    : undefined;
+  const onKey = enabled
+    ? (event: UiKeyEvent): boolean => {
+        if (event.ctrl || event.alt) return false;
+        if (event.key === 'left' || event.key === 'down') {
+          onChange!(clampNumber(value - s, lo, hi));
+          return true;
+        }
+        if (event.key === 'right' || event.key === 'up') {
+          onChange!(clampNumber(value + s, lo, hi));
+          return true;
+        }
+        return false;
+      }
+    : undefined;
+  const trackStyle = disabled === true ? [styles.dim] : focused === true ? [styles.accent] : [];
+  if (vertical) {
+    const rows = Array.from({ length: cells }, (_, row) => cells - 1 - row === handleAt);
+    return (
+      <Clickable
+        id={id}
+        direction="column"
+        disabled={disabled}
+        onMouse={onMouse}
+        onKey={onKey}
+        {...rest}
+      >
+        {rows.map((isHandle, index) => (
+          <Text key={String(index)} style={trackStyle}>
+            {isHandle ? '●' : '│'}
+          </Text>
+        ))}
+      </Clickable>
+    );
+  }
+  const track = Array.from({ length: cells }, (_, i) => (i === handleAt ? '●' : '─')).join('');
+  return (
+    <Clickable id={id} disabled={disabled} onMouse={onMouse} onKey={onKey} {...rest}>
+      <Text style={trackStyle}>{track}</Text>
     </Clickable>
   );
 }
@@ -492,6 +701,120 @@ function select(props: Props): VNode {
         </Layer>
       ) : null}
     </Box>
+  );
+}
+
+function comboBox(props: Props): VNode {
+  const {
+    value,
+    options,
+    open,
+    onOpenChange,
+    onInput,
+    onSelect,
+    activeKey,
+    onActiveChange,
+    placeholder,
+    caret,
+    selection,
+    focused,
+    disabled,
+    filter,
+    id,
+  } = props as ComboBoxProps;
+  const filtered = (filter ?? defaultComboBoxFilter)(options, value);
+  const selectable = filtered.filter((option) => option.disabled !== true);
+  const moveActive = (delta: number): void => {
+    if (onActiveChange === undefined || selectable.length === 0) return;
+    const at = activeKey ? selectable.findIndex((option) => option.key === activeKey) : -1;
+    const start = at === -1 ? (delta > 0 ? -1 : 0) : at;
+    const next = Math.max(0, Math.min(selectable.length - 1, start + delta));
+    onActiveChange(selectable[next]!.key);
+  };
+  const editKey = (event: UiKeyEvent): boolean => {
+    if (event.ctrl) return false;
+    if (event.key === 'escape' && open) {
+      onOpenChange(false);
+      return true;
+    }
+    if (event.key === 'down') {
+      if (!open) onOpenChange(true);
+      moveActive(1);
+      return true;
+    }
+    if (event.key === 'up' && open) {
+      moveActive(-1);
+      return true;
+    }
+    if (event.key === 'enter' && open && activeKey !== undefined && activeKey !== null) {
+      onSelect(activeKey);
+      onOpenChange(false);
+      return true;
+    }
+    const next = applyTextEdit({ value, caret: caret ?? value.length, selection }, event);
+    if (next === null) return false;
+    if (!open) onOpenChange(true);
+    onInput(next.value, next.caret, next.selection);
+    return true;
+  };
+  const items: MenuItem[] =
+    filtered.length > 0 ? filtered : [{ kind: 'header', label: 'No matches' }];
+  return (
+    <Box direction="column">
+      <Clickable
+        id={id}
+        onKey={editKey}
+        disabled={disabled}
+        onClick={disabled === true ? undefined : () => onOpenChange(true)}
+      >
+        <Input
+          value={value}
+          placeholder={placeholder}
+          caret={caret}
+          selection={selection}
+          focused={focused}
+        />
+      </Clickable>
+      {open ? (
+        <Layer anchorId={id}>
+          <Box border paddingX={1}>
+            <MenuList
+              items={items}
+              selectedKey={activeKey}
+              id={`${id}:menu`}
+              onSelect={(key) => {
+                onSelect(key);
+                onOpenChange(false);
+              }}
+            />
+          </Box>
+        </Layer>
+      ) : null}
+    </Box>
+  );
+}
+
+function iconButton(props: Props): VNode {
+  const {
+    icon,
+    label: _label,
+    onClick,
+    focused,
+    disabled,
+    icons,
+    id,
+    ...rest
+  } = props as IconButtonProps;
+  return (
+    <Clickable id={id} onClick={onClick} disabled={disabled} {...rest}>
+      <Text
+        style={
+          disabled === true ? [styles.dim] : focused === true ? [styles.bold, styles.accent] : []
+        }
+      >
+        {iconForm(icon, 'tui', icons)}
+      </Text>
+    </Clickable>
   );
 }
 
@@ -1047,11 +1370,39 @@ const CODE_TONE = {
 } as const;
 
 function code(props: Props): VNode {
-  const { code: source, language, showLineNumbers, id, ...rest } = props as CodeProps;
+  const {
+    code: source,
+    language,
+    showLineNumbers,
+    filename,
+    copyable,
+    onCopy,
+    id,
+    ...rest
+  } = props as CodeProps;
   const rows = highlightLines(source, language);
   const gutterWidth = String(rows.length).length;
+  const bar =
+    filename !== undefined || copyable === true ? (
+      <Box direction="column">
+        <Box direction="row" justify="between">
+          <Text style={[styles.dim]}>{filename ?? ''}</Text>
+          {copyable === true ? (
+            <Clickable
+              id={id !== undefined ? `${id}:copy` : undefined}
+              focusable={false}
+              onClick={onCopy ? () => onCopy(source) : undefined}
+            >
+              <Text style={[styles.dim]}>⧉ copy</Text>
+            </Clickable>
+          ) : null}
+        </Box>
+        <Rule style={[styles.dim]} />
+      </Box>
+    ) : null;
   return (
     <Box direction="column" border paddingX={1} id={id} {...rest}>
+      {bar}
       {rows.map((runs, index) => (
         <Box key={String(index)} direction="row" gap={showLineNumbers ? 1 : 0} minHeight={1}>
           {showLineNumbers ? (
@@ -1083,12 +1434,19 @@ function inlineCode(props: Props, children: NormalizedChild[]): VNode {
 
 const COMPOSERS: Record<string, Composer> = {
   'ui:panel': panel,
+  'ui:field': field,
+  'ui:fieldset': fieldset,
   'ui:button': button,
+  'ui:icon-button': iconButton,
   'ui:checkbox': checkbox,
   'ui:radio': radio,
   'ui:radio-group': radioGroup,
   'ui:switch': switchNode,
   'ui:text-input': textInput,
+  'ui:text-area': textArea,
+  'ui:number-input': numberInput,
+  'ui:slider': slider,
+  'ui:combobox': comboBox,
   'ui:details': details,
   'ui:expander': expanderNode,
   'ui:icon': iconNode,
