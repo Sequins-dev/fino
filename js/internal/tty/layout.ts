@@ -676,13 +676,17 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
       // be built before layout assigns a rect. `render(size)` runs here with
       // the constraint, and again at paint time with the resolved rect.
       const produced = renderMeasured(node, availW, explicitH);
-      size =
-        produced === null
-          ? { width: 0, height: 0 }
-          : measure(produced, {
-              width: availW,
-              ...(explicitH !== undefined ? { height: explicitH } : {}),
-            });
+      if (produced === null) {
+        size = { width: 0, height: 0 };
+      } else {
+        const inner = measure(produced, {
+          width: availW,
+          ...(explicitH !== undefined ? { height: explicitH } : {}),
+        });
+        // Never report more than the constraint: measured content adapts to
+        // the space it is given, so it must not widen its own ancestors.
+        size = { width: Math.min(inner.width, availW), height: inner.height };
+      }
       break;
     }
     default:

@@ -2066,8 +2066,6 @@ function lineChart(props: Props): VNode {
     allValues.length > 0
       ? niceScale(Math.min(...allValues), Math.max(...allValues))
       : niceScale(0, 1);
-  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
-  const minWidth = Math.max(10, Math.ceil(maxPoints / 2));
 
   // The plot spans whatever width layout assigns, so a chart fills its
   // container instead of collapsing to its sample count.
@@ -2079,7 +2077,10 @@ function lineChart(props: Props): VNode {
           linePlot({
             series,
             rows,
-            width: Math.max(minWidth, available - axisGutter(series, scale, showAxis)),
+            // Always fit: the plot scales down to the space it is given
+            // rather than overflowing when there are more samples than
+            // cells — plotBraille resamples across whatever width it gets.
+            width: Math.max(1, available - axisGutter(series, scale, showAxis)),
             scale,
             truecolor,
             showAxis,
