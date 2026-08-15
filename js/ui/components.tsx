@@ -146,7 +146,16 @@ export interface LayerProps extends StyleProps, Props {
   anchor?: { x: number; y: number };
   /** Anchor beneath the painted rect of the node with this hit id. */
   anchorId?: string;
-  placement?: 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'center';
+  placement?:
+    | 'bottom-start'
+    | 'bottom-center'
+    | 'bottom-end'
+    | 'top-start'
+    | 'top-center'
+    | 'top-end'
+    | 'center';
+  /** Place the layer inside the anchor's rect rather than beside it. */
+  within?: boolean;
   /** Dim everything beneath the layer. */
   backdrop?: boolean;
   /** Skip the opaque backing fill, letting content beneath show through. */
@@ -2030,7 +2039,7 @@ export interface FloatingActionBarProps extends Props {
    * the container itself an `id` and pass it here.
    */
   anchorId: string;
-  placement?: 'bottom-center' | 'bottom-end';
+  placement?: 'bottom-start' | 'bottom-center' | 'bottom-end';
   children?: Child;
 }
 /**

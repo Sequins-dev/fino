@@ -1839,7 +1839,12 @@ function hoverCardHtml(node: VNode): VNode {
 
 function floatingActionBarHtml(node: VNode): VNode {
   const { placement } = node.props as FloatingActionBarProps;
-  const align = placement === 'bottom-end' ? 'ui-fab-end' : 'ui-fab-center';
+  const align =
+    placement === 'bottom-end'
+      ? 'ui-fab-end'
+      : placement === 'bottom-start'
+        ? 'ui-fab-start'
+        : 'ui-fab-center';
   return h('div', { className: `ui-fab ${align}` }, ...transformChildren(node.children));
 }
 
@@ -2849,6 +2854,7 @@ button.ui-link { background: none; border: none; padding: 0; font: inherit; }
   display: flex; gap: 0.5rem; width: 100%; pointer-events: none;
 }
 .ui-fab > * { pointer-events: auto; }
+.ui-fab-start { justify-content: flex-start; }
 .ui-fab-center { justify-content: center; }
 .ui-fab-end { justify-content: flex-end; }
 .ui-calendar-wrap { display: inline-flex; flex-direction: column; gap: 0.5rem; width: fit-content; }

@@ -473,29 +473,14 @@ as CSS intends: `position: sticky` within the container, `justify-content`
 centered or end-aligned. The terminal target ran into a real limit of the
 `Layer` primitive while building this one, worth documenting precisely:
 
-`Layer`'s `anchorId` resolves to a *point*, not a rect — `internal:tty/layout`
-looks up the anchor id's hit rect and keeps only its bottom-left corner
-(`{ x: target.x, y: target.y + target.height - 1 }`); `target.width` is
-discarded entirely. An `-end`-suffixed placement computes
-`x = anchor.x - layerWidth + 1`, i.e. it right-aligns the layer against the
-anchor's own *left* edge — which is the right behavior when the anchor is a
-small trigger (a button, an input) sitting near where the popup should end,
-but not when the anchor is a wide container: subtracting the layer's width
-from the container's left edge almost always goes negative and clamps to 0,
-landing in the same place `-start` would. There is also no anchored-*center*
-placement at all — only start/end relative to the anchor point — so
-`'bottom-center'` has nothing truer to fall back to either. Concretely: **in
-the terminal, `FloatingActionBar`'s `'bottom-center'` and `'bottom-end'`
-currently render identically** — both land left-aligned, just inside the
-container's bottom edge — whenever the container is wider than the bar,
-which is the common case. `internal:tty/lower`'s `floatingActionBar` composer
-still requests `top-start`/`top-end` from `Layer` (the semantically correct
-primitive for "start" vs. "end") rather than hand-rolling positioning math of
-its own, so a future fix to `Layer` — capturing `target.width` and giving
-`-end` a real `anchor.x + target.width - layerWidth` calculation, plus adding
-an anchored-center mode — would make both placements correct with no change
-needed here. Until then, this is a known gap in the anchor primitive, not
-something `FloatingActionBar` works around.
+`Layer`'s `anchorId` resolves to the anchor's full rect, so placements that
+depend on the container's width work in both targets. `placement` accepts
+`'bottom-start'`, `'bottom-center'`, and `'bottom-end'`, aligning the bar to
+the parent's left edge, centre, or right edge respectively, and the `within`
+flag on `Layer` places a layer *inside* the anchor's rect rather than beside
+it — which is what makes a bar hover over the bottom of a container instead
+of dropping below it. A popover anchored to a small trigger still wants the
+default (outside) behavior, so `within` is opt-in.
 
 (Separately, `top-start`/`top-end` — rather than `bottom-start`/`bottom-end`
 — are what "just inside the container's bottom edge" means today: an anchor

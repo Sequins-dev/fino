@@ -1258,18 +1258,32 @@ function paintLayer(
   const content = measureFlex(node, { width: canvas.width }, spec);
   const width = Math.min(num(props, 'width') ?? content.width, canvas.width);
   const height = Math.min(num(props, 'height') ?? content.height, canvas.height);
-  let anchor = props.anchor as { x: number; y: number } | undefined;
+  // The anchor keeps its full rect: end and center placements need the
+  // target's width, and `within` positions inside it rather than beside it.
+  const point = props.anchor as { x: number; y: number } | undefined;
   const anchorId = str(props, 'anchorId');
-  if (!anchor && anchorId) {
-    const target = canvas.findHit(anchorId);
-    if (target) anchor = { x: target.x, y: target.y + target.height - 1 };
-  }
+  const target = anchorId !== undefined ? canvas.findHit(anchorId) : undefined;
+  const anchor: Rect | undefined =
+    target !== undefined
+      ? { x: target.x, y: target.y, width: target.width, height: target.height }
+      : point !== undefined
+        ? { x: point.x, y: point.y, width: 1, height: 1 }
+        : undefined;
   const placement = str(props, 'placement') ?? (anchor ? 'bottom-start' : 'center');
+  const within = props.within === true;
   let x: number;
   let y: number;
   if (anchor) {
-    x = placement.endsWith('end') ? anchor.x - width + 1 : anchor.x;
-    y = placement.startsWith('top') ? anchor.y - height : anchor.y + 1;
+    x = placement.endsWith('end')
+      ? anchor.x + anchor.width - width
+      : placement.endsWith('center')
+        ? anchor.x + Math.floor((anchor.width - width) / 2)
+        : anchor.x;
+    if (within) {
+      y = placement.startsWith('top') ? anchor.y : anchor.y + anchor.height - height;
+    } else {
+      y = placement.startsWith('top') ? anchor.y - height : anchor.y + anchor.height;
+    }
   } else {
     x = Math.floor((canvas.width - width) / 2);
     y = Math.floor((canvas.height - height) / 2);

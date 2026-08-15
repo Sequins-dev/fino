@@ -1572,8 +1572,11 @@ function hoverCard(props: Props, children: NormalizedChild[]): VNode {
 // `'top-start'` here; the web target centers it for real with flexbox.
 function floatingActionBar(props: Props, children: NormalizedChild[]): VNode {
   const { placement, anchorId } = props as FloatingActionBarProps;
+  // `within` keeps the bar inside its container's rect, and the anchor now
+  // carries width, so centering is measured against the container rather
+  // than collapsing onto its left edge.
   return (
-    <Layer anchorId={anchorId} placement={placement === 'bottom-end' ? 'top-end' : 'top-start'}>
+    <Layer anchorId={anchorId} within placement={placement ?? 'bottom-center'}>
       <Box border paddingX={1} direction="row" gap={1}>
         {children}
       </Box>

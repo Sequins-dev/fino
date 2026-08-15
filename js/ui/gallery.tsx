@@ -1082,7 +1082,7 @@ function displayGroup(): StoryGroup {
         controls: {
           placement: {
             type: 'select',
-            options: ['bottom-center', 'bottom-end'],
+            options: ['bottom-start', 'bottom-center', 'bottom-end'],
             default: 'bottom-center',
           },
         },
@@ -1099,7 +1099,7 @@ function displayGroup(): StoryGroup {
             <Text style={[styles.muted]}>Chat transcript scrolls here…</Text>
             <FloatingActionBar
               anchorId="fab-container"
-              placement={args.placement as 'bottom-center' | 'bottom-end'}
+              placement={args.placement as 'bottom-start' | 'bottom-center' | 'bottom-end'}
             >
               <Button label="Jump to latest" onClick={() => {}} />
             </FloatingActionBar>
