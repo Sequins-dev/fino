@@ -46,14 +46,17 @@ import {
   iconForm,
   monthGrid,
   monthLabel,
+  niceScale,
   paginationRange,
   parseIsoMonth,
+  seriesColor,
   shiftMonth,
   weekdayLabels,
 } from 'fino:ui/components';
 import { highlightLines } from 'fino:format/typescript';
 import type {
   BadgeProps,
+  BarChartProps,
   BlockquoteProps,
   BoldProps,
   BreadcrumbsProps,
@@ -83,6 +86,7 @@ import type {
   InlineCodeProps,
   ItalicProps,
   KeyHintProps,
+  LineChartProps,
   LinkProps,
   ListProps,
   MenuItem,
@@ -97,6 +101,7 @@ import type {
   RadioGroupProps,
   RadioProps,
   SelectProps,
+  Series,
   SliderProps,
   StatProps,
   StatusDotProps,
@@ -2012,6 +2017,239 @@ function colorPickerHtml(node: VNode): VNode {
   return h('div', { className: 'ui-color-picker', ...idAttr(id) }, picker, swatchRow);
 }
 
+// Fixed SVG canvas width; height scales with the `height` prop at the same
+// px-per-row (`VIRTUAL_ROW_PX`) the virtual list already uses, so a chart's
+// visual density matches the rest of the web target rather than inventing a
+// second unit.
+const CHART_SVG_WIDTH = 480;
+
+function chartSvgHeight(height: number | undefined): number {
+  return Math.max(1, Math.floor(height ?? 8)) * VIRTUAL_ROW_PX;
+}
+
+// Most SVG presentation attributes are plain lowercase (`fill`, `stroke`),
+// but a few multi-word ones (`font-size`, `text-anchor`,
+// `dominant-baseline`, `stroke-width`) are NOT in the HTML parser's small
+// SVG camelCase-restoration table (unlike `viewBox`/`preserveAspectRatio`,
+// which are) — written as camelCase object keys they'd serialize as
+// `fontsize`/`textanchor`/… and silently do nothing once parsed as inline
+// SVG. They're passed as explicit kebab-case string keys below instead.
+
+function barChartHtml(node: VNode): VNode {
+  const { series, labels, height, horizontal, showValues, id } = node.props as BarChartProps;
+  const svgW = CHART_SVG_WIDTH;
+  const innerH = chartSvgHeight(height);
+  const margin = { top: showValues === true ? 20 : 8, right: 8, bottom: 24, left: 8 };
+  const svgH = innerH + margin.top + margin.bottom;
+  const innerW = svgW - margin.left - margin.right;
+  const allValues = series.flatMap((s) => s.points);
+  const scale = niceScale(Math.min(0, ...allValues), Math.max(0, ...allValues));
+  const span = scale.max - scale.min || 1;
+  const count = Math.max(0, ...series.map((s) => s.points.length));
+  const cats = Array.from({ length: count }, (_, i) => labels?.[i] ?? String(i));
+  const summary = `Bar chart of ${series.length} series across ${cats.length} categories`;
+
+  const parts: VNode[] = [];
+  if (horizontal === true) {
+    const rowH = innerH / Math.max(1, cats.length);
+    const barGap = rowH * 0.15;
+    const barH = (rowH - barGap) / Math.max(1, series.length);
+    const xZero = margin.left + (innerW * (0 - scale.min)) / span;
+    cats.forEach((cat, ci) => {
+      series.forEach((s, si) => {
+        const value = s.points[ci] ?? 0;
+        const xValue = margin.left + (innerW * (value - scale.min)) / span;
+        const x = Math.min(xValue, xZero);
+        const w = Math.abs(xValue - xZero);
+        const y = margin.top + ci * rowH + barGap / 2 + si * barH;
+        const color = cssColor(seriesColor(s, si));
+        parts.push(
+          h(
+            'rect',
+            { x, y, width: w, height: Math.max(0, barH), fill: color },
+            h('title', null, `${s.label ?? s.key} — ${cat}: ${value}`),
+          ),
+        );
+        if (showValues === true) {
+          parts.push(
+            h(
+              'text',
+              { x: xValue + 4, y: y + barH / 2, 'dominant-baseline': 'middle', 'font-size': '10' },
+              String(value),
+            ),
+          );
+        }
+      });
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left - 4,
+            y: margin.top + ci * rowH + rowH / 2,
+            'text-anchor': 'end',
+            'dominant-baseline': 'middle',
+            'font-size': '10',
+          },
+          cat,
+        ),
+      );
+    });
+  } else {
+    const clusterW = innerW / Math.max(1, cats.length);
+    const barGap = clusterW * 0.15;
+    const barW = (clusterW - barGap) / Math.max(1, series.length);
+    const yZero = margin.top + innerH * (1 - (0 - scale.min) / span);
+    cats.forEach((cat, ci) => {
+      series.forEach((s, si) => {
+        const value = s.points[ci] ?? 0;
+        const yValue = margin.top + innerH * (1 - (value - scale.min) / span);
+        const y = Math.min(yValue, yZero);
+        const barHeight = Math.abs(yValue - yZero);
+        const x = margin.left + ci * clusterW + barGap / 2 + si * barW;
+        const color = cssColor(seriesColor(s, si));
+        parts.push(
+          h(
+            'rect',
+            { x, y, width: barW, height: barHeight, fill: color },
+            h('title', null, `${s.label ?? s.key} — ${cat}: ${value}`),
+          ),
+        );
+        if (showValues === true) {
+          parts.push(
+            h(
+              'text',
+              { x: x + barW / 2, y: y - 4, 'text-anchor': 'middle', 'font-size': '10' },
+              String(value),
+            ),
+          );
+        }
+      });
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left + ci * clusterW + clusterW / 2,
+            y: svgH - 6,
+            'text-anchor': 'middle',
+            'font-size': '10',
+          },
+          cat,
+        ),
+      );
+    });
+  }
+
+  const svg = h(
+    'svg',
+    {
+      className: 'ui-chart-svg',
+      viewBox: `0 0 ${svgW} ${svgH}`,
+      role: 'img',
+      'aria-label': summary,
+      xmlns: 'http://www.w3.org/2000/svg',
+    },
+    h('title', null, summary),
+    ...parts,
+  );
+  return h('div', { className: 'ui-bar-chart', ...idAttr(id) }, svg);
+}
+
+function lineChartHtml(node: VNode): VNode {
+  const { series, height, showAxis, showLegend, id } = node.props as LineChartProps;
+  const svgW = CHART_SVG_WIDTH;
+  const innerH = chartSvgHeight(height);
+  const margin = { top: 12, right: 12, bottom: 8, left: showAxis === true ? 36 : 8 };
+  const svgH = innerH + margin.top + margin.bottom;
+  const innerW = svgW - margin.left - margin.right;
+  const allValues = series.flatMap((s) => s.points);
+  const scale =
+    allValues.length > 0
+      ? niceScale(Math.min(...allValues), Math.max(...allValues))
+      : niceScale(0, 1);
+  const span = scale.max - scale.min || 1;
+  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
+  const xOf = (i: number): number =>
+    margin.left + (maxPoints <= 1 ? 0 : (i * innerW) / (maxPoints - 1));
+  const yOf = (v: number): number => margin.top + innerH * (1 - (v - scale.min) / span);
+  const summary = `Line chart of ${series.length} series: ${series
+    .map((s) => s.label ?? s.key)
+    .join(', ')}`;
+
+  const parts: VNode[] = [];
+  if (showAxis === true) {
+    for (const tick of scale.ticks) {
+      const y = yOf(tick);
+      parts.push(
+        h('line', {
+          x1: margin.left,
+          x2: svgW - margin.right,
+          y1: y,
+          y2: y,
+          stroke: 'var(--ui-border)',
+          'stroke-width': '1',
+        }),
+      );
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left - 4,
+            y,
+            'text-anchor': 'end',
+            'dominant-baseline': 'middle',
+            'font-size': '10',
+          },
+          String(tick),
+        ),
+      );
+    }
+  }
+  series.forEach((s, si) => {
+    const color = cssColor(seriesColor(s, si));
+    const pointsAttr = s.points.map((v, i) => `${xOf(i)},${yOf(v)}`).join(' ');
+    parts.push(
+      h(
+        'polyline',
+        { points: pointsAttr, fill: 'none', stroke: color, 'stroke-width': '2' },
+        h('title', null, s.label ?? s.key),
+      ),
+    );
+  });
+
+  const svg = h(
+    'svg',
+    {
+      className: 'ui-chart-svg',
+      viewBox: `0 0 ${svgW} ${svgH}`,
+      role: 'img',
+      'aria-label': summary,
+      xmlns: 'http://www.w3.org/2000/svg',
+    },
+    h('title', null, summary),
+    ...parts,
+  );
+  const legend =
+    showLegend === true
+      ? h(
+          'div',
+          { className: 'ui-chart-legend' },
+          ...series.map((s, si) =>
+            h(
+              'span',
+              { className: 'ui-chart-legend-item' },
+              h('span', {
+                className: 'ui-chart-legend-swatch',
+                style: { background: cssColor(seriesColor(s, si)) },
+                'aria-hidden': 'true',
+              }),
+              s.label ?? s.key,
+            ),
+          ),
+        )
+      : null;
+  return h('div', { className: 'ui-line-chart', ...idAttr(id) }, svg, legend);
+}
+
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
   'ui:field': fieldHtml,
@@ -2075,6 +2313,8 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:date-picker': datePickerHtml,
   'ui:time-picker': timePickerHtml,
   'ui:color-picker': colorPickerHtml,
+  'ui:bar-chart': barChartHtml,
+  'ui:line-chart': lineChartHtml,
 };
 
 /**

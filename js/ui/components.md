@@ -40,8 +40,9 @@ The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
 `StatusDot`), navigation (`Breadcrumbs`, `Pagination`, `Steps`), typography
 (`Heading`, `Bold`, `Italic`, `Link`, `Blockquote`, `List`, `Code`,
 `InlineCode`), time & pickers (`Calendar`, `DigitalClock`, `DatePicker`,
-`TimePicker`, `ColorPicker`), and data/display (`Panel`, `Card`, `Stat`,
-`Table`, `FileTree`, `Icon`, `VirtualList`, `EmptyState`).
+`TimePicker`, `ColorPicker`), charts (`BarChart`, `LineChart`), and
+data/display (`Panel`, `Card`, `Stat`, `Table`, `FileTree`, `Icon`,
+`VirtualList`, `EmptyState`).
 
 ## The tree is purely semantic
 
@@ -334,6 +335,98 @@ supportsTruecolor('truecolor'); // true
 nearestAnsi256(255, 0, 0);      // 196 — pure red, in the color cube
 nearestAnsi256(128, 128, 128);  // a grayscale-ramp index — nearer to gray than any cube step
 ```
+
+## Charts
+
+`BarChart` and `LineChart` chart one or more `Series` — `{ key, label?,
+color?, points: number[] }`. `points` is plain y-values at implied, evenly
+spaced x positions, not `{ x, y }` pairs: every chart in this catalog plots
+categorical or sampled data (bar categories, a time-bucketed line) where x is
+a uniform index, and `labels` (on `BarChart`) supplies the category names for
+that axis when the index itself isn't the label. A `{x,y}`-pair shape would
+make every call site invent a second coordinate — usually just the index
+again — for no chart here that actually has irregular x spacing.
+
+Like every catalog component the tree carries data only — no glyphs, no
+markup — with one deliberate exception: **`plotBraille` is a pure, exported,
+unit-testable function that lives in `fino:ui/components` even though it
+returns characters**, because rasterizing a line onto a braille dot grid is
+geometry (which dots are lit), not a presentation decision (what color, what
+font). Both lowerings call it rather than re-deriving the dot bit order:
+
+```ts no_run
+import { niceScale, plotBraille } from 'fino:ui/components';
+
+niceScale(0, 87);
+// → { min: 0, max: 100, step: 20, ticks: [0, 20, 40, 60, 80, 100] }
+
+plotBraille([[4]], 1, 1, { min: 0, max: 4, step: 4, ticks: [0, 4] });
+// → ['⠁'] — one point, at the max value (the cell's top-left dot)
+```
+
+`niceScale(min, max, ticks?)` computes human-friendly axis bounds by the
+classic 1/2/5 × 10ⁿ rounding rule (so an axis reads `0, 20, 40, …`, never
+`0, 17.4, 34.8, …`), works with `min`/`max` in either order, and pads a
+zero-span input (`min === max`) to a real range before rounding out. `min`/
+`max` are always returned free of the `-0`/float-noise artifacts that
+`Math.ceil`/multiplication-by-step can otherwise leave behind.
+
+`plotBraille(series, width, height, scale)` rasterizes one or more series of
+y-values into `height` rows of braille glyphs, `width` cells wide — each cell
+packs a 2×4 sub-cell dot grid (Unicode braille, base `U+2800`), so a chart gets
+roughly 8× the vertical resolution and 2× the horizontal resolution of plain
+character cells. Each series' points spread evenly across the available
+sub-columns by index and connect point-to-point with a Bresenham line, so a
+series with fewer points than sub-columns still draws a continuous line. A
+value outside `scale`'s range clamps to the nearest edge row. Passing
+multiple series in one call ORs their dot bits into the same grid; passing
+one series per call (in a single-element array) is how a caller keeps track
+of which series lit which dots, for per-series coloring — see below.
+
+A series that omits `color` falls back to `CHART_PALETTE`, a small
+qualitative color list, indexed (and wrapped) by the series' position —
+resolved once, in `seriesColor(series, index)`, and used by *both* lowerings
+so a chart's default colors agree between the terminal and the web rather
+than each target deriving its own assignment.
+
+`BarChart` — `{ series, labels?, height?, horizontal?, showValues? }` — draws
+grouped bars: one cluster per category, one bar per series within a cluster,
+sharing a *zero-anchored* scale (`niceScale(Math.min(0, …), Math.max(0, …))`)
+across every series so a bar's height is always comparable to zero, not just
+to the data's own min. The terminal draws vertical bars with sub-cell
+precision using the eighth-block glyphs `▁▂▃▄▅▆▇█` (so a bar's height reads
+correctly to 1/8th of a row, not just whole rows) and, for `horizontal`,
+plain `█` runs (whole-cell precision only — a horizontal bar doesn't need
+sub-cell columns the way a vertical one needs sub-cell rows). The web draws
+an inline `<svg role="img">` of `<rect>`s, one per series×category, each
+carrying a `<title>` with its category and value for hover text, plus a
+`<title>` on the `<svg>` itself summarizing the whole chart.
+
+**Stacking (bar segments piled within one bar, instead of grouped side by
+side) is deliberately not offered**, on either target: a stacked segment's
+boundary can land mid-row, and the terminal has exactly one color per
+character cell, so a boundary crossing a row can't render both segments'
+colors in that row. Supporting it only on the web — where SVG has no such
+limit — would mean `BarChart` branching on where it's running, which no
+component in this catalog does. Rather than special-case one target, stacking
+is left out of both.
+
+`LineChart` — `{ series, height?, showAxis?, showLegend? }` — draws one or
+more lines sharing a scale derived from every series' *actual* range
+(`niceScale(Math.min(...values), Math.max(...values))`, not zero-anchored —
+a line chart's baseline is wherever the data sits). The terminal calls
+`plotBraille` once per series (each in its own single-element array) so each
+line keeps its own color, then composites the per-series grids into one:
+where two series' lines cross into the same character cell, **the later
+series (by array order) wins that cell** — a terminal cell has one color, so
+crossing lines can't blend, and last-drawn-wins is the simplest rule that's
+still easy to reason about from the `series` array order. `showAxis` adds a
+column of y-axis tick labels at the rows nearest each `niceScale` tick;
+`showLegend` adds a row naming each series beside a colored `●`. The web
+draws an inline `<svg role="img">` `<polyline>` per series in the same
+colors (each carrying a `<title>` naming its series), y-axis tick `<text>`
+and gridlines when `showAxis` is set, and a small legend list beside the
+chart when `showLegend` is set.
 
 ## Display and layout
 
