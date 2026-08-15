@@ -39,8 +39,9 @@ The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
 `Tag`, `TagGroup`, `Spinner`, `ProgressBar`, `KeyHint`, `Timeline`,
 `StatusDot`), navigation (`Breadcrumbs`, `Pagination`, `Steps`), typography
 (`Heading`, `Bold`, `Italic`, `Link`, `Blockquote`, `List`, `Code`,
-`InlineCode`), and data/display (`Panel`, `Card`, `Stat`, `Table`, `FileTree`,
-`Icon`, `VirtualList`, `EmptyState`).
+`InlineCode`), time & pickers (`Calendar`, `DigitalClock`, `DatePicker`,
+`TimePicker`, `ColorPicker`), and data/display (`Panel`, `Card`, `Stat`,
+`Table`, `FileTree`, `Icon`, `VirtualList`, `EmptyState`).
 
 ## The tree is purely semantic
 
@@ -236,6 +237,103 @@ registry, and unknown names fall back to the `file` icon. `FileTree` builds on
 the same registry: `fileIcon` resolves each node's icon name — an explicit
 `icon` wins, directories get the folder icons (which double as the expander),
 and file extensions map through `FILE_ICONS`.
+
+## Time & pickers
+
+`Calendar`, `DigitalClock`, `DatePicker`, `TimePicker`, and `ColorPicker` are
+the catalog's date/time/color controls, and they follow one constraint the
+rest of the catalog doesn't have to think about: **none of them read a
+clock.** There is no ambient "now" anywhere in `fino:ui` — every date and
+time a component needs (the displayed month, a selection, "today", a live
+clock's reading) is data the caller supplies, as an ISO string
+(`'YYYY-MM-DD'` dates, `'HH:MM'`/`'HH:MM:SS'` 24h times) rather than a `Date`
+object (not portable JSON, and not something a server-rendered or realm-
+crossing tree could carry anyway). A live-updating `DigitalClock` is the
+caller re-rendering with a fresh `time` on whatever cadence it chooses — the
+same relationship an app has with `Spinner`'s `tick`, just never defaulted
+for you.
+
+The date math backing `Calendar` lives in small, pure, exported functions —
+`monthGrid(year, month, weekStartsOn?)` builds the week rows (leading/
+trailing days borrowed from the adjacent months, `currentMonth: false` on
+those), `shiftMonth`, `monthLabel`, and `weekdayLabels` handle navigation and
+labels, and `parseIsoMonth` parses `'YYYY-MM'`. All of it is unit-tested
+directly, with no tree to render:
+
+```ts no_run
+import { monthGrid, shiftMonth } from 'fino:ui/components';
+
+monthGrid(2024, 2, 0)[4]![4]; // { date: '2024-02-29', day: 29, currentMonth: true }
+shiftMonth('2024-12', 1);     //  '2025-01' — crosses the year boundary
+```
+
+`Calendar` paints the grid as a 7-column terminal box (weekday headers,
+leading/trailing days dimmed, the selection inverse+bold, "today" underlined,
+prev/next controls) and, on the web, a real `<table role="grid">` with `<th
+scope="col">` weekday headers and day `<button>`s carrying `aria-selected`/
+`aria-current="date"` — both targets get their own presentation from the same
+`month`/`selected`/`today` data.
+
+`DatePicker` and `TimePicker` compose a trigger plus an anchored popover —
+`DatePicker`'s popover is a `Calendar`, `TimePicker`'s is hour/minute(/second)
+columns built with `timeColumnWindow` (a `size`-wide window of a modular
+value ring, recomputed from the current value every render instead of
+holding scroll state) — the same `Layer`/`anchorId` pattern `Select` and
+`ComboBox` already use, right down to requiring `id` for the anchor. Picking
+a column value is a plain click (a "selectable list", as intended); arrow
+keys step the value directly instead of tracking which column has keyboard
+focus, since a component holds no state of its own to track that with —
+Up/Down step the minute by `step` (default 1) and Left/Right step the hour,
+the same directly-manipulated idiom `NumberInput`/`Slider` already use.
+Because `TuiDispatcher` only falls back to a `captureKeys` node when *nothing*
+is focused, both pickers put their key handling on the trigger itself (which
+stays focused after the open-click) rather than on a `captureKeys` wrapper
+around the popover, which would never see a key typed right after opening.
+
+**Both render only a native input on the web — no popover markup at all —
+and that's a deliberate asymmetry with the terminal, not an oversight.**
+`<input type="date">` and `<input type="time" step>` already ship a full,
+localized, keyboard-operable picker UI for free in every real browser.
+Pairing that with our own overlay would mean two non-native affordances
+fighting over the same job, one of them (ours) needing us to own its
+focus-trap and dismiss logic for zero benefit over what the platform already
+solved. The terminal has no such native picker to defer to, so the popover
+composition earns its keep there and only there.  `TimePicker`'s `step` prop
+is minutes (it sizes the terminal's minute column and arrow-key increment);
+the native `step` attribute is seconds, so the web lowering multiplies it,
+and `seconds: true` forces `step="1"` so the browser shows the seconds field
+— a whole-minute step and a sub-minute step can't both ride one native
+attribute value, so `seconds` wins when both are given.
+
+`ColorPicker` takes `value` as `'#rrggbb'` and an optional `swatches` palette.
+Given `open`/`onOpenChange`/`id` together it behaves like `Select` — a
+trigger swatch + hex readout, popover swatch grid on click; without them the
+grid renders inline, always visible, no trigger needed (handy inside a
+settings panel where there's room to spare). The web target is a native
+`<input type="color">` (another native-picker call, same rationale as
+`DatePicker`/`TimePicker`) alongside a row of swatch buttons for the palette,
+since the native color input has no concept of an app-supplied palette of
+its own.
+
+The terminal has no native color input, so it paints swatches itself —
+truecolor (24-bit RGB) when the terminal supports it, falling back to the
+nearest of the xterm 256-color palette otherwise. **Detecting truecolor
+happens in the lowering, never inside the `ColorPicker` component function**
+— the same rule that keeps the tree clock-free keeps it environment-free too.
+`fino:tty/style` exports the two pure pieces this needs:
+`supportsTruecolor(colorterm)` checks `COLORTERM` for `'truecolor'`/`'24bit'`
+(the lowering passes it `env.COLORTERM` from `fino:process`), and
+`nearestAnsi256(r, g, b)` maps a truecolor triple to its closest xterm-256
+index by checking both the 6×6×6 color cube (indices 16-231) and the 24-step
+grayscale ramp (232-255) and taking whichever is closer:
+
+```ts no_run
+import { nearestAnsi256, supportsTruecolor } from 'fino:tty/style';
+
+supportsTruecolor('truecolor'); // true
+nearestAnsi256(255, 0, 0);      // 196 — pure red, in the color cube
+nearestAnsi256(128, 128, 128);  // a grayscale-ramp index — nearer to gray than any cube step
+```
 
 ## Display and layout
 

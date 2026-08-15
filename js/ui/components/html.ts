@@ -39,7 +39,18 @@ import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
-import { defaultComboBoxFilter, fileIcon, iconForm, paginationRange } from 'fino:ui/components';
+import {
+  defaultComboBoxFilter,
+  fileIcon,
+  formatClockTime,
+  iconForm,
+  monthGrid,
+  monthLabel,
+  paginationRange,
+  parseIsoMonth,
+  shiftMonth,
+  weekdayLabels,
+} from 'fino:ui/components';
 import { highlightLines } from 'fino:format/typescript';
 import type {
   BadgeProps,
@@ -47,12 +58,16 @@ import type {
   BoldProps,
   BreadcrumbsProps,
   ButtonProps,
+  CalendarProps,
   CardProps,
   CheckboxProps,
   CodeProps,
+  ColorPickerProps,
   ComboBoxProps,
   ContextMenuProps,
+  DatePickerProps,
   DetailsProps,
+  DigitalClockProps,
   EmptyStateProps,
   ExpanderPosition,
   ExpanderProps,
@@ -96,6 +111,7 @@ import type {
   TextAreaProps,
   TextInputProps,
   TimelineProps,
+  TimePickerProps,
   ToastProps,
   ToastStackProps,
   TooltipProps,
@@ -1812,6 +1828,190 @@ function floatingActionBarHtml(node: VNode): VNode {
   return h('div', { className: `ui-fab ${align}` }, ...transformChildren(node.children));
 }
 
+function calStepButton(handler: (() => void) | undefined, label: string, aria: string): VNode {
+  const attrs: Props = { className: 'ui-cal-step', 'aria-label': aria };
+  if (actions !== null && handler !== undefined) {
+    attrs.name = 'do';
+    attrs.value = register(handler);
+    return actionForm({}, h('button', attrs, label));
+  }
+  attrs.type = 'button';
+  if (handler === undefined) attrs.disabled = true;
+  return h('button', attrs, label);
+}
+
+function calendarHtml(node: VNode): VNode {
+  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id } =
+    node.props as CalendarProps;
+  const select = handlerOf<(date: string) => void>(onSelect);
+  const monthChange = handlerOf<(month: string) => void>(onMonthChange);
+  const { year, month: m } = parseIsoMonth(month);
+  const weeks = monthGrid(year, m, weekStartsOn ?? 0);
+  const labels = weekdayLabels(weekStartsOn ?? 0);
+
+  const nav = h(
+    'div',
+    { className: 'ui-cal-nav' },
+    calStepButton(
+      monthChange !== undefined ? () => monthChange(shiftMonth(month, -1)) : undefined,
+      '‹',
+      'Previous month',
+    ),
+    h('span', { className: 'ui-cal-title' }, monthLabel(year, m)),
+    calStepButton(
+      monthChange !== undefined ? () => monthChange(shiftMonth(month, 1)) : undefined,
+      '›',
+      'Next month',
+    ),
+  );
+
+  const headerRow = h('tr', null, ...labels.map((label) => h('th', { scope: 'col' }, label)));
+  const bodyRows = weeks.map((week) =>
+    h(
+      'tr',
+      null,
+      ...week.map((cell) => {
+        const isSelected = cell.date === selected;
+        const isToday = cell.date === today;
+        const btnAttrs: Props = {
+          className:
+            'ui-cal-day' +
+            (cell.currentMonth ? '' : ' is-outside') +
+            (isSelected ? ' is-selected' : '') +
+            (isToday ? ' is-today' : ''),
+        };
+        if (isSelected) btnAttrs['aria-selected'] = 'true';
+        if (isToday) btnAttrs['aria-current'] = 'date';
+        let dayButton: VNode;
+        if (actions !== null && select !== undefined) {
+          btnAttrs.name = 'do';
+          btnAttrs.value = register(() => select(cell.date));
+          dayButton = actionForm({}, h('button', btnAttrs, String(cell.day)));
+        } else {
+          btnAttrs.type = 'button';
+          if (select === undefined) btnAttrs.disabled = true;
+          dayButton = h('button', btnAttrs, String(cell.day));
+        }
+        return h('td', { className: 'ui-cal-cell', role: 'gridcell' }, dayButton);
+      }),
+    ),
+  );
+  const table = h(
+    'table',
+    { className: 'ui-calendar', role: 'grid', 'aria-label': monthLabel(year, m), ...idAttr(id) },
+    h('thead', null, headerRow),
+    h('tbody', null, ...bodyRows),
+  );
+  return h('div', { className: 'ui-calendar-wrap' }, nav, table);
+}
+
+function digitalClockHtml(node: VNode): VNode {
+  const { time, seconds, label, id } = node.props as DigitalClockProps;
+  const shown = formatClockTime(time, seconds === true);
+  return h(
+    'div',
+    { className: 'ui-clock', ...idAttr(id) },
+    h('time', { className: 'ui-clock-time', datetime: shown }, shown),
+    label !== undefined ? h('span', { className: 'ui-clock-label' }, label) : null,
+  );
+}
+
+// The web target renders only the native `<input type="date">` — no
+// duplicate popover calendar. Native date inputs already provide a full,
+// localized, keyboard-operable picker UI for free; pairing it with our own
+// overlay would be a second, non-native affordance fighting the platform's
+// own for the same job, and we would own its focus-trap/dismiss logic for no
+// benefit. The popover `Calendar` composition stays terminal-only, where
+// there is no native equivalent to defer to.
+function datePickerHtml(node: VNode): VNode {
+  const { value, onChange, disabled, placeholder, id } = node.props as DatePickerProps;
+  const change = handlerOf<(date: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', type: 'date', ...idAttr(id) };
+  if (value !== undefined) attrs.value = value;
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  if (actions !== null && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
+}
+
+// Same native-only rationale as `DatePicker`: `<input type="time" step>`
+// gets a platform picker for free. `step` is minutes in this catalog's API
+// (it sizes the terminal's minute column/arrow-key increment) but the native
+// attribute is seconds, so it is multiplied here; `seconds` forces step=1s
+// so the browser shows the seconds field, since a whole-minute step and a
+// sub-minute step can't both be expressed by one native attribute value.
+function timePickerHtml(node: VNode): VNode {
+  const { value, onChange, step, seconds, disabled, placeholder, id } =
+    node.props as TimePickerProps;
+  const change = handlerOf<(time: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', type: 'time', ...idAttr(id) };
+  if (value !== undefined) attrs.value = value;
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  if (seconds === true) attrs.step = '1';
+  else if (step !== undefined) attrs.step = String(Math.max(1, Math.floor(step)) * 60);
+  if (actions !== null && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
+}
+
+function colorPickerHtml(node: VNode): VNode {
+  const { value, onChange, swatches, id } = node.props as ColorPickerProps;
+  const change = handlerOf<(value: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-color-input', type: 'color' };
+  if (typeof value === 'string') attrs.value = value;
+  let picker: VNode;
+  if (actions !== null && change !== undefined) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    picker = actionForm({ act, change: true }, h('input', attrs));
+  } else {
+    if (change === undefined) attrs.disabled = true;
+    picker = h('input', attrs);
+  }
+  const swatchRow =
+    swatches !== undefined && swatches.length > 0
+      ? h(
+          'div',
+          { className: 'ui-color-swatches' },
+          ...swatches.map((hex) => {
+            const selected =
+              hex.toLowerCase() === (typeof value === 'string' ? value.toLowerCase() : '');
+            const btnAttrs: Props = {
+              className: `ui-color-swatch${selected ? ' is-selected' : ''}`,
+              style: { background: hex },
+              'aria-label': hex,
+            };
+            if (actions !== null && change !== undefined) {
+              btnAttrs.name = 'do';
+              btnAttrs.value = register(() => change(hex));
+              return actionForm({}, h('button', btnAttrs));
+            }
+            btnAttrs.type = 'button';
+            if (change === undefined) btnAttrs.disabled = true;
+            return h('button', btnAttrs);
+          }),
+        )
+      : null;
+  return h('div', { className: 'ui-color-picker', ...idAttr(id) }, picker, swatchRow);
+}
+
 const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:panel': panelHtml,
   'ui:field': fieldHtml,
@@ -1870,6 +2070,11 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:empty-state': emptyStateHtml,
   'ui:hover-card': hoverCardHtml,
   'ui:floating-action-bar': floatingActionBarHtml,
+  'ui:calendar': calendarHtml,
+  'ui:digital-clock': digitalClockHtml,
+  'ui:date-picker': datePickerHtml,
+  'ui:time-picker': timePickerHtml,
+  'ui:color-picker': colorPickerHtml,
 };
 
 /**
@@ -2393,6 +2598,43 @@ button.ui-link { background: none; border: none; padding: 0; font: inherit; }
 .ui-fab > * { pointer-events: auto; }
 .ui-fab-center { justify-content: center; }
 .ui-fab-end { justify-content: flex-end; }
+.ui-calendar-wrap { display: inline-flex; flex-direction: column; gap: 0.5rem; width: fit-content; }
+.ui-cal-nav { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.ui-cal-title { font-weight: 600; }
+.ui-cal-step {
+  border: 1px solid var(--ui-border-strong); background: var(--ui-surface-2);
+  border-radius: 0.375rem; padding: 0.125rem 0.625rem; cursor: pointer; color: inherit;
+}
+.ui-cal-step:disabled { opacity: 0.45; cursor: default; }
+.ui-calendar { border-collapse: collapse; }
+.ui-calendar th { font-size: 0.75rem; color: var(--ui-muted); font-weight: 600; padding: 0.25rem 0.5rem; }
+.ui-cal-cell { padding: 0.125rem; text-align: center; }
+.ui-cal-day {
+  width: 2rem; height: 2rem; border-radius: 50%; border: none; background: none;
+  color: inherit; cursor: pointer; font: inherit;
+}
+.ui-cal-day:hover:not(:disabled) { background: var(--ui-surface-2); }
+.ui-cal-day.is-outside { color: var(--ui-muted); opacity: 0.55; }
+.ui-cal-day.is-today { box-shadow: inset 0 0 0 1px var(--ui-accent); }
+.ui-cal-day.is-selected { background: var(--ui-accent); color: var(--tui-bg); font-weight: 700; }
+.ui-cal-day:disabled { cursor: default; }
+.ui-clock { display: inline-flex; align-items: baseline; gap: 0.625rem; }
+.ui-clock-time {
+  font-size: 2rem; font-weight: 700; font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+.ui-clock-label { color: var(--ui-muted); font-size: 0.85rem; }
+.ui-color-picker { display: inline-flex; align-items: center; gap: 0.625rem; }
+.ui-color-input {
+  width: 2.25rem; height: 2.25rem; padding: 0.125rem; border-radius: 0.375rem;
+  border: 1px solid var(--ui-border-strong); background: var(--ui-surface); cursor: pointer;
+}
+.ui-color-swatches { display: flex; flex-wrap: wrap; gap: 0.375rem; }
+.ui-color-swatch {
+  width: 1.5rem; height: 1.5rem; border-radius: 0.3rem; cursor: pointer;
+  border: 2px solid transparent; padding: 0;
+}
+.ui-color-swatch.is-selected { border-color: var(--ui-fg); }
 `;
 
 /** Wrap transformed markup in a full HTML document with the palette shell. */

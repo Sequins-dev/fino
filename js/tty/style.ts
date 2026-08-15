@@ -205,6 +205,64 @@ export function styleToSgr(from: Style, to: Style): string {
   return `\x1b[${codes.join(';')}m`;
 }
 
+/**
+ * Whether a terminal's `COLORTERM` environment value indicates truecolor
+ * (24-bit RGB) support. A small pure predicate rather than an env lookup
+ * inline at call sites, so detection is unit-testable without touching
+ * process state and callers stay explicit about where the value came from —
+ * e.g. `supportsTruecolor(env.COLORTERM)` from `fino:process`.
+ */
+export function supportsTruecolor(colorterm: string | undefined): boolean {
+  return colorterm === 'truecolor' || colorterm === '24bit';
+}
+
+// The 6-step xterm color cube axis values (indices 0-5 of each of the r/g/b
+// axes in the 216-color cube spanning ansi256 indices 16-231).
+const CUBE_STEPS = [0, 95, 135, 175, 215, 255];
+
+function nearestCubeStep(value: number): number {
+  let closest = 0;
+  let closestDist = Infinity;
+  for (let i = 0; i < CUBE_STEPS.length; i++) {
+    const dist = Math.abs(CUBE_STEPS[i]! - value);
+    if (dist < closestDist) {
+      closestDist = dist;
+      closest = i;
+    }
+  }
+  return closest;
+}
+
+/**
+ * Map a truecolor RGB triple (0-255 each) to the closest xterm 256-color
+ * palette index, for terminals that report no truecolor support. Checks both
+ * the 6×6×6 color cube (indices 16-231) and the 24-step grayscale ramp
+ * (232-255) and returns whichever is closer by squared Euclidean distance.
+ *
+ * ```ts no_run
+ * nearestAnsi256(0, 0, 0);       // 16 — pure black, the cube's black corner
+ * nearestAnsi256(255, 255, 255); // 231 — pure white, the cube's white corner
+ * nearestAnsi256(128, 128, 128); // a grayscale-ramp index — nearer to gray than any cube step
+ * ```
+ */
+export function nearestAnsi256(r: number, g: number, b: number): number {
+  const cr = nearestCubeStep(r);
+  const cg = nearestCubeStep(g);
+  const cb = nearestCubeStep(b);
+  const cubeR = CUBE_STEPS[cr]!;
+  const cubeG = CUBE_STEPS[cg]!;
+  const cubeB = CUBE_STEPS[cb]!;
+  const cubeDist = (r - cubeR) ** 2 + (g - cubeG) ** 2 + (b - cubeB) ** 2;
+  const cubeIndex = 16 + 36 * cr + 6 * cg + cb;
+
+  const gray = Math.round((r + g + b) / 3);
+  const grayIndex = Math.max(0, Math.min(23, Math.round((gray - 8) / 10)));
+  const grayValue = 8 + grayIndex * 10;
+  const grayDist = (r - grayValue) ** 2 + (g - grayValue) ** 2 + (b - grayValue) ** 2;
+
+  return grayDist < cubeDist ? 232 + grayIndex : cubeIndex;
+}
+
 const FG_NAMES = new Map<number, NamedColor>(
   (Object.entries(FG_CODES) as Array<[NamedColor, number]>).map(([name, code]) => [code, name]),
 );

@@ -2045,3 +2045,314 @@ export interface FloatingActionBarProps extends Props {
 export function FloatingActionBar(props: FloatingActionBarProps): VNode {
   return h('ui:floating-action-bar', props);
 }
+
+// ---------------------------------------------------------------------------
+// Time & pickers
+//
+// None of these components read a clock — there is no ambient "now". Every
+// date/time value crosses the boundary as an ISO string (`YYYY-MM-DD` dates,
+// `HH:MM`/`HH:MM:SS` 24h times), never a `Date` object (not portable JSON),
+// and the caller supplies "today"/"now" explicitly wherever a component needs
+// it. The date/time math below is pure and exported so it is unit-testable
+// without rendering anything.
+// ---------------------------------------------------------------------------
+
+/** One day cell of a `Calendar` month grid. */
+export interface MonthDayCell {
+  /** ISO date, `'YYYY-MM-DD'`. */
+  date: string;
+  /** Day-of-month number, always relative to the cell's own month. */
+  day: number;
+  /** `false` for leading/trailing days borrowed from the adjacent month. */
+  currentMonth: boolean;
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function isoDate(year: number, month: number, day: number): string {
+  return `${String(year).padStart(4, '0')}-${pad2(month)}-${pad2(day)}`;
+}
+
+// `Date.UTC(year, month, 0)` lands on day 0 of 0-based month index `month`,
+// i.e. the last day of the *previous* 0-based month — which, since `month`
+// here is 1-based, is exactly the last day of month `month`. Using `Date`
+// only for this arithmetic (never `new Date()` with no arguments, which
+// would read the clock) keeps leap years and month-length quirks correct
+// without hand-rolling a Gregorian table.
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+/** Parse a `'YYYY-MM'` month string into numeric parts. Malformed input falls back to `1970-01`. */
+export function parseIsoMonth(month: string): { year: number; month: number } {
+  const [y, m] = month.split('-').map(Number);
+  const year = Number.isFinite(y) ? y! : 1970;
+  const monthNum = Number.isFinite(m) && m! >= 1 && m! <= 12 ? m! : 1;
+  return { year, month: monthNum };
+}
+
+/** Shift a `'YYYY-MM'` month string by `delta` months; negative moves backward across year boundaries. */
+export function shiftMonth(month: string, delta: number): string {
+  const { year, month: m } = parseIsoMonth(month);
+  const total = year * 12 + (m - 1) + Math.trunc(delta);
+  const nextYear = Math.floor(total / 12);
+  const nextMonth = ((total % 12) + 12) % 12;
+  return `${String(nextYear).padStart(4, '0')}-${pad2(nextMonth + 1)}`;
+}
+
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+];
+
+/** Human-readable month label: `monthLabel(2024, 6) === 'June 2024'`. */
+export function monthLabel(year: number, month: number): string {
+  return `${MONTH_NAMES[Math.max(0, Math.min(11, month - 1))]} ${year}`;
+}
+
+const WEEKDAY_LABELS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
+
+/** Two-letter weekday headers starting from `weekStartsOn` (default Sunday). */
+export function weekdayLabels(weekStartsOn: 0 | 1 = 0): string[] {
+  return [...WEEKDAY_LABELS.slice(weekStartsOn), ...WEEKDAY_LABELS.slice(0, weekStartsOn)];
+}
+
+/**
+ * Build the week rows a `Calendar` paints for `year`/`month` (1-12): complete
+ * weeks of `MonthDayCell`s, with leading/trailing days borrowed from the
+ * adjacent months to pad the first and last rows (`currentMonth: false` on
+ * those). Pure and clock-free — every input is explicit, so leap years and
+ * month-length boundaries are exercised directly by tests instead of waiting
+ * for the calendar to land on them.
+ *
+ * ```ts no_run
+ * monthGrid(2024, 2)[0]; // February 2024 (leap year) starts on a Thursday
+ * // → [{ date: '2024-01-28', day: 28, currentMonth: false }, …, { date: '2024-02-01', day: 1, currentMonth: true }, …]
+ * ```
+ */
+export function monthGrid(year: number, month: number, weekStartsOn: 0 | 1 = 0): MonthDayCell[][] {
+  const firstWeekday = new Date(Date.UTC(year, month - 1, 1)).getUTCDay();
+  const leading = (firstWeekday - weekStartsOn + 7) % 7;
+  const thisMonthDays = daysInMonth(year, month);
+  const prevMonth = month === 1 ? 12 : month - 1;
+  const prevYear = month === 1 ? year - 1 : year;
+  const prevMonthDays = daysInMonth(prevYear, prevMonth);
+  const nextMonth = month === 12 ? 1 : month + 1;
+  const nextYear = month === 12 ? year + 1 : year;
+
+  const cells: MonthDayCell[] = [];
+  for (let i = 0; i < leading; i++) {
+    const day = prevMonthDays - leading + 1 + i;
+    cells.push({ date: isoDate(prevYear, prevMonth, day), day, currentMonth: false });
+  }
+  for (let day = 1; day <= thisMonthDays; day++) {
+    cells.push({ date: isoDate(year, month, day), day, currentMonth: true });
+  }
+  let trailingDay = 1;
+  while (cells.length % 7 !== 0) {
+    cells.push({
+      date: isoDate(nextYear, nextMonth, trailingDay),
+      day: trailingDay,
+      currentMonth: false,
+    });
+    trailingDay++;
+  }
+
+  const weeks: MonthDayCell[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
+}
+
+/** Props accepted by `Calendar`. */
+export interface CalendarProps extends FlexChildProps, Props {
+  /** Displayed month, `'YYYY-MM'`. */
+  month: string;
+  /** Selected date, `'YYYY-MM-DD'`. */
+  selected?: string;
+  /** Today's date, `'YYYY-MM-DD'` — supplied by the caller; the component never reads a clock. */
+  today?: string;
+  weekStartsOn?: 0 | 1;
+  onSelect?: (date: string) => void;
+  onMonthChange?: (month: string) => void;
+  id?: string;
+}
+/**
+ * Month grid of selectable days, with prev/next month controls. Every date
+ * the component needs — the displayed month, the selection, and "today" —
+ * arrives as an ISO string from the caller; `monthGrid` does the date math.
+ */
+export function Calendar(props: CalendarProps): VNode {
+  return h('ui:calendar', props);
+}
+
+/** Props accepted by `DigitalClock`. */
+export interface DigitalClockProps extends StyleProps, FlexChildProps, Props {
+  /** `'HH:MM'` or `'HH:MM:SS'`, 24h. */
+  time: string;
+  /** Show the seconds field; default false. Independent of how much precision `time` carries. */
+  seconds?: boolean;
+  label?: string;
+  id?: string;
+}
+/**
+ * Prominent readout of a supplied time. The caller owns the clock: pass a
+ * fixed value for a static display, or re-render with a fresh `time` on
+ * whatever cadence the app chooses for a live one — there is no self-driven
+ * tick inside the component (contrast `Spinner`, which is presentational
+ * enough to animate on a frame counter it is handed; a clock is not).
+ */
+export function DigitalClock(props: DigitalClockProps): VNode {
+  return h('ui:digital-clock', props);
+}
+
+/** Normalize a time string to `'HH:MM'` or, with `seconds`, `'HH:MM:SS'`. */
+export function formatClockTime(time: string, seconds = false): string {
+  const [h, m, s] = time.split(':');
+  const hh = (h ?? '00').padStart(2, '0');
+  const mm = (m ?? '00').padStart(2, '0');
+  const ss = (s ?? '00').padStart(2, '0');
+  return seconds ? `${hh}:${mm}:${ss}` : `${hh}:${mm}`;
+}
+
+/** Props accepted by `DatePicker`. */
+export interface DatePickerProps extends Props {
+  /** Selected date, `'YYYY-MM-DD'`. */
+  value?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (date: string) => void;
+  /** Month the popover calendar shows, `'YYYY-MM'`; defaults to `value`'s month, then `'1970-01'`. */
+  month?: string;
+  onMonthChange?: (month: string) => void;
+  /** Today's date, forwarded to the popover `Calendar`. */
+  today?: string;
+  weekStartsOn?: 0 | 1;
+  focused?: boolean;
+  disabled?: boolean;
+  placeholder?: string;
+  /** Required for anchoring the popover to the trigger, same as `Select`. */
+  id: string;
+}
+/**
+ * Date picker: a trigger showing `value` (or `placeholder`) plus a `Calendar`
+ * in an anchored `Layer`, mirroring how `Select` composes its popover. The
+ * web target renders only a native `<input type="date">` — see the module
+ * guide for why the popover calendar is terminal-only.
+ */
+export function DatePicker(props: DatePickerProps): VNode {
+  return h('ui:date-picker', props);
+}
+
+/** Numeric hour/minute/second parts of a clock-time string. */
+export interface ClockParts {
+  hours: number;
+  minutes: number;
+  seconds: number;
+}
+/** Parse `'HH:MM'`/`'HH:MM:SS'` into clamped numeric parts. Undefined or malformed input is midnight. */
+export function parseClockTime(time: string | undefined): ClockParts {
+  if (time === undefined) return { hours: 0, minutes: 0, seconds: 0 };
+  const [h, m, s] = time.split(':').map(Number);
+  const clamp = (value: number | undefined, max: number): number =>
+    Number.isFinite(value) ? Math.max(0, Math.min(max, Math.floor(value!))) : 0;
+  return { hours: clamp(h, 23), minutes: clamp(m, 59), seconds: clamp(s, 59) };
+}
+/** Format numeric clock parts back to `'HH:MM'` or, with `seconds` given, `'HH:MM:SS'`. */
+export function formatTimeParts(hours: number, minutes: number, seconds?: number): string {
+  const base = `${pad2(hours)}:${pad2(minutes)}`;
+  return seconds !== undefined ? `${base}:${pad2(seconds)}` : base;
+}
+
+/**
+ * A `size`-wide window of values from a `max`-valued modular ring (0..max-1),
+ * centered on `current`. Paints a scrollable-looking column of a few
+ * neighboring hours/minutes/seconds without holding any scroll state — the
+ * window is recomputed from the current value on every render, the same
+ * "state lives outside the tree" rule the rest of the catalog follows.
+ *
+ * ```ts no_run
+ * timeColumnWindow(0, 24, 5); // [22, 23, 0, 1, 2] — wraps around midnight
+ * ```
+ */
+export function timeColumnWindow(current: number, max: number, size = 5): number[] {
+  const half = Math.floor(size / 2);
+  const out: number[] = [];
+  for (let i = 0; i < size; i++) {
+    out.push((((current - half + i) % max) + max) % max);
+  }
+  return out;
+}
+
+/** Props accepted by `TimePicker`. */
+export interface TimePickerProps extends Props {
+  /** Selected time, `'HH:MM'` or `'HH:MM:SS'`. */
+  value?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (time: string) => void;
+  /** Minute increment for the minute column/arrow-key stepping; default 1. */
+  step?: number;
+  seconds?: boolean;
+  focused?: boolean;
+  disabled?: boolean;
+  placeholder?: string;
+  /** Required for anchoring the popover to the trigger, same as `Select`. */
+  id: string;
+}
+/**
+ * Time picker: a trigger plus an anchored popover of hour/minute(/second)
+ * columns, mirroring `Select`/`DatePicker`. The web target renders only a
+ * native `<input type="time" step>`.
+ */
+export function TimePicker(props: TimePickerProps): VNode {
+  return h('ui:time-picker', props);
+}
+
+/** Parse `'#rrggbb'` (with or without the leading `#`) into 0-255 RGB parts, or `null` if malformed. */
+export function parseHexColor(hex: string): [number, number, number] | null {
+  const match = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (match === null) return null;
+  const value = match[1]!;
+  return [
+    parseInt(value.slice(0, 2), 16),
+    parseInt(value.slice(2, 4), 16),
+    parseInt(value.slice(4, 6), 16),
+  ];
+}
+
+/** Props accepted by `ColorPicker`. */
+export interface ColorPickerProps extends Props {
+  /** `'#rrggbb'`. */
+  value: string;
+  onChange: (value: string) => void;
+  swatches?: string[];
+  /** Popover mode when given alongside `onOpenChange` and `id`; otherwise the swatch grid renders inline. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  id?: string;
+}
+/**
+ * Color picker: a swatch preview and hex readout, with an optional
+ * `swatches` palette to pick from — inline by default, or behind a
+ * trigger/popover (like `Select`) when `open`/`onOpenChange`/`id` are all
+ * given. The terminal paints swatches with real RGB when the terminal
+ * reports truecolor support, falling back to the nearest of the 256-color
+ * palette otherwise (`fino:tty/style`'s `supportsTruecolor`/`nearestAnsi256`)
+ * — detected in the lowering, never inside this component. The web target
+ * renders a native `<input type="color">` alongside the swatch row.
+ */
+export function ColorPicker(props: ColorPickerProps): VNode {
+  return h('ui:color-picker', props);
+}
