@@ -83,7 +83,6 @@ import {
 } from 'internal:ui/components/pickers';
 import { highlightLines } from 'fino:format/typescript';
 import type {
-  BadgeProps,
   BarChartProps,
   BlockquoteProps,
   BoldProps,
@@ -113,7 +112,6 @@ import type {
   IconProps,
   InlineCodeProps,
   ItalicProps,
-  KeyHintProps,
   LineChartProps,
   LinkProps,
   ListProps,
@@ -125,7 +123,6 @@ import type {
   PaginationProps,
   PanelProps,
   PopoverProps,
-  ProgressBarProps,
   RadioGroupProps,
   RadioProps,
   SelectProps,
@@ -140,7 +137,6 @@ import type {
   TabListProps,
   TableProps,
   TabsProps,
-  TagProps,
   TextAreaProps,
   TextInputProps,
   TimelineProps,
@@ -919,66 +915,10 @@ function toastStackHtml(node: VNode): VNode {
   );
 }
 
-function progressHtml(node: VNode): VNode {
-  const { value, showPercent, id } = node.props as ProgressBarProps;
-  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
-  return h(
-    'span',
-    { className: 'ui-progress-wrap', ...idAttr(id) },
-    h('progress', { className: 'ui-progress', max: '100', value: String(percent) }),
-    showPercent === true ? h('span', { className: 'ui-progress-percent' }, `${percent}%`) : null,
-  );
-}
 
-function spinnerHtml(node: VNode): VNode {
-  return h('span', {
-    className: 'ui-spinner',
-    role: 'status',
-    'aria-label': 'loading',
-    ...idAttr(node.props.id),
-  });
-}
 
-function badgeHtml(node: VNode): VNode {
-  const { label, variant, id } = node.props as BadgeProps;
-  return h('span', { className: `ui-badge ${tone(variant, 'accent')}`, ...idAttr(id) }, label);
-}
 
-function keyHintHtml(node: VNode): VNode {
-  const { keys, separator, id } = node.props as KeyHintProps;
-  const sep = separator ?? ' · ';
-  const parts: NormalizedChild[] = [];
-  keys.forEach((hint, index) => {
-    if (index > 0) parts.push(h('span', { className: 'ui-keyhint-sep' }, sep));
-    parts.push(h('kbd', null, hint.key));
-    parts.push(` ${hint.label}`);
-  });
-  return h('span', { className: 'ui-keyhint', ...idAttr(id) }, ...parts);
-}
 
-function tagHtml(node: VNode): VNode {
-  const { label, onRemove, color, id } = node.props as TagProps;
-  const remove = handlerOf<() => void>(onRemove);
-  let remover: VNode | null = null;
-  if (remove !== undefined && actionsActive()) {
-    const act = register(() => remove());
-    remover = actionForm(
-      {},
-      h(
-        'button',
-        { className: 'ui-tag-remove', name: 'do', value: act, 'aria-label': `Remove ${label}` },
-        '×',
-      ),
-    );
-  } else if (remove !== undefined) {
-    remover = h(
-      'button',
-      { type: 'button', className: 'ui-tag-remove', 'aria-label': `Remove ${label}` },
-      '×',
-    );
-  }
-  return h('span', { className: `ui-tag ${tone(color, 'accent')}`, ...idAttr(id) }, label, remover);
-}
 
 function breadcrumbsHtml(node: VNode): VNode {
   const { items, onNavigate, id } = node.props as BreadcrumbsProps;
@@ -2024,11 +1964,6 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:tooltip': tooltipHtml,
   'ui:toast': toastHtml,
   'ui:toast-stack': toastStackHtml,
-  'ui:progress': progressHtml,
-  'ui:spinner': spinnerHtml,
-  'ui:badge': badgeHtml,
-  'ui:key-hint': keyHintHtml,
-  'ui:tag': tagHtml,
   'ui:breadcrumbs': breadcrumbsHtml,
   'ui:pagination': paginationHtml,
   'ui:steps': stepsHtml,

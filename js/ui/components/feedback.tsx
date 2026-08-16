@@ -3,11 +3,23 @@
  * internal:ui/components/feedback — small status surfaces: badges, spinners,
  * progress bars, key hints, and tags.
  *
+ * Each component renders native web markup directly; the terminal forms are
+ * registered beside it in `feedback.tui.tsx`. `TagGroup` needs neither: it
+ * composes a `Box`, and every target already knows how to lower that.
+ *
  * @internal
  */
-import { h, type Child, type Props, type VNode } from 'fino:ui';
+import { h, type Child, type NormalizedChild, type Props, type VNode } from 'fino:ui';
 import { Box } from 'internal:ui/components/primitives';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
+import {
+  actionForm,
+  actionsActive,
+  handlerOf,
+  idAttr,
+  register,
+  tone,
+} from 'internal:ui/components/html-runtime';
 
 /** Token color variants used by `Badge` and `Tag`. */
 export type ToneVariant = 'accent' | 'muted' | 'danger' | 'success' | 'warning';
@@ -22,7 +34,8 @@ export interface BadgeProps extends FlexChildProps, Props {
 }
 /** Small inline status label in a tone color. */
 export function Badge(props: BadgeProps): VNode {
-  return h('ui:badge', props);
+  const { label, variant, id } = props;
+  return h('span', { className: `ui-badge ${tone(variant, 'accent')}`, ...idAttr(id) }, label);
 }
 
 /** Frame set cycled by `Spinner` in the terminal target. */
@@ -37,7 +50,12 @@ export interface SpinnerProps extends FlexChildProps, Props {
 }
 /** Indeterminate activity indicator. */
 export function Spinner(props: SpinnerProps): VNode {
-  return h('ui:spinner', props);
+  return h('span', {
+    className: 'ui-spinner',
+    role: 'status',
+    'aria-label': 'loading',
+    ...idAttr(props.id),
+  });
 }
 
 /** Props accepted by `ProgressBar`. */
@@ -50,7 +68,14 @@ export interface ProgressBarProps extends FlexChildProps, Props {
 }
 /** Horizontal completion bar, optionally labeled with a percent. */
 export function ProgressBar(props: ProgressBarProps): VNode {
-  return h('ui:progress', props);
+  const { value, showPercent, id } = props;
+  const percent = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return h(
+    'span',
+    { className: 'ui-progress-wrap', ...idAttr(id) },
+    h('progress', { className: 'ui-progress', max: '100', value: String(percent) }),
+    showPercent === true ? h('span', { className: 'ui-progress-percent' }, `${percent}%`) : null,
+  );
 }
 
 /** Props accepted by `KeyHint`. */
@@ -61,7 +86,15 @@ export interface KeyHintProps extends FlexChildProps, Props {
 }
 /** Key legend row: `y approve · n reject`. */
 export function KeyHint(props: KeyHintProps): VNode {
-  return h('ui:key-hint', props);
+  const { keys, separator, id } = props;
+  const sep = separator ?? ' · ';
+  const parts: NormalizedChild[] = [];
+  keys.forEach((hint, index) => {
+    if (index > 0) parts.push(h('span', { className: 'ui-keyhint-sep' }, sep));
+    parts.push(h('kbd', null, hint.key));
+    parts.push(` ${hint.label}`);
+  });
+  return h('span', { className: 'ui-keyhint', ...idAttr(id) }, ...parts);
 }
 
 /** Props accepted by `Tag`. */
@@ -73,7 +106,27 @@ export interface TagProps extends FlexChildProps, Props {
 }
 /** Chip in a tone color, with an optional remover. */
 export function Tag(props: TagProps): VNode {
-  return h('ui:tag', props);
+  const { label, onRemove, color, id } = props;
+  const remove = handlerOf<() => void>(onRemove);
+  let remover: VNode | null = null;
+  if (remove !== undefined && actionsActive()) {
+    const act = register(() => remove());
+    remover = actionForm(
+      {},
+      h(
+        'button',
+        { className: 'ui-tag-remove', name: 'do', value: act, 'aria-label': `Remove ${label}` },
+        '×',
+      ),
+    );
+  } else if (remove !== undefined) {
+    remover = h(
+      'button',
+      { type: 'button', className: 'ui-tag-remove', 'aria-label': `Remove ${label}` },
+      '×',
+    );
+  }
+  return h('span', { className: `ui-tag ${tone(color, 'accent')}`, ...idAttr(id) }, label, remover);
 }
 
 /** Props accepted by `TagGroup`. */

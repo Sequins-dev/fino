@@ -232,6 +232,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/html-runtime",
         "ui/components/html-runtime"
     ),
+    source_builtin!(
+        "internal:ui/components/feedback.tui",
+        "ui/components/feedback.tui"
+    ),
     // internal: gallery stories, one file beside each component module.
     source_builtin!("internal:ui/story", "internal/ui/story"),
     source_builtin!(

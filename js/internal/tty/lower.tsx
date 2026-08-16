@@ -12,6 +12,9 @@
  * dispatcher only ever see primitives.
  */
 import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:ui';
+// Terminal lowerings that live beside their components, imported for their
+// registration side effects.
+import 'internal:ui/components/feedback.tui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import { highlightLines } from 'fino:format/typescript';
@@ -44,7 +47,6 @@ import { applyTextAreaEdit, applyTextEdit } from 'internal:ui/components/text-ed
 import { defaultComboBoxFilter } from 'internal:ui/components/menu';
 import { iconForm } from 'internal:ui/components/icons';
 import { fileIcon } from 'internal:ui/components/data';
-import { SPINNER_FRAMES } from 'internal:ui/components/feedback';
 import { paginationRange } from 'internal:ui/components/navigation';
 import { niceScale, plotBraille, seriesColor } from 'internal:ui/components/charts';
 import {
@@ -61,7 +63,6 @@ import {
 } from 'internal:ui/components/pickers';
 import type { ClockParts } from 'internal:ui/components/pickers';
 import type {
-  BadgeProps,
   BarChartProps,
   BlockquoteProps,
   BoldProps,
@@ -90,7 +91,6 @@ import type {
   IconProps,
   InlineCodeProps,
   ItalicProps,
-  KeyHintProps,
   LineChartProps,
   LinkProps,
   ListProps,
@@ -102,13 +102,11 @@ import type {
   PaginationProps,
   PanelProps,
   PopoverProps,
-  ProgressBarProps,
   RadioGroupProps,
   RadioProps,
   SelectProps,
   Series,
   SliderProps,
-  SpinnerProps,
   StatProps,
   StatusDotProps,
   StatusDotStatus,
@@ -117,7 +115,6 @@ import type {
   TabListProps,
   TableProps,
   TabsProps,
-  TagProps,
   TextAreaProps,
   TextInputProps,
   TimelineProps,
@@ -855,82 +852,10 @@ function iconButton(props: Props): VNode {
   );
 }
 
-function badge(props: Props): VNode {
-  const { label, variant, ...rest } = props as BadgeProps;
-  return (
-    <Text style={[styles[variant ?? 'accent'], styles.inverse]} {...rest}>{` ${label} `}</Text>
-  );
-}
 
-function spinner(props: Props): VNode {
-  const { tick, frames, ...rest } = props as SpinnerProps;
-  const set = frames !== undefined && frames.length > 0 ? frames : SPINNER_FRAMES;
-  const frame = set[((tick % set.length) + set.length) % set.length]!;
-  return (
-    <Text style={[styles.accent]} {...rest}>
-      {frame}
-    </Text>
-  );
-}
 
-function progressBar(props: Props): VNode {
-  const { value, width, showPercent, id, ...rest } = props as ProgressBarProps;
-  const cells = Math.max(1, width ?? 20);
-  const fraction = Math.max(0, Math.min(1, value));
-  const filled = Math.round(fraction * cells);
-  return (
-    <Box direction="row" id={id} {...rest}>
-      <Text style={[styles.accent]}>{'█'.repeat(filled)}</Text>
-      <Text style={[styles.muted]}>{'░'.repeat(cells - filled)}</Text>
-      {showPercent ? <Text style={[styles.dim]}>{` ${Math.round(fraction * 100)}%`}</Text> : null}
-    </Box>
-  );
-}
 
-function keyHint(props: Props): VNode {
-  const { keys, separator, id, ...rest } = props as KeyHintProps;
-  const sep = separator ?? ' · ';
-  const parts: VNode[] = [];
-  keys.forEach((hint, index) => {
-    if (index > 0) {
-      parts.push(
-        <Text key={`s${index}`} style={[styles.dim]}>
-          {sep}
-        </Text>,
-      );
-    }
-    parts.push(
-      <Text key={`k${index}`} style={[styles.bold]}>
-        {hint.key}
-      </Text>,
-    );
-    parts.push(<Text key={`l${index}`} style={[styles.dim]}>{` ${hint.label}`}</Text>);
-  });
-  return (
-    <Box direction="row" id={id} {...rest}>
-      {parts}
-    </Box>
-  );
-}
 
-function tag(props: Props): VNode {
-  const { label, onRemove, color, id, ...rest } = props as TagProps;
-  const tone = styles[color ?? 'accent'];
-  return (
-    <Box direction="row" id={id} {...rest}>
-      <Text style={[tone, styles.inverse]}>{` ${label} `}</Text>
-      {onRemove ? (
-        <Clickable
-          id={id !== undefined ? `${id}:remove` : undefined}
-          focusable={false}
-          onClick={onRemove}
-        >
-          <Text style={[tone, styles.inverse]}>{'× '}</Text>
-        </Clickable>
-      ) : null}
-    </Box>
-  );
-}
 
 function breadcrumbs(props: Props): VNode {
   const { items, onNavigate, id, ...rest } = props as BreadcrumbsProps;
@@ -2217,11 +2142,6 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:modal': modal,
   'ui:context-menu': contextMenu,
   'ui:select': select,
-  'ui:badge': badge,
-  'ui:spinner': spinner,
-  'ui:progress': progressBar,
-  'ui:key-hint': keyHint,
-  'ui:tag': tag,
   'ui:breadcrumbs': breadcrumbs,
   'ui:pagination': pagination,
   'ui:steps': steps,
