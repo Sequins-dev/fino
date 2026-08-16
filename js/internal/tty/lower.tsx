@@ -16,6 +16,10 @@ import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:
 // registration side effects.
 import 'internal:ui/components/feedback.tui';
 import 'internal:ui/components/navigation.tui';
+import 'internal:ui/components/overlay.tui';
+import 'internal:ui/components/menu.tui';
+import 'internal:ui/components/disclosure.tui';
+import 'internal:ui/components/forms.tui';
 import 'internal:ui/components/layout.tui';
 import 'internal:ui/components/typography.tui';
 import 'internal:ui/components/display.tui';
@@ -140,141 +144,11 @@ type Composer = (props: Props, children: NormalizedChild[]) => VNode;
 
 
 
-function button(props: Props): VNode {
-  const { label, onClick, focused, disabled, id, ...rest } = props as ButtonProps;
-  return (
-    <Clickable id={id} onClick={onClick} disabled={disabled} {...rest}>
-      <Text
-        style={disabled ? [styles.dim] : focused ? [styles.bold, styles.inverse] : []}
-      >{`[ ${label} ]`}</Text>
-    </Clickable>
-  );
-}
 
-function checkbox(props: Props): VNode {
-  const { checked, label, onChange, focused, disabled, id, ...rest } = props as CheckboxProps;
-  return (
-    <Clickable
-      id={id}
-      direction="row"
-      gap={1}
-      disabled={disabled}
-      onClick={onChange ? () => onChange(!checked) : undefined}
-      {...rest}
-    >
-      <Text style={disabled ? [styles.dim] : focused ? [styles.bold, styles.accent] : []}>
-        {checked ? '[x]' : '[ ]'}
-      </Text>
-      {label !== undefined ? <Text dim={disabled}>{label}</Text> : null}
-    </Clickable>
-  );
-}
 
-function radio(props: Props): VNode {
-  const { selected, label, onSelect, focused, disabled, id, ...rest } = props as RadioProps;
-  return (
-    <Clickable id={id} direction="row" gap={1} disabled={disabled} onClick={onSelect} {...rest}>
-      <Text style={disabled ? [styles.dim] : focused ? [styles.bold, styles.accent] : []}>
-        {selected ? '●' : '○'}
-      </Text>
-      {label !== undefined ? <Text dim={disabled}>{label}</Text> : null}
-    </Clickable>
-  );
-}
 
-function radioGroup(props: Props): VNode {
-  const { value, options, onChange, direction, gap, focusedKey, id, ...rest } =
-    props as RadioGroupProps;
-  return (
-    <Box id={id} direction={direction ?? 'column'} gap={gap ?? 0} {...rest}>
-      {options.map((option) => (
-        <Radio
-          key={option.key}
-          id={id !== undefined ? `${id}:${option.key}` : undefined}
-          selected={option.key === value}
-          label={option.label}
-          disabled={option.disabled}
-          focused={option.key === focusedKey}
-          onSelect={onChange ? () => onChange(option.key) : undefined}
-        />
-      ))}
-    </Box>
-  );
-}
 
-function switchNode(props: Props): VNode {
-  const { on, label, onChange, focused, disabled, id, ...rest } = props as SwitchProps;
-  return (
-    <Clickable
-      id={id}
-      direction="row"
-      gap={1}
-      disabled={disabled}
-      onClick={onChange ? () => onChange(!on) : undefined}
-      {...rest}
-    >
-      <Text
-        style={
-          disabled
-            ? [styles.dim]
-            : on
-              ? [styles.success, ...(focused ? [styles.bold] : [])]
-              : [styles.muted, ...(focused ? [styles.bold] : [])]
-        }
-      >
-        {on ? '──●' : '●──'}
-      </Text>
-      {label !== undefined ? <Text dim={disabled}>{label}</Text> : null}
-    </Clickable>
-  );
-}
 
-function textInput(props: Props): VNode {
-  const {
-    value,
-    placeholder,
-    caret,
-    selection,
-    focused,
-    onKey,
-    onChange,
-    onSubmit,
-    password,
-    id,
-    ...rest
-  } = props as TextInputProps;
-  const editKey =
-    onChange !== undefined || onSubmit !== undefined
-      ? (event: Parameters<NonNullable<TextInputProps['onKey']>>[0]): boolean | void => {
-          if (onKey?.(event) === true) return true;
-          if (event.key === 'enter' && !event.ctrl && !event.alt) {
-            if (onSubmit === undefined) return false;
-            onSubmit(value);
-            return true;
-          }
-          if (onChange === undefined) return false;
-          const next = applyTextEdit({ value, caret: caret ?? value.length, selection }, event);
-          if (next === null) return false;
-          onChange(next.value, next.caret, next.selection);
-          return true;
-        }
-      : onKey;
-  // Masking happens only at paint: the caret and selection indices are
-  // computed against the real `value`, so a same-length run of `•` keeps
-  // that math correct without the reducer ever seeing the masked form.
-  const shown = password === true ? '•'.repeat(value.length) : value;
-  return (
-    <Clickable id={id} onKey={editKey} {...rest}>
-      <Input
-        value={shown}
-        placeholder={placeholder}
-        caret={caret}
-        selection={selection}
-        focused={focused}
-      />
-    </Clickable>
-  );
-}
 
 function clampNumber(value: number, min: number | undefined, max: number | undefined): number {
   let out = value;
@@ -283,264 +157,14 @@ function clampNumber(value: number, min: number | undefined, max: number | undef
   return out;
 }
 
-function numberInput(props: Props): VNode {
-  const { value, min, max, step, onChange, focused, disabled, id, ...rest } =
-    props as NumberInputProps;
-  const s = step ?? 1;
-  const canDec = onChange !== undefined && disabled !== true && (min === undefined || value > min);
-  const canInc = onChange !== undefined && disabled !== true && (max === undefined || value < max);
-  const stepBy = (delta: number): void => onChange!(clampNumber(value + delta, min, max));
-  return (
-    <Clickable
-      id={id}
-      direction="row"
-      gap={1}
-      disabled={disabled}
-      onKey={
-        onChange !== undefined && disabled !== true
-          ? (event) => {
-              if (event.ctrl || event.alt) return false;
-              if (event.key === 'left' || event.key === 'down') {
-                stepBy(-s);
-                return true;
-              }
-              if (event.key === 'right' || event.key === 'up') {
-                stepBy(s);
-                return true;
-              }
-              return false;
-            }
-          : undefined
-      }
-      {...rest}
-    >
-      <Clickable
-        id={id !== undefined ? `${id}:dec` : undefined}
-        focusable={false}
-        disabled={!canDec}
-        onClick={canDec ? () => stepBy(-s) : undefined}
-      >
-        <Text style={canDec ? [styles.accent] : [styles.dim]}>‹</Text>
-      </Clickable>
-      <Text style={disabled === true ? [styles.dim] : focused === true ? [styles.bold] : []}>
-        {String(value)}
-      </Text>
-      <Clickable
-        id={id !== undefined ? `${id}:inc` : undefined}
-        focusable={false}
-        disabled={!canInc}
-        onClick={canInc ? () => stepBy(s) : undefined}
-      >
-        <Text style={canInc ? [styles.accent] : [styles.dim]}>›</Text>
-      </Clickable>
-    </Clickable>
-  );
-}
-
-function textArea(props: Props): VNode {
-  const { value, caret, selection, rows, focused, onChange, onSubmit, onKey, id, ...rest } =
-    props as TextAreaProps;
-  const editKey =
-    onChange !== undefined || onSubmit !== undefined
-      ? (event: Parameters<NonNullable<TextAreaProps['onKey']>>[0]): boolean | void => {
-          if (onKey?.(event) === true) return true;
-          if (event.key === 'enter' && event.ctrl === true && !event.alt) {
-            if (onSubmit === undefined) return false;
-            onSubmit(value);
-            return true;
-          }
-          if (onChange === undefined) return false;
-          const next = applyTextAreaEdit({ value, caret: caret ?? value.length, selection }, event);
-          if (next === null) return false;
-          onChange(next.value, next.caret, next.selection);
-          return true;
-        }
-      : onKey;
-  return (
-    <Clickable id={id} onKey={editKey} {...rest}>
-      <Box border paddingX={1} height={(rows ?? 4) + 2}>
-        <Text wrap={false} caret={focused === true ? (caret ?? value.length) : undefined}>
-          {value}
-        </Text>
-      </Box>
-    </Clickable>
-  );
-}
-
-function slider(props: Props): VNode {
-  const { value, min, max, step, onChange, orientation, width, focused, disabled, id, ...rest } =
-    props as SliderProps;
-  const lo = min ?? 0;
-  const hi = max ?? 100;
-  const s = step ?? 1;
-  const span = Math.max(1e-9, hi - lo);
-  const vertical = orientation === 'vertical';
-  const cells = Math.max(3, width ?? (vertical ? 8 : 20));
-  const fraction = Math.max(0, Math.min(1, (clampNumber(value, lo, hi) - lo) / span));
-  const handleAt = Math.round(fraction * (cells - 1));
-  const enabled = onChange !== undefined && disabled !== true;
-  const commit = (frac: number): void => {
-    const raw = lo + Math.max(0, Math.min(1, frac)) * span;
-    onChange!(clampNumber(Math.round(raw / s) * s, lo, hi));
-  };
-  const onMouse = enabled
-    ? (event: UiMouseEvent): boolean => {
-        if (event.action !== 'press' && event.action !== 'drag') return false;
-        const local = vertical ? event.localY : event.localX;
-        if (local === undefined) return false;
-        commit(vertical ? 1 - local / (cells - 1) : local / (cells - 1));
-        return true;
-      }
-    : undefined;
-  const onKey = enabled
-    ? (event: UiKeyEvent): boolean => {
-        if (event.ctrl || event.alt) return false;
-        if (event.key === 'left' || event.key === 'down') {
-          onChange!(clampNumber(value - s, lo, hi));
-          return true;
-        }
-        if (event.key === 'right' || event.key === 'up') {
-          onChange!(clampNumber(value + s, lo, hi));
-          return true;
-        }
-        return false;
-      }
-    : undefined;
-  const trackStyle = disabled === true ? [styles.dim] : focused === true ? [styles.accent] : [];
-  if (vertical) {
-    const rows = Array.from({ length: cells }, (_, row) => cells - 1 - row === handleAt);
-    return (
-      <Clickable
-        id={id}
-        direction="column"
-        disabled={disabled}
-        onMouse={onMouse}
-        onKey={onKey}
-        {...rest}
-      >
-        {rows.map((isHandle, index) => (
-          <Text key={String(index)} style={trackStyle}>
-            {isHandle ? '●' : '│'}
-          </Text>
-        ))}
-      </Clickable>
-    );
-  }
-  const track = Array.from({ length: cells }, (_, i) => (i === handleAt ? '●' : '─')).join('');
-  return (
-    <Clickable id={id} disabled={disabled} onMouse={onMouse} onKey={onKey} {...rest}>
-      <Text style={trackStyle}>{track}</Text>
-    </Clickable>
-  );
-}
 
 
-function expanderNode(props: Props): VNode {
-  const { open, onToggle, disabled, id, style, ...rest } = props as ExpanderProps;
-  const glyph = iconForm(open ? 'chevron-down' : 'chevron-right', 'tui');
-  if (onToggle === undefined) {
-    return (
-      <Text id={id} style={style} {...rest}>
-        {glyph}
-      </Text>
-    );
-  }
-  return (
-    <Clickable
-      id={id}
-      focusable={false}
-      disabled={disabled}
-      onClick={() => onToggle(!open)}
-      {...rest}
-    >
-      <Text style={style}>{glyph}</Text>
-    </Clickable>
-  );
-}
 
-function details(props: Props, children: NormalizedChild[]): VNode {
-  const { title, open, onToggle, expander, focused, id, ...rest } = props as DetailsProps;
-  const where = expander ?? 'start';
-  const summaryStyle = focused ? [styles.bold, styles.accent] : [styles.bold];
-  const marker = <Expander open={open} style={summaryStyle} />;
-  return (
-    <Box direction="column" {...rest}>
-      <Clickable
-        id={id}
-        direction="row"
-        gap={1}
-        onClick={onToggle ? () => onToggle(!open) : undefined}
-      >
-        {where === 'start' ? marker : null}
-        <Text style={summaryStyle}>{title}</Text>
-        {where === 'end' ? marker : null}
-      </Clickable>
-      {open ? (
-        <Box direction="column" paddingX={2}>
-          {children}
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
 
-function tabList(props: Props): VNode {
-  const { items, value, onChange, id, ...rest } = props as TabListProps;
-  return (
-    <Box direction="row" gap={2} {...rest}>
-      {items.map((item) => (
-        <Clickable
-          key={item.key}
-          id={id !== undefined ? `${id}:${item.key}` : undefined}
-          disabled={item.disabled}
-          onClick={onChange && item.key !== value ? () => onChange(item.key) : undefined}
-        >
-          <Text
-            style={
-              item.disabled
-                ? [styles.dim]
-                : item.key === value
-                  ? [styles.bold, styles.underline]
-                  : [styles.dim]
-            }
-          >
-            {item.label}
-          </Text>
-        </Clickable>
-      ))}
-    </Box>
-  );
-}
 
-function tabs(props: Props, children: NormalizedChild[]): VNode {
-  const rest = props as TabsProps;
-  return (
-    <Box direction="column" gap={1}>
-      <TabList {...rest} />
-      <Box direction="column">{children}</Box>
-    </Box>
-  );
-}
 
-function menuRow(props: Props): VNode {
-  const { label, detail, glyph, marker, selected, disabled, onClick, id } = props as MenuRowProps;
-  const mark = selected ? (marker ?? '▸') : ' ';
-  return (
-    <Clickable
-      id={id}
-      direction="row"
-      gap={1}
-      disabled={disabled}
-      onClick={onClick}
-      focusable={false}
-    >
-      <Text style={selected ? [styles.accent, styles.bold] : [styles.dim]}>{mark}</Text>
-      {glyph !== undefined ? <Text>{glyph}</Text> : null}
-      <Text style={disabled ? [styles.dim] : selected ? [styles.bold] : []}>{label}</Text>
-      {detail !== undefined ? <Text style={[styles.dim]}>{detail}</Text> : null}
-    </Clickable>
-  );
-}
+
+
 
 function menuHeader(props: Props): VNode {
   return <Text style={[styles.dim, styles.bold]}>{(props as { label: string }).label}</Text>;
@@ -550,244 +174,10 @@ function menuSeparator(): VNode {
   return <Rule style={[styles.dim]} />;
 }
 
-function menuList(props: Props): VNode {
-  const { items, selectedKey, top, maxRows, marker, onSelect, id } = props as MenuListProps;
-  const start = top ?? 0;
-  const end = maxRows !== undefined ? start + maxRows : items.length;
-  const visible = items.slice(start, end);
-  const remaining = items.length - end;
-  return (
-    <Box direction="column" id={id}>
-      {visible.map((item, index) => {
-        if (item.kind === 'header') return <MenuHeader key={`h${index}`} label={item.label} />;
-        if (item.kind === 'separator') return <MenuSeparator key={`s${index}`} />;
-        return (
-          <MenuRow
-            key={item.key}
-            id={id !== undefined ? `${id}:${item.key}` : undefined}
-            label={item.label}
-            detail={item.detail}
-            glyph={item.glyph}
-            marker={marker}
-            selected={item.key === selectedKey}
-            disabled={item.disabled}
-            onClick={onSelect && !item.disabled ? () => onSelect(item.key) : undefined}
-          />
-        );
-      })}
-      {remaining > 0 ? <Text style={[styles.dim]}>{`… ${remaining} more`}</Text> : null}
-    </Box>
-  );
-}
 
-function modal(props: Props, children: NormalizedChild[]): VNode {
-  const { title, onDismiss, width, height } = props as ModalProps;
-  return (
-    <Layer backdrop width={width} height={height}>
-      <Clickable
-        direction="column"
-        focusable={false}
-        captureKeys
-        onKey={
-          onDismiss
-            ? (event) => {
-                if (event.key === 'escape') {
-                  onDismiss();
-                  return true;
-                }
-                return false;
-              }
-            : undefined
-        }
-      >
-        <Panel title={title}>{children}</Panel>
-      </Clickable>
-    </Layer>
-  );
-}
 
-function contextMenu(props: Props): VNode {
-  const { at, items, selectedKey, onSelect, onDismiss, id } = props as ContextMenuProps;
-  return (
-    <Box>
-      <Layer anchor={{ x: 0, y: -1 }} width={9999} height={9999} transparent>
-        <Clickable
-          focusable={false}
-          width={9999}
-          height={9999}
-          onMouse={(event) => {
-            if (event.action === 'press') {
-              onDismiss();
-              return true;
-            }
-            return false;
-          }}
-        />
-      </Layer>
-      <Layer anchor={at}>
-        <Clickable
-          focusable={false}
-          captureKeys
-          onKey={(event) => {
-            if (event.key === 'escape') {
-              onDismiss();
-              return true;
-            }
-            return false;
-          }}
-        >
-          <Box border paddingX={1}>
-            <MenuList items={items} selectedKey={selectedKey} onSelect={onSelect} id={id} />
-          </Box>
-        </Clickable>
-      </Layer>
-    </Box>
-  );
-}
 
-function select(props: Props): VNode {
-  const { value, options, open, onOpenChange, onChange, placeholder, focused, id } =
-    props as SelectProps;
-  const current = options.find((option) => option.key === value);
-  const label = current?.label ?? placeholder ?? 'Select…';
-  return (
-    <Box direction="column">
-      <Clickable
-        id={id}
-        direction="row"
-        gap={1}
-        onClick={() => onOpenChange(!open)}
-        onKey={(event) => {
-          if (event.ctrl || event.alt) return false;
-          if (event.key === 'escape' && open) {
-            onOpenChange(false);
-            return true;
-          }
-          if (event.key === 'up' || event.key === 'down') {
-            const keys = options.filter((option) => !option.disabled).map((option) => option.key);
-            if (keys.length === 0) return false;
-            const index = value === null ? -1 : keys.indexOf(value);
-            const next =
-              event.key === 'down'
-                ? keys[Math.min(keys.length - 1, index + 1)]
-                : keys[Math.max(0, index === -1 ? 0 : index - 1)];
-            if (next !== undefined && next !== value) onChange(next);
-            return true;
-          }
-          return false;
-        }}
-      >
-        <Text style={current ? [] : [styles.dim]}>{label}</Text>
-        <Text style={focused ? [styles.accent] : [styles.dim]}>{open ? '▴' : '▾'}</Text>
-      </Clickable>
-      {open ? (
-        <Layer anchorId={id}>
-          <Box border paddingX={1}>
-            <MenuList
-              items={options}
-              selectedKey={value}
-              id={`${id}:menu`}
-              onSelect={(key) => {
-                onChange(key);
-                onOpenChange(false);
-              }}
-            />
-          </Box>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
-function comboBox(props: Props): VNode {
-  const {
-    value,
-    options,
-    open,
-    onOpenChange,
-    onInput,
-    onSelect,
-    activeKey,
-    onActiveChange,
-    placeholder,
-    caret,
-    selection,
-    focused,
-    disabled,
-    filter,
-    id,
-  } = props as ComboBoxProps;
-  const filtered = (filter ?? defaultComboBoxFilter)(options, value);
-  const selectable = filtered.filter((option) => option.disabled !== true);
-  const moveActive = (delta: number): void => {
-    if (onActiveChange === undefined || selectable.length === 0) return;
-    const at = activeKey ? selectable.findIndex((option) => option.key === activeKey) : -1;
-    const start = at === -1 ? (delta > 0 ? -1 : 0) : at;
-    const next = Math.max(0, Math.min(selectable.length - 1, start + delta));
-    onActiveChange(selectable[next]!.key);
-  };
-  const editKey = (event: UiKeyEvent): boolean => {
-    if (event.ctrl) return false;
-    if (event.key === 'escape' && open) {
-      onOpenChange(false);
-      return true;
-    }
-    if (event.key === 'down') {
-      if (!open) onOpenChange(true);
-      moveActive(1);
-      return true;
-    }
-    if (event.key === 'up' && open) {
-      moveActive(-1);
-      return true;
-    }
-    if (event.key === 'enter' && open && activeKey !== undefined && activeKey !== null) {
-      onSelect(activeKey);
-      onOpenChange(false);
-      return true;
-    }
-    const next = applyTextEdit({ value, caret: caret ?? value.length, selection }, event);
-    if (next === null) return false;
-    if (!open) onOpenChange(true);
-    onInput(next.value, next.caret, next.selection);
-    return true;
-  };
-  const items: MenuItem[] =
-    filtered.length > 0 ? filtered : [{ kind: 'header', label: 'No matches' }];
-  return (
-    <Box direction="column">
-      <Clickable
-        id={id}
-        onKey={editKey}
-        disabled={disabled}
-        onClick={disabled === true ? undefined : () => onOpenChange(true)}
-      >
-        <Input
-          value={value}
-          placeholder={placeholder}
-          caret={caret}
-          selection={selection}
-          focused={focused}
-        />
-      </Clickable>
-      {open ? (
-        <Layer anchorId={id}>
-          <Box border paddingX={1}>
-            <MenuList
-              items={items}
-              selectedKey={activeKey}
-              id={`${id}:menu`}
-              onSelect={(key) => {
-                onSelect(key);
-                onOpenChange(false);
-              }}
-            />
-          </Box>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
 
 
@@ -820,78 +210,9 @@ function virtualList(props: Props, children: NormalizedChild[]): VNode {
 }
 
 
-function popover(props: Props, children: NormalizedChild[]): VNode {
-  const { open, anchorId, onDismiss } = props as PopoverProps;
-  return (
-    <Box>
-      {open ? (
-        <Layer anchorId={anchorId}>
-          <Clickable
-            direction="column"
-            focusable={false}
-            captureKeys
-            onKey={
-              onDismiss
-                ? (event) => {
-                    if (event.key === 'escape') {
-                      onDismiss();
-                      return true;
-                    }
-                    return false;
-                  }
-                : undefined
-            }
-          >
-            <Box border paddingX={1} direction="column">
-              {children}
-            </Box>
-          </Clickable>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
-function tooltip(props: Props): VNode {
-  const { text, open, anchorId } = props as TooltipProps;
-  return (
-    <Box>
-      {open ? (
-        <Layer anchorId={anchorId}>
-          <Box border paddingX={1} style={[styles.dim]}>
-            <Text>{text}</Text>
-          </Box>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
-function toast(props: Props): VNode {
-  const { message, variant } = props as ToastProps;
-  return (
-    <Box border borderColor={styles[variant ?? 'info'].fg}>
-      <Text>{` ${message} `}</Text>
-    </Box>
-  );
-}
 
-function toastStack(props: Props): VNode {
-  const { toasts } = props as ToastStackProps;
-  return (
-    <Box>
-      {toasts.length > 0 ? (
-        <Layer anchor={{ x: 9999, y: -1 }} placement="bottom-end" transparent>
-          <Box direction="column" align="end">
-            {toasts.map((entry) => (
-              <Toast key={entry.id} message={entry.message} variant={entry.variant} />
-            ))}
-          </Box>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
 function table(props: Props): VNode {
   const { columns, rows, selectedIndex, onSelectRow, id, ...rest } = props as TableProps;
@@ -1065,21 +386,6 @@ function timeline(props: Props): VNode {
 
 
 
-function hoverCard(props: Props, children: NormalizedChild[]): VNode {
-  const { open, anchorId, title } = props as HoverCardProps;
-  return (
-    <Box>
-      {open ? (
-        <Layer anchorId={anchorId}>
-          <Box border paddingX={1} direction="column" gap={1}>
-            {title !== undefined ? <Text bold>{title}</Text> : null}
-            {children}
-          </Box>
-        </Layer>
-      ) : null}
-    </Box>
-  );
-}
 
 // `Layer` has no notion of "this node's own enclosing container" — anchoring
 // always means anchoring to a known hit id (the container must expose one
@@ -1091,19 +397,6 @@ function hoverCard(props: Props, children: NormalizedChild[]): VNode {
 // currently supports. `'bottom-center'` has no anchored-center counterpart
 // to fall back on, so it renders with the same left alignment as
 // `'top-start'` here; the web target centers it for real with flexbox.
-function floatingActionBar(props: Props, children: NormalizedChild[]): VNode {
-  const { placement, anchorId } = props as FloatingActionBarProps;
-  // `within` keeps the bar inside its container's rect, and the anchor now
-  // carries width, so centering is measured against the container rather
-  // than collapsing onto its left edge.
-  return (
-    <Layer anchorId={anchorId} within placement={placement ?? 'bottom-center'}>
-      <Box border paddingX={1} direction="row" gap={1}>
-        {children}
-      </Box>
-    </Layer>
-  );
-}
 
 function calendarTui(props: Props): VNode {
   const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id, ...rest } =
@@ -1712,37 +1005,12 @@ function linePlot(options: LinePlotOptions): VNode {
 }
 
 const COMPOSERS: Record<string, Composer> = {
-  'ui:button': button,
-  'ui:checkbox': checkbox,
-  'ui:radio': radio,
-  'ui:radio-group': radioGroup,
-  'ui:switch': switchNode,
-  'ui:text-input': textInput,
-  'ui:text-area': textArea,
-  'ui:number-input': numberInput,
-  'ui:slider': slider,
-  'ui:combobox': comboBox,
-  'ui:details': details,
-  'ui:expander': expanderNode,
-  'ui:tab-list': tabList,
-  'ui:tabs': tabs,
-  'ui:menu-row': menuRow,
   'ui:menu-header': menuHeader,
   'ui:menu-separator': menuSeparator,
-  'ui:menu-list': menuList,
-  'ui:modal': modal,
-  'ui:context-menu': contextMenu,
-  'ui:select': select,
-  'ui:popover': popover,
-  'ui:tooltip': tooltip,
-  'ui:toast': toast,
-  'ui:toast-stack': toastStack,
   'ui:table': table,
   'ui:file-tree': fileTree,
   'ui:timeline': timeline,
   'ui:virtual-list': virtualList,
-  'ui:hover-card': hoverCard,
-  'ui:floating-action-bar': floatingActionBar,
   'ui:calendar': calendarTui,
   'ui:digital-clock': digitalClock,
   'ui:date-picker': datePicker,

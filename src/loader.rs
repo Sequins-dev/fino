@@ -241,6 +241,19 @@ static BUILTINS: &[BuiltinEntry] = &[
         "ui/components/navigation.tui"
     ),
     source_builtin!(
+        "internal:ui/components/overlay.tui",
+        "ui/components/overlay.tui"
+    ),
+    source_builtin!("internal:ui/components/menu.tui", "ui/components/menu.tui"),
+    source_builtin!(
+        "internal:ui/components/disclosure.tui",
+        "ui/components/disclosure.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.tui",
+        "ui/components/forms.tui"
+    ),
+    source_builtin!(
         "internal:ui/components/layout.tui",
         "ui/components/layout.tui"
     ),

@@ -5,7 +5,6 @@
  * @internal
  */
 import { h, type NormalizedChild, type Child, type Props, type VNode } from 'fino:ui';
-import { highlightLines } from 'fino:format/typescript';
 import {
   actionForm,
   actionsActive,
@@ -16,6 +15,7 @@ import {
   register,
   safeHref,
 } from 'internal:ui/components/html-runtime';
+import { highlightLines } from 'fino:format/typescript';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';
 
 /** Props accepted by `Heading`. */

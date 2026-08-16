@@ -5,6 +5,14 @@
  * @internal
  */
 import { h, type Props, type VNode } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  changeAttrs,
+  handlerOf,
+  idAttr,
+  register,
+} from 'internal:ui/components/html-runtime';
 import type { TextSelection, UiKeyEvent } from 'internal:ui/components/primitives';
 
 /** Entries accepted by `MenuList` and `ListSelection`. */
@@ -135,6 +143,58 @@ export class ListSelection {
   }
 }
 
+function menuRowContent(item: {
+  label: string;
+  detail?: string;
+  glyph?: string;
+}): NormalizedChild[] {
+  const out: NormalizedChild[] = [];
+  if (item.glyph !== undefined) out.push(h('span', { className: 'ui-menu-glyph' }, item.glyph));
+  out.push(h('span', null, item.label));
+  if (item.detail !== undefined) out.push(h('span', { className: 'ui-menu-detail' }, item.detail));
+  return out;
+}
+
+function menuUl(
+  items: readonly MenuItem[],
+  selectedKey: string | null | undefined,
+  props: { top?: number; maxRows?: number; id?: string; onSelect?: unknown },
+): VNode {
+  const select = handlerOf<(key: string) => void>(props.onSelect);
+  const start = props.top ?? 0;
+  const end = props.maxRows !== undefined ? start + props.maxRows : items.length;
+  const visible = items.slice(start, end);
+  const remaining = items.length - end;
+  const list = h(
+    'ul',
+    { className: 'ui-menu', ...idAttr(props.id) },
+    ...visible.map((item) => {
+      if (item.kind === 'header') return h('li', { className: 'ui-menu-header' }, item.label);
+      if (item.kind === 'separator') return h('li', { className: 'ui-menu-sep' }, h('hr'));
+      const selected = item.key === selectedKey;
+      const disabled = item.disabled === true;
+      const button: Props = {};
+      if (actionsActive() && select !== undefined && !disabled) {
+        button.name = 'do';
+        button.value = register(() => select(item.key));
+      } else {
+        button.type = 'button';
+        if (disabled || select === undefined) button.disabled = true;
+      }
+      return h(
+        'li',
+        {
+          className:
+            'ui-menu-item' + (selected ? ' is-selected' : '') + (disabled ? ' is-disabled' : ''),
+        },
+        h('button', button, ...menuRowContent(item)),
+      );
+    }),
+    remaining > 0 ? h('li', { className: 'ui-menu-more' }, `… ${remaining} more`) : null,
+  );
+  return actionsActive() && select !== undefined ? actionForm({}, list) : list;
+}
+
 /** Props accepted by `MenuRow`. */
 export interface MenuRowProps extends Props {
   label: string;
@@ -147,8 +207,30 @@ export interface MenuRowProps extends Props {
   id?: string;
 }
 /** One selectable menu row: optional glyph, label, dim detail. */
-export function MenuRow(props: MenuRowProps): VNode {
-  return h('ui:menu-row', props);
+export function MenuRow(all: MenuRowProps): VNode {
+  const { children = [], ...props } = all as MenuRowProps & { children?: NormalizedChild[] };
+  const { label, detail, glyph, selected, disabled, onClick, id } = props;
+  const click = handlerOf<() => void>(onClick);
+  const button: Props = { ...idAttr(id) };
+  const row = (content: VNode): VNode =>
+    h(
+      'div',
+      {
+        className:
+          'ui-menu-item' +
+          (selected === true ? ' is-selected' : '') +
+          (disabled === true ? ' is-disabled' : ''),
+      },
+      content,
+    );
+  if (actionsActive() && click !== undefined && disabled !== true) {
+    button.name = 'do';
+    button.value = register(() => click());
+    return row(actionForm({}, h('button', button, ...menuRowContent({ label, detail, glyph }))));
+  }
+  button.type = 'button';
+  if (disabled === true || click === undefined) button.disabled = true;
+  return row(h('button', button, ...menuRowContent({ label, detail, glyph })));
 }
 
 /** Section heading inside a menu. */
@@ -174,8 +256,10 @@ export interface MenuListProps extends Props {
   id?: string;
 }
 /** Menu rendered from data: rows, headers, separators, windowed by `top`/`maxRows`. */
-export function MenuList(props: MenuListProps): VNode {
-  return h('ui:menu-list', props);
+export function MenuList(all: MenuListProps): VNode {
+  const { children = [], ...props } = all as MenuListProps & { children?: NormalizedChild[] };
+  const { items, selectedKey, top, maxRows, onSelect, id } = props;
+  return menuUl(items, selectedKey, { top, maxRows, id, onSelect });
 }
 
 /** Props accepted by `Select`. */
@@ -191,8 +275,38 @@ export interface SelectProps extends Props {
   id: string;
 }
 /** Select box: a trigger and an option list that opens beneath it. */
-export function Select(props: SelectProps): VNode {
-  return h('ui:select', props);
+export function Select(all: SelectProps): VNode {
+  const { children = [], ...props } = all as SelectProps & { children?: NormalizedChild[] };
+  const { value, options, placeholder, onChange, id } = props;
+  const change = handlerOf<(key: string) => void>(onChange);
+  const entries: VNode[] = [];
+  if (value === null) {
+    entries.push(
+      h('option', { value: '', selected: true, disabled: true }, placeholder ?? 'Select…'),
+    );
+  }
+  for (const option of options) {
+    const attrs: Props = { value: option.key };
+    if (option.key === value) attrs.selected = true;
+    if (option.disabled === true) attrs.disabled = true;
+    entries.push(h('option', attrs, option.label));
+  }
+  if (actionsActive() && change !== undefined) {
+    const act = register((key) => {
+      if (typeof key === 'string' && key.length > 0) change(key);
+    });
+    return actionForm(
+      { act, change: true },
+      h(
+        'select',
+        { className: 'ui-field', name: 'value', ...changeAttrs(), ...idAttr(id) },
+        ...entries,
+      ),
+    );
+  }
+  const attrs: Props = { className: 'ui-field', ...idAttr(id) };
+  if (change === undefined) attrs.disabled = true;
+  return h('select', attrs, ...entries);
 }
 
 /** One option in a `ComboBox` list. */
@@ -250,6 +364,67 @@ export interface ComboBoxProps extends Props {
  * list beneath the input, built on `MenuList` the same way `Select` anchors
  * its popover.
  */
-export function ComboBox(props: ComboBoxProps): VNode {
-  return h('ui:combobox', props);
+export function ComboBox(all: ComboBoxProps): VNode {
+  const { children = [], ...props } = all as ComboBoxProps & { children?: NormalizedChild[] };
+  const {
+    value,
+    options,
+    open,
+    onOpenChange,
+    onInput,
+    onSelect,
+    activeKey,
+    placeholder,
+    filter,
+    disabled,
+    id,
+  } = props;
+  const input = handlerOf<(value: string) => void>(onInput);
+  const openChange = handlerOf<(open: boolean) => void>(onOpenChange);
+  const filtered = (filter ?? defaultComboBoxFilter)(options, value ?? '');
+  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '' };
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  let field: VNode;
+  if (actionsActive() && input !== undefined && disabled !== true) {
+    const act = register((next) => {
+      input(next ?? '');
+      openChange?.(true);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    field = actionForm({ act, change: true }, h('input', attrs));
+  } else {
+    if (input === undefined || disabled === true) attrs.disabled = true;
+    field = h('input', attrs);
+  }
+  let toggle: VNode | null = null;
+  if (actionsActive() && openChange !== undefined && disabled !== true) {
+    const act = register(() => openChange(open !== true));
+    toggle = actionForm(
+      {},
+      h(
+        'button',
+        {
+          className: 'ui-combo-toggle',
+          name: 'do',
+          value: act,
+          'aria-label': open === true ? 'Close options' : 'Open options',
+        },
+        open === true ? '▴' : '▾',
+      ),
+    );
+  }
+  const popover =
+    open === true
+      ? h(
+          'div',
+          { className: 'ui-popover ui-combo-popover' },
+          menuUl(
+            filtered.length > 0 ? filtered : [{ kind: 'header', label: 'No matches' } as MenuItem],
+            activeKey ?? null,
+            { onSelect },
+          ),
+        )
+      : null;
+  return h('div', { className: 'ui-combo', ...idAttr(id) }, field, toggle, popover);
 }

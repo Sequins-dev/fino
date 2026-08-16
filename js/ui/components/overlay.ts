@@ -6,6 +6,10 @@
  * @internal
  */
 import { h, type Child, type Props, type VNode } from 'fino:ui';
+import {
+  emptyNode,
+  tone,
+} from 'internal:ui/components/html-runtime';
 import type { MenuItem } from 'internal:ui/components/menu';
 import type { StatusVariant } from 'internal:ui/components/feedback';
 
@@ -21,8 +25,20 @@ export interface ModalProps extends Props {
  * Centered dialog above a dimmed backdrop. Esc — from anywhere, the modal
  * root consumes it — and clicks outside both dismiss.
  */
-export function Modal(props: ModalProps): VNode {
-  return h('ui:modal', props);
+export function Modal(all: ModalProps): VNode {
+  const { children = [], ...props } = all as ModalProps & { children?: NormalizedChild[] };
+  const { title, onDismiss } = props;
+  return h(
+    'div',
+    { className: 'ui-overlay' },
+    h(
+      'div',
+      { className: 'ui-modal', role: 'dialog', 'aria-modal': 'true' },
+      dismissButton(onDismiss),
+      title !== undefined ? h('header', { className: 'ui-modal-title' }, title) : null,
+      ...children,
+    ),
+  );
 }
 
 /** Props accepted by `ContextMenu`. */
@@ -39,8 +55,15 @@ export interface ContextMenuProps extends Props {
  * Menu overlaying the content at a position. A full-screen catch layer
  * beneath it dismisses on any outside click.
  */
-export function ContextMenu(props: ContextMenuProps): VNode {
-  return h('ui:context-menu', props);
+export function ContextMenu(all: ContextMenuProps): VNode {
+  const { children = [], ...props } = all as ContextMenuProps & { children?: NormalizedChild[] };
+  const { items, selectedKey, onSelect, onDismiss, id } = props;
+  return h(
+    'div',
+    { className: 'ui-context-menu' },
+    dismissButton(onDismiss),
+    menuUl(items, selectedKey, { id, onSelect }),
+  );
 }
 
 /** Props accepted by `Popover`. */
@@ -52,8 +75,16 @@ export interface PopoverProps extends Props {
   children?: Child;
 }
 /** Overlay anchored beneath a trigger. Esc dismisses; no backdrop. */
-export function Popover(props: PopoverProps): VNode {
-  return h('ui:popover', props);
+export function Popover(all: PopoverProps): VNode {
+  const { children = [], ...props } = all as PopoverProps & { children?: NormalizedChild[] };
+  const { open, onDismiss } = props;
+  if (open !== true) return emptyNode();
+  return h(
+    'div',
+    { className: 'ui-popover' },
+    dismissButton(onDismiss),
+    ...children,
+  );
 }
 
 /** Props accepted by `Tooltip`. */
@@ -64,8 +95,11 @@ export interface TooltipProps extends Props {
   anchorId: string;
 }
 /** One-line hint anchored beneath a trigger. */
-export function Tooltip(props: TooltipProps): VNode {
-  return h('ui:tooltip', props);
+export function Tooltip(all: TooltipProps): VNode {
+  const { children = [], ...props } = all as TooltipProps & { children?: NormalizedChild[] };
+  const { text, open } = props;
+  if (open !== true) return emptyNode();
+  return h('span', { className: 'ui-tooltip', role: 'tooltip' }, text);
 }
 
 /** Props accepted by `Toast`. */
@@ -74,8 +108,10 @@ export interface ToastProps extends Props {
   variant?: StatusVariant;
 }
 /** One notification with a status variant. */
-export function Toast(props: ToastProps): VNode {
-  return h('ui:toast', props);
+export function Toast(all: ToastProps): VNode {
+  const { children = [], ...props } = all as ToastProps & { children?: NormalizedChild[] };
+  const { message, variant } = props;
+  return h('div', { className: `ui-toast ${tone(variant, 'info')}` }, message);
 }
 
 /** Props accepted by `ToastStack`. */
@@ -83,8 +119,17 @@ export interface ToastStackProps extends Props {
   toasts: Array<{ id: string; message: string; variant?: StatusVariant }>;
 }
 /** Notification column pinned to the top-right corner. */
-export function ToastStack(props: ToastStackProps): VNode {
-  return h('ui:toast-stack', props);
+export function ToastStack(all: ToastStackProps): VNode {
+  const { children = [], ...props } = all as ToastStackProps & { children?: NormalizedChild[] };
+  const { toasts } = props;
+  if (toasts.length === 0) return emptyNode();
+  return h(
+    'div',
+    { className: 'ui-toast-stack' },
+    ...toasts.map((entry) =>
+      h('div', { className: `ui-toast ${tone(entry.variant, 'info')}` }, entry.message),
+    ),
+  );
 }
 
 /** Props accepted by `HoverCard`. */
@@ -105,8 +150,16 @@ export interface HoverCardProps extends Props {
  * like `Tooltip` — and `Popover` is interactive content with `onDismiss`
  * wired to Esc and outside clicks.
  */
-export function HoverCard(props: HoverCardProps): VNode {
-  return h('ui:hover-card', props);
+export function HoverCard(all: HoverCardProps): VNode {
+  const { children = [], ...props } = all as HoverCardProps & { children?: NormalizedChild[] };
+  const { open, title } = props;
+  if (open !== true) return emptyNode();
+  return h(
+    'div',
+    { className: 'ui-hover-card' },
+    title !== undefined ? h('div', { className: 'ui-hover-card-title' }, title) : null,
+    ...children,
+  );
 }
 
 /** Props accepted by `FloatingActionBar`. */
@@ -131,6 +184,14 @@ export interface FloatingActionBarProps extends Props {
  * `floatingActionBar` composer for the documented gap. The web target
  * centers it for real with flexbox.
  */
-export function FloatingActionBar(props: FloatingActionBarProps): VNode {
-  return h('ui:floating-action-bar', props);
+export function FloatingActionBar(all: FloatingActionBarProps): VNode {
+  const { children = [], ...props } = all as FloatingActionBarProps & { children?: NormalizedChild[] };
+  const { placement } = props;
+  const align =
+    placement === 'bottom-end'
+      ? 'ui-fab-end'
+      : placement === 'bottom-start'
+        ? 'ui-fab-start'
+        : 'ui-fab-center';
+  return h('div', { className: `ui-fab ${align}` }, ...children);
 }

@@ -5,6 +5,14 @@
  * @internal
  */
 import { h, type Props, type VNode } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  changeAttrs,
+  handlerOf,
+  idAttr,
+  register,
+} from 'internal:ui/components/html-runtime';
 import type {
   Direction,
   FlexChildProps,
@@ -22,8 +30,70 @@ export interface ButtonProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Push button. */
-export function Button(props: ButtonProps): VNode {
-  return h('ui:button', props);
+export function Button(all: ButtonProps): VNode {
+  const { children = [], ...props } = all as ButtonProps & { children?: NormalizedChild[] };
+  const { label, onClick, disabled, id } = props;
+  const click = handlerOf<() => void>(onClick);
+  const enabled = disabled !== true && click !== undefined;
+  if (actionsActive() && enabled) {
+    const act = register(() => click!());
+    return actionForm(
+      {},
+      h('button', { className: 'ui-button', name: 'do', value: act, ...idAttr(id) }, label),
+    );
+  }
+  const attrs: Props = { className: 'ui-button', type: 'button', ...idAttr(id) };
+  if (!enabled) attrs.disabled = true;
+  return h('button', attrs, label);
+}
+
+// Checkbox, Switch and Radio are one control on the web with three
+// presentations, so they share a builder rather than repeating it.
+function choiceHtml(
+  kind: 'checkbox' | 'radio',
+  node: VNode,
+): VNode {
+  const props = node.props as CheckboxProps & RadioProps & SwitchProps;
+  const isSwitch = node.type === 'ui:switch';
+  const checked =
+    kind === 'checkbox'
+      ? isSwitch
+        ? props.on === true
+        : props.checked === true
+      : props.selected === true;
+  const change =
+    kind === 'radio'
+      ? handlerOf<() => void>(props.onSelect)
+      : handlerOf<(next: boolean) => void>(props.onChange);
+  const enabled = props.disabled !== true && change !== undefined;
+  const input: Props = { type: kind, className: isSwitch ? 'ui-switch' : 'ui-check' };
+  if (checked) input.checked = true;
+  const control = (field: Props): VNode =>
+    h(
+      'label',
+      {
+        className: `ui-choice${props.disabled === true ? ' is-disabled' : ''}`,
+        ...idAttr(props.id),
+      },
+      h('input', field),
+      props.label !== undefined ? h('span', null, props.label) : null,
+    );
+  if (actionsActive() && enabled) {
+    const act =
+      kind === 'radio'
+        ? register(() => (change as () => void)())
+        : register((value) => (change as (next: boolean) => void)(value === 'true'));
+    const field: Props = { ...input, name: 'value', value: 'true', ...changeAttrs() };
+    return actionForm(
+      { act, change: true },
+      ...(kind === 'checkbox'
+        ? [h('input', { type: 'hidden', name: 'value', value: 'false' })]
+        : []),
+      control(field),
+    );
+  }
+  if (!enabled) input.disabled = true;
+  return control(input);
 }
 
 /** Props accepted by `Checkbox`. */
@@ -37,7 +107,7 @@ export interface CheckboxProps extends StyleProps, FlexChildProps, Props {
 }
 /** Checkbox with a label, toggled by click or Enter/Space. */
 export function Checkbox(props: CheckboxProps): VNode {
-  return h('ui:checkbox', props);
+  return choiceHtml('checkbox', { type: 'ui:checkbox', props, children: [], key: null });
 }
 
 /** Props accepted by `Radio`. */
@@ -51,7 +121,7 @@ export interface RadioProps extends StyleProps, FlexChildProps, Props {
 }
 /** Single radio option. */
 export function Radio(props: RadioProps): VNode {
-  return h('ui:radio', props);
+  return choiceHtml('radio', { type: 'ui:radio', props, children: [], key: null });
 }
 
 /** Props accepted by `RadioGroup`. */
@@ -65,8 +135,35 @@ export interface RadioGroupProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Radio set rendered from an option list. */
-export function RadioGroup(props: RadioGroupProps): VNode {
-  return h('ui:radio-group', props);
+export function RadioGroup(all: RadioGroupProps): VNode {
+  const { children = [], ...props } = all as RadioGroupProps & { children?: NormalizedChild[] };
+  const { value, options, onChange, id } = props;
+  const change = handlerOf<(key: string) => void>(onChange);
+  const interactive = actionsActive() && change !== undefined;
+  const name = interactive ? 'value' : typeof id === 'string' ? id : 'ui-radio';
+  const group = h(
+    'div',
+    { className: 'ui-radio-group', role: 'radiogroup', ...idAttr(id) },
+    ...options.map((option) => {
+      const input: Props = { type: 'radio', className: 'ui-check', name, value: option.key };
+      if (option.key === value) input.checked = true;
+      if (option.disabled === true || change === undefined) input.disabled = true;
+      else if (interactive) Object.assign(input, changeAttrs());
+      return h(
+        'label',
+        { className: `ui-choice${option.disabled === true ? ' is-disabled' : ''}` },
+        h('input', input),
+        h('span', null, option.label),
+      );
+    }),
+  );
+  if (interactive) {
+    const act = register((key) => {
+      if (typeof key === 'string' && key.length > 0) change!(key);
+    });
+    return actionForm({ act, change: true }, group);
+  }
+  return group;
 }
 
 /** Props accepted by `Switch`. */
@@ -80,7 +177,7 @@ export interface SwitchProps extends StyleProps, FlexChildProps, Props {
 }
 /** On/off toggle switch. */
 export function Switch(props: SwitchProps): VNode {
-  return h('ui:switch', props);
+  return choiceHtml('checkbox', { type: 'ui:switch', props, children: [], key: null });
 }
 
 /** Props accepted by `TextInput`. */
@@ -111,8 +208,32 @@ export interface TextInputProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Single-line editable text field. */
-export function TextInput(props: TextInputProps): VNode {
-  return h('ui:text-input', props);
+export function TextInput(all: TextInputProps): VNode {
+  const { children = [], ...props } = all as TextInputProps & { children?: NormalizedChild[] };
+  const { value, placeholder, onChange, onSubmit, password, id } = props;
+  const change = handlerOf<(value: string, caret?: number) => void>(onChange);
+  const submit = handlerOf<(value: string) => void>(onSubmit);
+  const attrs: Props = {
+    className: 'ui-field',
+    type: password === true ? 'password' : 'text',
+    value: value ?? '',
+    ...idAttr(id),
+  };
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  if (actionsActive() && (change !== undefined || submit !== undefined)) {
+    // Change-submit and Enter-submit are the same GET round trip; Enter's
+    // natural form submission is what makes onSubmit win when both exist.
+    const act = register((next) => {
+      const text = next ?? '';
+      if (submit !== undefined) submit(text);
+      else change!(text);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined && submit === undefined) attrs.disabled = true;
+  return h('input', attrs);
 }
 
 /** Props accepted by `TextArea`. */
@@ -139,8 +260,19 @@ export interface TextAreaProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Multi-line editable text field. */
-export function TextArea(props: TextAreaProps): VNode {
-  return h('ui:text-area', props);
+export function TextArea(all: TextAreaProps): VNode {
+  const { children = [], ...props } = all as TextAreaProps & { children?: NormalizedChild[] };
+  const { value, rows, onChange, id } = props;
+  const change = handlerOf<(value: string, caret?: number) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', rows: String(rows ?? 4), ...idAttr(id) };
+  if (actionsActive() && change !== undefined) {
+    const act = register((next) => change(next ?? ''));
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('textarea', attrs, value ?? ''));
+  }
+  if (change === undefined) attrs.disabled = true;
+  return h('textarea', attrs, value ?? '');
 }
 
 /** Props accepted by `NumberInput`. */
@@ -161,8 +293,30 @@ export interface NumberInputProps extends StyleProps, FlexChildProps, Props {
  * left/right while focused steps the value; on the web it is a native
  * `<input type="number">`.
  */
-export function NumberInput(props: NumberInputProps): VNode {
-  return h('ui:number-input', props);
+export function NumberInput(all: NumberInputProps): VNode {
+  const { children = [], ...props } = all as NumberInputProps & { children?: NormalizedChild[] };
+  const { value, min, max, step, onChange, disabled, id } = props;
+  const change = handlerOf<(value: number) => void>(onChange);
+  const attrs: Props = {
+    className: 'ui-field',
+    type: 'number',
+    value: String(value),
+    ...idAttr(id),
+  };
+  if (min !== undefined) attrs.min = String(min);
+  if (max !== undefined) attrs.max = String(max);
+  if (step !== undefined) attrs.step = String(step);
+  if (actionsActive() && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) change(parsed);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
 }
 
 /** Props accepted by `Slider`. */
@@ -186,6 +340,29 @@ export interface SliderProps extends StyleProps, FlexChildProps, Props {
  * `localX`/`localY`, relative to the track's own painted rect); on the web
  * it is a native `<input type="range">`, which gets dragging for free.
  */
-export function Slider(props: SliderProps): VNode {
-  return h('ui:slider', props);
+export function Slider(all: SliderProps): VNode {
+  const { children = [], ...props } = all as SliderProps & { children?: NormalizedChild[] };
+  const { value, min, max, step, onChange, orientation, disabled, id } = props;
+  const change = handlerOf<(value: number) => void>(onChange);
+  const attrs: Props = {
+    className: 'ui-field ui-slider',
+    type: 'range',
+    value: String(value),
+    min: String(min ?? 0),
+    max: String(max ?? 100),
+    ...idAttr(id),
+  };
+  if (step !== undefined) attrs.step = String(step);
+  if (orientation === 'vertical') attrs.style = { writingMode: 'vertical-lr', direction: 'rtl' };
+  if (actionsActive() && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      const parsed = Number(next);
+      if (Number.isFinite(parsed)) change(parsed);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
 }

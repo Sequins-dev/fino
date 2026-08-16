@@ -280,479 +280,27 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 
 
 
-function buttonHtml(node: VNode): VNode {
-  const { label, onClick, disabled, id } = node.props as ButtonProps;
-  const click = handlerOf<() => void>(onClick);
-  const enabled = disabled !== true && click !== undefined;
-  if (actionsActive() && enabled) {
-    const act = register(() => click!());
-    return actionForm(
-      {},
-      h('button', { className: 'ui-button', name: 'do', value: act, ...idAttr(id) }, label),
-    );
-  }
-  const attrs: Props = { className: 'ui-button', type: 'button', ...idAttr(id) };
-  if (!enabled) attrs.disabled = true;
-  return h('button', attrs, label);
-}
-
-function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
-  const props = node.props as CheckboxProps & RadioProps & SwitchProps;
-  const isSwitch = node.type === 'ui:switch';
-  const checked =
-    kind === 'checkbox'
-      ? isSwitch
-        ? props.on === true
-        : props.checked === true
-      : props.selected === true;
-  const change =
-    kind === 'radio'
-      ? handlerOf<() => void>(props.onSelect)
-      : handlerOf<(next: boolean) => void>(props.onChange);
-  const enabled = props.disabled !== true && change !== undefined;
-  const input: Props = { type: kind, className: isSwitch ? 'ui-switch' : 'ui-check' };
-  if (checked) input.checked = true;
-  const control = (field: Props): VNode =>
-    h(
-      'label',
-      {
-        className: `ui-choice${props.disabled === true ? ' is-disabled' : ''}`,
-        ...idAttr(props.id),
-      },
-      h('input', field),
-      props.label !== undefined ? h('span', null, props.label) : null,
-    );
-  if (actionsActive() && enabled) {
-    const act =
-      kind === 'radio'
-        ? register(() => (change as () => void)())
-        : register((value) => (change as (next: boolean) => void)(value === 'true'));
-    const field: Props = { ...input, name: 'value', value: 'true', ...changeAttrs() };
-    return actionForm(
-      { act, change: true },
-      ...(kind === 'checkbox'
-        ? [h('input', { type: 'hidden', name: 'value', value: 'false' })]
-        : []),
-      control(field),
-    );
-  }
-  if (!enabled) input.disabled = true;
-  return control(input);
-}
-
-function radioGroupHtml(node: VNode): VNode {
-  const { value, options, onChange, id } = node.props as RadioGroupProps;
-  const change = handlerOf<(key: string) => void>(onChange);
-  const interactive = actionsActive() && change !== undefined;
-  const name = interactive ? 'value' : typeof id === 'string' ? id : 'ui-radio';
-  const group = h(
-    'div',
-    { className: 'ui-radio-group', role: 'radiogroup', ...idAttr(id) },
-    ...options.map((option) => {
-      const input: Props = { type: 'radio', className: 'ui-check', name, value: option.key };
-      if (option.key === value) input.checked = true;
-      if (option.disabled === true || change === undefined) input.disabled = true;
-      else if (interactive) Object.assign(input, changeAttrs());
-      return h(
-        'label',
-        { className: `ui-choice${option.disabled === true ? ' is-disabled' : ''}` },
-        h('input', input),
-        h('span', null, option.label),
-      );
-    }),
-  );
-  if (interactive) {
-    const act = register((key) => {
-      if (typeof key === 'string' && key.length > 0) change!(key);
-    });
-    return actionForm({ act, change: true }, group);
-  }
-  return group;
-}
-
-function textInputHtml(node: VNode): VNode {
-  const { value, placeholder, onChange, onSubmit, password, id } = node.props as TextInputProps;
-  const change = handlerOf<(value: string, caret?: number) => void>(onChange);
-  const submit = handlerOf<(value: string) => void>(onSubmit);
-  const attrs: Props = {
-    className: 'ui-field',
-    type: password === true ? 'password' : 'text',
-    value: value ?? '',
-    ...idAttr(id),
-  };
-  if (placeholder !== undefined) attrs.placeholder = placeholder;
-  if (actionsActive() && (change !== undefined || submit !== undefined)) {
-    // Change-submit and Enter-submit are the same GET round trip; Enter's
-    // natural form submission is what makes onSubmit win when both exist.
-    const act = register((next) => {
-      const text = next ?? '';
-      if (submit !== undefined) submit(text);
-      else change!(text);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('input', attrs));
-  }
-  if (change === undefined && submit === undefined) attrs.disabled = true;
-  return h('input', attrs);
-}
-
-function selectHtml(node: VNode): VNode {
-  const { value, options, placeholder, onChange, id } = node.props as SelectProps;
-  const change = handlerOf<(key: string) => void>(onChange);
-  const entries: VNode[] = [];
-  if (value === null) {
-    entries.push(
-      h('option', { value: '', selected: true, disabled: true }, placeholder ?? 'Select…'),
-    );
-  }
-  for (const option of options) {
-    const attrs: Props = { value: option.key };
-    if (option.key === value) attrs.selected = true;
-    if (option.disabled === true) attrs.disabled = true;
-    entries.push(h('option', attrs, option.label));
-  }
-  if (actionsActive() && change !== undefined) {
-    const act = register((key) => {
-      if (typeof key === 'string' && key.length > 0) change(key);
-    });
-    return actionForm(
-      { act, change: true },
-      h(
-        'select',
-        { className: 'ui-field', name: 'value', ...changeAttrs(), ...idAttr(id) },
-        ...entries,
-      ),
-    );
-  }
-  const attrs: Props = { className: 'ui-field', ...idAttr(id) };
-  if (change === undefined) attrs.disabled = true;
-  return h('select', attrs, ...entries);
-}
-
-function numberInputHtml(node: VNode): VNode {
-  const { value, min, max, step, onChange, disabled, id } = node.props as NumberInputProps;
-  const change = handlerOf<(value: number) => void>(onChange);
-  const attrs: Props = {
-    className: 'ui-field',
-    type: 'number',
-    value: String(value),
-    ...idAttr(id),
-  };
-  if (min !== undefined) attrs.min = String(min);
-  if (max !== undefined) attrs.max = String(max);
-  if (step !== undefined) attrs.step = String(step);
-  if (actionsActive() && change !== undefined && disabled !== true) {
-    const act = register((next) => {
-      const parsed = Number(next);
-      if (Number.isFinite(parsed)) change(parsed);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('input', attrs));
-  }
-  if (change === undefined || disabled === true) attrs.disabled = true;
-  return h('input', attrs);
-}
-
-function textAreaHtml(node: VNode): VNode {
-  const { value, rows, onChange, id } = node.props as TextAreaProps;
-  const change = handlerOf<(value: string, caret?: number) => void>(onChange);
-  const attrs: Props = { className: 'ui-field', rows: String(rows ?? 4), ...idAttr(id) };
-  if (actionsActive() && change !== undefined) {
-    const act = register((next) => change(next ?? ''));
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('textarea', attrs, value ?? ''));
-  }
-  if (change === undefined) attrs.disabled = true;
-  return h('textarea', attrs, value ?? '');
-}
-
-function sliderHtml(node: VNode): VNode {
-  const { value, min, max, step, onChange, orientation, disabled, id } = node.props as SliderProps;
-  const change = handlerOf<(value: number) => void>(onChange);
-  const attrs: Props = {
-    className: 'ui-field ui-slider',
-    type: 'range',
-    value: String(value),
-    min: String(min ?? 0),
-    max: String(max ?? 100),
-    ...idAttr(id),
-  };
-  if (step !== undefined) attrs.step = String(step);
-  if (orientation === 'vertical') attrs.style = { writingMode: 'vertical-lr', direction: 'rtl' };
-  if (actionsActive() && change !== undefined && disabled !== true) {
-    const act = register((next) => {
-      const parsed = Number(next);
-      if (Number.isFinite(parsed)) change(parsed);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('input', attrs));
-  }
-  if (change === undefined || disabled === true) attrs.disabled = true;
-  return h('input', attrs);
-}
-
-function comboBoxHtml(node: VNode): VNode {
-  const {
-    value,
-    options,
-    open,
-    onOpenChange,
-    onInput,
-    onSelect,
-    activeKey,
-    placeholder,
-    filter,
-    disabled,
-    id,
-  } = node.props as ComboBoxProps;
-  const input = handlerOf<(value: string) => void>(onInput);
-  const openChange = handlerOf<(open: boolean) => void>(onOpenChange);
-  const filtered = (filter ?? defaultComboBoxFilter)(options, value ?? '');
-  const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '' };
-  if (placeholder !== undefined) attrs.placeholder = placeholder;
-  let field: VNode;
-  if (actionsActive() && input !== undefined && disabled !== true) {
-    const act = register((next) => {
-      input(next ?? '');
-      openChange?.(true);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    field = actionForm({ act, change: true }, h('input', attrs));
-  } else {
-    if (input === undefined || disabled === true) attrs.disabled = true;
-    field = h('input', attrs);
-  }
-  let toggle: VNode | null = null;
-  if (actionsActive() && openChange !== undefined && disabled !== true) {
-    const act = register(() => openChange(open !== true));
-    toggle = actionForm(
-      {},
-      h(
-        'button',
-        {
-          className: 'ui-combo-toggle',
-          name: 'do',
-          value: act,
-          'aria-label': open === true ? 'Close options' : 'Open options',
-        },
-        open === true ? '▴' : '▾',
-      ),
-    );
-  }
-  const popover =
-    open === true
-      ? h(
-          'div',
-          { className: 'ui-popover ui-combo-popover' },
-          menuUl(
-            filtered.length > 0 ? filtered : [{ kind: 'header', label: 'No matches' } as MenuItem],
-            activeKey ?? null,
-            { onSelect },
-          ),
-        )
-      : null;
-  return h('div', { className: 'ui-combo', ...idAttr(id) }, field, toggle, popover);
-}
 
 
 
-function expanderMark(open: boolean): VNode {
-  return h('span', {
-    className: `ui-expander${open ? ' is-open' : ''}`,
-    'aria-hidden': 'true',
-  });
-}
 
-function expanderHtml(node: VNode): VNode {
-  const { open, onToggle, disabled, id } = node.props as ExpanderProps;
-  const toggle = handlerOf<(next: boolean) => void>(onToggle);
-  if (actionsActive() && toggle !== undefined && disabled !== true) {
-    const act = register(() => toggle(open !== true));
-    return actionForm(
-      {},
-      h('button', {
-        className: `ui-expander${open === true ? ' is-open' : ''}`,
-        name: 'do',
-        value: act,
-        'aria-label': open === true ? 'Collapse' : 'Expand',
-        ...idAttr(id),
-      }),
-    );
-  }
-  const mark = expanderMark(open === true);
-  if (typeof id === 'string') mark.props.id = id;
-  return mark;
-}
 
-function summaryRow(title: string, open: boolean, where: ExpanderPosition): NormalizedChild[] {
-  const out: NormalizedChild[] = [];
-  if (where === 'start') out.push(expanderMark(open));
-  out.push(h('span', { className: 'ui-details-title' }, title));
-  if (where === 'end') out.push(expanderMark(open));
-  return out;
-}
 
-function detailsHtml(node: VNode): VNode {
-  const { title, open, onToggle, expander, id } = node.props as DetailsProps;
-  const where: ExpanderPosition = expander ?? 'start';
-  const toggle = handlerOf<(next: boolean) => void>(onToggle);
-  const attrs: Props = { className: 'ui-details', ...idAttr(id) };
-  if (open === true) attrs.open = true;
-  const body = h('div', { className: 'ui-details-body' }, ...transformChildren(node.children));
-  if (actionsActive() && toggle !== undefined) {
-    // The summary is one big submit button: clicks round-trip instead of
-    // toggling natively, so the server's open state never desyncs.
-    const act = register(() => toggle(open !== true));
-    return h(
-      'details',
-      attrs,
-      h(
-        'summary',
-        { className: 'ui-details-summary' },
-        actionForm(
-          {},
-          h(
-            'button',
-            { className: 'ui-details-toggle ui-row', name: 'do', value: act },
-            ...summaryRow(title, open === true, where),
-          ),
-        ),
-      ),
-      body,
-    );
-  }
-  return h(
-    'details',
-    attrs,
-    h(
-      'summary',
-      { className: 'ui-details-summary ui-row' },
-      ...summaryRow(title, open === true, where),
-    ),
-    body,
-  );
-}
 
-function tabStrip(items: TabItem[], value: string, onChange: unknown): VNode {
-  const change = handlerOf<(key: string) => void>(onChange);
-  const entries = items.map((item) => {
-    const className =
-      'ui-tab' +
-      (item.key === value ? ' is-active' : '') +
-      (item.disabled === true ? ' is-disabled' : '');
-    const switchable = change !== undefined && item.key !== value && item.disabled !== true;
-    if (actionsActive() && switchable) {
-      const act = register(() => change!(item.key));
-      return h('button', { className, name: 'do', value: act }, item.label);
-    }
-    if (switchable) return h('a', { href: '#', className }, item.label);
-    return h('span', { className }, item.label);
-  });
-  const nav = h('nav', { className: 'ui-tabs' }, ...entries);
-  return actionsActive() && change !== undefined ? actionForm({}, nav) : nav;
-}
 
-function tabListHtml(node: VNode): VNode {
-  const { items, value, onChange } = node.props as TabListProps;
-  return tabStrip(items, value, onChange);
-}
 
-function tabsHtml(node: VNode): VNode {
-  const { items, value, onChange } = node.props as TabsProps;
-  return h(
-    'div',
-    { className: 'ui-tabs-wrap' },
-    tabStrip(items, value, onChange),
-    h('div', { className: 'ui-tab-panel' }, ...transformChildren(node.children)),
-  );
-}
 
-function menuRowContent(item: {
-  label: string;
-  detail?: string;
-  glyph?: string;
-}): NormalizedChild[] {
-  const out: NormalizedChild[] = [];
-  if (item.glyph !== undefined) out.push(h('span', { className: 'ui-menu-glyph' }, item.glyph));
-  out.push(h('span', null, item.label));
-  if (item.detail !== undefined) out.push(h('span', { className: 'ui-menu-detail' }, item.detail));
-  return out;
-}
 
-function menuUl(
-  items: readonly MenuItem[],
-  selectedKey: string | null | undefined,
-  props: { top?: number; maxRows?: number; id?: string; onSelect?: unknown },
-): VNode {
-  const select = handlerOf<(key: string) => void>(props.onSelect);
-  const start = props.top ?? 0;
-  const end = props.maxRows !== undefined ? start + props.maxRows : items.length;
-  const visible = items.slice(start, end);
-  const remaining = items.length - end;
-  const list = h(
-    'ul',
-    { className: 'ui-menu', ...idAttr(props.id) },
-    ...visible.map((item) => {
-      if (item.kind === 'header') return h('li', { className: 'ui-menu-header' }, item.label);
-      if (item.kind === 'separator') return h('li', { className: 'ui-menu-sep' }, h('hr'));
-      const selected = item.key === selectedKey;
-      const disabled = item.disabled === true;
-      const button: Props = {};
-      if (actionsActive() && select !== undefined && !disabled) {
-        button.name = 'do';
-        button.value = register(() => select(item.key));
-      } else {
-        button.type = 'button';
-        if (disabled || select === undefined) button.disabled = true;
-      }
-      return h(
-        'li',
-        {
-          className:
-            'ui-menu-item' + (selected ? ' is-selected' : '') + (disabled ? ' is-disabled' : ''),
-        },
-        h('button', button, ...menuRowContent(item)),
-      );
-    }),
-    remaining > 0 ? h('li', { className: 'ui-menu-more' }, `… ${remaining} more`) : null,
-  );
-  return actionsActive() && select !== undefined ? actionForm({}, list) : list;
-}
 
-function menuListHtml(node: VNode): VNode {
-  const { items, selectedKey, top, maxRows, onSelect, id } = node.props as MenuListProps;
-  return menuUl(items, selectedKey, { top, maxRows, id, onSelect });
-}
 
-function menuRowHtml(node: VNode): VNode {
-  const { label, detail, glyph, selected, disabled, onClick, id } = node.props as MenuRowProps;
-  const click = handlerOf<() => void>(onClick);
-  const button: Props = { ...idAttr(id) };
-  const row = (content: VNode): VNode =>
-    h(
-      'div',
-      {
-        className:
-          'ui-menu-item' +
-          (selected === true ? ' is-selected' : '') +
-          (disabled === true ? ' is-disabled' : ''),
-      },
-      content,
-    );
-  if (actionsActive() && click !== undefined && disabled !== true) {
-    button.name = 'do';
-    button.value = register(() => click());
-    return row(actionForm({}, h('button', button, ...menuRowContent({ label, detail, glyph }))));
-  }
-  button.type = 'button';
-  if (disabled === true || click === undefined) button.disabled = true;
-  return row(h('button', button, ...menuRowContent({ label, detail, glyph })));
-}
+
+
+
+
+
+
+
+
 
 function dismissButton(onDismiss: unknown): VNode | null {
   const dismiss = handlerOf<() => void>(onDismiss);
@@ -764,64 +312,11 @@ function dismissButton(onDismiss: unknown): VNode | null {
   );
 }
 
-function modalHtml(node: VNode): VNode {
-  const { title, onDismiss } = node.props as ModalProps;
-  return h(
-    'div',
-    { className: 'ui-overlay' },
-    h(
-      'div',
-      { className: 'ui-modal', role: 'dialog', 'aria-modal': 'true' },
-      dismissButton(onDismiss),
-      title !== undefined ? h('header', { className: 'ui-modal-title' }, title) : null,
-      ...transformChildren(node.children),
-    ),
-  );
-}
 
-function contextMenuHtml(node: VNode): VNode {
-  const { items, selectedKey, onSelect, onDismiss, id } = node.props as ContextMenuProps;
-  return h(
-    'div',
-    { className: 'ui-context-menu' },
-    dismissButton(onDismiss),
-    menuUl(items, selectedKey, { id, onSelect }),
-  );
-}
 
-function popoverHtml(node: VNode): VNode {
-  const { open, onDismiss } = node.props as PopoverProps;
-  if (open !== true) return emptyNode();
-  return h(
-    'div',
-    { className: 'ui-popover' },
-    dismissButton(onDismiss),
-    ...transformChildren(node.children),
-  );
-}
 
-function tooltipHtml(node: VNode): VNode {
-  const { text, open } = node.props as TooltipProps;
-  if (open !== true) return emptyNode();
-  return h('span', { className: 'ui-tooltip', role: 'tooltip' }, text);
-}
 
-function toastHtml(node: VNode): VNode {
-  const { message, variant } = node.props as ToastProps;
-  return h('div', { className: `ui-toast ${tone(variant, 'info')}` }, message);
-}
 
-function toastStackHtml(node: VNode): VNode {
-  const { toasts } = node.props as ToastStackProps;
-  if (toasts.length === 0) return emptyNode();
-  return h(
-    'div',
-    { className: 'ui-toast-stack' },
-    ...toasts.map((entry) =>
-      h('div', { className: `ui-toast ${tone(entry.variant, 'info')}` }, entry.message),
-    ),
-  );
-}
 
 
 
@@ -1076,27 +571,7 @@ function virtualListHtml(node: VNode): VNode {
 
 
 
-function hoverCardHtml(node: VNode): VNode {
-  const { open, title } = node.props as HoverCardProps;
-  if (open !== true) return emptyNode();
-  return h(
-    'div',
-    { className: 'ui-hover-card' },
-    title !== undefined ? h('div', { className: 'ui-hover-card-title' }, title) : null,
-    ...transformChildren(node.children),
-  );
-}
 
-function floatingActionBarHtml(node: VNode): VNode {
-  const { placement } = node.props as FloatingActionBarProps;
-  const align =
-    placement === 'bottom-end'
-      ? 'ui-fab-end'
-      : placement === 'bottom-start'
-        ? 'ui-fab-start'
-        : 'ui-fab-center';
-  return h('div', { className: `ui-fab ${align}` }, ...transformChildren(node.children));
-}
 
 function calStepButton(handler: (() => void) | undefined, label: string, aria: string): VNode {
   const attrs: Props = { className: 'ui-cal-step', 'aria-label': aria };
@@ -1516,38 +991,16 @@ function lineChartHtml(node: VNode): VNode {
 }
 
 const NATIVE: Record<string, (node: VNode) => VNode> = {
-  'ui:button': buttonHtml,
   'ui:checkbox': (node) => choiceHtml('checkbox', node),
   'ui:switch': (node) => choiceHtml('checkbox', node),
   'ui:radio': (node) => choiceHtml('radio', node),
-  'ui:radio-group': radioGroupHtml,
-  'ui:text-input': textInputHtml,
-  'ui:text-area': textAreaHtml,
-  'ui:number-input': numberInputHtml,
-  'ui:slider': sliderHtml,
-  'ui:combobox': comboBoxHtml,
-  'ui:select': selectHtml,
-  'ui:details': detailsHtml,
-  'ui:expander': expanderHtml,
-  'ui:tab-list': tabListHtml,
-  'ui:tabs': tabsHtml,
-  'ui:menu-list': menuListHtml,
-  'ui:menu-row': menuRowHtml,
   'ui:menu-header': (node) =>
     h('div', { className: 'ui-menu-header' }, (node.props as { label: string }).label),
   'ui:menu-separator': () => h('hr', { className: 'ui-menu-sep' }),
-  'ui:modal': modalHtml,
-  'ui:context-menu': contextMenuHtml,
-  'ui:popover': popoverHtml,
-  'ui:tooltip': tooltipHtml,
-  'ui:toast': toastHtml,
-  'ui:toast-stack': toastStackHtml,
   'ui:table': tableHtml,
   'ui:file-tree': fileTreeHtml,
   'ui:timeline': timelineHtml,
   'ui:virtual-list': virtualListHtml,
-  'ui:hover-card': hoverCardHtml,
-  'ui:floating-action-bar': floatingActionBarHtml,
   'ui:calendar': calendarHtml,
   'ui:digital-clock': digitalClockHtml,
   'ui:date-picker': datePickerHtml,
