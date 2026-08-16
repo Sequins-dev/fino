@@ -512,11 +512,14 @@ describe('fino:ui/components Code filename + copy — html', () => {
     );
   });
 
-  it('renders a home for the copy button even without a filename', (t) => {
+  it('drops the bar without a filename and overlays the copy button instead', (t) => {
     const html = renderToHtml(toHtml(<Code code="const x = 1;" language="ts" copyable />));
-    t.ok(html.includes('<figcaption class="ui-code-bar">'), 'bar still renders');
-    t.ok(html.includes('class="ui-code-filename"></span>'), 'empty filename label');
-    t.ok(html.includes('data-fi-copy="1"'), 'copy button renders right-aligned in the bar');
+    t.ok(!html.includes('ui-code-bar'), 'no bar without a filename to carry');
+    t.ok(html.includes('data-fi-copy="1"'), 'the copy button still renders');
+    t.ok(
+      html.indexOf('data-fi-copy') < html.indexOf('<pre>'),
+      'the button precedes the code so it overlays the content area',
+    );
   });
 
   it('reveals the copy button on hover/focus via CSS, not markup toggling', (t) => {

@@ -66,6 +66,27 @@ tokens from `fino:ui/components/theme` (`accent`, `muted`, `danger`, …), the
 terminal resolves them to SGR through `fino:tty/style`, and HTML maps the same
 fields onto CSS custom properties.
 
+## One import site, many modules
+
+The catalog is grouped into `internal:ui/components/*` modules — one per
+component family (`primitives`, `layout`, `forms`, `text-edit`, `disclosure`,
+`menu`, `overlay`, `feedback`, `navigation`, `icons`, `data`, `virtual`,
+`typography`, `display`, `pickers`, `charts`) — and `fino:ui/components` is
+the single public entry point over them. Each module keeps its gallery stories
+beside it, in `<module>.stories.tsx`, so a component and its demonstration
+move together.
+
+What the barrel re-exports *is* the public API: components, their props types,
+the data types those props name, and the state models an application holds
+across renders. Deliberately absent are the pure helpers that exist so the two
+render targets agree on the same answer — the edit reducers behind
+`TextInput`, the icon registry lookups, the calendar and axis math, the
+braille rasterizer. Those are lowering machinery rather than application API,
+so a render target imports them from the module that owns each one
+(`internal:ui/components/pickers`, `…/charts`, and so on). They are documented
+below where they explain a component's behavior; the import path in each
+example is the one that works.
+
 ## State lives outside the tree
 
 Components take values and change callbacks — never internal state. A
@@ -226,7 +247,8 @@ width-1 glyph for the terminal, an emoji for the web — and each render target
 picks its own column via `iconForm(name, target)`:
 
 ```ts no_run
-import { Icon, iconForm } from 'fino:ui/components';
+import { Icon } from 'fino:ui/components';
+import { iconForm } from 'internal:ui/components/icons';
 
 Icon({ name: 'folder' });          // ui:icon — the target chooses the form
 iconForm('folder', 'tui');         // '▸'
@@ -254,7 +276,8 @@ caller re-rendering with a fresh `time` on whatever cadence it chooses — the
 same relationship an app has with `Spinner`'s `tick`, just never defaulted
 for you.
 
-The date math backing `Calendar` lives in small, pure, exported functions —
+The date math backing `Calendar` lives in small, pure functions in
+`internal:ui/components/pickers` —
 `monthGrid(year, month, weekStartsOn?)` builds the week rows (leading/
 trailing days borrowed from the adjacent months, `currentMonth: false` on
 those), `shiftMonth`, `monthLabel`, and `weekdayLabels` handle navigation and
@@ -262,7 +285,7 @@ labels, and `parseIsoMonth` parses `'YYYY-MM'`. All of it is unit-tested
 directly, with no tree to render:
 
 ```ts no_run
-import { monthGrid, shiftMonth } from 'fino:ui/components';
+import { monthGrid, shiftMonth } from 'internal:ui/components/pickers';
 
 monthGrid(2024, 2, 0)[4]![4]; // { date: '2024-02-29', day: 29, currentMonth: true }
 shiftMonth('2024-12', 1);     //  '2025-01' — crosses the year boundary
@@ -348,14 +371,14 @@ make every call site invent a second coordinate — usually just the index
 again — for no chart here that actually has irregular x spacing.
 
 Like every catalog component the tree carries data only — no glyphs, no
-markup — with one deliberate exception: **`plotBraille` is a pure, exported,
-unit-testable function that lives in `fino:ui/components` even though it
-returns characters**, because rasterizing a line onto a braille dot grid is
+markup — with one deliberate exception: **`plotBraille` is a pure,
+unit-testable function that lives in the catalog even though it returns
+characters**, because rasterizing a line onto a braille dot grid is
 geometry (which dots are lit), not a presentation decision (what color, what
 font). Both lowerings call it rather than re-deriving the dot bit order:
 
 ```ts no_run
-import { niceScale, plotBraille } from 'fino:ui/components';
+import { niceScale, plotBraille } from 'internal:ui/components/charts';
 
 niceScale(0, 87);
 // → { min: 0, max: 100, step: 20, ticks: [0, 20, 40, 60, 80, 100] }

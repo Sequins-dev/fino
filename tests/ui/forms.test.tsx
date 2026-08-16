@@ -2,19 +2,8 @@
 import { describe, it } from 'fino:test/test';
 import { createRenderer, createSignal } from 'fino:ui';
 import type { VNode } from 'fino:ui';
-import {
-  ComboBox,
-  Field,
-  Fieldset,
-  IconButton,
-  NumberInput,
-  Slider,
-  TextArea,
-  TextInput,
-  applyTextAreaEdit,
-  createTextArea,
-  createTextField,
-} from 'fino:ui/components';
+import { ComboBox, Field, Fieldset, IconButton, NumberInput, Slider, TextArea, TextInput, createTextArea, createTextField } from 'fino:ui/components';
+import { applyTextAreaEdit } from 'internal:ui/components/text-edit';
 import type { ComboBoxOption } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';

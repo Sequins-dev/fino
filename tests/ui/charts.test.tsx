@@ -1,14 +1,8 @@
 /** @jsxImportSource fino:ui */
 import { describe, it } from 'fino:test/test';
 import type { VNode } from 'fino:ui';
-import {
-  BarChart,
-  CHART_PALETTE,
-  LineChart,
-  niceScale,
-  plotBraille,
-  seriesColor,
-} from 'fino:ui/components';
+import { BarChart, LineChart } from 'fino:ui/components';
+import { CHART_PALETTE, niceScale, plotBraille, seriesColor } from 'internal:ui/components/charts';
 import type { Series } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';

@@ -115,6 +115,14 @@ controlled and uncontrolled variants where Chakra does: `open`/`defaultOpen` +
 Chakra UI is the reference point for scope and API shape. Each component is behavior state
 plus composition down to primitives; every component renders in both targets from day one.
 
+**Module layout.** The catalog is grouped into `internal:ui/components/*` modules — one per
+component family — with `fino:ui/components` as the single public entry point over them, and
+each module's gallery stories beside it in `<module>.stories.tsx`. The barrel's re-exports are
+the public API: components, props types, the data types those props name, and the state models
+an app holds across renders. The pure helpers that exist so the two lowerings agree (edit
+reducers, icon registry lookups, calendar and axis math, the braille rasterizer) stay off the
+barrel and are imported from their owning module by render targets and tests.
+
 | Group | Components |
 |---|---|
 | Layout | `Flex`/`Stack`/`HStack`/`VStack` (thin `Box` sugar), `Spacer`, `Rule`, `Panel` (bordered box with title/footer) |

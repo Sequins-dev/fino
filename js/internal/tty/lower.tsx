@@ -18,44 +18,49 @@ import { stringWidth } from 'fino:tty/frame';
 import { highlightLines } from 'fino:format/typescript';
 import { env } from 'fino:process';
 import {
-  applyTextAreaEdit,
-  applyTextEdit,
   Box,
   Calendar,
   Clickable,
-  defaultComboBoxFilter,
   Expander,
-  fileIcon,
-  formatClockTime,
-  formatTimeParts,
-  iconForm,
   Input,
   Layer,
   MenuHeader,
   MenuList,
   MenuRow,
   MenuSeparator,
+  Panel,
+  Radio,
+  Rule,
+  TabList,
+  Text,
+  Toast,
+  styles,
+} from 'fino:ui/components';
+// The rest of what a lowering needs is deliberately absent from the public
+// barrel: pure helpers that exist so both render targets agree on the same
+// answer (the same edit reducer, the same icon name, the same axis ticks)
+// rather than API an application would call. They come from the catalog
+// module that owns each one.
+import { applyTextAreaEdit, applyTextEdit } from 'internal:ui/components/text-edit';
+import { defaultComboBoxFilter } from 'internal:ui/components/menu';
+import { iconForm } from 'internal:ui/components/icons';
+import { fileIcon } from 'internal:ui/components/data';
+import { SPINNER_FRAMES } from 'internal:ui/components/feedback';
+import { paginationRange } from 'internal:ui/components/navigation';
+import { niceScale, plotBraille, seriesColor } from 'internal:ui/components/charts';
+import {
+  formatClockTime,
+  formatTimeParts,
   monthGrid,
   monthLabel,
-  niceScale,
-  Panel,
   parseClockTime,
   parseHexColor,
   parseIsoMonth,
-  plotBraille,
-  Radio,
-  Rule,
-  seriesColor,
   shiftMonth,
-  SPINNER_FRAMES,
-  TabList,
-  Text,
   timeColumnWindow,
-  Toast,
-  paginationRange,
-  styles,
   weekdayLabels,
-} from 'fino:ui/components';
+} from 'internal:ui/components/pickers';
+import type { ClockParts } from 'internal:ui/components/pickers';
 import type {
   BadgeProps,
   BarChartProps,
@@ -66,7 +71,6 @@ import type {
   CalendarProps,
   CardProps,
   CheckboxProps,
-  ClockParts,
   CodeProps,
   ColorPickerProps,
   ComboBoxProps,

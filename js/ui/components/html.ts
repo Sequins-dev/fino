@@ -39,20 +39,23 @@ import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
+// The pure helpers a lowering shares with the terminal target — the same
+// filter, the same icon names, the same axis ticks — are not part of the
+// public `fino:ui/components` surface; they come from the catalog module
+// that owns each one.
+import { defaultComboBoxFilter } from 'internal:ui/components/menu';
+import { iconForm } from 'internal:ui/components/icons';
+import { fileIcon } from 'internal:ui/components/data';
+import { paginationRange } from 'internal:ui/components/navigation';
+import { niceScale, seriesColor } from 'internal:ui/components/charts';
 import {
-  defaultComboBoxFilter,
-  fileIcon,
   formatClockTime,
-  iconForm,
   monthGrid,
   monthLabel,
-  niceScale,
-  paginationRange,
   parseIsoMonth,
-  seriesColor,
   shiftMonth,
   weekdayLabels,
-} from 'fino:ui/components';
+} from 'internal:ui/components/pickers';
 import { highlightLines } from 'fino:format/typescript';
 import type {
   BadgeProps,

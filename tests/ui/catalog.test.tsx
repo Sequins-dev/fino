@@ -2,43 +2,11 @@
 import { describe, it } from 'fino:test/test';
 import { createRenderer, createSignal } from 'fino:ui';
 import type { VNode } from 'fino:ui';
-import {
-  Accordion,
-  Badge,
-  Box,
-  Breadcrumbs,
-  Button,
-  Card,
-  Clickable,
-  EmptyState,
-  FileTree,
-  FloatingActionBar,
-  HStack,
-  HoverCard,
-  KeyHint,
-  Pagination,
-  Popover,
-  ProgressBar,
-  SPINNER_FRAMES,
-  Spinner,
-  Stat,
-  StatusDot,
-  Steps,
-  Table,
-  Tag,
-  TagGroup,
-  Text,
-  Timeline,
-  Toast,
-  ToastStack,
-  Tooltip,
-  VStack,
-  createAccordion,
-  createTreeState,
-  fileIcon,
-  iconForm,
-  paginationRange,
-} from 'fino:ui/components';
+import { Accordion, Badge, Box, Breadcrumbs, Button, Card, Clickable, EmptyState, FileTree, FloatingActionBar, HStack, HoverCard, KeyHint, Pagination, Popover, ProgressBar, Spinner, Stat, StatusDot, Steps, Table, Tag, TagGroup, Text, Timeline, Toast, ToastStack, Tooltip, VStack, createAccordion, createTreeState } from 'fino:ui/components';
+import { fileIcon } from 'internal:ui/components/data';
+import { SPINNER_FRAMES } from 'internal:ui/components/feedback';
+import { iconForm } from 'internal:ui/components/icons';
+import { paginationRange } from 'internal:ui/components/navigation';
 import type { FileTreeNode } from 'fino:ui/components';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';
@@ -752,12 +720,11 @@ describe('fino:ui/components catalog display — terminal', () => {
       'the bar content paints somewhere in the frame',
     );
     t.equal(
-      strip(frame[4]!),
-      '┌──────────┐                 │',
-      'the bar lands just inside the container, above its last row — overlapping the ' +
-        'container border, since Layer anchors to the raw hit rect',
+      strip(frame[5]!),
+      '│        ┌──────────┐        │',
+      'the bar floats inside the container, centered on its rect rather than beside it',
     );
-    t.equal(strip(frame[5]!), '│ [ Jump ] │                 │', 'bar content row');
+    t.equal(strip(frame[6]!), '│        │ [ Jump ] │        │', 'bar content row');
   });
 });
 

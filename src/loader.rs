@@ -195,6 +195,89 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:globals/global", "globals/global"),
     source_builtin!("internal:ui/web/client", "internal/ui/web/client"),
+    // internal: the fino:ui/components catalog, one module per component
+    // family. `fino:ui/components` is the public entry point over them.
+    source_builtin!(
+        "internal:ui/components/primitives",
+        "ui/components/primitives"
+    ),
+    source_builtin!("internal:ui/components/layout", "ui/components/layout"),
+    source_builtin!("internal:ui/components/forms", "ui/components/forms"),
+    source_builtin!(
+        "internal:ui/components/text-edit",
+        "ui/components/text-edit"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure",
+        "ui/components/disclosure"
+    ),
+    source_builtin!("internal:ui/components/menu", "ui/components/menu"),
+    source_builtin!("internal:ui/components/overlay", "ui/components/overlay"),
+    source_builtin!("internal:ui/components/feedback", "ui/components/feedback"),
+    source_builtin!(
+        "internal:ui/components/navigation",
+        "ui/components/navigation"
+    ),
+    source_builtin!("internal:ui/components/icons", "ui/components/icons"),
+    source_builtin!("internal:ui/components/data", "ui/components/data"),
+    source_builtin!("internal:ui/components/virtual", "ui/components/virtual"),
+    source_builtin!(
+        "internal:ui/components/typography",
+        "ui/components/typography"
+    ),
+    source_builtin!("internal:ui/components/display", "ui/components/display"),
+    source_builtin!("internal:ui/components/pickers", "ui/components/pickers"),
+    source_builtin!("internal:ui/components/charts", "ui/components/charts"),
+    // internal: gallery stories, one file beside each component module.
+    source_builtin!("internal:ui/story", "internal/ui/story"),
+    source_builtin!(
+        "internal:ui/components/layout.stories",
+        "ui/components/layout.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.stories",
+        "ui/components/forms.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/indicators.stories",
+        "ui/components/indicators.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/feedback.stories",
+        "ui/components/feedback.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.stories",
+        "ui/components/navigation.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure.stories",
+        "ui/components/disclosure.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/overlay.stories",
+        "ui/components/overlay.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/data.stories",
+        "ui/components/data.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.stories",
+        "ui/components/typography.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.stories",
+        "ui/components/display.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/pickers.stories",
+        "ui/components/pickers.stories"
+    ),
+    source_builtin!(
+        "internal:ui/components/charts.stories",
+        "ui/components/charts.stories"
+    ),
     // internal: compression
     source_builtin!("internal:compress/common", "internal/compress/common"),
     source_builtin!("internal:compress/zlib", "internal/compress/zlib"),
