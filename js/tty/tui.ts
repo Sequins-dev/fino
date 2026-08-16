@@ -51,16 +51,43 @@ import {
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
-import { layout, measure } from 'internal:tty/layout';
-import type { BorderStyle, Constraints, Measured, WrapMode } from 'internal:tty/layout';
+import { layout as layoutPrimitives, measure as measurePrimitives } from 'internal:tty/layout';
+import type {
+  BorderStyle,
+  Constraints,
+  LayoutNode,
+  Measured,
+  WrapMode,
+} from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
 import { lowerTui } from 'internal:tty/lower';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type { Color } from 'fino:tty/style';
-export { h, Fragment, createSignal, batch, layout, measure };
+export { h, Fragment, createSignal, batch };
 export type { BorderStyle, Constraints, Measured, WrapMode };
+
+/**
+ * Measure a tree against constraints.
+ *
+ * Components are lowered for the terminal first, so a caller measures what the
+ * terminal will actually paint rather than the semantic tree that describes it.
+ * An already-lowered tree passes through untouched.
+ */
+export function measure(node: VNode | LayoutNode | string, constraints: Constraints): Measured {
+  return measurePrimitives(
+    typeof node === 'string' ? node : lowerTui(node as VNode),
+    constraints,
+  );
+}
+
+/**
+ * Lay a tree out into a frame, lowering it for the terminal first.
+ */
+export function layout(node: VNode | LayoutNode, constraints: Constraints): Frame {
+  return layoutPrimitives(lowerTui(node as VNode), constraints);
+}
 /**
  * The host-neutral primitives are defined by `fino:ui/components`; this
  * module re-exports them so terminal apps import one place, and implements
@@ -440,7 +467,7 @@ export function copyToClipboard(text: string): void {
  * `fino:tty/frame`, or use `renderFrame()` for the padded-string form.
  */
 export function layoutFrame(element: VNode, options: RenderFrameOptions): Frame {
-  return layout(lowerTui(element), {
+  return layoutPrimitives(lowerTui(element), {
     width: Math.max(0, Math.floor(options.width)),
     height: Math.max(0, Math.floor(options.height)),
   });
@@ -500,7 +527,7 @@ export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
           hits: [],
         };
       }
-      return layout(node, {
+      return layoutPrimitives(node, {
         width: Math.max(0, Math.floor(options.width)),
         height: Math.max(0, Math.floor(options.height)),
       });
@@ -550,7 +577,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
       renderer.render(lowerTui(tree), hostRoot);
       const node = hostRoot.children[0];
       const frame = node
-        ? layout(node, { width, height })
+        ? layoutPrimitives(node, { width, height })
         : { width, height, rows: [], cursor: null, hits: [] };
       if (!stopped) {
         let out = frameToScreen(frame, lastFrame);

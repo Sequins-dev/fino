@@ -11,8 +11,7 @@
  * before layout and reconciliation, so the retained tree and the event
  * dispatcher only ever see primitives.
  */
-import { h, createSignal } from 'fino:ui';
-import { timeout as loopTimeout } from '../runtime/loop.ts';
+import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:ui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import { highlightLines } from 'fino:format/typescript';
@@ -2258,26 +2257,50 @@ const COMPOSERS: Record<string, Composer> = {
 };
 
 /**
+ * The node names the terminal paints itself.
+ *
+ * This is the target's floor: lowering stops here, and anything else reaching
+ * it without a registered lowering is an error rather than a silently empty
+ * box. `button` and `list` are the older `fino:tty/tui` primitives, still
+ * handled by the layout engine.
+ */
+const TUI_PRIMITIVES = [
+  'fragment',
+  // Retained host text nodes, so lowering an already-mounted tree is a no-op
+  // rather than an error.
+  '#text',
+  'box',
+  'text',
+  'spacer',
+  'rule',
+  'input',
+  'button',
+  'list',
+  'clickable',
+  'scrollview',
+  'layer',
+  'measured',
+];
+
+defineRenderTarget('tui', { primitives: TUI_PRIMITIVES });
+
+// Each composer becomes a lowering registered against the semantic node name.
+// Registering them here rather than hard-wiring a table is what lets a
+// component ship its own terminal lowering later, and lets an application
+// override one of these.
+for (const [type, compose] of Object.entries(COMPOSERS)) {
+  mapRenderTargetLowering(type, 'tui', (props: Props & { children?: NormalizedChild[] }) => {
+    const { children, ...rest } = props;
+    return compose(rest, children ?? []);
+  });
+}
+
+/**
  * Lower a semantic tree to terminal primitives.
  *
- * Semantic `ui:*` nodes are replaced by their terminal compositions —
- * recursively, since compositions may nest further semantic nodes — and
- * primitive nodes pass through with their children lowered. Keys survive
- * onto the lowered roots, so reconciliation sees the same identity the
- * semantic tree declared.
+ * Thin wrapper over `lowerTree(node, 'tui')`, kept because the terminal target
+ * and its tests name this operation directly.
  */
 export function lowerTui(node: VNode): VNode {
-  const compose = COMPOSERS[node.type];
-  if (compose) {
-    const composed = compose(node.props, node.children);
-    return lowerTui(node.key === null ? composed : { ...composed, key: node.key });
-  }
-  let changed = false;
-  const children = node.children.map((child) => {
-    if (typeof child === 'string') return child;
-    const lowered = lowerTui(child);
-    if (lowered !== child) changed = true;
-    return lowered;
-  });
-  return changed ? { ...node, children } : node;
+  return lowerTree(node, 'tui');
 }

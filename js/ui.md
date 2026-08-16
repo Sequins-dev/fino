@@ -45,6 +45,40 @@ Those two choices are independent. Any sink works with either lifetime, which is
 why adding a host does not mean reimplementing reactivity, and why making
 something live does not mean rewriting its output path.
 
+## Components run when a target lowers them
+
+`h()` does not call a component. It stores the function as the node's `type`,
+and the component runs later, during `lowerTree(tree, target)` — which is what
+a sink does on commit. The delay is the point: between building the tree and
+running a component there is a moment where the render target is known, and
+that is the moment a target gets to substitute its own version of that
+component.
+
+```ts no_run
+import { mapRenderTargetLowering } from 'fino:ui';
+
+mapRenderTargetLowering(Checkbox, 'tui', TuiCheckbox);   // one component
+mapRenderTargetLowering('article', 'tui', TuiArticle);   // any <article>
+```
+
+Registration is deliberately not the component author's privilege. The map is
+keyed on the function itself, so a render target can lower components it did
+not write and cannot modify — which is how a target is added without editing
+the components it renders. A string key matches a host element name instead, so
+a target can catch elements generically rather than specialising every
+component that emits one. The last registration for a pair wins, so an
+application can override either.
+
+Lowering repeats until nothing is left but the target's own primitives, which
+each target declares with `defineRenderTarget()`. A component that only
+composes other components therefore needs no registration at all and runs
+anywhere; only the leaves, where meaning becomes real output, need a target to
+say anything. A node that reaches a target with no lowering and no place in its
+floor raises `RenderTargetError` naming both, rather than rendering nothing.
+
+Calling a component directly (`Greeting({ name: 'fino' })`) still works and
+simply bypasses the registry.
+
 ## State is never a component's job
 
 Components do no asynchronous work. There is no `await` in a render pass and no

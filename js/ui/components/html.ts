@@ -34,7 +34,7 @@
  * const page = htmlPage(markup, { title: 'Preview' });
  * ```
  */
-import { Fragment, h } from 'fino:ui';
+import { Fragment, h, defineRenderTarget, renderTargetLowering } from 'fino:ui';
 import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
@@ -2367,8 +2367,22 @@ export function toHtml(node: VNode, options: ToHtmlOptions = {}): VNode {
 }
 
 function transformNode(node: VNode): VNode {
+  // `h()` stores component functions rather than invoking them, so resolve
+  // them here: an `'html'` lowering registered for the component wins,
+  // otherwise the component's own function is its HTML behaviour. The result
+  // is transformed again, since a component may produce further components.
+  if (typeof node.type !== 'string') {
+    const impl = renderTargetLowering(node.type, 'html') ?? node.type;
+    const composed = impl({ ...node.props, children: node.children });
+    return transformNode(node.key === null ? composed : { ...composed, key: node.key });
+  }
   const native = NATIVE[node.type];
   if (native) return native(node);
+  const elementLowering = renderTargetLowering(node.type, 'html');
+  if (elementLowering !== undefined) {
+    const composed = elementLowering({ ...node.props, children: node.children });
+    return transformNode(node.key === null ? composed : { ...composed, key: node.key });
+  }
   const children = transformChildren(node.children);
   switch (node.type) {
     case 'fragment':
@@ -2422,6 +2436,11 @@ function transformNode(node: VNode): VNode {
     }
   }
 }
+
+// The web's vocabulary is open-ended — every HTML tag name is legitimate — so
+// the target declares no primitive floor and `transformNode` passes unknown
+// element names straight through.
+defineRenderTarget('html');
 
 /** Stylesheet for the component classes `toHtml` emits; embed it in page shells. */
 export const PAGE_CSS = `
