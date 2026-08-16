@@ -144,6 +144,9 @@ export function justifyCss(value: unknown): string | undefined {
   return undefined;
 }
 
+/** Row height in CSS pixels for anything measured in terminal rows on the web. */
+export const VIRTUAL_ROW_PX = 24;
+
 export function emptyNode(): VNode {
   return { type: 'fragment', props: {}, children: [], key: null };
 }

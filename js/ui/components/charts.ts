@@ -22,6 +22,11 @@
  * @internal
  */
 import { h, type Props, type VNode } from 'fino:ui';
+import {
+  cssColor,
+  idAttr,
+  VIRTUAL_ROW_PX,
+} from 'internal:ui/components/html-runtime';
 import type { Color } from 'fino:tty/style';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
 
@@ -254,6 +259,12 @@ export function plotBraille(
   return out;
 }
 
+const CHART_SVG_WIDTH = 480;
+
+function chartSvgHeight(height: number | undefined): number {
+  return Math.max(1, Math.floor(height ?? 8)) * VIRTUAL_ROW_PX;
+}
+
 /** Props accepted by `BarChart`. */
 export interface BarChartProps extends FlexChildProps, Props {
   series: Series[];
@@ -279,8 +290,124 @@ export interface BarChartProps extends FlexChildProps, Props {
  * targets. The terminal draws sub-cell-precise bars with the block
  * elements `▁▂▃▄▅▆▇█`; the web draws an inline `<svg>` of `<rect>`s.
  */
-export function BarChart(props: BarChartProps): VNode {
-  return h('ui:bar-chart', props);
+export function BarChart(all: BarChartProps): VNode {
+  const { children = [], ...props } = all as BarChartProps & { children?: NormalizedChild[] };
+  const { series, labels, height, horizontal, showValues, id } = props;
+  const svgW = CHART_SVG_WIDTH;
+  const innerH = chartSvgHeight(height);
+  const margin = { top: showValues === true ? 20 : 8, right: 8, bottom: 24, left: 8 };
+  const svgH = innerH + margin.top + margin.bottom;
+  const innerW = svgW - margin.left - margin.right;
+  const allValues = series.flatMap((s) => s.points);
+  const scale = niceScale(Math.min(0, ...allValues), Math.max(0, ...allValues));
+  const span = scale.max - scale.min || 1;
+  const count = Math.max(0, ...series.map((s) => s.points.length));
+  const cats = Array.from({ length: count }, (_, i) => labels?.[i] ?? String(i));
+  const summary = `Bar chart of ${series.length} series across ${cats.length} categories`;
+
+  const parts: VNode[] = [];
+  if (horizontal === true) {
+    const rowH = innerH / Math.max(1, cats.length);
+    const barGap = rowH * 0.15;
+    const barH = (rowH - barGap) / Math.max(1, series.length);
+    const xZero = margin.left + (innerW * (0 - scale.min)) / span;
+    cats.forEach((cat, ci) => {
+      series.forEach((s, si) => {
+        const value = s.points[ci] ?? 0;
+        const xValue = margin.left + (innerW * (value - scale.min)) / span;
+        const x = Math.min(xValue, xZero);
+        const w = Math.abs(xValue - xZero);
+        const y = margin.top + ci * rowH + barGap / 2 + si * barH;
+        const color = cssColor(seriesColor(s, si));
+        parts.push(
+          h(
+            'rect',
+            { x, y, width: w, height: Math.max(0, barH), fill: color },
+            h('title', null, `${s.label ?? s.key} — ${cat}: ${value}`),
+          ),
+        );
+        if (showValues === true) {
+          parts.push(
+            h(
+              'text',
+              { x: xValue + 4, y: y + barH / 2, 'dominant-baseline': 'middle', 'font-size': '10' },
+              String(value),
+            ),
+          );
+        }
+      });
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left - 4,
+            y: margin.top + ci * rowH + rowH / 2,
+            'text-anchor': 'end',
+            'dominant-baseline': 'middle',
+            'font-size': '10',
+          },
+          cat,
+        ),
+      );
+    });
+  } else {
+    const clusterW = innerW / Math.max(1, cats.length);
+    const barGap = clusterW * 0.15;
+    const barW = (clusterW - barGap) / Math.max(1, series.length);
+    const yZero = margin.top + innerH * (1 - (0 - scale.min) / span);
+    cats.forEach((cat, ci) => {
+      series.forEach((s, si) => {
+        const value = s.points[ci] ?? 0;
+        const yValue = margin.top + innerH * (1 - (value - scale.min) / span);
+        const y = Math.min(yValue, yZero);
+        const barHeight = Math.abs(yValue - yZero);
+        const x = margin.left + ci * clusterW + barGap / 2 + si * barW;
+        const color = cssColor(seriesColor(s, si));
+        parts.push(
+          h(
+            'rect',
+            { x, y, width: barW, height: barHeight, fill: color },
+            h('title', null, `${s.label ?? s.key} — ${cat}: ${value}`),
+          ),
+        );
+        if (showValues === true) {
+          parts.push(
+            h(
+              'text',
+              { x: x + barW / 2, y: y - 4, 'text-anchor': 'middle', 'font-size': '10' },
+              String(value),
+            ),
+          );
+        }
+      });
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left + ci * clusterW + clusterW / 2,
+            y: svgH - 6,
+            'text-anchor': 'middle',
+            'font-size': '10',
+          },
+          cat,
+        ),
+      );
+    });
+  }
+
+  const svg = h(
+    'svg',
+    {
+      className: 'ui-chart-svg',
+      viewBox: `0 0 ${svgW} ${svgH}`,
+      role: 'img',
+      'aria-label': summary,
+      xmlns: 'http://www.w3.org/2000/svg',
+    },
+    h('title', null, summary),
+    ...parts,
+  );
+  return h('div', { className: 'ui-bar-chart', ...idAttr(id) }, svg);
 }
 
 /** Props accepted by `LineChart`. */
@@ -304,6 +431,99 @@ export interface LineChartProps extends FlexChildProps, Props {
  * terminal cell has one color, so overlap can't blend. The web draws an
  * inline `<svg>` `<polyline>` per series in the same colors.
  */
-export function LineChart(props: LineChartProps): VNode {
-  return h('ui:line-chart', props);
+export function LineChart(all: LineChartProps): VNode {
+  const { children = [], ...props } = all as LineChartProps & { children?: NormalizedChild[] };
+  const { series, height, showAxis, showLegend, id } = props;
+  const svgW = CHART_SVG_WIDTH;
+  const innerH = chartSvgHeight(height);
+  const margin = { top: 12, right: 12, bottom: 8, left: showAxis === true ? 36 : 8 };
+  const svgH = innerH + margin.top + margin.bottom;
+  const innerW = svgW - margin.left - margin.right;
+  const allValues = series.flatMap((s) => s.points);
+  const scale =
+    allValues.length > 0
+      ? niceScale(Math.min(...allValues), Math.max(...allValues))
+      : niceScale(0, 1);
+  const span = scale.max - scale.min || 1;
+  const maxPoints = Math.max(1, ...series.map((s) => s.points.length));
+  const xOf = (i: number): number =>
+    margin.left + (maxPoints <= 1 ? 0 : (i * innerW) / (maxPoints - 1));
+  const yOf = (v: number): number => margin.top + innerH * (1 - (v - scale.min) / span);
+  const summary = `Line chart of ${series.length} series: ${series
+    .map((s) => s.label ?? s.key)
+    .join(', ')}`;
+
+  const parts: VNode[] = [];
+  if (showAxis === true) {
+    for (const tick of scale.ticks) {
+      const y = yOf(tick);
+      parts.push(
+        h('line', {
+          x1: margin.left,
+          x2: svgW - margin.right,
+          y1: y,
+          y2: y,
+          stroke: 'var(--ui-border)',
+          'stroke-width': '1',
+        }),
+      );
+      parts.push(
+        h(
+          'text',
+          {
+            x: margin.left - 4,
+            y,
+            'text-anchor': 'end',
+            'dominant-baseline': 'middle',
+            'font-size': '10',
+          },
+          String(tick),
+        ),
+      );
+    }
+  }
+  series.forEach((s, si) => {
+    const color = cssColor(seriesColor(s, si));
+    const pointsAttr = s.points.map((v, i) => `${xOf(i)},${yOf(v)}`).join(' ');
+    parts.push(
+      h(
+        'polyline',
+        { points: pointsAttr, fill: 'none', stroke: color, 'stroke-width': '2' },
+        h('title', null, s.label ?? s.key),
+      ),
+    );
+  });
+
+  const svg = h(
+    'svg',
+    {
+      className: 'ui-chart-svg',
+      viewBox: `0 0 ${svgW} ${svgH}`,
+      role: 'img',
+      'aria-label': summary,
+      xmlns: 'http://www.w3.org/2000/svg',
+    },
+    h('title', null, summary),
+    ...parts,
+  );
+  const legend =
+    showLegend === true
+      ? h(
+          'div',
+          { className: 'ui-chart-legend' },
+          ...series.map((s, si) =>
+            h(
+              'span',
+              { className: 'ui-chart-legend-item' },
+              h('span', {
+                className: 'ui-chart-legend-swatch',
+                style: { background: cssColor(seriesColor(s, si)) },
+                'aria-hidden': 'true',
+              }),
+              s.label ?? s.key,
+            ),
+          ),
+        )
+      : null;
+  return h('div', { className: 'ui-line-chart', ...idAttr(id) }, svg, legend);
 }
