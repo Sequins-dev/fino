@@ -12,6 +12,14 @@
  * @internal
  */
 import { h, type Props, type VNode } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  changeAttrs,
+  handlerOf,
+  idAttr,
+  register,
+} from 'internal:ui/components/html-runtime';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';
 
 /** One day cell of a `Calendar` month grid. */
@@ -132,6 +140,18 @@ export function monthGrid(year: number, month: number, weekStartsOn: 0 | 1 = 0):
   return weeks;
 }
 
+function calStepButton(handler: (() => void) | undefined, label: string, aria: string): VNode {
+  const attrs: Props = { className: 'ui-cal-step', 'aria-label': aria };
+  if (actionsActive() && handler !== undefined) {
+    attrs.name = 'do';
+    attrs.value = register(handler);
+    return actionForm({}, h('button', attrs, label));
+  }
+  attrs.type = 'button';
+  if (handler === undefined) attrs.disabled = true;
+  return h('button', attrs, label);
+}
+
 /** Props accepted by `Calendar`. */
 export interface CalendarProps extends FlexChildProps, Props {
   /** Displayed month, `'YYYY-MM'`. */
@@ -150,8 +170,70 @@ export interface CalendarProps extends FlexChildProps, Props {
  * the component needs — the displayed month, the selection, and "today" —
  * arrives as an ISO string from the caller; `monthGrid` does the date math.
  */
-export function Calendar(props: CalendarProps): VNode {
-  return h('ui:calendar', props);
+export function Calendar(all: CalendarProps): VNode {
+  const { children = [], ...props } = all as CalendarProps & { children?: NormalizedChild[] };
+  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id } =
+    props;
+  const select = handlerOf<(date: string) => void>(onSelect);
+  const monthChange = handlerOf<(month: string) => void>(onMonthChange);
+  const { year, month: m } = parseIsoMonth(month);
+  const weeks = monthGrid(year, m, weekStartsOn ?? 0);
+  const labels = weekdayLabels(weekStartsOn ?? 0);
+
+  const nav = h(
+    'div',
+    { className: 'ui-cal-nav' },
+    calStepButton(
+      monthChange !== undefined ? () => monthChange(shiftMonth(month, -1)) : undefined,
+      '‹',
+      'Previous month',
+    ),
+    h('span', { className: 'ui-cal-title' }, monthLabel(year, m)),
+    calStepButton(
+      monthChange !== undefined ? () => monthChange(shiftMonth(month, 1)) : undefined,
+      '›',
+      'Next month',
+    ),
+  );
+
+  const headerRow = h('tr', null, ...labels.map((label) => h('th', { scope: 'col' }, label)));
+  const bodyRows = weeks.map((week) =>
+    h(
+      'tr',
+      null,
+      ...week.map((cell) => {
+        const isSelected = cell.date === selected;
+        const isToday = cell.date === today;
+        const btnAttrs: Props = {
+          className:
+            'ui-cal-day' +
+            (cell.currentMonth ? '' : ' is-outside') +
+            (isSelected ? ' is-selected' : '') +
+            (isToday ? ' is-today' : ''),
+        };
+        if (isSelected) btnAttrs['aria-selected'] = 'true';
+        if (isToday) btnAttrs['aria-current'] = 'date';
+        let dayButton: VNode;
+        if (actionsActive() && select !== undefined) {
+          btnAttrs.name = 'do';
+          btnAttrs.value = register(() => select(cell.date));
+          dayButton = actionForm({}, h('button', btnAttrs, String(cell.day)));
+        } else {
+          btnAttrs.type = 'button';
+          if (select === undefined) btnAttrs.disabled = true;
+          dayButton = h('button', btnAttrs, String(cell.day));
+        }
+        return h('td', { className: 'ui-cal-cell', role: 'gridcell' }, dayButton);
+      }),
+    ),
+  );
+  const table = h(
+    'table',
+    { className: 'ui-calendar', role: 'grid', 'aria-label': monthLabel(year, m), ...idAttr(id) },
+    h('thead', null, headerRow),
+    h('tbody', null, ...bodyRows),
+  );
+  return h('div', { className: 'ui-calendar-wrap' }, nav, table);
 }
 
 /** Props accepted by `DigitalClock`. */
@@ -170,8 +252,16 @@ export interface DigitalClockProps extends StyleProps, FlexChildProps, Props {
  * tick inside the component (contrast `Spinner`, which is presentational
  * enough to animate on a frame counter it is handed; a clock is not).
  */
-export function DigitalClock(props: DigitalClockProps): VNode {
-  return h('ui:digital-clock', props);
+export function DigitalClock(all: DigitalClockProps): VNode {
+  const { children = [], ...props } = all as DigitalClockProps & { children?: NormalizedChild[] };
+  const { time, seconds, label, id } = props;
+  const shown = formatClockTime(time, seconds === true);
+  return h(
+    'div',
+    { className: 'ui-clock', ...idAttr(id) },
+    h('time', { className: 'ui-clock-time', datetime: shown }, shown),
+    label !== undefined ? h('span', { className: 'ui-clock-label' }, label) : null,
+  );
 }
 
 /** Normalize a time string to `'HH:MM'` or, with `seconds`, `'HH:MM:SS'`. */
@@ -208,8 +298,23 @@ export interface DatePickerProps extends Props {
  * web target renders only a native `<input type="date">` — see the module
  * guide for why the popover calendar is terminal-only.
  */
-export function DatePicker(props: DatePickerProps): VNode {
-  return h('ui:date-picker', props);
+export function DatePicker(all: DatePickerProps): VNode {
+  const { children = [], ...props } = all as DatePickerProps & { children?: NormalizedChild[] };
+  const { value, onChange, disabled, placeholder, id } = props;
+  const change = handlerOf<(date: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', type: 'date', ...idAttr(id) };
+  if (value !== undefined) attrs.value = value;
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  if (actionsActive() && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
 }
 
 /** Numeric hour/minute/second parts of a clock-time string. */
@@ -273,8 +378,26 @@ export interface TimePickerProps extends Props {
  * columns, mirroring `Select`/`DatePicker`. The web target renders only a
  * native `<input type="time" step>`.
  */
-export function TimePicker(props: TimePickerProps): VNode {
-  return h('ui:time-picker', props);
+export function TimePicker(all: TimePickerProps): VNode {
+  const { children = [], ...props } = all as TimePickerProps & { children?: NormalizedChild[] };
+  const { value, onChange, step, seconds, disabled, placeholder, id } =
+    props;
+  const change = handlerOf<(time: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-field', type: 'time', ...idAttr(id) };
+  if (value !== undefined) attrs.value = value;
+  if (placeholder !== undefined) attrs.placeholder = placeholder;
+  if (seconds === true) attrs.step = '1';
+  else if (step !== undefined) attrs.step = String(Math.max(1, Math.floor(step)) * 60);
+  if (actionsActive() && change !== undefined && disabled !== true) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    return actionForm({ act, change: true }, h('input', attrs));
+  }
+  if (change === undefined || disabled === true) attrs.disabled = true;
+  return h('input', attrs);
 }
 
 /** Parse `'#rrggbb'` (with or without the leading `#`) into 0-255 RGB parts, or `null` if malformed. */
@@ -310,6 +433,47 @@ export interface ColorPickerProps extends Props {
  * — detected in the lowering, never inside this component. The web target
  * renders a native `<input type="color">` alongside the swatch row.
  */
-export function ColorPicker(props: ColorPickerProps): VNode {
-  return h('ui:color-picker', props);
+export function ColorPicker(all: ColorPickerProps): VNode {
+  const { children = [], ...props } = all as ColorPickerProps & { children?: NormalizedChild[] };
+  const { value, onChange, swatches, id } = props;
+  const change = handlerOf<(value: string) => void>(onChange);
+  const attrs: Props = { className: 'ui-color-input', type: 'color' };
+  if (typeof value === 'string') attrs.value = value;
+  let picker: VNode;
+  if (actionsActive() && change !== undefined) {
+    const act = register((next) => {
+      if (typeof next === 'string' && next.length > 0) change(next);
+    });
+    attrs.name = 'value';
+    Object.assign(attrs, changeAttrs());
+    picker = actionForm({ act, change: true }, h('input', attrs));
+  } else {
+    if (change === undefined) attrs.disabled = true;
+    picker = h('input', attrs);
+  }
+  const swatchRow =
+    swatches !== undefined && swatches.length > 0
+      ? h(
+          'div',
+          { className: 'ui-color-swatches' },
+          ...swatches.map((hex) => {
+            const selected =
+              hex.toLowerCase() === (typeof value === 'string' ? value.toLowerCase() : '');
+            const btnAttrs: Props = {
+              className: `ui-color-swatch${selected ? ' is-selected' : ''}`,
+              style: { background: hex },
+              'aria-label': hex,
+            };
+            if (actionsActive() && change !== undefined) {
+              btnAttrs.name = 'do';
+              btnAttrs.value = register(() => change(hex));
+              return actionForm({}, h('button', btnAttrs));
+            }
+            btnAttrs.type = 'button';
+            if (change === undefined) btnAttrs.disabled = true;
+            return h('button', btnAttrs);
+          }),
+        )
+      : null;
+  return h('div', { className: 'ui-color-picker', ...idAttr(id) }, picker, swatchRow);
 }

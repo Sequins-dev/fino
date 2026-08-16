@@ -408,93 +408,8 @@ function virtualListHtml(node: VNode): VNode {
 
 
 
-function calStepButton(handler: (() => void) | undefined, label: string, aria: string): VNode {
-  const attrs: Props = { className: 'ui-cal-step', 'aria-label': aria };
-  if (actionsActive() && handler !== undefined) {
-    attrs.name = 'do';
-    attrs.value = register(handler);
-    return actionForm({}, h('button', attrs, label));
-  }
-  attrs.type = 'button';
-  if (handler === undefined) attrs.disabled = true;
-  return h('button', attrs, label);
-}
 
-function calendarHtml(node: VNode): VNode {
-  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id } =
-    node.props as CalendarProps;
-  const select = handlerOf<(date: string) => void>(onSelect);
-  const monthChange = handlerOf<(month: string) => void>(onMonthChange);
-  const { year, month: m } = parseIsoMonth(month);
-  const weeks = monthGrid(year, m, weekStartsOn ?? 0);
-  const labels = weekdayLabels(weekStartsOn ?? 0);
 
-  const nav = h(
-    'div',
-    { className: 'ui-cal-nav' },
-    calStepButton(
-      monthChange !== undefined ? () => monthChange(shiftMonth(month, -1)) : undefined,
-      '‹',
-      'Previous month',
-    ),
-    h('span', { className: 'ui-cal-title' }, monthLabel(year, m)),
-    calStepButton(
-      monthChange !== undefined ? () => monthChange(shiftMonth(month, 1)) : undefined,
-      '›',
-      'Next month',
-    ),
-  );
-
-  const headerRow = h('tr', null, ...labels.map((label) => h('th', { scope: 'col' }, label)));
-  const bodyRows = weeks.map((week) =>
-    h(
-      'tr',
-      null,
-      ...week.map((cell) => {
-        const isSelected = cell.date === selected;
-        const isToday = cell.date === today;
-        const btnAttrs: Props = {
-          className:
-            'ui-cal-day' +
-            (cell.currentMonth ? '' : ' is-outside') +
-            (isSelected ? ' is-selected' : '') +
-            (isToday ? ' is-today' : ''),
-        };
-        if (isSelected) btnAttrs['aria-selected'] = 'true';
-        if (isToday) btnAttrs['aria-current'] = 'date';
-        let dayButton: VNode;
-        if (actionsActive() && select !== undefined) {
-          btnAttrs.name = 'do';
-          btnAttrs.value = register(() => select(cell.date));
-          dayButton = actionForm({}, h('button', btnAttrs, String(cell.day)));
-        } else {
-          btnAttrs.type = 'button';
-          if (select === undefined) btnAttrs.disabled = true;
-          dayButton = h('button', btnAttrs, String(cell.day));
-        }
-        return h('td', { className: 'ui-cal-cell', role: 'gridcell' }, dayButton);
-      }),
-    ),
-  );
-  const table = h(
-    'table',
-    { className: 'ui-calendar', role: 'grid', 'aria-label': monthLabel(year, m), ...idAttr(id) },
-    h('thead', null, headerRow),
-    h('tbody', null, ...bodyRows),
-  );
-  return h('div', { className: 'ui-calendar-wrap' }, nav, table);
-}
-
-function digitalClockHtml(node: VNode): VNode {
-  const { time, seconds, label, id } = node.props as DigitalClockProps;
-  const shown = formatClockTime(time, seconds === true);
-  return h(
-    'div',
-    { className: 'ui-clock', ...idAttr(id) },
-    h('time', { className: 'ui-clock-time', datetime: shown }, shown),
-    label !== undefined ? h('span', { className: 'ui-clock-label' }, label) : null,
-  );
-}
 
 // The web target renders only the native `<input type="date">` — no
 // duplicate popover calendar. Native date inputs already provide a full,
@@ -503,23 +418,6 @@ function digitalClockHtml(node: VNode): VNode {
 // own for the same job, and we would own its focus-trap/dismiss logic for no
 // benefit. The popover `Calendar` composition stays terminal-only, where
 // there is no native equivalent to defer to.
-function datePickerHtml(node: VNode): VNode {
-  const { value, onChange, disabled, placeholder, id } = node.props as DatePickerProps;
-  const change = handlerOf<(date: string) => void>(onChange);
-  const attrs: Props = { className: 'ui-field', type: 'date', ...idAttr(id) };
-  if (value !== undefined) attrs.value = value;
-  if (placeholder !== undefined) attrs.placeholder = placeholder;
-  if (actionsActive() && change !== undefined && disabled !== true) {
-    const act = register((next) => {
-      if (typeof next === 'string' && next.length > 0) change(next);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('input', attrs));
-  }
-  if (change === undefined || disabled === true) attrs.disabled = true;
-  return h('input', attrs);
-}
 
 // Same native-only rationale as `DatePicker`: `<input type="time" step>`
 // gets a platform picker for free. `step` is minutes in this catalog's API
@@ -527,70 +425,7 @@ function datePickerHtml(node: VNode): VNode {
 // attribute is seconds, so it is multiplied here; `seconds` forces step=1s
 // so the browser shows the seconds field, since a whole-minute step and a
 // sub-minute step can't both be expressed by one native attribute value.
-function timePickerHtml(node: VNode): VNode {
-  const { value, onChange, step, seconds, disabled, placeholder, id } =
-    node.props as TimePickerProps;
-  const change = handlerOf<(time: string) => void>(onChange);
-  const attrs: Props = { className: 'ui-field', type: 'time', ...idAttr(id) };
-  if (value !== undefined) attrs.value = value;
-  if (placeholder !== undefined) attrs.placeholder = placeholder;
-  if (seconds === true) attrs.step = '1';
-  else if (step !== undefined) attrs.step = String(Math.max(1, Math.floor(step)) * 60);
-  if (actionsActive() && change !== undefined && disabled !== true) {
-    const act = register((next) => {
-      if (typeof next === 'string' && next.length > 0) change(next);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    return actionForm({ act, change: true }, h('input', attrs));
-  }
-  if (change === undefined || disabled === true) attrs.disabled = true;
-  return h('input', attrs);
-}
 
-function colorPickerHtml(node: VNode): VNode {
-  const { value, onChange, swatches, id } = node.props as ColorPickerProps;
-  const change = handlerOf<(value: string) => void>(onChange);
-  const attrs: Props = { className: 'ui-color-input', type: 'color' };
-  if (typeof value === 'string') attrs.value = value;
-  let picker: VNode;
-  if (actionsActive() && change !== undefined) {
-    const act = register((next) => {
-      if (typeof next === 'string' && next.length > 0) change(next);
-    });
-    attrs.name = 'value';
-    Object.assign(attrs, changeAttrs());
-    picker = actionForm({ act, change: true }, h('input', attrs));
-  } else {
-    if (change === undefined) attrs.disabled = true;
-    picker = h('input', attrs);
-  }
-  const swatchRow =
-    swatches !== undefined && swatches.length > 0
-      ? h(
-          'div',
-          { className: 'ui-color-swatches' },
-          ...swatches.map((hex) => {
-            const selected =
-              hex.toLowerCase() === (typeof value === 'string' ? value.toLowerCase() : '');
-            const btnAttrs: Props = {
-              className: `ui-color-swatch${selected ? ' is-selected' : ''}`,
-              style: { background: hex },
-              'aria-label': hex,
-            };
-            if (actionsActive() && change !== undefined) {
-              btnAttrs.name = 'do';
-              btnAttrs.value = register(() => change(hex));
-              return actionForm({}, h('button', btnAttrs));
-            }
-            btnAttrs.type = 'button';
-            if (change === undefined) btnAttrs.disabled = true;
-            return h('button', btnAttrs);
-          }),
-        )
-      : null;
-  return h('div', { className: 'ui-color-picker', ...idAttr(id) }, picker, swatchRow);
-}
 
 // Fixed SVG canvas width; height scales with the `height` prop at the same
 // px-per-row (`VIRTUAL_ROW_PX`) the virtual list already uses, so a chart's
@@ -833,11 +668,6 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
     h('div', { className: 'ui-menu-header' }, (node.props as { label: string }).label),
   'ui:menu-separator': () => h('hr', { className: 'ui-menu-sep' }),
   'ui:virtual-list': virtualListHtml,
-  'ui:calendar': calendarHtml,
-  'ui:digital-clock': digitalClockHtml,
-  'ui:date-picker': datePickerHtml,
-  'ui:time-picker': timePickerHtml,
-  'ui:color-picker': colorPickerHtml,
   'ui:bar-chart': barChartHtml,
   'ui:line-chart': lineChartHtml,
 };
