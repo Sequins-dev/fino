@@ -6,13 +6,13 @@
  * Two vocabularies live here. The structural primitives — `box`, `text`,
  * `layer`, `clickable`, `input`, `scrollview` (plus the `spacer` and `rule`
  * helpers) — describe layout, and render targets implement them directly.
- * Catalog components sit above them and are purely semantic: `Checkbox()`
- * emits a `ui:checkbox` node carrying `checked`, `label`, and `onChange`, and
- * says nothing about presentation. Each render target owns the lowering:
- * `internal:tty/lower` turns semantic nodes into the glyph-and-box
- * compositions the terminal paints, and `fino:ui/components/html` turns the
- * same nodes into native web markup (`<input type="checkbox">`, `<details>`,
- * `<select>`).
+ * Catalog components sit above them. A component's own body is its default
+ * rendering — native web markup, since HTML has the richest vocabulary to
+ * express meaning in — and a render target that wants something else registers
+ * a replacement against the component with `mapRenderTargetLowering`. Each
+ * component's terminal form lives beside it in `<family>.tui.tsx`, imported
+ * only by the terminal target. A component that merely composes others needs
+ * no registration and runs anywhere.
  *
  * State never lives inside a component: interactive components take values
  * and change callbacks, and small state helpers (`createDisclosure`,

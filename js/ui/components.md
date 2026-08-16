@@ -19,15 +19,19 @@ implement directly (`box`, `text`, `layer`, `clickable`, `input`,
 `scrollview`, plus the `spacer` and `rule` helpers): flexbox axes, padding and
 borders, styled runs, overlays, hit regions.
 
-The **catalog components** sit above them and are purely semantic. `Checkbox()`
-does not compose glyphs or markup; it emits a `ui:checkbox` node carrying
-`checked`, `label`, and `onChange`, and says nothing about presentation:
+The **catalog components** sit above them. A component is an ordinary function
+whose own body is its default rendering — the web one — and `h()` stores it
+rather than calling it, so a render target gets to substitute its own version
+first:
 
 ```ts no_run
 import { Checkbox } from 'fino:ui/components';
+import { h, lowerTree } from 'fino:ui';
 
-Checkbox({ checked: true, label: 'Ship it' });
-// → { type: 'ui:checkbox', props: { checked: true, label: 'Ship it' } }
+const node = h(Checkbox, { checked: true, label: 'Ship it' });
+// → { type: Checkbox, props: { checked: true, label: 'Ship it' } }
+lowerTree(node, 'html'); // → <label class="ui-choice"><input type="checkbox" …
+lowerTree(node, 'tui'); //  → the [x] glyph composition
 ```
 
 The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
@@ -44,27 +48,42 @@ The catalog covers forms (`Button`, `IconButton`, `Checkbox`, `Radio`,
 data/display (`Panel`, `Card`, `Stat`, `Table`, `FileTree`, `Icon`,
 `VirtualList`, `EmptyState`).
 
-## The tree is purely semantic
+## Platform behaviour lives at the edges
 
-The core rule: **the tree is purely semantic; render targets own all
-presentation.**
+The core rule: **a component never branches on where it is running.** It has
+one default rendering, and a target that wants something else registers a
+replacement beside it:
 
-In the terminal, `fino:tty/tui` runs `internal:tty/lower` over every tree
-before layout: `ui:checkbox` lowers to the `[x]` glyph-and-box composition the
-layout engine paints, `ui:button` to a bracketed `Clickable`, `ui:progress` to
-a filled bar, with handlers forwarded onto the lowered nodes. On the web,
-`fino:ui/components/html` lowers the same nodes to native markup — a real
-`<input type="checkbox">`, `ui:details` a `<details><summary>`, `ui:select` a
-`<select>` — so checkboxes toggle and sections expand with zero client
+```ts no_run
+import { mapRenderTargetLowering } from 'fino:ui';
+
+mapRenderTargetLowering(Checkbox, 'tui', TuiCheckbox);
+```
+
+The default is the web form, because HTML has the richest native vocabulary:
+`Checkbox` is a real `<input type="checkbox">`, `Details` a
+`<details><summary>`, `Select` a `<select>`, so those work with zero client
 JavaScript. Pass `toHtml()` an `actions` collector and handler-bearing nodes
-become server-driven forms instead of static markup.
+become server-driven forms instead of static markup. Each component's terminal
+form sits next to it in `<family>.tui.tsx`, which only the terminal target
+imports — a web-only program never loads the glyph vocabulary.
 
-Because no presentation rides in the tree, a component never branches on where
-it is running, and a new render target means one new lowering — not a new
-component library. Color is semantic too: components reference the `styles`
-tokens from `fino:ui/components/theme` (`accent`, `muted`, `danger`, …), the
-terminal resolves them to SGR through `fino:tty/style`, and HTML maps the same
-fields onto CSS custom properties.
+A component that only composes other components needs no registration at all
+and runs on any target: `TagGroup` is a `Box`, and every target already knows
+how to lower that. Registration is earned at the leaves, where meaning becomes
+real output.
+
+The registry is keyed on the component function and is open in both
+directions. A target can lower components it did not write and cannot modify,
+which is how a target is added without touching the catalog; an application
+can override either. `defineRenderTarget()` declares a target's primitive
+floor, so a node with no lowering raises `RenderTargetError` naming both it
+and the target rather than rendering nothing.
+
+Color is semantic too: components reference the `styles` tokens from
+`fino:ui/components/theme` (`accent`, `muted`, `danger`, …), the terminal
+resolves them to SGR through `fino:tty/style`, and HTML maps the same fields
+onto CSS custom properties.
 
 ## One import site, many modules
 
@@ -86,6 +105,12 @@ so a render target imports them from the module that owns each one
 (`internal:ui/components/pickers`, `…/charts`, and so on). They are documented
 below where they explain a component's behavior; the import path in each
 example is the one that works.
+
+A component with a terminal form has it beside it as `<family>.tui.tsx`, which
+`internal:tty/lower` imports for the registration side effect. Splitting the
+file rather than putting both renderings in one is what keeps a web-only
+program from loading the glyph tables and a terminal program from loading the
+stylesheet.
 
 ## State lives outside the tree
 
