@@ -302,15 +302,6 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 
 
 
-function dismissButton(onDismiss: unknown): VNode | null {
-  const dismiss = handlerOf<() => void>(onDismiss);
-  if (!actionsActive() || dismiss === undefined) return null;
-  const act = register(() => dismiss());
-  return actionForm(
-    {},
-    h('button', { className: 'ui-dismiss', name: 'do', value: act, 'aria-label': 'Dismiss' }, '×'),
-  );
-}
 
 
 
@@ -326,166 +317,10 @@ function dismissButton(onDismiss: unknown): VNode | null {
 
 
 
-function tableHtml(node: VNode): VNode {
-  const { columns, rows, selectedIndex, onSelectRow } = node.props as TableProps;
-  const select = handlerOf<(index: number) => void>(onSelectRow);
-  const interactive = actionsActive() && select !== undefined;
-  const cellStyle = (align: 'start' | 'end' | undefined): Props =>
-    align === 'end' ? { style: { textAlign: 'right' } } : {};
-  const table = h(
-    'table',
-    { className: 'ui-table', ...idAttr(node.props.id) },
-    h(
-      'thead',
-      null,
-      h('tr', null, ...columns.map((column) => h('th', cellStyle(column.align), column.header))),
-    ),
-    h(
-      'tbody',
-      null,
-      ...rows.map((row, index) => {
-        // Every cell of a row shares one action id: a <tr> cannot be a
-        // button, so each cell's content is a full-width submit button.
-        const act = interactive ? register(() => select!(index)) : null;
-        return h(
-          'tr',
-          index === selectedIndex ? { className: 'is-selected' } : {},
-          ...columns.map((column) => {
-            const text = row[column.key] ?? '';
-            return h(
-              'td',
-              cellStyle(column.align),
-              act !== null
-                ? h('button', { className: 'ui-row-select', name: 'do', value: act }, text)
-                : text,
-            );
-          }),
-        );
-      }),
-    ),
-  );
-  return interactive ? actionForm({}, table) : table;
-}
 
-interface TreeContext {
-  icons?: Record<string, string>;
-  folderIcons?: { open: string; closed: string };
-  toggle?: (key: string) => void;
-  select?: (key: string) => void;
-}
 
-function treeNodesHtml(
-  nodes: FileTreeNode[],
-  expanded: string[],
-  selectedKey: string | null | undefined,
-  ctx: TreeContext,
-): VNode[] {
-  return nodes.map((entry) => {
-    const selected = entry.key === selectedKey;
-    const dir = entry.children !== undefined;
-    const open = dir && expanded.includes(entry.key);
-    const glyph = iconForm(fileIcon(entry, ctx.icons, open, ctx.folderIcons), 'html');
-    if (dir) {
-      const attrs: Props = { className: 'ui-tree-dir' };
-      if (open) attrs.open = true;
-      // The icon IS the expander: it toggles, the name selects. With no
-      // select handler the name toggles too, so the whole row expands.
-      // Registered in visual order so ids follow the markup.
-      const toggleId =
-        actionsActive() && ctx.toggle !== undefined
-          ? register(() => ctx.toggle!(entry.key))
-          : null;
-      const selectId =
-        actionsActive() && ctx.select !== undefined
-          ? register(() => ctx.select!(entry.key))
-          : null;
-      const children = h(
-        'div',
-        { className: 'ui-tree-children' },
-        ...treeNodesHtml(entry.children!, expanded, selectedKey, ctx),
-      );
-      const icon =
-        toggleId !== null
-          ? h(
-              'button',
-              {
-                className: 'ui-tree-icon',
-                name: 'do',
-                value: toggleId,
-                'aria-label': open ? 'Collapse' : 'Expand',
-              },
-              glyph,
-            )
-          : h('span', { className: 'ui-tree-icon' }, glyph);
-      const nameAct = selectId ?? toggleId;
-      const name =
-        nameAct !== null
-          ? h('button', { className: 'ui-tree-name', name: 'do', value: nameAct }, entry.label)
-          : h('span', { className: 'ui-tree-name' }, entry.label);
-      return h(
-        'details',
-        attrs,
-        h('summary', { className: `ui-tree-row${selected ? ' is-selected' : ''}` }, icon, name),
-        children,
-      );
-    }
-    const content = [
-      h('span', { className: 'ui-tree-icon' }, glyph),
-      h('span', { className: 'ui-tree-name' }, entry.label),
-    ];
-    if (actionsActive() && ctx.select !== undefined) {
-      const act = register(() => ctx.select!(entry.key));
-      return h(
-        'button',
-        {
-          className: `ui-tree-leaf ui-tree-row${selected ? ' is-selected' : ''}`,
-          name: 'do',
-          value: act,
-        },
-        ...content,
-      );
-    }
-    return h(
-      'div',
-      { className: `ui-tree-leaf ui-tree-row${selected ? ' is-selected' : ''}` },
-      ...content,
-    );
-  });
-}
 
-function fileTreeHtml(node: VNode): VNode {
-  const { nodes, expanded, selectedKey, icons, folderIcons, onToggle, onSelect, id } =
-    node.props as FileTreeProps;
-  const toggle = handlerOf<(key: string) => void>(onToggle);
-  const select = handlerOf<(key: string) => void>(onSelect);
-  const ctx: TreeContext = { icons, folderIcons, toggle, select };
-  const tree = h(
-    'div',
-    { className: 'ui-tree', ...idAttr(id) },
-    ...treeNodesHtml(nodes, expanded ?? [], selectedKey, ctx),
-  );
-  return actionsActive() && (toggle !== undefined || select !== undefined)
-    ? actionForm({}, tree)
-    : tree;
-}
 
-function timelineHtml(node: VNode): VNode {
-  const { entries, id } = node.props as TimelineProps;
-  return h(
-    'ol',
-    { className: 'ui-timeline', ...idAttr(id) },
-    ...entries.map((entry) =>
-      h(
-        'li',
-        { className: tone(entry.variant, 'info') },
-        h('span', { className: 'ui-timeline-title' }, entry.title),
-        entry.detail !== undefined
-          ? h('span', { className: 'ui-timeline-detail' }, entry.detail)
-          : null,
-      ),
-    ),
-  );
-}
 
 // Fixed row height (px) for `ui:virtual-list` in the HTML target. The
 // container's height and its top/bottom spacers all size off this same
@@ -997,9 +832,6 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:menu-header': (node) =>
     h('div', { className: 'ui-menu-header' }, (node.props as { label: string }).label),
   'ui:menu-separator': () => h('hr', { className: 'ui-menu-sep' }),
-  'ui:table': tableHtml,
-  'ui:file-tree': fileTreeHtml,
-  'ui:timeline': timelineHtml,
   'ui:virtual-list': virtualListHtml,
   'ui:calendar': calendarHtml,
   'ui:digital-clock': digitalClockHtml,

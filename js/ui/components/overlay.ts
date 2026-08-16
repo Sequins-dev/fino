@@ -7,11 +7,25 @@
  */
 import { h, type Child, type Props, type VNode } from 'fino:ui';
 import {
+  actionForm,
+  actionsActive,
   emptyNode,
+  handlerOf,
+  register,
   tone,
 } from 'internal:ui/components/html-runtime';
 import type { MenuItem } from 'internal:ui/components/menu';
 import type { StatusVariant } from 'internal:ui/components/feedback';
+
+function dismissButton(onDismiss: unknown): VNode | null {
+  const dismiss = handlerOf<() => void>(onDismiss);
+  if (!actionsActive() || dismiss === undefined) return null;
+  const act = register(() => dismiss());
+  return actionForm(
+    {},
+    h('button', { className: 'ui-dismiss', name: 'do', value: act, 'aria-label': 'Dismiss' }, '×'),
+  );
+}
 
 /** Props accepted by `Modal`. */
 export interface ModalProps extends Props {

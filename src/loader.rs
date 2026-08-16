@@ -240,6 +240,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/navigation.tui",
         "ui/components/navigation.tui"
     ),
+    source_builtin!("internal:ui/components/data.tui", "ui/components/data.tui"),
     source_builtin!(
         "internal:ui/components/overlay.tui",
         "ui/components/overlay.tui"
