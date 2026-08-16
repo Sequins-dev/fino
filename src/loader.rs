@@ -228,6 +228,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:ui/components/display", "ui/components/display"),
     source_builtin!("internal:ui/components/pickers", "ui/components/pickers"),
     source_builtin!("internal:ui/components/charts", "ui/components/charts"),
+    source_builtin!(
+        "internal:ui/components/html-runtime",
+        "ui/components/html-runtime"
+    ),
     // internal: gallery stories, one file beside each component module.
     source_builtin!("internal:ui/story", "internal/ui/story"),
     source_builtin!(

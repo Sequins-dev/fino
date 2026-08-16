@@ -34,7 +34,32 @@
  * const page = htmlPage(markup, { title: 'Preview' });
  * ```
  */
-import { Fragment, h, defineRenderTarget, renderTargetLowering } from 'fino:ui';
+import { h, defineRenderTarget, renderTargetLowering } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  borderShorthand,
+  changeAttrs,
+  cssColor,
+  emptyNode,
+  flexChildCss,
+  handlerOf,
+  idAttr,
+  injectFirstControlAria,
+  inlineStyleAttrs,
+  justifyCss,
+  num,
+  register,
+  resolveStyle,
+  safeHref,
+  sizeCss,
+  slotChildren,
+  styleCss,
+  tone,
+  withActions,
+} from 'internal:ui/components/html-runtime';
+export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
+import type { ToHtmlOptions } from 'internal:ui/components/html-runtime';
 import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
@@ -127,130 +152,6 @@ import type {
   VirtualListProps,
 } from 'fino:ui/components';
 
-const NAMED_CSS: Record<string, string> = {
-  black: 'var(--tui-black)',
-  red: 'var(--tui-red)',
-  green: 'var(--tui-green)',
-  yellow: 'var(--tui-yellow)',
-  blue: 'var(--tui-blue)',
-  magenta: 'var(--tui-magenta)',
-  cyan: 'var(--tui-cyan)',
-  white: 'var(--tui-white)',
-  brightBlack: 'var(--tui-bright-black)',
-  brightRed: 'var(--tui-bright-red)',
-  brightGreen: 'var(--tui-bright-green)',
-  brightYellow: 'var(--tui-bright-yellow)',
-  brightBlue: 'var(--tui-bright-blue)',
-  brightMagenta: 'var(--tui-bright-magenta)',
-  brightCyan: 'var(--tui-bright-cyan)',
-  brightWhite: 'var(--tui-bright-white)',
-  default: 'inherit',
-};
-
-function cssColor(color: Color): string {
-  if (typeof color === 'string') return NAMED_CSS[color] ?? 'inherit';
-  if ('rgb' in color) return `rgb(${color.rgb[0]},${color.rgb[1]},${color.rgb[2]})`;
-  return 'var(--tui-bright-black)';
-}
-
-function resolveStyle(props: Props): Style {
-  let style = EMPTY_STYLE;
-  const token = props.style;
-  if (Array.isArray(token)) {
-    for (const entry of token) style = mergeStyle(style, entry as Style);
-  } else if (token && typeof token === 'object') {
-    style = mergeStyle(style, token as Style);
-  }
-  const own: Record<string, unknown> = {};
-  if (props.color !== undefined) own.fg = props.color;
-  if (props.background !== undefined) own.bg = props.background;
-  for (const attr of ['bold', 'dim', 'italic', 'underline', 'inverse', 'strike'] as const) {
-    if (typeof props[attr] === 'boolean') own[attr] = props[attr];
-  }
-  return mergeStyle(style, own as Style);
-}
-
-function styleCss(style: Style, css: Record<string, string>): void {
-  if (style.fg) css.color = cssColor(style.fg);
-  if (style.bg) css.background = cssColor(style.bg);
-  if (style.bold) css.fontWeight = 'bold';
-  if (style.dim) css.opacity = '0.55';
-  if (style.italic) css.fontStyle = 'italic';
-  const deco: string[] = [];
-  if (style.underline) deco.push('underline');
-  if (style.strike) deco.push('line-through');
-  if (deco.length > 0) css.textDecoration = deco.join(' ');
-  if (style.inverse) {
-    css.background = style.fg ? cssColor(style.fg) : 'var(--tui-fg)';
-    css.color = style.bg ? cssColor(style.bg) : 'var(--tui-bg)';
-  }
-}
-
-function num(props: Props, name: string): number | undefined {
-  const value = props[name];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function sizeCss(props: Props, css: Record<string, string>): void {
-  const width = num(props, 'width');
-  const height = num(props, 'height');
-  if (width !== undefined) css.width = `${width}ch`;
-  if (height !== undefined) css.height = `${height}lh`;
-  const minWidth = num(props, 'minWidth');
-  const maxWidth = num(props, 'maxWidth');
-  const minHeight = num(props, 'minHeight');
-  const maxHeight = num(props, 'maxHeight');
-  if (minWidth !== undefined) css.minWidth = `${minWidth}ch`;
-  if (maxWidth !== undefined) css.maxWidth = `${maxWidth}ch`;
-  if (minHeight !== undefined) css.minHeight = `${minHeight}lh`;
-  if (maxHeight !== undefined) css.maxHeight = `${maxHeight}lh`;
-}
-
-function flexChildCss(props: Props, css: Record<string, string>): void {
-  const grow = num(props, 'grow') ?? num(props, 'flex');
-  const shrink = num(props, 'shrink');
-  const basis = num(props, 'basis');
-  if (grow !== undefined || shrink !== undefined || basis !== undefined) {
-    css.flex = `${grow ?? 0} ${shrink ?? 0} ${basis !== undefined ? `${basis}ch` : 'auto'}`;
-  }
-  const alignSelf = props.alignSelf;
-  if (typeof alignSelf === 'string') {
-    css.alignSelf =
-      alignSelf === 'start' ? 'flex-start' : alignSelf === 'end' ? 'flex-end' : alignSelf;
-  }
-  const margin = num(props, 'margin');
-  const marginX = num(props, 'marginX') ?? margin;
-  const marginY = num(props, 'marginY') ?? margin;
-  if (marginX !== undefined || marginY !== undefined) {
-    css.margin = `${marginY ?? 0}lh ${marginX ?? 0}ch`;
-  }
-}
-
-function borderShorthand(
-  style: unknown,
-  rounded: boolean,
-  color: string,
-): { border: string; radius: string } {
-  const radius = rounded ? '0.5rem' : '0';
-  switch (style) {
-    case 'heavy':
-      return { border: `3px solid ${color}`, radius };
-    case 'double':
-      return { border: `4px double ${color}`, radius };
-    case 'ascii':
-      return { border: `1px dashed ${color}`, radius };
-    default:
-      return { border: `1px solid ${color}`, radius };
-  }
-}
-
-function justifyCss(value: unknown): string | undefined {
-  if (value === 'center') return 'center';
-  if (value === 'end') return 'flex-end';
-  if (value === 'between') return 'space-between';
-  if (value === 'start') return 'flex-start';
-  return undefined;
-}
 
 function boxNode(node: VNode, children: NormalizedChild[]): VNode {
   const props = node.props;
@@ -366,124 +267,7 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
   return children.map((child) => (typeof child === 'string' ? child : transformNode(child)));
 }
 
-function emptyNode(): VNode {
-  return { type: 'fragment', props: {}, children: [], key: null };
-}
-
-// Normalize a raw `Child`-typed prop (e.g. `Card`'s `actions`, `EmptyState`'s
-// `action`) the same way JSX children are normalized — flattening arrays and
-// dropping `null`/`undefined`/booleans — so it can be transformed and
-// spliced into markup like any other child list. `h(Fragment, …)` already
-// does exactly this normalization; reusing it here avoids reimplementing it.
-function slotChildren(value: unknown): NormalizedChild[] {
-  return h(Fragment, null, value as Child).children;
-}
-
-function idAttr(id: unknown): Props {
-  return typeof id === 'string' ? { id } : {};
-}
-
-function tone(variant: unknown, fallback: string): string {
-  return `ui-tone-${typeof variant === 'string' ? variant : fallback}`;
-}
-
 /** Collector receiving `id → invoke` pairs during an interactive transform. */
-export interface ActionCollector {
-  set(id: string, invoke: (value?: string) => void): unknown;
-}
-
-/** Options accepted by `toHtml`. */
-export interface ToHtmlOptions {
-  /** Collect handler invocations by action id; enables interactive markup. */
-  actions?: ActionCollector;
-  /** Hidden fields carried by every no-JS GET fallback form. */
-  fields?: Record<string, string>;
-  /**
-   * `fino:ui/web` action descriptor. When given, interactive elements emit
-   * POST forms carrying it as their `action` prop — the web client submits
-   * them as JSON envelopes and patches the DOM from the SSE response, with
-   * no navigation. Without it, forms are plain GET round trips.
-   */
-  action?: unknown;
-}
-
-interface ActionState {
-  collector: ActionCollector;
-  fields: Record<string, string>;
-  ref: unknown;
-  next: number;
-}
-
-let actions: ActionState | null = null;
-
-function register(invoke: (value?: string) => void): string {
-  const id = `a${actions!.next++}`;
-  actions!.collector.set(id, invoke);
-  return id;
-}
-
-interface FormOptions {
-  /** Action id carried as a hidden `do` field (value-bearing forms). */
-  act?: string;
-  /** Submit when a control changes (auto-submit idiom per wire mode). */
-  change?: boolean;
-}
-
-function actionForm(opts: FormOptions, ...children: NormalizedChild[]): VNode {
-  const hidden =
-    opts.act !== undefined ? [h('input', { type: 'hidden', name: 'do', value: opts.act })] : [];
-  if (actions!.ref !== undefined && actions!.ref !== null) {
-    // The web client reads the envelope from these reserved fields when a
-    // form was server-rendered rather than mounted from a portable tree.
-    const ref = actions!.ref as {
-      url: string;
-      view: string;
-      revision: number;
-      request: string;
-      action?: string;
-    };
-    // The client's submit/change listeners intercept only forms whose
-    // data-fi-action is truthy; without it the browser navigates natively
-    // and the CSRF gate rejects the post.
-    const props: Props = {
-      action: ref.url,
-      method: 'post',
-      className: 'ui-action',
-      'data-fi-action': ref.action ?? 'invoke',
-    };
-    if (opts.change === true) props['data-fi-change'] = '1';
-    return h(
-      'form',
-      props,
-      h('input', { type: 'hidden', name: '_view', value: ref.view }),
-      h('input', { type: 'hidden', name: '_ver', value: String(ref.revision) }),
-      h('input', { type: 'hidden', name: '_nonce', value: ref.request }),
-      ...hidden,
-      ...children,
-    );
-  }
-  return h(
-    'form',
-    { method: 'get', className: 'ui-action' },
-    ...Object.entries(actions!.fields).map(([name, value]) =>
-      h('input', { type: 'hidden', name, value }),
-    ),
-    ...hidden,
-    ...children,
-  );
-}
-
-const RESUBMIT = 'this.form.submit()';
-
-// In web-action mode the client's change listener drives submission; the
-// inline handler would bypass it (form.submit() skips submit events).
-function changeAttrs(): Props {
-  return actions!.ref !== undefined && actions!.ref !== null ? {} : { onchange: RESUBMIT };
-}
-
-function handlerOf<T>(value: unknown): T | undefined {
-  return typeof value === 'function' ? (value as T) : undefined;
-}
 
 function panelHtml(node: VNode): VNode {
   const { title, id, border, borderStyle, rounded } = node.props as PanelProps;
@@ -506,31 +290,6 @@ function panelHtml(node: VNode): VNode {
   );
 }
 
-const ARIA_CONTROL_TYPES = new Set(['input', 'select', 'textarea']);
-
-// Finds the first native form control among a field's transformed children
-// and merges `attrs` onto it — the only way to wire `aria-invalid`/
-// `aria-describedby` onto a control `Field` does not own and cannot know the
-// shape of. Stops at the first match, matching the "the control" (singular)
-// framing of one field around one control.
-function injectFirstControlAria(
-  nodes: NormalizedChild[],
-  attrs: Props,
-): { nodes: NormalizedChild[]; applied: boolean } {
-  let applied = false;
-  const out = nodes.map((node) => {
-    if (applied || typeof node === 'string') return node;
-    if (ARIA_CONTROL_TYPES.has(node.type)) {
-      applied = true;
-      return { ...node, props: { ...node.props, ...attrs } };
-    }
-    const nested = injectFirstControlAria(node.children, attrs);
-    if (!nested.applied) return node;
-    applied = true;
-    return { ...node, children: nested.nodes };
-  });
-  return { nodes: out, applied };
-}
 
 function fieldHtml(node: VNode): VNode {
   const { label, hint, error, required, htmlFor, id } = node.props as FieldProps;
@@ -585,7 +344,7 @@ function buttonHtml(node: VNode): VNode {
   const { label, onClick, disabled, id } = node.props as ButtonProps;
   const click = handlerOf<() => void>(onClick);
   const enabled = disabled !== true && click !== undefined;
-  if (actions !== null && enabled) {
+  if (actionsActive() && enabled) {
     const act = register(() => click!());
     return actionForm(
       {},
@@ -623,7 +382,7 @@ function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
       h('input', field),
       props.label !== undefined ? h('span', null, props.label) : null,
     );
-  if (actions !== null && enabled) {
+  if (actionsActive() && enabled) {
     const act =
       kind === 'radio'
         ? register(() => (change as () => void)())
@@ -644,7 +403,7 @@ function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
 function radioGroupHtml(node: VNode): VNode {
   const { value, options, onChange, id } = node.props as RadioGroupProps;
   const change = handlerOf<(key: string) => void>(onChange);
-  const interactive = actions !== null && change !== undefined;
+  const interactive = actionsActive() && change !== undefined;
   const name = interactive ? 'value' : typeof id === 'string' ? id : 'ui-radio';
   const group = h(
     'div',
@@ -682,7 +441,7 @@ function textInputHtml(node: VNode): VNode {
     ...idAttr(id),
   };
   if (placeholder !== undefined) attrs.placeholder = placeholder;
-  if (actions !== null && (change !== undefined || submit !== undefined)) {
+  if (actionsActive() && (change !== undefined || submit !== undefined)) {
     // Change-submit and Enter-submit are the same GET round trip; Enter's
     // natural form submission is what makes onSubmit win when both exist.
     const act = register((next) => {
@@ -713,7 +472,7 @@ function selectHtml(node: VNode): VNode {
     if (option.disabled === true) attrs.disabled = true;
     entries.push(h('option', attrs, option.label));
   }
-  if (actions !== null && change !== undefined) {
+  if (actionsActive() && change !== undefined) {
     const act = register((key) => {
       if (typeof key === 'string' && key.length > 0) change(key);
     });
@@ -743,7 +502,7 @@ function numberInputHtml(node: VNode): VNode {
   if (min !== undefined) attrs.min = String(min);
   if (max !== undefined) attrs.max = String(max);
   if (step !== undefined) attrs.step = String(step);
-  if (actions !== null && change !== undefined && disabled !== true) {
+  if (actionsActive() && change !== undefined && disabled !== true) {
     const act = register((next) => {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) change(parsed);
@@ -760,7 +519,7 @@ function textAreaHtml(node: VNode): VNode {
   const { value, rows, onChange, id } = node.props as TextAreaProps;
   const change = handlerOf<(value: string, caret?: number) => void>(onChange);
   const attrs: Props = { className: 'ui-field', rows: String(rows ?? 4), ...idAttr(id) };
-  if (actions !== null && change !== undefined) {
+  if (actionsActive() && change !== undefined) {
     const act = register((next) => change(next ?? ''));
     attrs.name = 'value';
     Object.assign(attrs, changeAttrs());
@@ -783,7 +542,7 @@ function sliderHtml(node: VNode): VNode {
   };
   if (step !== undefined) attrs.step = String(step);
   if (orientation === 'vertical') attrs.style = { writingMode: 'vertical-lr', direction: 'rtl' };
-  if (actions !== null && change !== undefined && disabled !== true) {
+  if (actionsActive() && change !== undefined && disabled !== true) {
     const act = register((next) => {
       const parsed = Number(next);
       if (Number.isFinite(parsed)) change(parsed);
@@ -816,7 +575,7 @@ function comboBoxHtml(node: VNode): VNode {
   const attrs: Props = { className: 'ui-field', type: 'text', value: value ?? '' };
   if (placeholder !== undefined) attrs.placeholder = placeholder;
   let field: VNode;
-  if (actions !== null && input !== undefined && disabled !== true) {
+  if (actionsActive() && input !== undefined && disabled !== true) {
     const act = register((next) => {
       input(next ?? '');
       openChange?.(true);
@@ -829,7 +588,7 @@ function comboBoxHtml(node: VNode): VNode {
     field = h('input', attrs);
   }
   let toggle: VNode | null = null;
-  if (actions !== null && openChange !== undefined && disabled !== true) {
+  if (actionsActive() && openChange !== undefined && disabled !== true) {
     const act = register(() => openChange(open !== true));
     toggle = actionForm(
       {},
@@ -869,7 +628,7 @@ function iconButtonHtml(node: VNode): VNode {
     { className: 'ui-icon', 'aria-hidden': 'true' },
     iconForm(icon, 'html', icons),
   );
-  if (actions !== null && enabled) {
+  if (actionsActive() && enabled) {
     const act = register(() => click!());
     return actionForm(
       {},
@@ -908,7 +667,7 @@ function expanderMark(open: boolean): VNode {
 function expanderHtml(node: VNode): VNode {
   const { open, onToggle, disabled, id } = node.props as ExpanderProps;
   const toggle = handlerOf<(next: boolean) => void>(onToggle);
-  if (actions !== null && toggle !== undefined && disabled !== true) {
+  if (actionsActive() && toggle !== undefined && disabled !== true) {
     const act = register(() => toggle(open !== true));
     return actionForm(
       {},
@@ -941,7 +700,7 @@ function detailsHtml(node: VNode): VNode {
   const attrs: Props = { className: 'ui-details', ...idAttr(id) };
   if (open === true) attrs.open = true;
   const body = h('div', { className: 'ui-details-body' }, ...transformChildren(node.children));
-  if (actions !== null && toggle !== undefined) {
+  if (actionsActive() && toggle !== undefined) {
     // The summary is one big submit button: clicks round-trip instead of
     // toggling natively, so the server's open state never desyncs.
     const act = register(() => toggle(open !== true));
@@ -983,7 +742,7 @@ function tabStrip(items: TabItem[], value: string, onChange: unknown): VNode {
       (item.key === value ? ' is-active' : '') +
       (item.disabled === true ? ' is-disabled' : '');
     const switchable = change !== undefined && item.key !== value && item.disabled !== true;
-    if (actions !== null && switchable) {
+    if (actionsActive() && switchable) {
       const act = register(() => change!(item.key));
       return h('button', { className, name: 'do', value: act }, item.label);
     }
@@ -991,7 +750,7 @@ function tabStrip(items: TabItem[], value: string, onChange: unknown): VNode {
     return h('span', { className }, item.label);
   });
   const nav = h('nav', { className: 'ui-tabs' }, ...entries);
-  return actions !== null && change !== undefined ? actionForm({}, nav) : nav;
+  return actionsActive() && change !== undefined ? actionForm({}, nav) : nav;
 }
 
 function tabListHtml(node: VNode): VNode {
@@ -1040,7 +799,7 @@ function menuUl(
       const selected = item.key === selectedKey;
       const disabled = item.disabled === true;
       const button: Props = {};
-      if (actions !== null && select !== undefined && !disabled) {
+      if (actionsActive() && select !== undefined && !disabled) {
         button.name = 'do';
         button.value = register(() => select(item.key));
       } else {
@@ -1058,7 +817,7 @@ function menuUl(
     }),
     remaining > 0 ? h('li', { className: 'ui-menu-more' }, `… ${remaining} more`) : null,
   );
-  return actions !== null && select !== undefined ? actionForm({}, list) : list;
+  return actionsActive() && select !== undefined ? actionForm({}, list) : list;
 }
 
 function menuListHtml(node: VNode): VNode {
@@ -1081,7 +840,7 @@ function menuRowHtml(node: VNode): VNode {
       },
       content,
     );
-  if (actions !== null && click !== undefined && disabled !== true) {
+  if (actionsActive() && click !== undefined && disabled !== true) {
     button.name = 'do';
     button.value = register(() => click());
     return row(actionForm({}, h('button', button, ...menuRowContent({ label, detail, glyph }))));
@@ -1093,7 +852,7 @@ function menuRowHtml(node: VNode): VNode {
 
 function dismissButton(onDismiss: unknown): VNode | null {
   const dismiss = handlerOf<() => void>(onDismiss);
-  if (actions === null || dismiss === undefined) return null;
+  if (!actionsActive() || dismiss === undefined) return null;
   const act = register(() => dismiss());
   return actionForm(
     {},
@@ -1201,7 +960,7 @@ function tagHtml(node: VNode): VNode {
   const { label, onRemove, color, id } = node.props as TagProps;
   const remove = handlerOf<() => void>(onRemove);
   let remover: VNode | null = null;
-  if (remove !== undefined && actions !== null) {
+  if (remove !== undefined && actionsActive()) {
     const act = register(() => remove());
     remover = actionForm(
       {},
@@ -1231,7 +990,7 @@ function breadcrumbsHtml(node: VNode): VNode {
       let entry: VNode;
       if (index === items.length - 1) {
         entry = h('strong', null, item.label);
-      } else if (actions !== null && navigate !== undefined) {
+      } else if (actionsActive() && navigate !== undefined) {
         const act = register(() => navigate(item.key));
         entry = h('button', { className: 'ui-crumb', name: 'do', value: act }, item.label);
       } else if (navigate !== undefined) {
@@ -1242,7 +1001,7 @@ function breadcrumbsHtml(node: VNode): VNode {
       return index > 0 ? [h('span', { className: 'ui-crumbs-sep' }, '/'), entry] : [entry];
     }),
   );
-  return actions !== null && navigate !== undefined ? actionForm({}, nav) : nav;
+  return actionsActive() && navigate !== undefined ? actionForm({}, nav) : nav;
 }
 
 function paginationHtml(node: VNode): VNode {
@@ -1253,7 +1012,7 @@ function paginationHtml(node: VNode): VNode {
   const range = paginationRange(current, total, siblings);
   const step = (target: number, blocked: boolean, label: string): VNode => {
     const attrs: Props = { className: 'ui-button ui-pager-step' };
-    if (actions !== null && change !== undefined && !blocked) {
+    if (actionsActive() && change !== undefined && !blocked) {
       attrs.name = 'do';
       attrs.value = register(() => change(target));
     } else {
@@ -1268,7 +1027,7 @@ function paginationHtml(node: VNode): VNode {
       className: `ui-button ui-pager-page${isCurrent ? ' is-current' : ''}`,
     };
     if (isCurrent) attrs['aria-current'] = 'page';
-    if (actions !== null && change !== undefined && !isCurrent) {
+    if (actionsActive() && change !== undefined && !isCurrent) {
       attrs.name = 'do';
       attrs.value = register(() => change(target));
     } else {
@@ -1286,7 +1045,7 @@ function paginationHtml(node: VNode): VNode {
     ),
     step(current + 1, current >= total, '›'),
   );
-  return actions !== null && change !== undefined ? actionForm({}, nav) : nav;
+  return actionsActive() && change !== undefined ? actionForm({}, nav) : nav;
 }
 
 function stepsHtml(node: VNode): VNode {
@@ -1311,7 +1070,7 @@ function stepsHtml(node: VNode): VNode {
 function tableHtml(node: VNode): VNode {
   const { columns, rows, selectedIndex, onSelectRow } = node.props as TableProps;
   const select = handlerOf<(index: number) => void>(onSelectRow);
-  const interactive = actions !== null && select !== undefined;
+  const interactive = actionsActive() && select !== undefined;
   const cellStyle = (align: 'start' | 'end' | undefined): Props =>
     align === 'end' ? { style: { textAlign: 'right' } } : {};
   const table = h(
@@ -1374,11 +1133,11 @@ function treeNodesHtml(
       // select handler the name toggles too, so the whole row expands.
       // Registered in visual order so ids follow the markup.
       const toggleId =
-        actions !== null && ctx.toggle !== undefined
+        actionsActive() && ctx.toggle !== undefined
           ? register(() => ctx.toggle!(entry.key))
           : null;
       const selectId =
-        actions !== null && ctx.select !== undefined
+        actionsActive() && ctx.select !== undefined
           ? register(() => ctx.select!(entry.key))
           : null;
       const children = h(
@@ -1415,7 +1174,7 @@ function treeNodesHtml(
       h('span', { className: 'ui-tree-icon' }, glyph),
       h('span', { className: 'ui-tree-name' }, entry.label),
     ];
-    if (actions !== null && ctx.select !== undefined) {
+    if (actionsActive() && ctx.select !== undefined) {
       const act = register(() => ctx.select!(entry.key));
       return h(
         'button',
@@ -1446,7 +1205,7 @@ function fileTreeHtml(node: VNode): VNode {
     { className: 'ui-tree', ...idAttr(id) },
     ...treeNodesHtml(nodes, expanded ?? [], selectedKey, ctx),
   );
-  return actions !== null && (toggle !== undefined || select !== undefined)
+  return actionsActive() && (toggle !== undefined || select !== undefined)
     ? actionForm({}, tree)
     : tree;
 }
@@ -1513,7 +1272,7 @@ function virtualListHtml(node: VNode): VNode {
   css.height = `${Math.max(1, Math.floor(height)) * VIRTUAL_ROW_PX}px`;
   const children = transformChildren(node.children);
   const attrs: Props = { className: 'ui-virtual', style: css, ...idAttr(id) };
-  const interactive = actions !== null && scroll !== undefined;
+  const interactive = actionsActive() && scroll !== undefined;
   if (interactive) {
     attrs['data-fi-scroll'] = '1';
     attrs['data-fi-row-height'] = String(VIRTUAL_ROW_PX);
@@ -1544,13 +1303,6 @@ function headingHtml(node: VNode): VNode {
   );
 }
 
-function inlineStyleAttrs(rest: Props, id: unknown): Props {
-  const css: Record<string, string> = {};
-  styleCss(resolveStyle(rest as Props), css);
-  const attrs: Props = { ...idAttr(id) };
-  if (Object.keys(css).length > 0) attrs.style = css;
-  return attrs;
-}
 
 function boldHtml(node: VNode): VNode {
   const { id, ...rest } = node.props as BoldProps;
@@ -1566,34 +1318,6 @@ function italicHtml(node: VNode): VNode {
 // dangerously `javascript:`/`vbscript:`/`data:` — is app-controlled content
 // (chat messages, agent output, file metadata) that must never reach a live
 // anchor, so it is dropped rather than escaped.
-const SAFE_HREF_SCHEME = /^(?:https?|mailto|tel):/i;
-const SAFE_HREF_RELATIVE = /^(?:\/|\.\/|\.\.\/|#|\?)/;
-
-/**
- * Validate a `Link` `href` before it reaches markup. Browsers ignore ASCII
- * control characters (tabs, newlines, NUL) inside a URL scheme, so
- * `java\tscript:` parses as `javascript:` — control characters are stripped
- * first so that bypass can't slip past the scheme check. Returns the
- * cleaned href when it is `http(s):`, `mailto:`, `tel:`, or a relative form
- * (`/…`, `./…`, `../…`, `#…`, `?…`); anything else — including unrecognized
- * schemes — returns `undefined`.
- */
-function safeHref(raw: unknown): string | undefined {
-  if (typeof raw !== 'string') return undefined;
-  // eslint-disable-next-line no-control-regex -- stripping is the point
-  const cleaned = raw.replace(/[\x00-\x1f\x7f]+/g, '').trim();
-  if (cleaned.length === 0) return undefined;
-  if (SAFE_HREF_RELATIVE.test(cleaned) || SAFE_HREF_SCHEME.test(cleaned)) return cleaned;
-  return undefined;
-}
-
-// `Link` is the one catalog component allowed to navigate: a bare `href`
-// becomes a real anchor, once it passes `safeHref`. With `onActivate` (and
-// no collector wiring an action) it degrades to a link-styled, inert-looking
-// button — same as any other handler-less control. With both, the href
-// rides on the anchor for right-click/open-in-new-tab, but an inline
-// handler intercepts the click and submits the action form instead of
-// navigating. A rejected href never reaches markup — the link still renders
 // its text, styled, just without a `href` attribute.
 function linkHtml(node: VNode): VNode {
   const { href, onActivate, id } = node.props as LinkProps;
@@ -1602,7 +1326,7 @@ function linkHtml(node: VNode): VNode {
   const safe = safeHref(href);
   const hasHref = safe !== undefined;
   if (activate !== undefined) {
-    if (actions !== null) {
+    if (actionsActive()) {
       const act = register(() => activate());
       if (hasHref) {
         return actionForm(
@@ -1853,7 +1577,7 @@ function floatingActionBarHtml(node: VNode): VNode {
 
 function calStepButton(handler: (() => void) | undefined, label: string, aria: string): VNode {
   const attrs: Props = { className: 'ui-cal-step', 'aria-label': aria };
-  if (actions !== null && handler !== undefined) {
+  if (actionsActive() && handler !== undefined) {
     attrs.name = 'do';
     attrs.value = register(handler);
     return actionForm({}, h('button', attrs, label));
@@ -1906,7 +1630,7 @@ function calendarHtml(node: VNode): VNode {
         if (isSelected) btnAttrs['aria-selected'] = 'true';
         if (isToday) btnAttrs['aria-current'] = 'date';
         let dayButton: VNode;
-        if (actions !== null && select !== undefined) {
+        if (actionsActive() && select !== undefined) {
           btnAttrs.name = 'do';
           btnAttrs.value = register(() => select(cell.date));
           dayButton = actionForm({}, h('button', btnAttrs, String(cell.day)));
@@ -1952,7 +1676,7 @@ function datePickerHtml(node: VNode): VNode {
   const attrs: Props = { className: 'ui-field', type: 'date', ...idAttr(id) };
   if (value !== undefined) attrs.value = value;
   if (placeholder !== undefined) attrs.placeholder = placeholder;
-  if (actions !== null && change !== undefined && disabled !== true) {
+  if (actionsActive() && change !== undefined && disabled !== true) {
     const act = register((next) => {
       if (typeof next === 'string' && next.length > 0) change(next);
     });
@@ -1979,7 +1703,7 @@ function timePickerHtml(node: VNode): VNode {
   if (placeholder !== undefined) attrs.placeholder = placeholder;
   if (seconds === true) attrs.step = '1';
   else if (step !== undefined) attrs.step = String(Math.max(1, Math.floor(step)) * 60);
-  if (actions !== null && change !== undefined && disabled !== true) {
+  if (actionsActive() && change !== undefined && disabled !== true) {
     const act = register((next) => {
       if (typeof next === 'string' && next.length > 0) change(next);
     });
@@ -1997,7 +1721,7 @@ function colorPickerHtml(node: VNode): VNode {
   const attrs: Props = { className: 'ui-color-input', type: 'color' };
   if (typeof value === 'string') attrs.value = value;
   let picker: VNode;
-  if (actions !== null && change !== undefined) {
+  if (actionsActive() && change !== undefined) {
     const act = register((next) => {
       if (typeof next === 'string' && next.length > 0) change(next);
     });
@@ -2021,7 +1745,7 @@ function colorPickerHtml(node: VNode): VNode {
               style: { background: hex },
               'aria-label': hex,
             };
-            if (actions !== null && change !== undefined) {
+            if (actionsActive() && change !== undefined) {
               btnAttrs.name = 'do';
               btnAttrs.value = register(() => change(hex));
               return actionForm({}, h('button', btnAttrs));
@@ -2350,20 +2074,16 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
  * hidden inputs so the round trip lands back on the same page state.
  */
 export function toHtml(node: VNode, options: ToHtmlOptions = {}): VNode {
-  if (options.actions !== undefined && actions === null) {
-    actions = {
-      collector: options.actions,
-      fields: options.fields ?? {},
-      ref: options.action ?? null,
-      next: 0,
-    };
-    try {
-      return transformNode(node);
-    } finally {
-      actions = null;
-    }
-  }
-  return transformNode(node);
+  const state =
+    options.actions !== undefined && !actionsActive()
+      ? {
+          collector: options.actions,
+          fields: options.fields ?? {},
+          ref: options.action ?? null,
+          next: 0,
+        }
+      : null;
+  return withActions(state, () => transformNode(node));
 }
 
 /**
