@@ -2366,23 +2366,57 @@ export function toHtml(node: VNode, options: ToHtmlOptions = {}): VNode {
   return transformNode(node);
 }
 
+/**
+ * Nodes this walker has already produced.
+ *
+ * Lowering is a fixpoint — a lowering may emit further components or semantic
+ * nodes, and those have to be lowered in turn. Without this, a lowering that
+ * transforms its own children would have that subtree walked again by the
+ * outer pass, once per level of nesting. Membership is by identity, so only
+ * the nodes a lowering newly created get visited.
+ */
+const walked = new WeakSet<VNode>();
+
+// A lowering chain that never bottoms out is a bug in a lowering, not a deep
+// tree; this counts substitutions at one node.
+const MAX_LOWERING_DEPTH = 100;
+
 function transformNode(node: VNode): VNode {
+  if (walked.has(node)) return node;
+  const out = transformUnwalked(node, 0);
+  walked.add(out);
+  return out;
+}
+
+function transformUnwalked(node: VNode, depth: number): VNode {
+  if (depth > MAX_LOWERING_DEPTH) {
+    throw new Error(
+      `HTML lowering for '${String(node.type)}' did not reach markup after ` +
+        `${MAX_LOWERING_DEPTH} substitutions — a lowering is probably emitting its own type`,
+    );
+  }
   // `h()` stores component functions rather than invoking them, so resolve
   // them here: an `'html'` lowering registered for the component wins,
-  // otherwise the component's own function is its HTML behaviour. The result
-  // is transformed again, since a component may produce further components.
+  // otherwise the component's own function is its HTML behaviour.
   if (typeof node.type !== 'string') {
     const impl = renderTargetLowering(node.type, 'html') ?? node.type;
-    const composed = impl({ ...node.props, children: node.children });
-    return transformNode(node.key === null ? composed : { ...composed, key: node.key });
+    return substitute(node, impl, depth);
   }
   const native = NATIVE[node.type];
-  if (native) return native(node);
-  const elementLowering = renderTargetLowering(node.type, 'html');
-  if (elementLowering !== undefined) {
-    const composed = elementLowering({ ...node.props, children: node.children });
-    return transformNode(node.key === null ? composed : { ...composed, key: node.key });
+  if (native) {
+    const composed = native(node);
+    // A lowering emits finished markup, so its output is *not* run back
+    // through the element switch below — `text`, `input` and `rule` are
+    // primitive names here and real HTML/SVG element names there, and the two
+    // meanings would collide. What is re-visited is anything the lowering
+    // composed rather than emitted: nested components and semantic nodes.
+    const resolved = resolveNested(node.key === null ? composed : { ...composed, key: node.key });
+    walked.add(resolved);
+    return resolved;
   }
+  const elementLowering = renderTargetLowering(node.type, 'html');
+  if (elementLowering !== undefined) return substitute(node, elementLowering, depth);
+  if (walked.has(node)) return node;
   const children = transformChildren(node.children);
   switch (node.type) {
     case 'fragment':
@@ -2435,6 +2469,44 @@ function transformNode(node: VNode): VNode {
       return { type: node.type, props, children, key: node.key };
     }
   }
+}
+
+/**
+ * Resolve components and semantic nodes inside finished markup.
+ *
+ * This is the composition half of the fixpoint: a lowering may build its
+ * output partly from other components, and those still need lowering, but the
+ * element nodes it emitted are already final and must be left exactly as they
+ * are. Elements are marked walked on the way back up so the outer pass skips
+ * them instead of re-walking the subtree once per level of nesting.
+ */
+function resolveNested(node: VNode): VNode {
+  if (walked.has(node)) return node;
+  if (
+    typeof node.type !== 'string' ||
+    NATIVE[node.type] !== undefined ||
+    renderTargetLowering(node.type, 'html') !== undefined
+  ) {
+    return transformNode(node);
+  }
+  let changed = false;
+  const children = node.children.map((child) => {
+    if (typeof child === 'string') return child;
+    const next = resolveNested(child);
+    if (next !== child) changed = true;
+    return next;
+  });
+  const out = changed ? { ...node, children } : node;
+  walked.add(out);
+  return out;
+}
+
+function substitute(node: VNode, impl: (props: Props) => VNode, depth: number): VNode {
+  const composed = impl({ ...node.props, children: node.children });
+  return transformUnwalked(
+    node.key === null ? composed : { ...composed, key: node.key },
+    depth + 1,
+  );
 }
 
 // The web's vocabulary is open-ended — every HTML tag name is legitimate — so
