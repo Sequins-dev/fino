@@ -10,8 +10,6 @@
  * @internal
  */
 import { h, type Child, type NormalizedChild, type Props, type VNode } from 'fino:ui';
-import { Box } from 'internal:ui/components/primitives';
-import type { FlexChildProps } from 'internal:ui/components/primitives';
 import {
   actionForm,
   actionsActive,
@@ -20,6 +18,8 @@ import {
   register,
   tone,
 } from 'internal:ui/components/html-runtime';
+import { Box } from 'internal:ui/components/primitives';
+import type { FlexChildProps } from 'internal:ui/components/primitives';
 
 /** Token color variants used by `Badge` and `Tag`. */
 export type ToneVariant = 'accent' | 'muted' | 'danger' | 'success' | 'warning';

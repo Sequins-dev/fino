@@ -8,7 +8,14 @@
  *
  * @internal
  */
-import { h, type Props, type VNode } from 'fino:ui';
+import { h, type NormalizedChild, type Props, type VNode } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  handlerOf,
+  idAttr,
+  register,
+} from 'internal:ui/components/html-runtime';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';
 
 /** Per-target representations of one registry icon. */
@@ -63,8 +70,13 @@ export interface IconProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Registry-backed icon; each render target draws its own form. */
-export function Icon(props: IconProps): VNode {
-  return h('ui:icon', props);
+export function Icon(all: IconProps): VNode {
+  const { children = [], ...props } = all as IconProps & { children?: NormalizedChild[] };
+  const { name, label, icons, id } = props;
+  const attrs: Props = { className: 'ui-icon', ...idAttr(id) };
+  if (label !== undefined) attrs.title = label;
+  else attrs['aria-hidden'] = 'true';
+  return h('span', attrs, iconForm(name, 'html', icons));
 }
 
 /** Props accepted by `IconButton`. */
@@ -81,6 +93,33 @@ export interface IconButtonProps extends StyleProps, FlexChildProps, Props {
   id?: string;
 }
 /** Icon-only button: a focusable click target whose accessible name comes from `label`, not visible text. */
-export function IconButton(props: IconButtonProps): VNode {
-  return h('ui:icon-button', props);
+export function IconButton(all: IconButtonProps): VNode {
+  const { children = [], ...props } = all as IconButtonProps & { children?: NormalizedChild[] };
+  const { icon, label, onClick, disabled, icons, id } = props;
+  const click = handlerOf<() => void>(onClick);
+  const enabled = disabled !== true && click !== undefined;
+  const glyph = h(
+    'span',
+    { className: 'ui-icon', 'aria-hidden': 'true' },
+    iconForm(icon, 'html', icons),
+  );
+  if (actionsActive() && enabled) {
+    const act = register(() => click!());
+    return actionForm(
+      {},
+      h(
+        'button',
+        { className: 'ui-icon-button', name: 'do', value: act, 'aria-label': label, ...idAttr(id) },
+        glyph,
+      ),
+    );
+  }
+  const attrs: Props = {
+    className: 'ui-icon-button',
+    type: 'button',
+    'aria-label': label,
+    ...idAttr(id),
+  };
+  if (!enabled) attrs.disabled = true;
+  return h('button', attrs, glyph);
 }

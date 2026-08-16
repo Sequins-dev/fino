@@ -56,6 +56,7 @@ import {
   handlerOf,
   idAttr,
   injectFirstControlAria,
+  setChildTransform,
   inlineStyleAttrs,
   justifyCss,
   num,
@@ -275,76 +276,9 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 
 /** Collector receiving `id → invoke` pairs during an interactive transform. */
 
-function panelHtml(node: VNode): VNode {
-  const { title, id, border, borderStyle, rounded } = node.props as PanelProps;
-  const css: Record<string, string> = {};
-  sizeCss(node.props, css);
-  flexChildCss(node.props, css);
-  const styleName = typeof border === 'string' ? border : borderStyle;
-  if (typeof styleName === 'string' || rounded !== undefined) {
-    const spec = borderShorthand(styleName, rounded === true, 'var(--ui-border)');
-    css.border = spec.border;
-    css.borderRadius = spec.radius;
-  }
-  const attrs: Props = { className: 'ui-panel', ...idAttr(id) };
-  if (Object.keys(css).length > 0) attrs.style = css;
-  return h(
-    'section',
-    attrs,
-    title !== undefined ? h('header', { className: 'ui-panel-title' }, title) : null,
-    ...transformChildren(node.children),
-  );
-}
 
 
-function fieldHtml(node: VNode): VNode {
-  const { label, hint, error, required, htmlFor, id } = node.props as FieldProps;
-  const hintId = id !== undefined ? `${id}-hint` : undefined;
-  const errorId = id !== undefined ? `${id}-error` : undefined;
-  const describedBy = [
-    hint !== undefined ? hintId : undefined,
-    error !== undefined ? errorId : undefined,
-  ].filter((entry): entry is string => entry !== undefined);
-  const controlAttrs: Props = {};
-  if (error !== undefined) controlAttrs['aria-invalid'] = 'true';
-  if (describedBy.length > 0) controlAttrs['aria-describedby'] = describedBy.join(' ');
-  let kids = transformChildren(node.children);
-  if (Object.keys(controlAttrs).length > 0) kids = injectFirstControlAria(kids, controlAttrs).nodes;
-  const labelText = h(
-    'span',
-    { className: 'ui-field-label' },
-    label,
-    required === true
-      ? h('span', { className: 'ui-field-required', 'aria-hidden': 'true' }, ' *')
-      : null,
-  );
-  const body = [
-    ...kids,
-    hint !== undefined ? h('small', { className: 'ui-field-hint', id: hintId }, hint) : null,
-    error !== undefined
-      ? h('small', { className: 'ui-field-error', role: 'alert', id: errorId }, error)
-      : null,
-  ];
-  if (typeof htmlFor === 'string') {
-    return h(
-      'div',
-      { className: 'ui-field', ...idAttr(id) },
-      h('label', { className: 'ui-field-label-row', for: htmlFor }, labelText),
-      ...body,
-    );
-  }
-  return h('label', { className: 'ui-field ui-field-wrap', ...idAttr(id) }, labelText, ...body);
-}
 
-function fieldsetHtml(node: VNode): VNode {
-  const { legend, id } = node.props as FieldsetProps;
-  return h(
-    'fieldset',
-    { className: 'ui-fieldset', ...idAttr(id) },
-    h('legend', null, legend),
-    ...transformChildren(node.children),
-  );
-}
 
 function buttonHtml(node: VNode): VNode {
   const { label, onClick, disabled, id } = node.props as ButtonProps;
@@ -625,43 +559,7 @@ function comboBoxHtml(node: VNode): VNode {
   return h('div', { className: 'ui-combo', ...idAttr(id) }, field, toggle, popover);
 }
 
-function iconButtonHtml(node: VNode): VNode {
-  const { icon, label, onClick, disabled, icons, id } = node.props as IconButtonProps;
-  const click = handlerOf<() => void>(onClick);
-  const enabled = disabled !== true && click !== undefined;
-  const glyph = h(
-    'span',
-    { className: 'ui-icon', 'aria-hidden': 'true' },
-    iconForm(icon, 'html', icons),
-  );
-  if (actionsActive() && enabled) {
-    const act = register(() => click!());
-    return actionForm(
-      {},
-      h(
-        'button',
-        { className: 'ui-icon-button', name: 'do', value: act, 'aria-label': label, ...idAttr(id) },
-        glyph,
-      ),
-    );
-  }
-  const attrs: Props = {
-    className: 'ui-icon-button',
-    type: 'button',
-    'aria-label': label,
-    ...idAttr(id),
-  };
-  if (!enabled) attrs.disabled = true;
-  return h('button', attrs, glyph);
-}
 
-function iconHtml(node: VNode): VNode {
-  const { name, label, icons, id } = node.props as IconProps;
-  const attrs: Props = { className: 'ui-icon', ...idAttr(id) };
-  if (label !== undefined) attrs.title = label;
-  else attrs['aria-hidden'] = 'true';
-  return h('span', attrs, iconForm(name, 'html', icons));
-}
 
 function expanderMark(open: boolean): VNode {
   return h('span', {
@@ -930,92 +828,8 @@ function toastStackHtml(node: VNode): VNode {
 
 
 
-function breadcrumbsHtml(node: VNode): VNode {
-  const { items, onNavigate, id } = node.props as BreadcrumbsProps;
-  const navigate = handlerOf<(key: string) => void>(onNavigate);
-  const nav = h(
-    'nav',
-    { className: 'ui-crumbs', 'aria-label': 'breadcrumbs', ...idAttr(id) },
-    ...items.flatMap((item, index) => {
-      let entry: VNode;
-      if (index === items.length - 1) {
-        entry = h('strong', null, item.label);
-      } else if (actionsActive() && navigate !== undefined) {
-        const act = register(() => navigate(item.key));
-        entry = h('button', { className: 'ui-crumb', name: 'do', value: act }, item.label);
-      } else if (navigate !== undefined) {
-        entry = h('a', { href: '#', className: 'ui-crumb' }, item.label);
-      } else {
-        entry = h('span', { className: 'ui-crumb' }, item.label);
-      }
-      return index > 0 ? [h('span', { className: 'ui-crumbs-sep' }, '/'), entry] : [entry];
-    }),
-  );
-  return actionsActive() && navigate !== undefined ? actionForm({}, nav) : nav;
-}
 
-function paginationHtml(node: VNode): VNode {
-  const { page, pages, onChange, siblings, id } = node.props as PaginationProps;
-  const change = handlerOf<(page: number) => void>(onChange);
-  const total = Math.max(1, Math.floor(pages));
-  const current = Math.min(Math.max(1, Math.floor(page)), total);
-  const range = paginationRange(current, total, siblings);
-  const step = (target: number, blocked: boolean, label: string): VNode => {
-    const attrs: Props = { className: 'ui-button ui-pager-step' };
-    if (actionsActive() && change !== undefined && !blocked) {
-      attrs.name = 'do';
-      attrs.value = register(() => change(target));
-    } else {
-      attrs.type = 'button';
-      if (blocked || change === undefined) attrs.disabled = true;
-    }
-    return h('button', attrs, label);
-  };
-  const pageButton = (target: number): VNode => {
-    const isCurrent = target === current;
-    const attrs: Props = {
-      className: `ui-button ui-pager-page${isCurrent ? ' is-current' : ''}`,
-    };
-    if (isCurrent) attrs['aria-current'] = 'page';
-    if (actionsActive() && change !== undefined && !isCurrent) {
-      attrs.name = 'do';
-      attrs.value = register(() => change(target));
-    } else {
-      attrs.type = 'button';
-      if (isCurrent || change === undefined) attrs.disabled = true;
-    }
-    return h('button', attrs, String(target));
-  };
-  const nav = h(
-    'nav',
-    { className: 'ui-pager', ...idAttr(id) },
-    step(current - 1, current <= 1, '‹'),
-    ...range.map((entry) =>
-      entry === 'ellipsis' ? h('span', { className: 'ui-pager-ellipsis' }, '…') : pageButton(entry),
-    ),
-    step(current + 1, current >= total, '›'),
-  );
-  return actionsActive() && change !== undefined ? actionForm({}, nav) : nav;
-}
 
-function stepsHtml(node: VNode): VNode {
-  const { steps, current, id } = node.props as StepsProps;
-  const at = steps.findIndex((step) => step.key === current);
-  return h(
-    'ol',
-    { className: 'ui-steps', ...idAttr(id) },
-    ...steps.map((step, index) => {
-      const state =
-        at !== -1 && index < at ? 'is-done' : index === at ? 'is-current' : 'is-upcoming';
-      return h(
-        'li',
-        { className: state },
-        h('span', { className: 'ui-step-dot' }),
-        h('span', null, step.label),
-      );
-    }),
-  );
-}
 
 function tableHtml(node: VNode): VNode {
   const { columns, rows, selectedIndex, onSelectRow } = node.props as TableProps;
@@ -1243,265 +1057,24 @@ function virtualListHtml(node: VNode): VNode {
   );
 }
 
-function headingHtml(node: VNode): VNode {
-  const { level, id } = node.props as HeadingProps;
-  const lvl = Math.min(6, Math.max(1, Math.floor((level as number | undefined) ?? 1)));
-  return h(
-    `h${lvl}`,
-    { className: `ui-heading ui-heading-${lvl}`, ...idAttr(id) },
-    ...transformChildren(node.children),
-  );
-}
 
 
-function boldHtml(node: VNode): VNode {
-  const { id, ...rest } = node.props as BoldProps;
-  return h('strong', inlineStyleAttrs(rest as Props, id), ...transformChildren(node.children));
-}
 
-function italicHtml(node: VNode): VNode {
-  const { id, ...rest } = node.props as ItalicProps;
-  return h('em', inlineStyleAttrs(rest as Props, id), ...transformChildren(node.children));
-}
 
 // Schemes and relative forms an <a href> may carry. Anything else — most
 // dangerously `javascript:`/`vbscript:`/`data:` — is app-controlled content
 // (chat messages, agent output, file metadata) that must never reach a live
 // anchor, so it is dropped rather than escaped.
 // its text, styled, just without a `href` attribute.
-function linkHtml(node: VNode): VNode {
-  const { href, onActivate, id } = node.props as LinkProps;
-  const activate = handlerOf<() => void>(onActivate);
-  const kids = transformChildren(node.children);
-  const safe = safeHref(href);
-  const hasHref = safe !== undefined;
-  if (activate !== undefined) {
-    if (actionsActive()) {
-      const act = register(() => activate());
-      if (hasHref) {
-        return actionForm(
-          { act },
-          h(
-            'a',
-            {
-              className: 'ui-link',
-              href: safe,
-              onclick: 'event.preventDefault();this.form.requestSubmit();',
-              ...idAttr(id),
-            },
-            ...kids,
-          ),
-        );
-      }
-      return actionForm(
-        {},
-        h('button', { className: 'ui-link', name: 'do', value: act, ...idAttr(id) }, ...kids),
-      );
-    }
-    return hasHref
-      ? h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids)
-      : h('button', { className: 'ui-link', type: 'button', ...idAttr(id) }, ...kids);
-  }
-  if (hasHref) return h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids);
-  return h('span', { className: 'ui-link', ...idAttr(id) }, ...kids);
-}
 
-function blockquoteHtml(node: VNode): VNode {
-  const { id } = node.props as BlockquoteProps;
-  return h(
-    'blockquote',
-    { className: 'ui-blockquote', ...idAttr(id) },
-    ...transformChildren(node.children),
-  );
-}
 
-function listHtml(node: VNode): VNode {
-  const { ordered, items, id } = node.props as ListProps;
-  const tag = ordered === true ? 'ol' : 'ul';
-  return h(
-    tag,
-    { className: 'ui-list', ...idAttr(id) },
-    ...items.map((item, index) => transformNode(h('li', { key: String(index) }, item))),
-  );
-}
 
-const CODE_TOK: Record<'keyword' | 'string' | 'number' | 'comment' | 'regexp', string> = {
-  keyword: 'tok-keyword',
-  string: 'tok-string',
-  number: 'tok-number',
-  comment: 'tok-comment',
-  regexp: 'tok-regexp',
-};
 
-function codeHtml(node: VNode): VNode {
-  const {
-    code: source,
-    language,
-    showLineNumbers,
-    filename,
-    copyable,
-    id,
-  } = node.props as CodeProps;
-  const lines = highlightLines(source, language);
-  const codeClass =
-    typeof language === 'string' && language.length > 0 ? `language-${language}` : undefined;
-  const body = lines.map((runs, index) =>
-    h(
-      'span',
-      { className: 'ui-code-line' },
-      showLineNumbers === true ? h('span', { className: 'ui-code-num' }, String(index + 1)) : null,
-      h(
-        'span',
-        { className: 'ui-code-content' },
-        ...runs.map((run) =>
-          run.cls ? h('span', { className: CODE_TOK[run.cls] }, run.text) : run.text,
-        ),
-      ),
-    ),
-  );
-  const pre = h(
-    'pre',
-    null,
-    h('code', codeClass !== undefined ? { className: codeClass } : null, ...body),
-  );
-  // The copy button reads its sibling <code>'s textContent client-side
-  // (internal:ui/web/client's `[data-fi-copy]` listener) rather than
-  // duplicating the (potentially large) source into a data-* attribute.
-  const copyButton =
-    copyable === true
-      ? h(
-          'button',
-          {
-            type: 'button',
-            className: 'ui-copy',
-            'aria-label': 'Copy code',
-            'data-fi-copy': '1',
-          },
-          'Copy',
-        )
-      : null;
-  // The bar exists only to carry a filename. Without one the copy button
-  // overlays the code area instead, so an unnamed block keeps its full height.
-  const bar =
-    filename !== undefined
-      ? h(
-          'figcaption',
-          { className: 'ui-code-bar' },
-          h('span', { className: 'ui-code-filename' }, filename),
-          copyButton,
-        )
-      : null;
-  return h(
-    'figure',
-    { className: 'ui-code', ...idAttr(id) },
-    bar,
-    bar === null ? copyButton : null,
-    pre,
-  );
-}
 
-function inlineCodeHtml(node: VNode): VNode {
-  const { id, ...rest } = node.props as InlineCodeProps;
-  const attrs = inlineStyleAttrs(rest as Props, id);
-  attrs.className = 'ui-inline-code';
-  return h('code', attrs, ...transformChildren(node.children));
-}
 
-function cardHtml(node: VNode): VNode {
-  const { title, subtitle, image, actions, id } = node.props as CardProps;
-  const safeSrc = image !== undefined ? safeHref(image.src) : undefined;
-  const media =
-    image !== undefined && safeSrc !== undefined
-      ? h('div', { className: 'ui-card-media' }, h('img', { src: safeSrc, alt: image.alt }))
-      : null;
-  const header =
-    title !== undefined || subtitle !== undefined
-      ? h(
-          'div',
-          { className: 'ui-card-header' },
-          title !== undefined ? h('h3', { className: 'ui-card-title' }, title) : null,
-          subtitle !== undefined ? h('p', { className: 'ui-card-subtitle' }, subtitle) : null,
-        )
-      : null;
-  const body = h('div', { className: 'ui-card-body' }, ...transformChildren(node.children));
-  const footer =
-    actions !== undefined
-      ? h('div', { className: 'ui-card-actions' }, ...transformChildren(slotChildren(actions)))
-      : null;
-  return h('article', { className: 'ui-card', ...idAttr(id) }, media, header, body, footer);
-}
 
-const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
-const TREND_LABEL: Record<Trend, string> = {
-  up: 'trending up',
-  down: 'trending down',
-  flat: 'no change',
-};
-const TREND_TONE: Record<Trend, string> = { up: 'success', down: 'danger', flat: 'muted' };
 
-function statHtml(node: VNode): VNode {
-  const { label, value, hint, trend, id } = node.props as StatProps;
-  const trendSpan =
-    trend !== undefined
-      ? h(
-          'span',
-          {
-            className: `ui-stat-trend ui-tone-${TREND_TONE[trend]}`,
-            'aria-label': TREND_LABEL[trend],
-          },
-          TREND_GLYPH[trend],
-        )
-      : null;
-  return h(
-    'dl',
-    { className: 'ui-stat', ...idAttr(id) },
-    h('dt', null, label),
-    h('dd', { className: 'ui-stat-value' }, value, trendSpan),
-    hint !== undefined ? h('dd', { className: 'ui-stat-hint' }, hint) : null,
-  );
-}
 
-const STATUS_TONE: Record<StatusDotStatus, string> = {
-  ok: 'success',
-  busy: 'info',
-  error: 'danger',
-  idle: 'muted',
-  warning: 'warning',
-};
-
-function statusDotHtml(node: VNode): VNode {
-  const { status, label, id } = node.props as StatusDotProps;
-  const dot = h('span', {
-    className: `ui-status-dot ui-tone-${STATUS_TONE[status]}`,
-    ...(label !== undefined ? { 'aria-hidden': 'true' } : { role: 'img', 'aria-label': status }),
-  });
-  return h(
-    'span',
-    { className: 'ui-row', ...idAttr(id) },
-    dot,
-    label !== undefined ? h('span', null, label) : null,
-  );
-}
-
-function emptyStateHtml(node: VNode): VNode {
-  const { icon, title, description, action, icons, id } = node.props as EmptyStateProps;
-  return h(
-    'div',
-    { className: 'ui-empty-state', ...idAttr(id) },
-    icon !== undefined
-      ? h(
-          'span',
-          { className: 'ui-empty-state-icon', 'aria-hidden': 'true' },
-          iconForm(icon, 'html', icons),
-        )
-      : null,
-    h('p', { className: 'ui-empty-state-title' }, title),
-    description !== undefined ? h('p', { className: 'ui-empty-state-desc' }, description) : null,
-    action !== undefined
-      ? h('div', { className: 'ui-empty-state-action' }, ...transformChildren(slotChildren(action)))
-      : null,
-  );
-}
 
 function hoverCardHtml(node: VNode): VNode {
   const { open, title } = node.props as HoverCardProps;
@@ -1943,11 +1516,7 @@ function lineChartHtml(node: VNode): VNode {
 }
 
 const NATIVE: Record<string, (node: VNode) => VNode> = {
-  'ui:panel': panelHtml,
-  'ui:field': fieldHtml,
-  'ui:fieldset': fieldsetHtml,
   'ui:button': buttonHtml,
-  'ui:icon-button': iconButtonHtml,
   'ui:checkbox': (node) => choiceHtml('checkbox', node),
   'ui:switch': (node) => choiceHtml('checkbox', node),
   'ui:radio': (node) => choiceHtml('radio', node),
@@ -1960,7 +1529,6 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:select': selectHtml,
   'ui:details': detailsHtml,
   'ui:expander': expanderHtml,
-  'ui:icon': iconHtml,
   'ui:tab-list': tabListHtml,
   'ui:tabs': tabsHtml,
   'ui:menu-list': menuListHtml,
@@ -1974,25 +1542,10 @@ const NATIVE: Record<string, (node: VNode) => VNode> = {
   'ui:tooltip': tooltipHtml,
   'ui:toast': toastHtml,
   'ui:toast-stack': toastStackHtml,
-  'ui:breadcrumbs': breadcrumbsHtml,
-  'ui:pagination': paginationHtml,
-  'ui:steps': stepsHtml,
   'ui:table': tableHtml,
   'ui:file-tree': fileTreeHtml,
   'ui:timeline': timelineHtml,
   'ui:virtual-list': virtualListHtml,
-  'ui:heading': headingHtml,
-  'ui:bold': boldHtml,
-  'ui:italic': italicHtml,
-  'ui:link': linkHtml,
-  'ui:blockquote': blockquoteHtml,
-  'ui:list': listHtml,
-  'ui:code': codeHtml,
-  'ui:inline-code': inlineCodeHtml,
-  'ui:card': cardHtml,
-  'ui:stat': statHtml,
-  'ui:status-dot': statusDotHtml,
-  'ui:empty-state': emptyStateHtml,
   'ui:hover-card': hoverCardHtml,
   'ui:floating-action-bar': floatingActionBarHtml,
   'ui:calendar': calendarHtml,
@@ -2243,6 +1796,9 @@ mapRenderTargetLowering(Scroll, 'html', (props: PrimitiveProps) => {
 // the target declares no primitive floor and `transformNode` passes unknown
 // element names straight through.
 defineRenderTarget('html');
+
+// Hand the walker to the runtime for the one case that needs lowered children.
+setChildTransform(transformChildren);
 
 /** Stylesheet for the component classes `toHtml` emits; embed it in page shells. */
 export const PAGE_CSS = `

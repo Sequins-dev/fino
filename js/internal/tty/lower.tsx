@@ -15,6 +15,11 @@ import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:
 // Terminal lowerings that live beside their components, imported for their
 // registration side effects.
 import 'internal:ui/components/feedback.tui';
+import 'internal:ui/components/navigation.tui';
+import 'internal:ui/components/layout.tui';
+import 'internal:ui/components/typography.tui';
+import 'internal:ui/components/display.tui';
+import 'internal:ui/components/icons.tui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { stringWidth } from 'fino:tty/frame';
 import { highlightLines } from 'fino:format/typescript';
@@ -132,44 +137,8 @@ import { nearestAnsi256, supportsTruecolor } from 'fino:tty/style';
 
 type Composer = (props: Props, children: NormalizedChild[]) => VNode;
 
-function panel(props: Props, children: NormalizedChild[]): VNode {
-  const { title, ...rest } = props as PanelProps;
-  return h(
-    'box',
-    {
-      border: true,
-      paddingX: 1,
-      direction: 'column',
-      ...rest,
-      ...(title !== undefined ? { borderTitle: title } : {}),
-    },
-    children,
-  );
-}
 
-function field(props: Props, children: NormalizedChild[]): VNode {
-  const { label, hint, error, required, htmlFor: _htmlFor, id, ...rest } = props as FieldProps;
-  return (
-    <Box direction="column" id={id} {...rest}>
-      <Box direction="row">
-        <Text style={[styles.bold]}>{label}</Text>
-        {required === true ? <Text style={[styles.danger, styles.bold]}>{' *'}</Text> : null}
-      </Box>
-      {children}
-      {hint !== undefined ? <Text style={[styles.dim]}>{hint}</Text> : null}
-      {error !== undefined ? <Text style={[styles.danger]}>{error}</Text> : null}
-    </Box>
-  );
-}
 
-function fieldset(props: Props, children: NormalizedChild[]): VNode {
-  const { legend, ...rest } = props as FieldsetProps;
-  return (
-    <Box border paddingX={1} direction="column" borderTitle={legend} {...rest}>
-      {children}
-    </Box>
-  );
-}
 
 function button(props: Props): VNode {
   const { label, onClick, focused, disabled, id, ...rest } = props as ButtonProps;
@@ -465,14 +434,6 @@ function slider(props: Props): VNode {
   );
 }
 
-function iconNode(props: Props): VNode {
-  const { name, label: _label, icons, id, ...rest } = props as IconProps;
-  return (
-    <Text id={id} {...rest}>
-      {iconForm(name, 'tui', icons)}
-    </Text>
-  );
-}
 
 function expanderNode(props: Props): VNode {
   const { open, onToggle, disabled, id, style, ...rest } = props as ExpanderProps;
@@ -828,113 +789,13 @@ function comboBox(props: Props): VNode {
   );
 }
 
-function iconButton(props: Props): VNode {
-  const {
-    icon,
-    label: _label,
-    onClick,
-    focused,
-    disabled,
-    icons,
-    id,
-    ...rest
-  } = props as IconButtonProps;
-  return (
-    <Clickable id={id} onClick={onClick} disabled={disabled} {...rest}>
-      <Text
-        style={
-          disabled === true ? [styles.dim] : focused === true ? [styles.bold, styles.accent] : []
-        }
-      >
-        {iconForm(icon, 'tui', icons)}
-      </Text>
-    </Clickable>
-  );
-}
 
 
 
 
 
 
-function breadcrumbs(props: Props): VNode {
-  const { items, onNavigate, id, ...rest } = props as BreadcrumbsProps;
-  return (
-    <Box direction="row" gap={1} id={id} {...rest}>
-      {items.flatMap((item, index) => {
-        const node =
-          index === items.length - 1 ? (
-            <Text key={item.key} style={[styles.bold]}>
-              {item.label}
-            </Text>
-          ) : (
-            <Clickable
-              key={item.key}
-              id={id !== undefined ? `${id}:${item.key}` : undefined}
-              focusable={false}
-              onClick={onNavigate ? () => onNavigate(item.key) : undefined}
-            >
-              <Text style={[styles.dim]}>{item.label}</Text>
-            </Clickable>
-          );
-        const separator = (
-          <Text key={`sep:${item.key}`} style={[styles.dim]}>
-            /
-          </Text>
-        );
-        return index > 0 ? [separator, node] : [node];
-      })}
-    </Box>
-  );
-}
 
-function pagination(props: Props): VNode {
-  const { page, pages, onChange, siblings, id, ...rest } = props as PaginationProps;
-  const total = Math.max(1, Math.floor(pages));
-  const current = Math.min(Math.max(1, Math.floor(page)), total);
-  const atStart = current <= 1;
-  const atEnd = current >= total;
-  const range = paginationRange(current, total, siblings);
-  return (
-    <Box direction="row" gap={1} id={id} {...rest}>
-      <Clickable
-        id={id !== undefined ? `${id}:prev` : undefined}
-        focusable={false}
-        disabled={atStart}
-        onClick={atStart ? undefined : () => onChange(current - 1)}
-      >
-        <Text style={atStart ? [styles.dim] : [styles.accent]}>‹</Text>
-      </Clickable>
-      {range.map((entry, index) =>
-        entry === 'ellipsis' ? (
-          <Text key={`ellipsis:${index}`} style={[styles.dim]}>
-            …
-          </Text>
-        ) : (
-          <Clickable
-            key={String(entry)}
-            id={id !== undefined ? `${id}:${entry}` : undefined}
-            focusable={false}
-            disabled={entry === current}
-            onClick={entry === current ? undefined : () => onChange(entry)}
-          >
-            <Text style={entry === current ? [styles.bold, styles.accent] : [styles.dim]}>
-              {String(entry)}
-            </Text>
-          </Clickable>
-        ),
-      )}
-      <Clickable
-        id={id !== undefined ? `${id}:next` : undefined}
-        focusable={false}
-        disabled={atEnd}
-        onClick={atEnd ? undefined : () => onChange(current + 1)}
-      >
-        <Text style={atEnd ? [styles.dim] : [styles.accent]}>›</Text>
-      </Clickable>
-    </Box>
-  );
-}
 
 function virtualList(props: Props, children: NormalizedChild[]): VNode {
   const {
@@ -958,45 +819,6 @@ function virtualList(props: Props, children: NormalizedChild[]): VNode {
   );
 }
 
-function steps(props: Props): VNode {
-  const { steps: entries, current, id, ...rest } = props as StepsProps;
-  const at = entries.findIndex((step) => step.key === current);
-  return (
-    <Box direction="row" gap={1} id={id} {...rest}>
-      {entries.flatMap((step, index) => {
-        const state = at !== -1 && index < at ? 'done' : index === at ? 'current' : 'upcoming';
-        const dot = (
-          <Text
-            key={`d:${step.key}`}
-            style={
-              state === 'done'
-                ? [styles.success]
-                : state === 'current'
-                  ? [styles.bold, styles.accent]
-                  : [styles.dim]
-            }
-          >
-            {state === 'upcoming' ? '○' : '●'}
-          </Text>
-        );
-        const label = (
-          <Text
-            key={`l:${step.key}`}
-            style={state === 'current' ? [styles.bold] : state === 'upcoming' ? [styles.dim] : []}
-          >
-            {step.label}
-          </Text>
-        );
-        const joint = (
-          <Text key={`j:${step.key}`} style={[styles.dim]}>
-            ──
-          </Text>
-        );
-        return index > 0 ? [joint, dot, label] : [dot, label];
-      })}
-    </Box>
-  );
-}
 
 function popover(props: Props, children: NormalizedChild[]): VNode {
   const { open, anchorId, onDismiss } = props as PopoverProps;
@@ -1219,41 +1041,8 @@ function timeline(props: Props): VNode {
   );
 }
 
-function heading(props: Props, children: NormalizedChild[]): VNode {
-  const { level, id, ...rest } = props as HeadingProps;
-  const lvl = Math.min(6, Math.max(1, Math.floor(level ?? 1)));
-  const style = [styles.bold, ...(lvl <= 2 ? [styles.accent] : [])];
-  const text = (
-    <Text id={id} style={style} {...rest}>
-      {children}
-    </Text>
-  );
-  if (lvl !== 1) return text;
-  return (
-    <Box direction="column">
-      {text}
-      <Rule style={[styles.dim]} />
-    </Box>
-  );
-}
 
-function bold(props: Props, children: NormalizedChild[]): VNode {
-  const { id, ...rest } = props as BoldProps;
-  return (
-    <Text id={id} {...rest} bold>
-      {children}
-    </Text>
-  );
-}
 
-function italic(props: Props, children: NormalizedChild[]): VNode {
-  const { id, ...rest } = props as ItalicProps;
-  return (
-    <Text id={id} {...rest} italic>
-      {children}
-    </Text>
-  );
-}
 
 // `Link` is the one catalog component allowed to navigate. With `onActivate`
 // it becomes a focusable Clickable, same as any other click-like control.
@@ -1261,22 +1050,6 @@ function italic(props: Props, children: NormalizedChild[]): VNode {
 // pipeline (parseAnsi drops non-SGR escapes so segments stay free of control
 // codes), and carrying links through Segment/Row is a frame-model change we
 // chose not to make. An href-only link renders as styled, underlined text.
-function link(props: Props, children: NormalizedChild[]): VNode {
-  const { href: _href, onActivate, id, ...rest } = props as LinkProps;
-  const style = [styles.accent, styles.underline];
-  if (onActivate !== undefined) {
-    return (
-      <Clickable id={id} onClick={onActivate} {...rest}>
-        <Text style={style}>{children}</Text>
-      </Clickable>
-    );
-  }
-  return (
-    <Text id={id} style={style} {...rest}>
-      {children}
-    </Text>
-  );
-}
 
 // Each child gets its own gutter row, so a quote built from several `Text`
 // lines carries `│` beside every one of them — matching Markdown's `>` on
@@ -1285,189 +1058,12 @@ function link(props: Props, children: NormalizedChild[]): VNode {
 // layout-time decision made after this composer runs, and repeating the
 // gutter per wrapped row would mean teaching the frame/cell layer about a
 // tiling left border, which is out of scope for a component lowering.
-function blockquote(props: Props, children: NormalizedChild[]): VNode {
-  const { id, ...rest } = props as BlockquoteProps;
-  return (
-    <Box direction="column" id={id} {...rest}>
-      {children.map((child, index) => (
-        <Box key={String(index)} direction="row" gap={1}>
-          <Text style={[styles.dim]}>│</Text>
-          <Box direction="column" grow={1} style={[styles.dim]}>
-            {child}
-          </Box>
-        </Box>
-      ))}
-    </Box>
-  );
-}
 
-function list(props: Props): VNode {
-  const { ordered, items, id, ...rest } = props as ListProps;
-  const width = (ordered ? `${items.length}.` : '•').length;
-  return (
-    <Box direction="column" id={id} {...rest}>
-      {items.map((item, index) => (
-        <Box key={String(index)} direction="row" gap={1}>
-          <Text width={width} align="end" style={[styles.dim]}>
-            {ordered ? `${index + 1}.` : '•'}
-          </Text>
-          <Box direction="column" grow={1}>
-            {typeof item === 'string' || typeof item === 'number' ? <Text wrap>{item}</Text> : item}
-          </Box>
-        </Box>
-      ))}
-    </Box>
-  );
-}
 
-const CODE_TONE = {
-  keyword: styles.accent,
-  string: styles.success,
-  number: styles.info,
-  comment: styles.muted,
-  regexp: styles.warning,
-} as const;
 
-function code(props: Props): VNode {
-  const {
-    code: source,
-    language,
-    showLineNumbers,
-    filename,
-    copyable,
-    onCopy,
-    id,
-    ...rest
-  } = props as CodeProps;
-  const rows = highlightLines(source, language);
-  const gutterWidth = String(rows.length).length;
-  const bar =
-    filename !== undefined || copyable === true ? (
-      <Box direction="column">
-        <Box direction="row" justify="between">
-          <Text style={[styles.dim]}>{filename ?? ''}</Text>
-          {copyable === true ? (
-            <Clickable
-              id={id !== undefined ? `${id}:copy` : undefined}
-              focusable={false}
-              onClick={onCopy ? () => onCopy(source) : undefined}
-            >
-              <Text style={[styles.dim]}>⧉ copy</Text>
-            </Clickable>
-          ) : null}
-        </Box>
-        <Rule style={[styles.dim]} />
-      </Box>
-    ) : null;
-  return (
-    <Box direction="column" border paddingX={1} id={id} {...rest}>
-      {bar}
-      {rows.map((runs, index) => (
-        <Box key={String(index)} direction="row" gap={showLineNumbers ? 1 : 0} minHeight={1}>
-          {showLineNumbers ? (
-            <Text width={gutterWidth} align="end" style={[styles.dim]}>
-              {String(index + 1)}
-            </Text>
-          ) : null}
-          <Box direction="row">
-            {runs.map((run, runIndex) => (
-              <Text key={String(runIndex)} style={run.cls ? [CODE_TONE[run.cls]] : []}>
-                {run.text}
-              </Text>
-            ))}
-          </Box>
-        </Box>
-      ))}
-    </Box>
-  );
-}
 
-function inlineCode(props: Props, children: NormalizedChild[]): VNode {
-  const { id, ...rest } = props as InlineCodeProps;
-  return (
-    <Text id={id} {...rest} style={[styles.dim, styles.inverse]}>
-      {children}
-    </Text>
-  );
-}
 
-function card(props: Props, children: NormalizedChild[]): VNode {
-  const { title, subtitle, image, actions, id, ...rest } = props as CardProps;
-  return (
-    <Box border direction="column" paddingX={1} id={id} {...rest}>
-      {image !== undefined ? <Text style={[styles.dim]}>{`[ ${image.alt} ]`}</Text> : null}
-      {title !== undefined ? <Text bold>{title}</Text> : null}
-      {subtitle !== undefined ? <Text style={[styles.dim]}>{subtitle}</Text> : null}
-      {children}
-      {actions !== undefined ? (
-        <Box direction="row" gap={1} justify="end">
-          {actions}
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
 
-const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
-const TREND_TONE: Record<Trend, Style> = {
-  up: styles.success,
-  down: styles.danger,
-  flat: styles.muted,
-};
-
-function stat(props: Props): VNode {
-  const { label, value, hint, trend, id, ...rest } = props as StatProps;
-  return (
-    <Box direction="column" id={id} {...rest}>
-      <Text style={[styles.dim]}>{label}</Text>
-      <Box direction="row" gap={1}>
-        <Text bold>{value}</Text>
-        {trend !== undefined ? <Text style={[TREND_TONE[trend]]}>{TREND_GLYPH[trend]}</Text> : null}
-      </Box>
-      {hint !== undefined ? <Text style={[styles.dim]}>{hint}</Text> : null}
-    </Box>
-  );
-}
-
-const STATUS_TONE: Record<StatusDotStatus, Style> = {
-  ok: styles.success,
-  busy: styles.info,
-  error: styles.danger,
-  idle: styles.muted,
-  warning: styles.warning,
-};
-
-function statusDot(props: Props): VNode {
-  const { status, label, id, ...rest } = props as StatusDotProps;
-  return (
-    <Box direction="row" gap={1} id={id} {...rest}>
-      <Text style={[STATUS_TONE[status]]}>●</Text>
-      {label !== undefined ? <Text>{label}</Text> : null}
-    </Box>
-  );
-}
-
-function emptyState(props: Props): VNode {
-  const { icon, title, description, action, icons, id, ...rest } = props as EmptyStateProps;
-  return (
-    <Box direction="column" align="center" justify="center" gap={1} id={id} {...rest}>
-      {icon !== undefined ? <Text style={[styles.dim]}>{iconForm(icon, 'tui', icons)}</Text> : null}
-      <Text bold align="center">
-        {title}
-      </Text>
-      {description !== undefined ? (
-        <Text style={[styles.dim]} align="center">
-          {description}
-        </Text>
-      ) : null}
-      {action !== undefined ? (
-        <Box direction="row" justify="center">
-          {action}
-        </Box>
-      ) : null}
-    </Box>
-  );
-}
 
 function hoverCard(props: Props, children: NormalizedChild[]): VNode {
   const { open, anchorId, title } = props as HoverCardProps;
@@ -2116,11 +1712,7 @@ function linePlot(options: LinePlotOptions): VNode {
 }
 
 const COMPOSERS: Record<string, Composer> = {
-  'ui:panel': panel,
-  'ui:field': field,
-  'ui:fieldset': fieldset,
   'ui:button': button,
-  'ui:icon-button': iconButton,
   'ui:checkbox': checkbox,
   'ui:radio': radio,
   'ui:radio-group': radioGroup,
@@ -2132,7 +1724,6 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:combobox': comboBox,
   'ui:details': details,
   'ui:expander': expanderNode,
-  'ui:icon': iconNode,
   'ui:tab-list': tabList,
   'ui:tabs': tabs,
   'ui:menu-row': menuRow,
@@ -2142,9 +1733,6 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:modal': modal,
   'ui:context-menu': contextMenu,
   'ui:select': select,
-  'ui:breadcrumbs': breadcrumbs,
-  'ui:pagination': pagination,
-  'ui:steps': steps,
   'ui:popover': popover,
   'ui:tooltip': tooltip,
   'ui:toast': toast,
@@ -2153,18 +1741,6 @@ const COMPOSERS: Record<string, Composer> = {
   'ui:file-tree': fileTree,
   'ui:timeline': timeline,
   'ui:virtual-list': virtualList,
-  'ui:heading': heading,
-  'ui:bold': bold,
-  'ui:italic': italic,
-  'ui:link': link,
-  'ui:blockquote': blockquote,
-  'ui:list': list,
-  'ui:code': code,
-  'ui:inline-code': inlineCode,
-  'ui:card': card,
-  'ui:stat': stat,
-  'ui:status-dot': statusDot,
-  'ui:empty-state': emptyState,
   'ui:hover-card': hoverCard,
   'ui:floating-action-bar': floatingActionBar,
   'ui:calendar': calendarTui,

@@ -270,6 +270,27 @@ export const ARIA_CONTROL_TYPES = new Set(['input', 'select', 'textarea']);
 // `aria-describedby` onto a control `Field` does not own and cannot know the
 // shape of. Stops at the first match, matching the "the control" (singular)
 // framing of one field around one control.
+/**
+ * Lower a child list the way the active target would.
+ *
+ * Almost nothing needs this: a component hands its children back untouched and
+ * the walker lowers them afterwards. `Field` is the exception — it rewrites the
+ * *first native control* among its descendants to carry `aria-invalid` and
+ * `aria-describedby`, and it can only recognise one by element name, which
+ * exists only after lowering. The walker injects itself here rather than being
+ * imported, because importing it would close a cycle back through the module
+ * that owns every component's markup.
+ */
+let childTransform: ((children: NormalizedChild[]) => NormalizedChild[]) | null = null;
+
+export function setChildTransform(fn: (children: NormalizedChild[]) => NormalizedChild[]): void {
+  childTransform = fn;
+}
+
+export function lowerChildren(children: NormalizedChild[]): NormalizedChild[] {
+  return childTransform === null ? children : childTransform(children);
+}
+
 export function injectFirstControlAria(
   nodes: NormalizedChild[],
   attrs: Props,

@@ -3,7 +3,14 @@
  *
  * @internal
  */
-import { h, type Props, type VNode } from 'fino:ui';
+import { h, type NormalizedChild, type Props, type VNode } from 'fino:ui';
+import {
+  actionForm,
+  actionsActive,
+  handlerOf,
+  idAttr,
+  register,
+} from 'internal:ui/components/html-runtime';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
 
 /** Props accepted by `Breadcrumbs`. */
@@ -13,8 +20,29 @@ export interface BreadcrumbsProps extends FlexChildProps, Props {
   id?: string;
 }
 /** Path row: clickable ancestors, then the current item. */
-export function Breadcrumbs(props: BreadcrumbsProps): VNode {
-  return h('ui:breadcrumbs', props);
+export function Breadcrumbs(all: BreadcrumbsProps): VNode {
+  const { children = [], ...props } = all as BreadcrumbsProps & { children?: NormalizedChild[] };
+  const { items, onNavigate, id } = props;
+  const navigate = handlerOf<(key: string) => void>(onNavigate);
+  const nav = h(
+    'nav',
+    { className: 'ui-crumbs', 'aria-label': 'breadcrumbs', ...idAttr(id) },
+    ...items.flatMap((item, index) => {
+      let entry: VNode;
+      if (index === items.length - 1) {
+        entry = h('strong', null, item.label);
+      } else if (actionsActive() && navigate !== undefined) {
+        const act = register(() => navigate(item.key));
+        entry = h('button', { className: 'ui-crumb', name: 'do', value: act }, item.label);
+      } else if (navigate !== undefined) {
+        entry = h('a', { href: '#', className: 'ui-crumb' }, item.label);
+      } else {
+        entry = h('span', { className: 'ui-crumb' }, item.label);
+      }
+      return index > 0 ? [h('span', { className: 'ui-crumbs-sep' }, '/'), entry] : [entry];
+    }),
+  );
+  return actionsActive() && navigate !== undefined ? actionForm({}, nav) : nav;
 }
 
 /** Props accepted by `Pagination`. */
@@ -32,8 +60,49 @@ export interface PaginationProps extends FlexChildProps, Props {
  * chevrons disable at the boundaries and `…` markers are inert. See
  * `paginationRange` for the exact sequence rule.
  */
-export function Pagination(props: PaginationProps): VNode {
-  return h('ui:pagination', props);
+export function Pagination(all: PaginationProps): VNode {
+  const { children = [], ...props } = all as PaginationProps & { children?: NormalizedChild[] };
+  const { page, pages, onChange, siblings, id } = props;
+  const change = handlerOf<(page: number) => void>(onChange);
+  const total = Math.max(1, Math.floor(pages));
+  const current = Math.min(Math.max(1, Math.floor(page)), total);
+  const range = paginationRange(current, total, siblings);
+  const step = (target: number, blocked: boolean, label: string): VNode => {
+    const attrs: Props = { className: 'ui-button ui-pager-step' };
+    if (actionsActive() && change !== undefined && !blocked) {
+      attrs.name = 'do';
+      attrs.value = register(() => change(target));
+    } else {
+      attrs.type = 'button';
+      if (blocked || change === undefined) attrs.disabled = true;
+    }
+    return h('button', attrs, label);
+  };
+  const pageButton = (target: number): VNode => {
+    const isCurrent = target === current;
+    const attrs: Props = {
+      className: `ui-button ui-pager-page${isCurrent ? ' is-current' : ''}`,
+    };
+    if (isCurrent) attrs['aria-current'] = 'page';
+    if (actionsActive() && change !== undefined && !isCurrent) {
+      attrs.name = 'do';
+      attrs.value = register(() => change(target));
+    } else {
+      attrs.type = 'button';
+      if (isCurrent || change === undefined) attrs.disabled = true;
+    }
+    return h('button', attrs, String(target));
+  };
+  const nav = h(
+    'nav',
+    { className: 'ui-pager', ...idAttr(id) },
+    step(current - 1, current <= 1, '‹'),
+    ...range.map((entry) =>
+      entry === 'ellipsis' ? h('span', { className: 'ui-pager-ellipsis' }, '…') : pageButton(entry),
+    ),
+    step(current + 1, current >= total, '›'),
+  );
+  return actionsActive() && change !== undefined ? actionForm({}, nav) : nav;
 }
 
 /**
@@ -84,6 +153,22 @@ export interface StepsProps extends FlexChildProps, Props {
   id?: string;
 }
 /** Step strip: done, current, and upcoming steps in order. */
-export function Steps(props: StepsProps): VNode {
-  return h('ui:steps', props);
+export function Steps(all: StepsProps): VNode {
+  const { children = [], ...props } = all as StepsProps & { children?: NormalizedChild[] };
+  const { steps, current, id } = props;
+  const at = steps.findIndex((step) => step.key === current);
+  return h(
+    'ol',
+    { className: 'ui-steps', ...idAttr(id) },
+    ...steps.map((step, index) => {
+      const state =
+        at !== -1 && index < at ? 'is-done' : index === at ? 'is-current' : 'is-upcoming';
+      return h(
+        'li',
+        { className: state },
+        h('span', { className: 'ui-step-dot' }),
+        h('span', null, step.label),
+      );
+    }),
+  );
 }

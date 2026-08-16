@@ -4,8 +4,15 @@
  *
  * @internal
  */
-import { h, type Child, type Props, type VNode } from 'fino:ui';
+import { h, type NormalizedChild, type Child, type Props, type VNode } from 'fino:ui';
+import {
+  idAttr,
+  safeHref,
+  slotChildren,
+  tone,
+} from 'internal:ui/components/html-runtime';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
+import { iconForm } from 'internal:ui/components/icons';
 import type { IconForms } from 'internal:ui/components/icons';
 
 /** Props accepted by `Card`. */
@@ -30,12 +37,51 @@ export interface CardProps extends FlexChildProps, Props {
  * footer row of `actions`. A bordered box in the terminal, a real
  * `<article>` on the web.
  */
-export function Card(props: CardProps): VNode {
-  return h('ui:card', props);
+export function Card(all: CardProps): VNode {
+  const { children = [], ...props } = all as CardProps & { children?: NormalizedChild[] };
+  const { title, subtitle, image, actions, id } = props;
+  const safeSrc = image !== undefined ? safeHref(image.src) : undefined;
+  const media =
+    image !== undefined && safeSrc !== undefined
+      ? h('div', { className: 'ui-card-media' }, h('img', { src: safeSrc, alt: image.alt }))
+      : null;
+  const header =
+    title !== undefined || subtitle !== undefined
+      ? h(
+          'div',
+          { className: 'ui-card-header' },
+          title !== undefined ? h('h3', { className: 'ui-card-title' }, title) : null,
+          subtitle !== undefined ? h('p', { className: 'ui-card-subtitle' }, subtitle) : null,
+        )
+      : null;
+  const body = h('div', { className: 'ui-card-body' }, ...children);
+  const footer =
+    actions !== undefined
+      ? h('div', { className: 'ui-card-actions' }, ...slotChildren(actions))
+      : null;
+  return h('article', { className: 'ui-card', ...idAttr(id) }, media, header, body, footer);
 }
 
 /** Trend direction shown by `Stat`. */
 export type Trend = 'up' | 'down' | 'flat';
+
+const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
+const TREND_LABEL: Record<Trend, string> = {
+  up: 'trending up',
+  down: 'trending down',
+  flat: 'no change',
+};
+
+const TREND_TONE: Record<Trend, string> = { up: 'success', down: 'danger', flat: 'muted' };
+
+
+const STATUS_TONE: Record<StatusDotStatus, string> = {
+  ok: 'success',
+  busy: 'info',
+  error: 'danger',
+  idle: 'muted',
+  warning: 'warning',
+};
 
 /** Props accepted by `Stat`. */
 export interface StatProps extends FlexChildProps, Props {
@@ -52,8 +98,27 @@ export interface StatProps extends FlexChildProps, Props {
  * additionally names it through `aria-label`, so the signal never rests on
  * color alone.
  */
-export function Stat(props: StatProps): VNode {
-  return h('ui:stat', props);
+export function Stat(all: StatProps): VNode {
+  const { children = [], ...props } = all as StatProps & { children?: NormalizedChild[] };
+  const { label, value, hint, trend, id } = props;
+  const trendSpan =
+    trend !== undefined
+      ? h(
+          'span',
+          {
+            className: `ui-stat-trend ui-tone-${TREND_TONE[trend]}`,
+            'aria-label': TREND_LABEL[trend],
+          },
+          TREND_GLYPH[trend],
+        )
+      : null;
+  return h(
+    'dl',
+    { className: 'ui-stat', ...idAttr(id) },
+    h('dt', null, label),
+    h('dd', { className: 'ui-stat-value' }, value, trendSpan),
+    hint !== undefined ? h('dd', { className: 'ui-stat-hint' }, hint) : null,
+  );
 }
 
 /** Status values shown by `StatusDot`. */
@@ -70,8 +135,19 @@ export interface StatusDotProps extends FlexChildProps, Props {
  * status is always conveyed as text too — the visible `label` when given, an
  * `aria-label` naming the status when not — never color alone.
  */
-export function StatusDot(props: StatusDotProps): VNode {
-  return h('ui:status-dot', props);
+export function StatusDot(all: StatusDotProps): VNode {
+  const { children = [], ...props } = all as StatusDotProps & { children?: NormalizedChild[] };
+  const { status, label, id } = props;
+  const dot = h('span', {
+    className: `ui-status-dot ui-tone-${STATUS_TONE[status]}`,
+    ...(label !== undefined ? { 'aria-hidden': 'true' } : { role: 'img', 'aria-label': status }),
+  });
+  return h(
+    'span',
+    { className: 'ui-row', ...idAttr(id) },
+    dot,
+    label !== undefined ? h('span', null, label) : null,
+  );
 }
 
 /** Props accepted by `EmptyState`. */
@@ -91,6 +167,23 @@ export interface EmptyStateProps extends FlexChildProps, Props {
  * `justify`/`align` on a `Box` — give it room to fill (`grow`, an explicit
  * `height`, …) for the centering to be visible.
  */
-export function EmptyState(props: EmptyStateProps): VNode {
-  return h('ui:empty-state', props);
+export function EmptyState(all: EmptyStateProps): VNode {
+  const { children = [], ...props } = all as EmptyStateProps & { children?: NormalizedChild[] };
+  const { icon, title, description, action, icons, id } = props;
+  return h(
+    'div',
+    { className: 'ui-empty-state', ...idAttr(id) },
+    icon !== undefined
+      ? h(
+          'span',
+          { className: 'ui-empty-state-icon', 'aria-hidden': 'true' },
+          iconForm(icon, 'html', icons),
+        )
+      : null,
+    h('p', { className: 'ui-empty-state-title' }, title),
+    description !== undefined ? h('p', { className: 'ui-empty-state-desc' }, description) : null,
+    action !== undefined
+      ? h('div', { className: 'ui-empty-state-action' }, ...slotChildren(action))
+      : null,
+  );
 }

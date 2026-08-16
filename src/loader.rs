@@ -236,6 +236,26 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/feedback.tui",
         "ui/components/feedback.tui"
     ),
+    source_builtin!(
+        "internal:ui/components/navigation.tui",
+        "ui/components/navigation.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/layout.tui",
+        "ui/components/layout.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.tui",
+        "ui/components/typography.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.tui",
+        "ui/components/display.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/icons.tui",
+        "ui/components/icons.tui"
+    ),
     // internal: gallery stories, one file beside each component module.
     source_builtin!("internal:ui/story", "internal/ui/story"),
     source_builtin!(

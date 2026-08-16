@@ -4,7 +4,18 @@
  *
  * @internal
  */
-import { h, type Child, type Props, type VNode } from 'fino:ui';
+import { h, type NormalizedChild, type Child, type Props, type VNode } from 'fino:ui';
+import { highlightLines } from 'fino:format/typescript';
+import {
+  actionForm,
+  actionsActive,
+  handlerOf,
+  idAttr,
+  inlineStyleAttrs,
+  num,
+  register,
+  safeHref,
+} from 'internal:ui/components/html-runtime';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';
 
 /** Props accepted by `Heading`. */
@@ -14,8 +25,15 @@ export interface HeadingProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
 /** Section heading. Level 1 additionally draws a rule beneath it. */
-export function Heading(props: HeadingProps): VNode {
-  return h('ui:heading', props);
+export function Heading(all: HeadingProps): VNode {
+  const { children = [], ...props } = all as HeadingProps & { children?: NormalizedChild[] };
+  const { level, id } = props;
+  const lvl = Math.min(6, Math.max(1, Math.floor((level as number | undefined) ?? 1)));
+  return h(
+    `h${lvl}`,
+    { className: `ui-heading ui-heading-${lvl}`, ...idAttr(id) },
+    ...children,
+  );
 }
 
 /** Props accepted by `Bold`. */
@@ -29,8 +47,10 @@ export interface BoldProps extends StyleProps, FlexChildProps, Props {
  * styling on a `Bold` nested inside it is silently dropped there (see the
  * module guide's Typography section).
  */
-export function Bold(props: BoldProps): VNode {
-  return h('ui:bold', props);
+export function Bold(all: BoldProps): VNode {
+  const { children = [], ...props } = all as BoldProps & { children?: NormalizedChild[] };
+  const { id, ...rest } = props;
+  return h('strong', inlineStyleAttrs(rest as Props, id), ...children);
 }
 
 /** Props accepted by `Italic`. */
@@ -38,8 +58,10 @@ export interface ItalicProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
 /** Italic inline emphasis. Compose it as a row sibling, not nested inside a `Text` — see `Bold`. */
-export function Italic(props: ItalicProps): VNode {
-  return h('ui:italic', props);
+export function Italic(all: ItalicProps): VNode {
+  const { children = [], ...props } = all as ItalicProps & { children?: NormalizedChild[] };
+  const { id, ...rest } = props;
+  return h('em', inlineStyleAttrs(rest as Props, id), ...children);
 }
 
 /** Props accepted by `Link`. */
@@ -64,8 +86,42 @@ export interface LinkProps extends FlexChildProps, Props {
  * both — see `href` and `onActivate` for how they combine. Compose it as a
  * row sibling, not nested inside a `Text` — see `Bold`.
  */
-export function Link(props: LinkProps): VNode {
-  return h('ui:link', props);
+export function Link(all: LinkProps): VNode {
+  const { children = [], ...props } = all as LinkProps & { children?: NormalizedChild[] };
+  const { href, onActivate, id } = props;
+  const activate = handlerOf<() => void>(onActivate);
+  const kids = children;
+  const safe = safeHref(href);
+  const hasHref = safe !== undefined;
+  if (activate !== undefined) {
+    if (actionsActive()) {
+      const act = register(() => activate());
+      if (hasHref) {
+        return actionForm(
+          { act },
+          h(
+            'a',
+            {
+              className: 'ui-link',
+              href: safe,
+              onclick: 'event.preventDefault();this.form.requestSubmit();',
+              ...idAttr(id),
+            },
+            ...kids,
+          ),
+        );
+      }
+      return actionForm(
+        {},
+        h('button', { className: 'ui-link', name: 'do', value: act, ...idAttr(id) }, ...kids),
+      );
+    }
+    return hasHref
+      ? h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids)
+      : h('button', { className: 'ui-link', type: 'button', ...idAttr(id) }, ...kids);
+  }
+  if (hasHref) return h('a', { className: 'ui-link', href: safe, ...idAttr(id) }, ...kids);
+  return h('span', { className: 'ui-link', ...idAttr(id) }, ...kids);
 }
 
 /** Props accepted by `Blockquote`. */
@@ -74,8 +130,14 @@ export interface BlockquoteProps extends FlexChildProps, Props {
   children?: Child;
 }
 /** Quoted content, set off with a leading gutter rule and dimmed text. */
-export function Blockquote(props: BlockquoteProps): VNode {
-  return h('ui:blockquote', props);
+export function Blockquote(all: BlockquoteProps): VNode {
+  const { children = [], ...props } = all as BlockquoteProps & { children?: NormalizedChild[] };
+  const { id } = props;
+  return h(
+    'blockquote',
+    { className: 'ui-blockquote', ...idAttr(id) },
+    ...children,
+  );
 }
 
 /** Props accepted by `List`. */
@@ -87,9 +149,24 @@ export interface ListProps extends FlexChildProps, Props {
   id?: string;
 }
 /** Bulleted or numbered list, with a hanging indent for wrapped item lines. */
-export function List(props: ListProps): VNode {
-  return h('ui:list', props);
+export function List(all: ListProps): VNode {
+  const { children = [], ...props } = all as ListProps & { children?: NormalizedChild[] };
+  const { ordered, items, id } = props;
+  const tag = ordered === true ? 'ol' : 'ul';
+  return h(
+    tag,
+    { className: 'ui-list', ...idAttr(id) },
+    ...items.map((item, index) => h('li', { key: String(index) }, item)),
+  );
 }
+
+const CODE_TOK: Record<'keyword' | 'string' | 'number' | 'comment' | 'regexp', string> = {
+  keyword: 'tok-keyword',
+  string: 'tok-string',
+  number: 'tok-number',
+  comment: 'tok-comment',
+  regexp: 'tok-regexp',
+};
 
 /** Props accepted by `Code`. */
 export interface CodeProps extends FlexChildProps, Props {
@@ -115,8 +192,72 @@ export interface CodeProps extends FlexChildProps, Props {
  * from `fino:format/typescript` for JS/TS/JSX family languages; anything
  * else renders as plain monospace text.
  */
-export function Code(props: CodeProps): VNode {
-  return h('ui:code', props);
+export function Code(all: CodeProps): VNode {
+  const { children = [], ...props } = all as CodeProps & { children?: NormalizedChild[] };
+  const {
+    code: source,
+    language,
+    showLineNumbers,
+    filename,
+    copyable,
+    id,
+  } = props;
+  const lines = highlightLines(source, language);
+  const codeClass =
+    typeof language === 'string' && language.length > 0 ? `language-${language}` : undefined;
+  const body = lines.map((runs, index) =>
+    h(
+      'span',
+      { className: 'ui-code-line' },
+      showLineNumbers === true ? h('span', { className: 'ui-code-num' }, String(index + 1)) : null,
+      h(
+        'span',
+        { className: 'ui-code-content' },
+        ...runs.map((run) =>
+          run.cls ? h('span', { className: CODE_TOK[run.cls] }, run.text) : run.text,
+        ),
+      ),
+    ),
+  );
+  const pre = h(
+    'pre',
+    null,
+    h('code', codeClass !== undefined ? { className: codeClass } : null, ...body),
+  );
+  // The copy button reads its sibling <code>'s textContent client-side
+  // (internal:ui/web/client's `[data-fi-copy]` listener) rather than
+  // duplicating the (potentially large) source into a data-* attribute.
+  const copyButton =
+    copyable === true
+      ? h(
+          'button',
+          {
+            type: 'button',
+            className: 'ui-copy',
+            'aria-label': 'Copy code',
+            'data-fi-copy': '1',
+          },
+          'Copy',
+        )
+      : null;
+  // The bar exists only to carry a filename. Without one the copy button
+  // overlays the code area instead, so an unnamed block keeps its full height.
+  const bar =
+    filename !== undefined
+      ? h(
+          'figcaption',
+          { className: 'ui-code-bar' },
+          h('span', { className: 'ui-code-filename' }, filename),
+          copyButton,
+        )
+      : null;
+  return h(
+    'figure',
+    { className: 'ui-code', ...idAttr(id) },
+    bar,
+    bar === null ? copyButton : null,
+    pre,
+  );
 }
 
 /** Props accepted by `InlineCode`. */
@@ -124,6 +265,10 @@ export interface InlineCodeProps extends StyleProps, FlexChildProps, Props {
   children?: Child;
 }
 /** Inline code span. Compose it as a row sibling, not nested inside a `Text` — see `Bold`. */
-export function InlineCode(props: InlineCodeProps): VNode {
-  return h('ui:inline-code', props);
+export function InlineCode(all: InlineCodeProps): VNode {
+  const { children = [], ...props } = all as InlineCodeProps & { children?: NormalizedChild[] };
+  const { id, ...rest } = props;
+  const attrs = inlineStyleAttrs(rest as Props, id);
+  attrs.className = 'ui-inline-code';
+  return h('code', attrs, ...children);
 }
