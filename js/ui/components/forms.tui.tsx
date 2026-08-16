@@ -238,7 +238,13 @@ mapRenderTargetLowering(Slider, 'tui', (all: SliderProps): VNode => {
     : undefined;
   const trackStyle = disabled === true ? [styles.dim] : focused === true ? [styles.accent] : [];
   if (vertical) {
-    const rows = Array.from({ length: cells }, (_, row) => cells - 1 - row === handleAt);
+    // One `Text` spanning the whole column, not a `Text` per row: a mouse
+    // event's `localY` is relative to the deepest node it hit, so a stack of
+    // one-row nodes reports 0 for every row and every click reads as the top
+    // of the track. The horizontal track is a single node for the same reason.
+    const column = Array.from({ length: cells }, (_, row) =>
+      cells - 1 - row === handleAt ? '●' : '│',
+    ).join('\n');
     return (
       <Clickable
         id={id}
@@ -248,11 +254,7 @@ mapRenderTargetLowering(Slider, 'tui', (all: SliderProps): VNode => {
         onKey={onKey}
         {...rest}
       >
-        {rows.map((isHandle, index) => (
-          <Text key={String(index)} style={trackStyle}>
-            {isHandle ? '●' : '│'}
-          </Text>
-        ))}
+        <Text style={trackStyle}>{column}</Text>
       </Clickable>
     );
   }

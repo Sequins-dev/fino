@@ -10,6 +10,7 @@
  * @internal
  */
 import { createSignal, mapRenderTargetLowering } from 'fino:ui';
+import { timeout as loopTimeout } from 'internal:runtime/loop';
 import { Box, Clickable, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import {
@@ -30,34 +31,63 @@ import type {
 import type { VNode } from 'fino:ui';
 
 /**
- * The spinner's own clock.
+ * One clock, shared by every spinner.
  *
- * A spinner is the one component whose appearance changes without its props
- * changing, so it cannot be driven the way everything else is. It reads this
- * signal when the caller did not pin a `tick`, which both selects the frame
- * and — because the terminal root re-renders whatever it read — makes the
- * next `advanceSpinners()` repaint it.
+ * A spinner is the only component whose appearance changes without its props
+ * changing, so it cannot be driven the way everything else is. Every spinner
+ * with no pinned `tick` reads this one signal, which both selects the frame
+ * and — because a root re-renders whatever it read — repaints all of them
+ * together off a single timer. Ten spinners cost one timer, not ten.
  *
- * The clock does not run itself. A one-shot `renderFrame` would otherwise
- * start a timer and hold the event loop open for a frame it already painted,
- * so the *live* terminal app drives it and stops as soon as nothing reads it:
- * `spinnersAnimating()` reports whether the pass that just rendered wanted a
- * frame at all.
+ * The loop only runs while a live terminal app exists *and* a spinner asked
+ * for it. A one-shot `renderFrame` therefore never starts a timer for a frame
+ * it has already painted, and an app showing no spinner does not wake up.
+ * Restarting is the spinner's job rather than the app's: whenever a lowering
+ * pass wants a frame it calls `ensureClock()`, so a loop that ends for any
+ * reason is started again by the next render instead of leaving the spinner
+ * frozen until the app restarts.
  */
+const FRAME_MS = 80;
 const clock = createSignal(0);
-let animating = false;
+let wanted = false;
+let ticking = false;
+let liveApps = 0;
 
-/** Whether the last lowering pass produced a spinner with no pinned `tick`. */
-export function spinnersAnimating(): boolean {
-  return animating;
+function ensureClock(): void {
+  if (ticking || liveApps === 0) return;
+  ticking = true;
+  void (async (): Promise<void> => {
+    try {
+      while (liveApps > 0 && wanted) {
+        await loopTimeout(FRAME_MS);
+        if (liveApps === 0) break;
+        // Cleared before the write: the re-render it triggers sets it again
+        // if any spinner is still on screen, and leaves it false if none is.
+        wanted = false;
+        clock.set(clock.get() + 1);
+      }
+    } finally {
+      ticking = false;
+    }
+  })();
 }
 
-/** Advance the clock, repainting every self-driven spinner. */
-export function advanceSpinners(): void {
-  animating = false;
-  clock.set(clock.get() + 1);
+/**
+ * Register a live terminal app, returning its release function.
+ *
+ * The clock is bounded by app lifetime so nothing keeps the event loop awake
+ * after the last app stops.
+ */
+export function holdSpinnerClock(): () => void {
+  liveApps += 1;
+  ensureClock();
+  let released = false;
+  return (): void => {
+    if (released) return;
+    released = true;
+    liveApps -= 1;
+  };
 }
-
 
 mapRenderTargetLowering(Badge, 'tui', (props: BadgeProps): VNode => {
   const { label, variant, ...rest } = props;
@@ -71,7 +101,8 @@ mapRenderTargetLowering(Spinner, 'tui', (props: SpinnerProps): VNode => {
   const set = frames !== undefined && frames.length > 0 ? frames : SPINNER_FRAMES;
   let index: number;
   if (tick === undefined) {
-    animating = true;
+    wanted = true;
+    ensureClock();
     index = clock.get();
   } else {
     index = tick;

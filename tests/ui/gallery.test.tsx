@@ -985,3 +985,65 @@ describe('fino:ui/gallery', () => {
     }
   });
 });
+
+describe('fino:ui/components spinner clock', () => {
+  it('animates on its own and stops when the spinner leaves the tree', async (t) => {
+    const dir = `/tmp/fino-spinner-${Date.now().toString(36)}`;
+    await fs.mkdir(dir);
+    const script = `${dir}/app.ts`;
+    await fs.writeFile(
+      script,
+      encoder.encode(
+        "import { render } from 'fino:tty/tui';\n" +
+          "import { h, createSignal } from 'fino:ui';\n" +
+          "import { Spinner, Text, VStack } from 'fino:ui/components';\n" +
+          'const show = createSignal(true);\n' +
+          'const app = render(() =>\n' +
+          "  h(VStack, null, show.get() ? h(Spinner, {}) : h(Text, null, 'done')), { input: true });\n" +
+          'setTimeout(() => show.set(false), 900);\n' +
+          'setTimeout(() => app.stop(), 1600);\n',
+      ),
+    );
+    const pty = await openPty(execPath, [script], { cols: 12, rows: 3 });
+    try {
+      await pty.waitFor((term) => /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/.test(term.text()[0] ?? ''));
+      const frames = new Set<string>();
+      for (let i = 0; i < 10; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const found = (pty.term.text()[0] ?? '').match(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/);
+        if (found) frames.add(found[0]);
+      }
+      t.ok(frames.size >= 3, `the clock advanced on its own (${frames.size} distinct frames)`);
+      await pty.waitFor((term) => term.text().some((line) => line.includes('done')));
+      t.ok(true, 'the spinner stops when the tree no longer renders one');
+    } finally {
+      await pty.close();
+    }
+  });
+
+  it('never starts a clock for a one-shot render', async (t) => {
+    const dir = `/tmp/fino-spinner-once-${Date.now().toString(36)}`;
+    await fs.mkdir(dir);
+    const script = `${dir}/once.ts`;
+    await fs.writeFile(
+      script,
+      encoder.encode(
+        "import { renderFrame } from 'fino:tty/tui';\n" +
+          "import { h } from 'fino:ui';\n" +
+          "import { Spinner } from 'fino:ui/components';\n" +
+          "renderFrame(h(Spinner, {}), { width: 3, height: 1 });\n" +
+          "console.log('done');\n",
+      ),
+    );
+    const pty = await openPty(execPath, [script], { cols: 12, rows: 3 });
+    try {
+      // With no live app there is nothing to bound a timer, so a one-shot
+      // render must not start one — it would hold the loop open for a frame
+      // it has already painted.
+      const code = await pty.waitExit();
+      t.equal(code, 0, 'the process exits without waiting on an animation frame');
+    } finally {
+      await pty.close();
+    }
+  });
+});

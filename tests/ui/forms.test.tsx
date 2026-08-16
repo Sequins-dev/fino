@@ -571,3 +571,54 @@ describe('fino:ui/components IconButton', () => {
     t.ok(html.includes('disabled'), 'handler-less icon button is inert');
   });
 });
+
+describe('fino:ui/components slider — terminal', () => {
+  function pressAt(vertical: boolean, x: number, y: number): number {
+    const root = createTerminalRoot();
+    const renderer = createRenderer(terminalHost());
+    const dispatcher = new TuiDispatcher(root);
+    const value = createSignal(50);
+    renderer.render(
+      lowerTui(
+        <Slider
+          value={value.get()}
+          min={0}
+          max={100}
+          step={1}
+          id="s"
+          orientation={vertical ? 'vertical' : 'horizontal'}
+          width={vertical ? 9 : 21}
+          onChange={(next) => value.set(next)}
+        />,
+      ),
+      root,
+    );
+    layout(root.children[0]!, { width: 30, height: 12 });
+    dispatcher.dispatch({
+      type: 'mouse',
+      action: 'press',
+      button: 'left',
+      x,
+      y,
+      ctrl: false,
+      alt: false,
+      shift: false,
+    } as TuiMouseEventLike);
+    return value.get();
+  }
+
+  it('maps a press to a position along a horizontal track', (t) => {
+    t.equal(pressAt(false, 0, 0), 0, 'the left end is the minimum');
+    t.equal(pressAt(false, 10, 0), 50, 'the middle is halfway');
+    t.equal(pressAt(false, 20, 0), 100, 'the right end is the maximum');
+  });
+
+  it('maps a press to a position along a vertical track', (t) => {
+    // A vertical track is one node, not a node per row: `localY` is measured
+    // against the deepest node hit, so a row-per-node stack reports 0 for
+    // every row and every press reads as the top of the track.
+    t.equal(pressAt(true, 0, 0), 100, 'the top is the maximum');
+    t.equal(pressAt(true, 0, 4), 50, 'the middle is halfway');
+    t.equal(pressAt(true, 0, 8), 0, 'the bottom is the minimum');
+  });
+});

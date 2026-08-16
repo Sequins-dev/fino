@@ -13,7 +13,7 @@ import { renderToHtml } from 'fino:ui/html';
 import { toHtml } from 'fino:ui/components/html';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
-import { advanceSpinners, lowerTui, spinnersAnimating } from 'internal:tty/lower';
+import { lowerTui } from 'internal:tty/lower';
 import { TuiDispatcher } from 'internal:tty/events';
 import type { TuiMouseEventLike } from 'internal:tty/events';
 
@@ -920,23 +920,17 @@ describe('fino:ui/components overlays render open — html', () => {
   });
 });
 
-describe('fino:ui/components spinner animates itself', () => {
-  it('advances without a tick prop and stops when nothing renders one', (t) => {
-    const first = strip(lines(<Spinner />, 3, 1)[0]!);
-    t.ok(SPINNER_FRAMES.includes(first), 'a frame renders with no tick supplied');
-    t.ok(spinnersAnimating(), 'the pass reported that it wants a clock');
+describe('fino:ui/components spinner', () => {
+  it('renders a frame with no tick supplied', (t) => {
+    const frame = strip(lines(<Spinner />, 3, 1)[0]!);
+    t.ok(SPINNER_FRAMES.includes(frame), 'a frame renders without the caller driving one');
+  });
 
-    advanceSpinners();
-    const second = strip(lines(<Spinner />, 3, 1)[0]!);
-    t.equal(
-      SPINNER_FRAMES.indexOf(second),
-      (SPINNER_FRAMES.indexOf(first) + 1) % SPINNER_FRAMES.length,
-      'advancing the clock moves to the next frame',
-    );
-
-    // A pinned tick opts out, so a tree of those alone leaves the clock idle.
-    advanceSpinners();
-    lines(<Spinner tick={3} />, 3, 1);
-    t.ok(!spinnersAnimating(), 'a pinned tick does not ask for the clock');
+  it('freezes on a pinned tick', (t) => {
+    // A pinned tick is the deterministic path — it must not move on its own.
+    const first = strip(lines(<Spinner tick={3} />, 3, 1)[0]!);
+    const second = strip(lines(<Spinner tick={3} />, 3, 1)[0]!);
+    t.equal(first, SPINNER_FRAMES[3], 'the pinned frame renders');
+    t.equal(second, first, 'and stays put across renders');
   });
 });

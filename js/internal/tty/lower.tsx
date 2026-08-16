@@ -15,9 +15,9 @@ import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:
 // Terminal lowerings that live beside their components, imported for their
 // registration side effects.
 import 'internal:ui/components/feedback.tui';
-// Re-exported so `fino:tty/tui` drives the one component that repaints
-// without its props changing, without importing a component module.
-export { advanceSpinners, spinnersAnimating } from 'internal:ui/components/feedback.tui';
+// Re-exported so `fino:tty/tui` can bound the spinner clock to the life of a
+// live app without importing a component module directly.
+export { holdSpinnerClock } from 'internal:ui/components/feedback.tui';
 import 'internal:ui/components/navigation.tui';
 import 'internal:ui/components/data.tui';
 import 'internal:ui/components/virtual.tui';
