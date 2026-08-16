@@ -293,14 +293,26 @@ function modifierBits(parameter: number): Partial<TuiKeyEvent> {
   return extra;
 }
 /**
- * Decode one terminal input byte chunk into TUI input events.
+ * Whether `text` from `at` onwards is the start of an escape sequence that has
+ * not finished arriving.
  *
- * The decoder understands printable UTF-8, common control keys, arrow/function
- * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
- * coordinates are converted to zero-based `x`/`y` values.
+ * A terminal writes `ESC [ B` in one call, but the tty hands those bytes to the
+ * line discipline one at a time, so a reader that is already awake can see the
+ * prefix and nothing else. Anything that could still become a sequence — a bare
+ * `ESC`, or a CSI whose parameters have arrived but whose final byte has not —
+ * is held for the next chunk rather than decoded as the keys it is made of.
  */
-export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
-  const text = decoder.decode(bytes);
+function pendingEscape(text: string, at: number): boolean {
+  return /^\x1b(?:\[[\d;<]*)?$/.test(text.slice(at));
+}
+/**
+ * Decode terminal input text into TUI input events.
+ *
+ * `streaming` decides what happens to a trailing partial sequence: held back as
+ * `rest` for the next chunk, or — for a caller decoding one complete buffer —
+ * decoded as the bare `ESC` it looks like.
+ */
+function decodeInputText(text: string, streaming: boolean): { events: TuiEvent[]; rest: string } {
   const events: TuiEvent[] = [];
   for (let i = 0; i < text.length; ) {
     const ch = text[i]!;
@@ -313,6 +325,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
         i += csi[0].length;
         continue;
       }
+      if (streaming && pendingEscape(text, i)) return { events, rest: text.slice(i) };
       if (i + 1 < text.length) {
         const following = text.charCodeAt(i + 1);
         // macOS Terminal sends ESC+DEL for option-delete.
@@ -339,29 +352,91 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     else events.push(keyEvent(ch, { text: ch }));
     i++;
   }
-  return events;
+  return { events, rest: '' };
+}
+/**
+ * Decode one terminal input byte chunk into TUI input events.
+ *
+ * The decoder understands printable UTF-8, common control keys, arrow/function
+ * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
+ * coordinates are converted to zero-based `x`/`y` values.
+ *
+ * The chunk is taken to be complete, so a sequence that is only half here is
+ * decoded as the characters it is made of. `TuiInput` reads from a live
+ * terminal, where that is not a safe assumption, and reassembles instead.
+ */
+export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
+  return decodeInputText(decoder.decode(bytes), false).events;
 }
 /** Options for creating a raw terminal input reader. */
 export interface TuiInputOptions {
   mouse?: boolean;
 }
+/**
+ * How long a half-arrived escape sequence is held waiting for the rest.
+ *
+ * The wait exists because `ESC` is both the start of every arrow, function and
+ * mouse sequence and a key in its own right, so a lone `ESC` is only knowable
+ * as Escape once nothing follows it. Long enough to reassemble a sequence the
+ * tty split across two reads, short enough that Escape still feels immediate.
+ */
+const ESCAPE_HOLD_MS = 25;
 /** Raw terminal input reader for keyboard and mouse events. */
 export class TuiInput {
   #restoreRaw: (() => void) | null;
   #closed = false;
   #queue: TuiEvent[] = [];
+  // Trailing bytes of a sequence that has not finished arriving, and the read
+  // they are waiting on. The read is kept rather than abandoned when the hold
+  // expires: a second `stdin().read()` would post a second readability watch on
+  // the same descriptor, and the loop only keeps one.
+  #partial = '';
+  #pendingRead: Promise<Uint8Array | null> | null = null;
+  #stream = new TextDecoder();
   constructor(options: TuiInputOptions = {}) {
     this.#restoreRaw = enterRawMode(0);
     void writeStdout(options.mouse === false ? '' : enterMouseMode());
+  }
+  /** Decode whatever is held back as the literal keys it is made of. */
+  #flushPartial(): void {
+    if (this.#partial.length === 0) return;
+    const held = this.#partial;
+    this.#partial = '';
+    this.#queue.push(...decodeInputText(held, false).events);
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
     while (!this.#closed) {
       const queued = this.#queue.shift();
       if (queued) return queued;
-      const bytes = await stdin().read();
-      if (bytes === null) return null;
-      this.#queue.push(...decodeTuiInput(bytes));
+      this.#pendingRead ??= stdin().read();
+      let bytes: Uint8Array | null;
+      if (this.#partial.length > 0) {
+        const hold = loopTimeout(ESCAPE_HOLD_MS);
+        const settled = await Promise.race([
+          this.#pendingRead.then((value) => ({ value })),
+          hold.then(() => null),
+        ]);
+        if (settled === null) {
+          // Nothing followed: it was the Escape key, not a truncated sequence.
+          this.#flushPartial();
+          continue;
+        }
+        hold.cancel();
+        bytes = settled.value;
+      } else {
+        bytes = await this.#pendingRead;
+      }
+      this.#pendingRead = null;
+      if (bytes === null) {
+        if (this.#partial.length === 0) return null;
+        this.#flushPartial();
+        continue;
+      }
+      const chunk = this.#partial + this.#stream.decode(bytes, { stream: true });
+      const { events, rest } = decodeInputText(chunk, true);
+      this.#partial = rest;
+      this.#queue.push(...events);
     }
     return null;
   }
