@@ -5,19 +5,24 @@
  * @internal
  */
 import { h, type Child, type Props, type VNode } from 'fino:ui';
+import { Box } from 'internal:ui/components/primitives';
 import type { BoxProps, FlexChildProps } from 'internal:ui/components/primitives';
 
 /** Props accepted by `Stack`, `HStack`, and `VStack`. */
 export interface StackProps extends Omit<BoxProps, 'direction'> {
   children?: Child;
 }
+// These compose the `Box` *component* rather than emitting the `box` node
+// name directly. A bare node name is a render target's own terminal
+// vocabulary; going through the component is what lets each target substitute
+// its own lowering, which on the web is a real `<div>` rather than a `<box>`.
 /** Vertical box, `gap` between children. */
 export function VStack(props: StackProps): VNode {
-  return h('box', { ...props, direction: 'column' });
+  return h(Box, { ...props, direction: 'column' });
 }
 /** Horizontal box, `gap` between children. */
 export function HStack(props: StackProps): VNode {
-  return h('box', { ...props, direction: 'row' });
+  return h(Box, { ...props, direction: 'row' });
 }
 /** Alias of `VStack`, matching the common stacking default. */
 export function Stack(props: StackProps): VNode {

@@ -34,7 +34,17 @@
  * const page = htmlPage(markup, { title: 'Preview' });
  * ```
  */
-import { h, defineRenderTarget, renderTargetLowering } from 'fino:ui';
+import { h, defineRenderTarget, mapRenderTargetLowering, renderTargetLowering } from 'fino:ui';
+import {
+  Box,
+  Clickable,
+  Input,
+  Layer,
+  Rule,
+  Scroll,
+  Spacer,
+  Text,
+} from 'internal:ui/components/primitives';
 import {
   actionForm,
   actionsActive,
@@ -2065,7 +2075,7 @@ function transformUnwalked(node: VNode, depth: number): VNode {
     // primitive names here and real HTML/SVG element names there, and the two
     // meanings would collide. What is re-visited is anything the lowering
     // composed rather than emitted: nested components and semantic nodes.
-    const resolved = resolveNested(node.key === null ? composed : { ...composed, key: node.key });
+    const resolved = resolveNested(node.key === null ? composed : { ...composed, key: node.key }, depth);
     walked.add(resolved);
     return resolved;
   }
@@ -2135,19 +2145,19 @@ function transformUnwalked(node: VNode, depth: number): VNode {
  * are. Elements are marked walked on the way back up so the outer pass skips
  * them instead of re-walking the subtree once per level of nesting.
  */
-function resolveNested(node: VNode): VNode {
+function resolveNested(node: VNode, depth: number): VNode {
   if (walked.has(node)) return node;
   if (
     typeof node.type !== 'string' ||
     NATIVE[node.type] !== undefined ||
     renderTargetLowering(node.type, 'html') !== undefined
   ) {
-    return transformNode(node);
+    return transformUnwalked(node, depth + 1);
   }
   let changed = false;
   const children = node.children.map((child) => {
     if (typeof child === 'string') return child;
-    const next = resolveNested(child);
+    const next = resolveNested(child, depth);
     if (next !== child) changed = true;
     return next;
   });
@@ -2158,11 +2168,76 @@ function resolveNested(node: VNode): VNode {
 
 function substitute(node: VNode, impl: (props: Props) => VNode, depth: number): VNode {
   const composed = impl({ ...node.props, children: node.children });
-  return transformUnwalked(
-    node.key === null ? composed : { ...composed, key: node.key },
-    depth + 1,
-  );
+  // A lowering's output is finished markup. Running it back through the
+  // element switch would rewrite the real HTML it emitted — `input` and `text`
+  // are primitive node names to that switch and genuine element names here,
+  // and the hidden fields an `actionForm` emits lose their `type` and `name`
+  // to it. Only what the lowering *composed* is revisited.
+  const keyed = node.key === null ? composed : { ...composed, key: node.key };
+  const resolved = resolveNested(keyed, depth);
+  walked.add(resolved);
+  return resolved;
 }
+
+// Primitives are components, so they resolve through the registry like every
+// other component. That is what lets a lowering's output be treated as
+// finished markup: with `Box`/`Text`/`Input` reachable by map key, the node
+// names `box`/`text`/`input` never arrive here from a component at all, and
+// the switch below is left for hand-written trees that spell them directly.
+type PrimitiveProps = Props & { children?: NormalizedChild[] };
+
+function asNode(props: PrimitiveProps): { node: VNode; children: NormalizedChild[] } {
+  const { children = [], ...rest } = props;
+  return { node: { type: '', props: rest, children, key: null }, children };
+}
+
+mapRenderTargetLowering(Box, 'html', (props: PrimitiveProps) => {
+  const { node, children } = asNode(props);
+  return boxNode(node, children);
+});
+mapRenderTargetLowering(Clickable, 'html', (props: PrimitiveProps) => {
+  const { node, children } = asNode(props);
+  return boxNode({ ...node, type: 'clickable' }, children);
+});
+mapRenderTargetLowering(Text, 'html', (props: PrimitiveProps) => {
+  const { node, children } = asNode(props);
+  return textNode(node, children);
+});
+mapRenderTargetLowering(Layer, 'html', (props: PrimitiveProps) => {
+  const { node, children } = asNode(props);
+  return layerNode(node, children);
+});
+mapRenderTargetLowering(Spacer, 'html', (props: PrimitiveProps) => {
+  const css: Record<string, string> = {};
+  sizeCss(props, css);
+  flexChildCss(props, css);
+  return h('div', { style: css, 'aria-hidden': 'true' });
+});
+mapRenderTargetLowering(Rule, 'html', () =>
+  h('hr', {
+    style: {
+      border: 'none',
+      borderTop: '1px solid var(--tui-border)',
+      width: '100%',
+      margin: '0.25lh 0',
+    },
+  }),
+);
+mapRenderTargetLowering(Input, 'html', (props: PrimitiveProps) => {
+  const css: Record<string, string> = { font: 'inherit' };
+  styleCss(resolveStyle(props), css);
+  const attrs: Props = { style: css };
+  if (typeof props.value === 'string') attrs.value = props.value;
+  if (typeof props.placeholder === 'string') attrs.placeholder = props.placeholder;
+  return h('input', attrs);
+});
+mapRenderTargetLowering(Scroll, 'html', (props: PrimitiveProps) => {
+  const { children } = asNode(props);
+  const css: Record<string, string> = { overflow: 'auto', display: 'flex', flexDirection: 'column' };
+  sizeCss(props, css);
+  flexChildCss(props, css);
+  return h('div', { style: css }, ...children);
+});
 
 // The web's vocabulary is open-ended — every HTML tag name is legitimate — so
 // the target declares no primitive floor and `transformNode` passes unknown
