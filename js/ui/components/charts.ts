@@ -23,9 +23,9 @@
  */
 import { h, type Props, type VNode } from 'fino:ui';
 import {
+  VIRTUAL_ROW_PX,
   cssColor,
   idAttr,
-  VIRTUAL_ROW_PX,
 } from 'internal:ui/components/html-runtime';
 import type { Color } from 'fino:tty/style';
 import type { FlexChildProps } from 'internal:ui/components/primitives';

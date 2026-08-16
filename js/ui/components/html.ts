@@ -329,12 +329,6 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 // convert a scroll container's `scrollTop` back into the row-offset unit
 // `VirtualScroll` works in — see internal:ui/web/client's scroll listener.
 
-function virtualSpacerHtml(rows: number): VNode {
-  return h('div', {
-    style: { height: `${rows * VIRTUAL_ROW_PX}px`, flex: '0 0 auto' },
-    'aria-hidden': 'true',
-  });
-}
 
 /**
  * `ui:virtual-list` on the web: there is no wheel event to hook, so instead
@@ -344,48 +338,6 @@ function virtualSpacerHtml(rows: number): VNode {
  * scrolled-to row before submitting. Without an `onScroll` handler the
  * container renders inert, same as any other handler-less control.
  */
-function virtualListHtml(node: VNode): VNode {
-  const {
-    height,
-    window: slice,
-    offset,
-    onMouse: _onMouse,
-    onScroll,
-    id,
-    ...rest
-  } = node.props as VirtualListProps;
-  const scroll = handlerOf<(offset: number) => void>(onScroll);
-  const css: Record<string, string> = {
-    overflow: 'auto',
-    display: 'flex',
-    flexDirection: 'column',
-  };
-  sizeCss(rest, css);
-  flexChildCss(rest, css);
-  styleCss(resolveStyle(rest as Props), css);
-  css.height = `${Math.max(1, Math.floor(height)) * VIRTUAL_ROW_PX}px`;
-  const children = transformChildren(node.children);
-  const attrs: Props = { className: 'ui-virtual', style: css, ...idAttr(id) };
-  const interactive = actionsActive() && scroll !== undefined;
-  if (interactive) {
-    attrs['data-fi-scroll'] = '1';
-    attrs['data-fi-row-height'] = String(VIRTUAL_ROW_PX);
-  }
-  const container = h(
-    'div',
-    attrs,
-    slice.topPad > 0 ? virtualSpacerHtml(slice.topPad) : null,
-    ...children,
-    slice.bottomPad > 0 ? virtualSpacerHtml(slice.bottomPad) : null,
-  );
-  if (!interactive) return container;
-  const act = register((value) => scroll!(Number(value ?? 0)));
-  return actionForm(
-    { act, change: true },
-    h('input', { type: 'hidden', name: 'value', value: String(Math.max(0, Math.floor(offset))) }),
-    container,
-  );
-}
 
 
 
@@ -444,13 +396,6 @@ function virtualListHtml(node: VNode): VNode {
 
 
 const NATIVE: Record<string, (node: VNode) => VNode> = {
-  'ui:checkbox': (node) => choiceHtml('checkbox', node),
-  'ui:switch': (node) => choiceHtml('checkbox', node),
-  'ui:radio': (node) => choiceHtml('radio', node),
-  'ui:menu-header': (node) =>
-    h('div', { className: 'ui-menu-header' }, (node.props as { label: string }).label),
-  'ui:menu-separator': () => h('hr', { className: 'ui-menu-sep' }),
-  'ui:virtual-list': virtualListHtml,
 };
 
 /**

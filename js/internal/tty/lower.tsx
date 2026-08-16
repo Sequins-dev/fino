@@ -17,6 +17,7 @@ import { h, defineRenderTarget, lowerTree, mapRenderTargetLowering } from 'fino:
 import 'internal:ui/components/feedback.tui';
 import 'internal:ui/components/navigation.tui';
 import 'internal:ui/components/data.tui';
+import 'internal:ui/components/virtual.tui';
 import 'internal:ui/components/charts.tui';
 import 'internal:ui/components/pickers.tui';
 import 'internal:ui/components/overlay.tui';
@@ -169,13 +170,6 @@ function clampNumber(value: number, min: number | undefined, max: number | undef
 
 
 
-function menuHeader(props: Props): VNode {
-  return <Text style={[styles.dim, styles.bold]}>{(props as { label: string }).label}</Text>;
-}
-
-function menuSeparator(): VNode {
-  return <Rule style={[styles.dim]} />;
-}
 
 
 
@@ -190,27 +184,7 @@ function menuSeparator(): VNode {
 
 
 
-function virtualList(props: Props, children: NormalizedChild[]): VNode {
-  const {
-    height,
-    window: slice,
-    offset,
-    onMouse,
-    onScroll: _onScroll,
-    ...rest
-  } = props as VirtualListProps;
-  return h(
-    'clickable',
-    { direction: 'column', height, onMouse, focusable: false, ...rest },
-    h(
-      'scrollview',
-      { height, offset },
-      slice.topPad > 0 ? h('spacer', { height: slice.topPad }) : null,
-      children,
-      slice.bottomPad > 0 ? h('spacer', { height: slice.bottomPad }) : null,
-    ),
-  );
-}
+
 
 
 
@@ -283,11 +257,6 @@ function virtualList(props: Props, children: NormalizedChild[]): VNode {
 // components, matching the "environment detection stays out of components"
 // rule `colorPicker` already established.
 
-const COMPOSERS: Record<string, Composer> = {
-  'ui:menu-header': menuHeader,
-  'ui:menu-separator': menuSeparator,
-  'ui:virtual-list': virtualList,
-};
 
 /**
  * The node names the terminal paints itself.
@@ -316,17 +285,6 @@ const TUI_PRIMITIVES = [
 ];
 
 defineRenderTarget('tui', { primitives: TUI_PRIMITIVES });
-
-// Each composer becomes a lowering registered against the semantic node name.
-// Registering them here rather than hard-wiring a table is what lets a
-// component ship its own terminal lowering later, and lets an application
-// override one of these.
-for (const [type, compose] of Object.entries(COMPOSERS)) {
-  mapRenderTargetLowering(type, 'tui', (props: Props & { children?: NormalizedChild[] }) => {
-    const { children, ...rest } = props;
-    return compose(rest, children ?? []);
-  });
-}
 
 /**
  * Lower a semantic tree to terminal primitives.

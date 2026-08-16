@@ -235,12 +235,12 @@ export function MenuRow(all: MenuRowProps): VNode {
 
 /** Section heading inside a menu. */
 export function MenuHeader(props: { label: string } & Props): VNode {
-  return h('ui:menu-header', props);
+  return h('div', { className: 'ui-menu-header' }, props.label);
 }
 
 /** Divider inside a menu. */
-export function MenuSeparator(props: Props = {}): VNode {
-  return h('ui:menu-separator', props);
+export function MenuSeparator(): VNode {
+  return h('hr', { className: 'ui-menu-sep' });
 }
 
 /** Props accepted by `MenuList`. */

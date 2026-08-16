@@ -5,6 +5,18 @@
  * @internal
  */
 import { h, type Child, type Props, type VNode } from 'fino:ui';
+import {
+  VIRTUAL_ROW_PX,
+  actionForm,
+  actionsActive,
+  flexChildCss,
+  handlerOf,
+  idAttr,
+  register,
+  resolveStyle,
+  sizeCss,
+  styleCss,
+} from 'internal:ui/components/html-runtime';
 import type {
   FlexChildProps,
   StyleProps,
@@ -168,7 +180,51 @@ export interface VirtualListProps extends StyleProps, FlexChildProps, Props {
  * terminal's clickable+scrollview shape and `fino:ui/components/html` for
  * the browser's scrollable container.
  */
-export function VirtualList(props: VirtualListProps): VNode {
-  const { children, ...rest } = props;
-  return h('ui:virtual-list', rest, children);
+function virtualSpacerHtml(rows: number): VNode {
+  return h('div', {
+    style: { height: `${rows * VIRTUAL_ROW_PX}px`, flex: '0 0 auto' },
+    'aria-hidden': 'true',
+  });
+}
+export function VirtualList(all: VirtualListProps): VNode {
+  const { children = [], ...props } = all as VirtualListProps & { children?: NormalizedChild[] };
+  const {
+    height,
+    window: slice,
+    offset,
+    onMouse: _onMouse,
+    onScroll,
+    id,
+    ...rest
+  } = props;
+  const scroll = handlerOf<(offset: number) => void>(onScroll);
+  const css: Record<string, string> = {
+    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+  };
+  sizeCss(rest, css);
+  flexChildCss(rest, css);
+  styleCss(resolveStyle(rest as Props), css);
+  css.height = `${Math.max(1, Math.floor(height)) * VIRTUAL_ROW_PX}px`;
+  const attrs: Props = { className: 'ui-virtual', style: css, ...idAttr(id) };
+  const interactive = actionsActive() && scroll !== undefined;
+  if (interactive) {
+    attrs['data-fi-scroll'] = '1';
+    attrs['data-fi-row-height'] = String(VIRTUAL_ROW_PX);
+  }
+  const container = h(
+    'div',
+    attrs,
+    slice.topPad > 0 ? virtualSpacerHtml(slice.topPad) : null,
+    ...children,
+    slice.bottomPad > 0 ? virtualSpacerHtml(slice.bottomPad) : null,
+  );
+  if (!interactive) return container;
+  const act = register((value) => scroll!(Number(value ?? 0)));
+  return actionForm(
+    { act, change: true },
+    h('input', { type: 'hidden', name: 'value', value: String(Math.max(0, Math.floor(offset))) }),
+    container,
+  );
 }

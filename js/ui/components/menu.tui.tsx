@@ -6,7 +6,7 @@
  */
 import { mapRenderTargetLowering } from 'fino:ui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
-import { Box, Clickable, Input, Layer, Text } from 'internal:ui/components/primitives';
+import { Box, Clickable, Input, Layer, Rule, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { applyTextEdit } from 'internal:ui/components/text-edit';
 import { MenuHeader, MenuSeparator, defaultComboBoxFilter } from 'internal:ui/components/menu';
@@ -215,3 +215,8 @@ mapRenderTargetLowering(ComboBox, 'tui', (all: ComboBoxProps): VNode => {
     </Box>
   );
 });
+
+mapRenderTargetLowering(MenuHeader, 'tui', (props: { label: string }): VNode => (
+  <Text style={[styles.dim, styles.bold]}>{props.label}</Text>
+));
+mapRenderTargetLowering(MenuSeparator, 'tui', (): VNode => <Rule style={[styles.dim]} />);

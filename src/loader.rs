@@ -242,6 +242,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:ui/components/data.tui", "ui/components/data.tui"),
     source_builtin!(
+        "internal:ui/components/virtual.tui",
+        "ui/components/virtual.tui"
+    ),
+    source_builtin!(
         "internal:ui/components/charts.tui",
         "ui/components/charts.tui"
     ),
