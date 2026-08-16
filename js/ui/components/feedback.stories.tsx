@@ -39,13 +39,21 @@ export function feedbackStories(): StoryGroup {
         key: 'spinner',
         name: 'Spinner',
         controls: {
+          pinned: { type: 'boolean', label: 'pin a frame', default: false },
           tick: { type: 'number', default: 0, min: 0 },
         },
         view: (args) => (
-          <HStack gap={1}>
-            <Spinner tick={Number(args.tick)} />
-            <Text style={[styles.muted]}>{`tick ${String(args.tick)}`}</Text>
-          </HStack>
+          <VStack gap={1}>
+            <HStack gap={1}>
+              {args.pinned === true ? <Spinner tick={Number(args.tick)} /> : <Spinner />}
+              <Text style={[styles.muted]}>
+                {args.pinned === true ? `pinned to tick ${String(args.tick)}` : 'animating'}
+              </Text>
+            </HStack>
+            <Text style={[styles.dim]}>
+              Left to itself the terminal spinner runs its own clock; pin a tick to freeze it.
+            </Text>
+          </VStack>
         ),
       },
       {

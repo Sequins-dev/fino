@@ -155,7 +155,14 @@ function menuRowContent(item: {
   return out;
 }
 
-function menuUl(
+/**
+ * The shared `<ul>` a menu renders as.
+ *
+ * Exported because `ContextMenu` builds its own popover around the same list
+ * rather than nesting a `MenuList` inside a `Layer` — the two would each want
+ * to own the surrounding element.
+ */
+export function menuUl(
   items: readonly MenuItem[],
   selectedKey: string | null | undefined,
   props: { top?: number; maxRows?: number; id?: string; onSelect?: unknown },

@@ -2,7 +2,7 @@
 import { describe, it } from 'fino:test/test';
 import { createRenderer, createSignal } from 'fino:ui';
 import type { VNode } from 'fino:ui';
-import { Accordion, Badge, Box, Breadcrumbs, Button, Card, Clickable, EmptyState, FileTree, FloatingActionBar, HStack, HoverCard, KeyHint, Pagination, Popover, ProgressBar, Spinner, Stat, StatusDot, Steps, Table, Tag, TagGroup, Text, Timeline, Toast, ToastStack, Tooltip, VStack, createAccordion, createTreeState } from 'fino:ui/components';
+import { Accordion, Badge, Box, Breadcrumbs, Button, Card, Clickable, ContextMenu, EmptyState, FileTree, FloatingActionBar, HStack, HoverCard, KeyHint, Modal, Pagination, Popover, ProgressBar, Spinner, Stat, StatusDot, Steps, Table, Tag, TagGroup, Text, Timeline, Toast, ToastStack, Tooltip, VStack, createAccordion, createTreeState } from 'fino:ui/components';
 import { fileIcon } from 'internal:ui/components/data';
 import { SPINNER_FRAMES } from 'internal:ui/components/feedback';
 import { iconForm } from 'internal:ui/components/icons';
@@ -13,7 +13,7 @@ import { renderToHtml } from 'fino:ui/html';
 import { toHtml } from 'fino:ui/components/html';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { layout } from 'internal:tty/layout';
-import { lowerTui } from 'internal:tty/lower';
+import { advanceSpinners, lowerTui, spinnersAnimating } from 'internal:tty/lower';
 import { TuiDispatcher } from 'internal:tty/events';
 import type { TuiMouseEventLike } from 'internal:tty/events';
 
@@ -865,5 +865,78 @@ describe('fino:ui/components catalog display — html', () => {
       ),
     );
     t.ok(end.includes('class="ui-fab ui-fab-end"'), 'bottom-end end-aligns');
+  });
+});
+
+// Every overlay story renders closed, so a lowering that only runs while open
+// is invisible to the gallery snapshot. These render them open in both wire
+// modes — the shape that hid a missing `dismissButton` and a missing `menuUl`.
+describe('fino:ui/components overlays render open — html', () => {
+  const ref = { action: 'invoke', url: '/x', view: 'v1', revision: 0, request: 'r1' };
+  const items = [
+    { key: 'rename', label: 'Rename' },
+    { kind: 'separator' as const },
+    { key: 'delete', label: 'Delete' },
+  ];
+
+  it('renders a context menu with its rows and dismiss control', (t) => {
+    const node = (
+      <ContextMenu
+        at={{ x: 4, y: 2 }}
+        items={items}
+        onSelect={() => {}}
+        onDismiss={() => {}}
+        id="cm"
+      />
+    );
+    const html = renderToHtml(toHtml(node));
+    t.ok(html.includes('ui-context-menu'), 'the menu surface renders');
+    t.ok(html.includes('Rename') && html.includes('Delete'), 'rows render');
+    const live = renderToHtml(toHtml(node, { actions: new Map(), fields: {}, action: ref }));
+    t.ok(live.includes('class="ui-dismiss"'), 'a dismiss control renders when interactive');
+    t.ok(live.includes('type="hidden" name="_view"'), 'the action envelope is intact');
+  });
+
+  it('renders a modal and a popover open', (t) => {
+    const modal = renderToHtml(
+      toHtml(
+        <Modal title="Confirm" onDismiss={() => {}}>
+          <Text>Body</Text>
+        </Modal>,
+        { actions: new Map(), fields: {}, action: ref },
+      ),
+    );
+    t.ok(modal.includes('Confirm') && modal.includes('Body'), 'modal title and body render');
+    t.ok(modal.includes('class="ui-dismiss"'), 'modal offers a dismiss control');
+    const popover = renderToHtml(
+      toHtml(
+        <Popover open anchorId="trigger" onDismiss={() => {}}>
+          <Text>Panel</Text>
+        </Popover>,
+        { actions: new Map(), fields: {}, action: ref },
+      ),
+    );
+    t.ok(popover.includes('Panel'), 'popover content renders when open');
+  });
+});
+
+describe('fino:ui/components spinner animates itself', () => {
+  it('advances without a tick prop and stops when nothing renders one', (t) => {
+    const first = strip(lines(<Spinner />, 3, 1)[0]!);
+    t.ok(SPINNER_FRAMES.includes(first), 'a frame renders with no tick supplied');
+    t.ok(spinnersAnimating(), 'the pass reported that it wants a clock');
+
+    advanceSpinners();
+    const second = strip(lines(<Spinner />, 3, 1)[0]!);
+    t.equal(
+      SPINNER_FRAMES.indexOf(second),
+      (SPINNER_FRAMES.indexOf(first) + 1) % SPINNER_FRAMES.length,
+      'advancing the clock moves to the next frame',
+    );
+
+    // A pinned tick opts out, so a tree of those alone leaves the clock idle.
+    advanceSpinners();
+    lines(<Spinner tick={3} />, 3, 1);
+    t.ok(!spinnersAnimating(), 'a pinned tick does not ask for the clock');
   });
 });

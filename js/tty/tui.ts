@@ -61,7 +61,7 @@ import type {
 } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
-import { lowerTui } from 'internal:tty/lower';
+import { advanceSpinners, lowerTui, spinnersAnimating } from 'internal:tty/lower';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type { Color } from 'fino:tty/style';
@@ -592,9 +592,30 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
         if (out.length > 0) void writeStdout(out);
       }
       lastFrame = frame;
+      scheduleAnimation();
       return frame;
     },
   };
+  // A `Spinner` with no pinned `tick` is the one thing that must repaint
+  // without its props changing. The clock lives with the component; the live
+  // app is what runs it, so a one-shot `renderFrame` never starts a timer, and
+  // it stops as soon as a pass renders no self-driven spinner.
+  const FRAME_MS = 80;
+  let animation: { cancel(): void } | null = null;
+  function scheduleAnimation(): void {
+    if (stopped || animation !== null || !spinnersAnimating()) return;
+    const pending = loopTimeout(FRAME_MS);
+    animation = pending;
+    void pending.then(
+      () => {
+        animation = null;
+        if (!stopped) advanceSpinners();
+      },
+      () => {
+        animation = null;
+      },
+    );
+  }
   // A tree renders once; a thunk keeps its signal dependencies live. Both go
   // through the same sink, so the paint path does not fork.
   let root: Root<Frame> | null = null;

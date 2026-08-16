@@ -9,7 +9,7 @@
  *
  * @internal
  */
-import { mapRenderTargetLowering } from 'fino:ui';
+import { createSignal, mapRenderTargetLowering } from 'fino:ui';
 import { Box, Clickable, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import {
@@ -29,6 +29,36 @@ import type {
 } from 'internal:ui/components/feedback';
 import type { VNode } from 'fino:ui';
 
+/**
+ * The spinner's own clock.
+ *
+ * A spinner is the one component whose appearance changes without its props
+ * changing, so it cannot be driven the way everything else is. It reads this
+ * signal when the caller did not pin a `tick`, which both selects the frame
+ * and — because the terminal root re-renders whatever it read — makes the
+ * next `advanceSpinners()` repaint it.
+ *
+ * The clock does not run itself. A one-shot `renderFrame` would otherwise
+ * start a timer and hold the event loop open for a frame it already painted,
+ * so the *live* terminal app drives it and stops as soon as nothing reads it:
+ * `spinnersAnimating()` reports whether the pass that just rendered wanted a
+ * frame at all.
+ */
+const clock = createSignal(0);
+let animating = false;
+
+/** Whether the last lowering pass produced a spinner with no pinned `tick`. */
+export function spinnersAnimating(): boolean {
+  return animating;
+}
+
+/** Advance the clock, repainting every self-driven spinner. */
+export function advanceSpinners(): void {
+  animating = false;
+  clock.set(clock.get() + 1);
+}
+
+
 mapRenderTargetLowering(Badge, 'tui', (props: BadgeProps): VNode => {
   const { label, variant, ...rest } = props;
   return (
@@ -39,7 +69,14 @@ mapRenderTargetLowering(Badge, 'tui', (props: BadgeProps): VNode => {
 mapRenderTargetLowering(Spinner, 'tui', (props: SpinnerProps): VNode => {
   const { tick, frames, ...rest } = props;
   const set = frames !== undefined && frames.length > 0 ? frames : SPINNER_FRAMES;
-  const frame = set[(((tick ?? 0) % set.length) + set.length) % set.length]!;
+  let index: number;
+  if (tick === undefined) {
+    animating = true;
+    index = clock.get();
+  } else {
+    index = tick;
+  }
+  const frame = set[((index % set.length) + set.length) % set.length]!;
   return (
     <Text style={[styles.accent]} {...rest}>
       {frame}

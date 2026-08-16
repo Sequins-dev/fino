@@ -14,6 +14,7 @@ import {
   register,
   tone,
 } from 'internal:ui/components/html-runtime';
+import { menuUl } from 'internal:ui/components/menu';
 import type { MenuItem } from 'internal:ui/components/menu';
 import type { StatusVariant } from 'internal:ui/components/feedback';
 

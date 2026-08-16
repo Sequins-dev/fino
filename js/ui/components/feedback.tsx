@@ -43,7 +43,14 @@ export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', 
 
 /** Props accepted by `Spinner`. */
 export interface SpinnerProps extends FlexChildProps, Props {
-  /** Optional fixed frame index; omitted, the render target animates. */
+  /**
+   * Pin the animation to one frame.
+   *
+   * Left out, the terminal target runs its own clock and the spinner animates
+   * without the caller doing anything; the web target animates in CSS either
+   * way. Supply a tick to freeze it — for a deterministic frame in a test, or
+   * to drive the phase from state you already own.
+   */
   tick?: number;
   frames?: string[];
   id?: string;
