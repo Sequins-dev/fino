@@ -22,8 +22,8 @@ import {
   VirtualScroll,
   VStack,
 } from 'fino:ui/components';
-import { catalogStories, createGalleryApp, defaultArgs, galleryPage } from 'fino:ui/gallery';
-import type { Story } from 'fino:ui/gallery';
+import { catalogPreviews, createPreviewApp, defaultArgs, previewPage } from 'fino:ui/preview';
+import type { Preview } from 'fino:ui/preview';
 import { renderFrame } from 'fino:tty/tui';
 import { createRenderer } from 'fino:ui';
 import type { VNode } from 'fino:ui';
@@ -358,11 +358,11 @@ describe('fino:ui/components/html actions', () => {
     const html = renderToHtml(
       toHtml(<Button label="Save" onClick={() => clicks++} />, {
         actions,
-        fields: { story: 'buttons' },
+        fields: { preview: 'buttons' },
       }),
     );
     t.ok(html.includes('<form method="get" class="ui-action">'), 'button wrapped in a GET form');
-    t.ok(html.includes('name="story" value="buttons"'), 'context fields ride along hidden');
+    t.ok(html.includes('name="preview" value="buttons"'), 'context fields ride along hidden');
     t.ok(html.includes('name="do" value="a0"'), 'submit button carries the action id');
     actions.get('a0')!();
     t.equal(clicks, 1, 'invoking the registered action fires the handler');
@@ -603,7 +603,7 @@ describe('fino:ui/components/html actions', () => {
   });
 
   it('wires VirtualList scroll containers to an action when onScroll is given', (t) => {
-    // Mirrors how the real gallery renders interactive views: an actions
+    // Mirrors how the real preview renders interactive views: an actions
     // collector plus a web action descriptor, which is what turns on the
     // client-facing data-fi-action/data-fi-scroll markers (the plain GET
     // fallback used when no descriptor is given intentionally carries none —
@@ -660,16 +660,16 @@ describe('fino:ui/components/html actions', () => {
   });
 
   it('honors semantic border styles on panels', (t) => {
-    const groups = catalogStories();
-    const doubled = galleryPage(groups, 'panel', { border: 'double' });
+    const groups = catalogPreviews();
+    const doubled = previewPage(groups, 'panel', { border: 'double' });
     t.ok(doubled.includes('double var(--ui-border)'), 'double maps to a CSS double border');
-    const dashed = galleryPage(groups, 'panel', { border: 'ascii' });
+    const dashed = previewPage(groups, 'panel', { border: 'ascii' });
     t.ok(dashed.includes('dashed var(--ui-border)'), 'ascii maps to a dashed border');
     t.ok(!dashed.includes('double var(--ui-border)'), 'border styles are distinct');
   });
 
   it('applies actions over SSE without navigation', async (t) => {
-    const app = createGalleryApp();
+    const app = createPreviewApp();
     const jar = new Map<string, string>();
     const absorb = (response: Response): void => {
       const raw =
@@ -682,9 +682,9 @@ describe('fino:ui/components/html actions', () => {
     };
     const cookieHeader = (): string =>
       [...jar.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
-    const loadStory = async (key: string) => {
+    const loadPreview = async (key: string) => {
       const response = (await app.handle(
-        new Request(`http://local/?story=${key}`, {
+        new Request(`http://local/?preview=${key}`, {
           headers: jar.size > 0 ? { cookie: cookieHeader() } : {},
         }),
       )) as Response;
@@ -699,7 +699,7 @@ describe('fino:ui/components/html actions', () => {
       };
     };
     const post = (
-      fields: Awaited<ReturnType<typeof loadStory>>,
+      fields: Awaited<ReturnType<typeof loadPreview>>,
       input: Record<string, string>,
     ): Promise<Response> =>
       app.handle(
@@ -716,7 +716,7 @@ describe('fino:ui/components/html actions', () => {
         }),
       ) as Promise<Response>;
 
-    const checkbox = await loadStory('checkbox');
+    const checkbox = await loadPreview('checkbox');
     t.ok(
       /<form[^>]*data-fi-action="[^"]/.test(checkbox.html),
       'action forms carry a truthy data-fi-action for client interception',
@@ -733,37 +733,37 @@ describe('fino:ui/components/html actions', () => {
     const events = await acted.text();
     t.ok(events.includes('"kind":"render"'), 'the stream pushes a render event');
     t.ok(!events.includes('"checked":true'), 'the pushed tree shows the unchecked state');
-    const after = await loadStory('checkbox');
+    const after = await loadPreview('checkbox');
     t.ok(
       !/class="ui-check"[^>]*checked/.test(after.html),
-      'story signals persisted the toggle server-side',
+      'preview signals persisted the toggle server-side',
     );
 
-    const tabs = await loadStory('tabs');
+    const tabs = await loadPreview('tabs');
     t.ok(tabs.html.includes('Active panel: one'), 'first tab active initially');
     const tabId = /name="do" value="(a\d+)">Details</.exec(tabs.html)![1]!;
     const switched = await (await post(tabs, { do: tabId })).text();
     t.ok(switched.includes('Active panel: two'), 'tab switch arrives in the SSE render');
     t.ok(switched.includes('ui-tab is-active'), 'active tab styling updates in the pushed tree');
 
-    const text = await loadStory('text-input');
-    t.ok(text.html.includes('value="hello"'), 'text input starts with the story value');
+    const text = await loadPreview('text-input');
+    t.ok(text.html.includes('value="hello"'), 'text input starts with the preview value');
     const textDo = /name="do" value="(a\d+)"/.exec(text.html)![1]!;
     const edited = await (await post(text, { do: textDo, value: 'world' })).text();
     t.ok(edited.includes('world'), 'submitted text arrives in the pushed tree');
 
-    const tree = await loadStory('file-tree');
+    const tree = await loadPreview('file-tree');
     t.ok(tree.html.includes('class="ui-tree-dir" open'), 'src starts expanded');
     const treeToggle = /<button class="ui-tree-icon" name="do" value="(a\d+)"/.exec(tree.html)![1]!;
     const collapsed = await (await post(tree, { do: treeToggle })).text();
     t.ok(collapsed.includes('"kind":"render"'), 'tree toggle pushes a render');
-    const reloaded = await loadStory('file-tree');
+    const reloaded = await loadPreview('file-tree');
     t.ok(
       !reloaded.html.includes('class="ui-tree-dir" open'),
       'icon-click toggle collapsed src server-side',
     );
 
-    const pagination = await loadStory('pagination');
+    const pagination = await loadPreview('pagination');
     t.ok(
       /class="ui-button ui-pager-page is-current"[^>]*>1</.test(pagination.html),
       'pagination starts on page 1',
@@ -775,19 +775,19 @@ describe('fino:ui/components/html actions', () => {
       jumped.includes('"ui-button ui-pager-page is-current"'),
       'a page is marked current in the pushed tree',
     );
-    const paginationReloaded = await loadStory('pagination');
+    const paginationReloaded = await loadPreview('pagination');
     t.ok(
       /class="ui-button ui-pager-page is-current"[^>]*>2</.test(paginationReloaded.html),
       'the page jump persisted server-side',
     );
 
-    const virtual = await loadStory('virtual-list');
+    const virtual = await loadPreview('virtual-list');
     t.ok(virtual.html.includes('data-fi-scroll="1"'), 'the virtual list carries the scroll marker');
     t.ok(
       virtual.html.includes('data-fi-row-height="'),
       'a row height rides along for the client to convert scrollTop',
     );
-    t.ok(virtual.html.includes('item 000'), 'the story starts windowed at the top');
+    t.ok(virtual.html.includes('item 000'), 'the preview starts windowed at the top');
     t.ok(!virtual.html.includes('item 020'), 'row 20 is not in the initial window');
     const scrollMarkerAt = virtual.html.indexOf('data-fi-scroll');
     const scrollFormStart = virtual.html.lastIndexOf('<form', scrollMarkerAt);
@@ -797,18 +797,18 @@ describe('fino:ui/components/html actions', () => {
     const scrolled = await (await post(virtual, { do: scrollDo, value: '20' })).text();
     t.ok(scrolled.includes('"kind":"render"'), 'the scroll action pushes a render');
     t.ok(scrolled.includes('item 020'), 'scrolling moved the window to reveal later rows');
-    const virtualReloaded = await loadStory('virtual-list');
+    const virtualReloaded = await loadPreview('virtual-list');
     t.ok(virtualReloaded.html.includes('item 020'), 'the scrolled offset persisted server-side');
   });
 });
 
-interface LiveStory {
+interface LivePreview {
   dispatcher: TuiDispatcher;
   render(tree: VNode): void;
   text(): string[];
 }
 
-function liveStory(width = 60, height = 20): LiveStory {
+function livePreview(width = 60, height = 20): LivePreview {
   const root = createTerminalRoot();
   const renderer = createRenderer(terminalHost());
   const dispatcher = new TuiDispatcher(root);
@@ -826,11 +826,11 @@ function liveStory(width = 60, height = 20): LiveStory {
   };
 }
 
-function storyByKey(key: string): Story {
-  for (const group of catalogStories()) {
-    for (const story of group.stories) if (story.key === key) return story;
+function storyByKey(key: string): Preview {
+  for (const group of catalogPreviews()) {
+    for (const preview of group.previews) if (preview.key === key) return preview;
   }
-  throw new Error(`no story ${key}`);
+  throw new Error(`no preview ${key}`);
 }
 
 function mouse(
@@ -842,27 +842,27 @@ function mouse(
   return { type: 'mouse', action, button, x, y, ctrl: false, alt: false, shift: false };
 }
 
-describe('fino:ui/gallery', () => {
-  it('renders every catalog story in both targets without throwing', (t) => {
+describe('fino:ui/preview', () => {
+  it('renders every catalog preview in both targets without throwing', (t) => {
     const seen = new Set<string>();
-    for (const group of catalogStories()) {
-      for (const story of group.stories) {
-        t.ok(!seen.has(story.key), `${story.key} is a unique story key`);
-        seen.add(story.key);
-        const args = defaultArgs(story);
-        const tui = renderFrame(story.view(args), { width: 60, height: 20 });
-        t.ok(tui.split('\n').length === 20, `${story.key} renders to a TUI frame`);
-        const html = renderToHtml(toHtml(story.view(args)));
-        t.ok(html.length > 0, `${story.key} renders to HTML`);
+    for (const group of catalogPreviews()) {
+      for (const preview of group.previews) {
+        t.ok(!seen.has(preview.key), `${preview.key} is a unique preview key`);
+        seen.add(preview.key);
+        const args = defaultArgs(preview);
+        const tui = renderFrame(preview.view(args), { width: 60, height: 20 });
+        t.ok(tui.split('\n').length === 20, `${preview.key} renders to a TUI frame`);
+        const html = renderToHtml(toHtml(preview.view(args)));
+        t.ok(html.length > 0, `${preview.key} renders to HTML`);
       }
     }
   });
 
-  it('scrolls the VirtualList story with the wheel through the TUI dispatcher', (t) => {
-    const story = storyByKey('virtual-list');
-    const args = defaultArgs(story);
-    const app = liveStory();
-    app.render(story.view(args));
+  it('scrolls the VirtualList preview with the wheel through the TUI dispatcher', (t) => {
+    const preview = storyByKey('virtual-list');
+    const args = defaultArgs(preview);
+    const app = livePreview();
+    app.render(preview.view(args));
     t.ok(
       app.text().some((line) => line.includes('item 000')),
       'window starts at the top of the list',
@@ -876,7 +876,7 @@ describe('fino:ui/gallery', () => {
       true,
       'the list consumes the wheel event',
     );
-    app.render(story.view(args));
+    app.render(preview.view(args));
     t.ok(
       app.text().some((line) => line.includes('offset 3/500')),
       'one notch moves the window three rows',
@@ -886,21 +886,21 @@ describe('fino:ui/gallery', () => {
       'the windowed slice follows the offset',
     );
     app.dispatcher.dispatch(mouse('wheel', 'wheel-up', 2, 2));
-    app.render(story.view(args));
+    app.render(preview.view(args));
     t.ok(
       app.text().some((line) => line.includes('offset 0/500')),
       'wheel-up scrolls back to the top',
     );
   });
 
-  it('removes a tag from the story list through its remover', (t) => {
-    const story = storyByKey('tags');
-    const args = defaultArgs(story);
-    const app = liveStory();
-    app.render(story.view(args));
+  it('removes a tag from the preview list through its remover', (t) => {
+    const preview = storyByKey('tags');
+    const args = defaultArgs(preview);
+    const app = livePreview();
+    app.render(preview.view(args));
     t.ok(
       app.text().some((line) => line.includes('4 tags')),
-      'the story starts with four tags',
+      'the preview starts with four tags',
     );
     const row = app.text().findIndex((line) => line.includes('alpha'));
     t.ok(row >= 0, 'the alpha tag renders');
@@ -908,7 +908,7 @@ describe('fino:ui/gallery', () => {
     t.ok(x >= 0, 'the removable tag carries a remover');
     app.dispatcher.dispatch(mouse('press', 'left', x, row));
     app.dispatcher.dispatch(mouse('release', 'left', x, row));
-    app.render(story.view(args));
+    app.render(preview.view(args));
     t.ok(
       !app.text().some((line) => line.includes('alpha')),
       'removing deletes the tag from the signal-held list',
@@ -919,35 +919,35 @@ describe('fino:ui/gallery', () => {
     );
   });
 
-  it('builds gallery pages with a sidebar and the selected story', (t) => {
-    const groups = catalogStories();
-    const page = galleryPage(groups, 'checkbox');
-    t.ok(page.includes('?story=buttons'), 'sidebar links to stories');
-    t.ok(page.includes('Notifications'), 'selected story is rendered');
+  it('builds preview pages with a sidebar and the selected preview', (t) => {
+    const groups = catalogPreviews();
+    const page = previewPage(groups, 'checkbox');
+    t.ok(page.includes('?preview=buttons'), 'sidebar links to previews');
+    t.ok(page.includes('Notifications'), 'selected preview is rendered');
     t.ok(page.includes('font-weight:bold">Checkbox</a>'), 'active link is bold');
-    const fallback = galleryPage(groups, null);
-    t.ok(fallback.includes('<h1'), 'no selection falls back to the first story');
+    const fallback = previewPage(groups, null);
+    t.ok(fallback.includes('<h1'), 'no selection falls back to the first preview');
   });
 
-  it('drives the TUI gallery in a real pty', async (t) => {
-    const dir = `/tmp/fino-gallery-test-${Date.now().toString(36)}`;
+  it('drives the TUI preview in a real pty', async (t) => {
+    const dir = `/tmp/fino-preview-test-${Date.now().toString(36)}`;
     await fs.mkdir(dir);
-    const script = `${dir}/gallery.ts`;
+    const script = `${dir}/preview.ts`;
     await fs.writeFile(
       script,
-      encoder.encode("import { runGalleryTui } from 'fino:ui/gallery';\nawait runGalleryTui();\n"),
+      encoder.encode("import { runPreviewTui } from 'fino:ui/preview';\nawait runPreviewTui();\n"),
     );
     const pty = await openPty(execPath, [script], { cols: 90, rows: 26 });
     try {
-      await pty.waitFor((term) => term.text().some((line) => line.includes('Stories')));
+      await pty.waitFor((term) => term.text().some((line) => line.includes('Previews')));
       await pty.waitFor((term) => term.text().some((line) => line.includes('Panel')));
       t.ok(
         pty.term.text().some((line) => line.includes('Bordered content')),
-        'first story previews',
+        'first preview previews',
       );
       await pty.sendKey('down');
       await pty.waitFor((term) => term.text().some((line) => line.includes('grow 2')));
-      t.ok(true, 'arrow key changes the story');
+      t.ok(true, 'arrow key changes the preview');
       await pty.sendKey('q');
       const code = await pty.waitExit();
       t.equal(code, 0, 'q quits cleanly');
@@ -957,17 +957,17 @@ describe('fino:ui/gallery', () => {
     }
   });
 
-  it('reaches story controls by keyboard in the TUI', async (t) => {
-    const dir = `/tmp/fino-gallery-keys-${Date.now().toString(36)}`;
+  it('reaches preview controls by keyboard in the TUI', async (t) => {
+    const dir = `/tmp/fino-preview-keys-${Date.now().toString(36)}`;
     await fs.mkdir(dir);
-    const script = `${dir}/gallery.ts`;
+    const script = `${dir}/preview.ts`;
     await fs.writeFile(
       script,
-      encoder.encode("import { runGalleryTui } from 'fino:ui/gallery';\nawait runGalleryTui();\n"),
+      encoder.encode("import { runPreviewTui } from 'fino:ui/preview';\nawait runPreviewTui();\n"),
     );
     const pty = await openPty(execPath, [script], { cols: 90, rows: 26 });
     try {
-      await pty.waitFor((term) => term.text().some((line) => line.includes('Stories')));
+      await pty.waitFor((term) => term.text().some((line) => line.includes('Previews')));
       for (let i = 0; i < 3; i++) await pty.sendKey('down');
       await pty.waitFor((term) => term.text().some((line) => line.includes('[x] Notifications')));
       await pty.sendKey('tab');
@@ -1031,7 +1031,7 @@ describe('fino:ui/components spinner clock', () => {
         "import { renderFrame } from 'fino:tty/tui';\n" +
           "import { h } from 'fino:ui';\n" +
           "import { Spinner } from 'fino:ui/components';\n" +
-          "renderFrame(h(Spinner, {}), { width: 3, height: 1 });\n" +
+          'renderFrame(h(Spinner, {}), { width: 3, height: 1 });\n' +
           "console.log('done');\n",
       ),
     );

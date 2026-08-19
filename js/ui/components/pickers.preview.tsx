@@ -1,14 +1,13 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/pickers.stories — gallery stories for calendars, clocks, and the date/time/color pickers.
+ * internal:ui/components/pickers.preview — preview previews for calendars, clocks, and the date/time/color pickers.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
 import { createSignal } from 'fino:ui';
-import { render } from 'fino:tty/tui';
 import {
   Calendar,
   ColorPicker,
@@ -21,7 +20,7 @@ import {
   createDisclosure,
   styles,
 } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
 const SWATCHES = [
   '#bf616a',
@@ -38,7 +37,7 @@ const SWATCHES = [
 // clock — so the terminal and HTML galleries render identically on every
 // run, and the interaction tests in tests/ui/pickers.test.tsx can assert
 
-export function pickersStories(): StoryGroup {
+export function pickersPreviews(): PreviewGroup {
   const calMonth = createSignal('2024-06');
   const calSelected = createSignal<string | undefined>('2024-06-15');
   const datePicker = createDisclosure(false);
@@ -51,7 +50,7 @@ export function pickersStories(): StoryGroup {
 
   return {
     title: 'Time & pickers',
-    stories: [
+    previews: [
       {
         key: 'calendar',
         name: 'Calendar',
@@ -66,7 +65,7 @@ export function pickersStories(): StoryGroup {
         view: (args) => (
           <VStack gap={1}>
             <Calendar
-              id="gallery-calendar"
+              id="preview-calendar"
               month={calMonth.get()}
               selected={calSelected.get()}
               today="2024-06-10"
@@ -108,7 +107,7 @@ export function pickersStories(): StoryGroup {
         view: (args) => (
           <VStack gap={1} width={30}>
             <DatePicker
-              id="gallery-date-picker"
+              id="preview-date-picker"
               value={dateValue.get()}
               open={datePicker.open.get()}
               onOpenChange={(next) => datePicker.set(next)}
@@ -132,7 +131,7 @@ export function pickersStories(): StoryGroup {
         view: (args) => (
           <VStack gap={1} width={30}>
             <TimePicker
-              id="gallery-time-picker"
+              id="preview-time-picker"
               value={timeValue.get()}
               open={timePicker.open.get()}
               onOpenChange={(next) => timePicker.set(next)}
@@ -155,7 +154,7 @@ export function pickersStories(): StoryGroup {
           return (
             <VStack gap={1}>
               <ColorPicker
-                id="gallery-color-picker"
+                id="preview-color-picker"
                 value={colorValue.get()}
                 onChange={(value) => colorValue.set(value)}
                 swatches={SWATCHES}

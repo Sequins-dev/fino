@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/overlay.stories — gallery stories for menus, popovers, tooltips, and modals.
+ * internal:ui/components/overlay.preview — preview previews for menus, popovers, tooltips, and modals.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -22,9 +22,9 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { MenuItem } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function overlayStories(): StoryGroup {
+export function overlayPreviews(): PreviewGroup {
   const modal = createDisclosure(false);
   const select = createDisclosure(false);
   const model = createSignal<string | null>(null);
@@ -33,7 +33,7 @@ export function overlayStories(): StoryGroup {
   const popover = createDisclosure(false);
   return {
     title: 'Menus & overlays',
-    stories: [
+    previews: [
       {
         key: 'tooltip',
         name: 'Tooltip',
@@ -92,7 +92,7 @@ export function overlayStories(): StoryGroup {
         view: () => (
           <VStack gap={1} width={26}>
             <Select
-              id="gallery-select"
+              id="preview-select"
               value={model.get()}
               open={select.open.get()}
               onOpenChange={(next) => select.set(next)}
@@ -113,7 +113,7 @@ export function overlayStories(): StoryGroup {
         view: () => (
           <VStack gap={1}>
             <Button label="Open modal" onClick={() => modal.set(true)} />
-            <Text style={[styles.muted]}>Esc or the backdrop story text dims.</Text>
+            <Text style={[styles.muted]}>Esc or the backdrop preview text dims.</Text>
             {modal.open.get() ? (
               <Modal title="Confirm" onDismiss={() => modal.set(false)}>
                 <Text>Delete this session?</Text>

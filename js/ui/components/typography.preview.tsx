@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/typography.stories — gallery stories for headings, emphasis, links, quotes, lists, and code.
+ * internal:ui/components/typography.preview — preview previews for headings, emphasis, links, quotes, lists, and code.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -23,9 +23,9 @@ import {
   VStack,
   styles,
 } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function typographyStories(): StoryGroup {
+export function typographyPreviews(): PreviewGroup {
   const activated = createSignal(0);
   const sampleCode = [
     'function greet(name: string): string {',
@@ -35,7 +35,7 @@ export function typographyStories(): StoryGroup {
   ].join('\n');
   return {
     title: 'Typography',
-    stories: [
+    previews: [
       {
         key: 'heading',
         name: 'Heading',
@@ -81,7 +81,7 @@ export function typographyStories(): StoryGroup {
         view: (args) => (
           <VStack gap={1}>
             {args.mode === 'handler' ? (
-              <Link id="story-link" onActivate={() => activated.set(activated.get() + 1)}>
+              <Link id="preview-link" onActivate={() => activated.set(activated.get() + 1)}>
                 Run the build
               </Link>
             ) : (

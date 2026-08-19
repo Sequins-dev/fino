@@ -10,7 +10,6 @@ import {
   actionsActive,
   changeAttrs,
   handlerOf,
-  idAttr,
   register,
 } from 'internal:ui/components/html-runtime';
 import type {
@@ -49,10 +48,7 @@ export function Button(all: ButtonProps): VNode {
 
 // Checkbox, Switch and Radio are one control on the web with three
 // presentations, so they share a builder rather than repeating it.
-function choiceHtml(
-  kind: 'checkbox' | 'radio',
-  node: VNode,
-): VNode {
+function choiceHtml(kind: 'checkbox' | 'radio', node: VNode): VNode {
   const props = node.props as CheckboxProps & RadioProps & SwitchProps;
   const isSwitch = node.type === 'ui:switch';
   const checked =

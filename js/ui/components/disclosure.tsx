@@ -10,7 +10,6 @@ import {
   actionForm,
   actionsActive,
   handlerOf,
-  idAttr,
   register,
 } from 'internal:ui/components/html-runtime';
 import { Box } from 'internal:ui/components/primitives';

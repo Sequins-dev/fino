@@ -5,18 +5,14 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Rule, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { stringWidth } from 'fino:tty/frame';
 import { iconForm } from 'internal:ui/components/icons';
 import { fileIcon } from 'internal:ui/components/data';
 import { FileTree, Table, Timeline } from 'internal:ui/components/data';
-import type {
-  FileTreeProps,
-  TableProps,
-  TimelineProps,
-} from 'internal:ui/components/data';
+import type { FileTreeProps, TableProps, TimelineProps } from 'internal:ui/components/data';
 
 mapRenderTargetLowering(Table, 'tui', (all: TableProps): VNode => {
   const { children = [], ...props } = all as TableProps & { children?: NormalizedChild[] };

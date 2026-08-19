@@ -145,6 +145,11 @@ export function justifyCss(value: unknown): string | undefined {
 }
 
 /** Row height in CSS pixels for anything measured in terminal rows on the web. */
+// Fixed row height (px) for `ui:virtual-list` in the HTML target. The
+// container's height and its top/bottom spacers all size off this same
+// constant, and it rides along as `data-fi-row-height` so the client can
+// convert a scroll container's `scrollTop` back into the row-offset unit
+// `VirtualScroll` works in — see internal:ui/web/client's scroll listener.
 export const VIRTUAL_ROW_PX = 24;
 
 export function emptyNode(): VNode {
@@ -167,7 +172,6 @@ export function idAttr(id: unknown): Props {
 export function tone(variant: unknown, fallback: string): string {
   return `ui-tone-${typeof variant === 'string' ? variant : fallback}`;
 }
-
 
 export interface ActionCollector {
   set(id: string, invoke: (value?: string) => void): unknown;
@@ -333,6 +337,10 @@ export const SAFE_HREF_RELATIVE = /^(?:\/|\.\/|\.\.\/|#|\?)/;
  * (`/…`, `./…`, `../…`, `#…`, `?…`); anything else — including unrecognized
  * schemes — returns `undefined`.
  */
+// Schemes and relative forms an <a href> may carry. Anything else — most
+// dangerously `javascript:`/`vbscript:`/`data:` — is app-controlled content
+// (chat messages, agent output, file metadata) that must never reach a live
+// anchor, so it is dropped rather than escaped.
 export function safeHref(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   // eslint-disable-next-line no-control-regex -- stripping is the point

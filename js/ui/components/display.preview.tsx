@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/display.stories — gallery stories for cards, stats, status dots, and empty states.
+ * internal:ui/components/display.preview — preview previews for cards, stats, status dots, and empty states.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -24,16 +24,16 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { StatusDotStatus, Trend } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
 const STATUS_DOT_VALUES: StatusDotStatus[] = ['ok', 'busy', 'error', 'idle', 'warning'];
 
-export function displayStories(): StoryGroup {
+export function displayPreviews(): PreviewGroup {
   const cardSynced = createSignal(0);
   const emptyCleared = createSignal(0);
   return {
     title: 'Display',
-    stories: [
+    previews: [
       {
         key: 'card',
         name: 'Card',

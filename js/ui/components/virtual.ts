@@ -11,17 +11,12 @@ import {
   actionsActive,
   flexChildCss,
   handlerOf,
-  idAttr,
   register,
   resolveStyle,
   sizeCss,
   styleCss,
 } from 'internal:ui/components/html-runtime';
-import type {
-  FlexChildProps,
-  StyleProps,
-  UiMouseEvent,
-} from 'internal:ui/components/primitives';
+import type { FlexChildProps, StyleProps, UiMouseEvent } from 'internal:ui/components/primitives';
 
 /** The visible slice a `VirtualScroll` model computed for one paint. */
 export interface VirtualWindow {
@@ -186,17 +181,17 @@ function virtualSpacerHtml(rows: number): VNode {
     'aria-hidden': 'true',
   });
 }
+/**
+ * `ui:virtual-list` on the web: there is no wheel event to hook, so instead
+ * of `onMouse` this wires `onScroll` to a real scrollable `<div>` — marked
+ * `data-fi-scroll` with its row height, and (when interactive) wrapped in an
+ * action form carrying a hidden `value` field the client fills in with the
+ * scrolled-to row before submitting. Without an `onScroll` handler the
+ * container renders inert, same as any other handler-less control.
+ */
 export function VirtualList(all: VirtualListProps): VNode {
   const { children = [], ...props } = all as VirtualListProps & { children?: NormalizedChild[] };
-  const {
-    height,
-    window: slice,
-    offset,
-    onMouse: _onMouse,
-    onScroll,
-    id,
-    ...rest
-  } = props;
+  const { height, window: slice, offset, onMouse: _onMouse, onScroll, id, ...rest } = props;
   const scroll = handlerOf<(offset: number) => void>(onScroll);
   const css: Record<string, string> = {
     overflow: 'auto',

@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/forms.stories — gallery stories for buttons, toggles, and text entry.
+ * internal:ui/components/forms.preview — preview previews for buttons, toggles, and text entry.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -29,7 +29,7 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { ComboBoxOption } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
 const COMBO_OPTIONS: ComboBoxOption[] = [
   { key: 'js', label: 'JavaScript' },
@@ -39,7 +39,7 @@ const COMBO_OPTIONS: ComboBoxOption[] = [
   { key: 'go', label: 'Go' },
 ];
 
-export function formsStories(): StoryGroup {
+export function formsPreviews(): PreviewGroup {
   const checked = createSignal(true);
   const radio = createSignal('b');
   const power = createSignal(false);
@@ -55,7 +55,7 @@ export function formsStories(): StoryGroup {
   const starred = createSignal(false);
   return {
     title: 'Forms',
-    stories: [
+    previews: [
       {
         key: 'buttons',
         name: 'Button',
@@ -216,7 +216,7 @@ export function formsStories(): StoryGroup {
         view: (args) => (
           <VStack gap={1}>
             <Slider
-              id="gallery-slider"
+              id="preview-slider"
               value={volume.get()}
               orientation={args.orientation as 'horizontal' | 'vertical'}
               onChange={(next) => volume.set(next)}
@@ -231,7 +231,7 @@ export function formsStories(): StoryGroup {
         view: () => (
           <VStack gap={1} width={26}>
             <ComboBox
-              id="gallery-combo"
+              id="preview-combo"
               value={combo.value.get()}
               options={COMBO_OPTIONS}
               open={comboOpen.get()}
@@ -255,7 +255,7 @@ export function formsStories(): StoryGroup {
         view: () => (
           <HStack gap={1}>
             <IconButton
-              id="gallery-icon-button"
+              id="preview-icon-button"
               icon={starred.get() ? 'lock' : 'file'}
               label={starred.get() ? 'Unstar' : 'Star'}
               onClick={() => starred.set(!starred.get())}

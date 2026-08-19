@@ -11,14 +11,7 @@ import type { VirtualListProps } from 'internal:ui/components/virtual';
 
 mapRenderTargetLowering(VirtualList, 'tui', (all: VirtualListProps): VNode => {
   const { children = [], ...props } = all as VirtualListProps & { children?: NormalizedChild[] };
-  const {
-    height,
-    window: slice,
-    offset,
-    onMouse,
-    onScroll: _onScroll,
-    ...rest
-  } = props;
+  const { height, window: slice, offset, onMouse, onScroll: _onScroll, ...rest } = props;
   return h(
     'clickable',
     { direction: 'column', height, onMouse, focusable: false, ...rest },

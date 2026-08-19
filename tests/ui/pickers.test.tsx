@@ -3,7 +3,18 @@ import { describe, it } from 'fino:test/test';
 import { createRenderer, createSignal } from 'fino:ui';
 import type { VNode } from 'fino:ui';
 import { Calendar, ColorPicker, DatePicker, DigitalClock, TimePicker } from 'fino:ui/components';
-import { formatClockTime, formatTimeParts, monthGrid, monthLabel, parseClockTime, parseHexColor, parseIsoMonth, shiftMonth, timeColumnWindow, weekdayLabels } from 'internal:ui/components/pickers';
+import {
+  formatClockTime,
+  formatTimeParts,
+  monthGrid,
+  monthLabel,
+  parseClockTime,
+  parseHexColor,
+  parseIsoMonth,
+  shiftMonth,
+  timeColumnWindow,
+  weekdayLabels,
+} from 'internal:ui/components/pickers';
 import { nearestAnsi256, supportsTruecolor } from 'fino:tty/style';
 import { renderFrame } from 'fino:tty/tui';
 import { renderToHtml } from 'fino:ui/html';

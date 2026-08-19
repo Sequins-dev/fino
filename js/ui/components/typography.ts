@@ -9,7 +9,6 @@ import {
   actionForm,
   actionsActive,
   handlerOf,
-  idAttr,
   inlineStyleAttrs,
   num,
   register,
@@ -29,11 +28,7 @@ export function Heading(all: HeadingProps): VNode {
   const { children = [], ...props } = all as HeadingProps & { children?: NormalizedChild[] };
   const { level, id } = props;
   const lvl = Math.min(6, Math.max(1, Math.floor((level as number | undefined) ?? 1)));
-  return h(
-    `h${lvl}`,
-    { className: `ui-heading ui-heading-${lvl}`, ...idAttr(id) },
-    ...children,
-  );
+  return h(`h${lvl}`, { className: `ui-heading ui-heading-${lvl}`, ...idAttr(id) }, ...children);
 }
 
 /** Props accepted by `Bold`. */
@@ -133,11 +128,7 @@ export interface BlockquoteProps extends FlexChildProps, Props {
 export function Blockquote(all: BlockquoteProps): VNode {
   const { children = [], ...props } = all as BlockquoteProps & { children?: NormalizedChild[] };
   const { id } = props;
-  return h(
-    'blockquote',
-    { className: 'ui-blockquote', ...idAttr(id) },
-    ...children,
-  );
+  return h('blockquote', { className: 'ui-blockquote', ...idAttr(id) }, ...children);
 }
 
 /** Props accepted by `List`. */
@@ -194,14 +185,7 @@ export interface CodeProps extends FlexChildProps, Props {
  */
 export function Code(all: CodeProps): VNode {
   const { children = [], ...props } = all as CodeProps & { children?: NormalizedChild[] };
-  const {
-    code: source,
-    language,
-    showLineNumbers,
-    filename,
-    copyable,
-    id,
-  } = props;
+  const { code: source, language, showLineNumbers, filename, copyable, id } = props;
   const lines = highlightLines(source, language);
   const codeClass =
     typeof language === 'string' && language.length > 0 ? `language-${language}` : undefined;

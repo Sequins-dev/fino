@@ -104,10 +104,7 @@ export class Terminal {
   }
 
   write(data: string | Uint8Array): void {
-    const chunk =
-      typeof data === 'string'
-        ? data
-        : this.#decoder.decode(data, { stream: true });
+    const chunk = typeof data === 'string' ? data : this.#decoder.decode(data, { stream: true });
     // A write can split an escape sequence; hold the tail until it completes
     // or it would be painted to the screen as literal text.
     const s = this.#pending + chunk;
@@ -186,8 +183,7 @@ export class Terminal {
     let shed = 0;
     if (rows < this.#rows) {
       if (anchor === 'bottom') shed = Math.min(this.#rows - rows, this.#rows);
-      else if (this.#cy > rows - 1)
-        shed = Math.min(this.#cy - (rows - 1), this.#rows);
+      else if (this.#cy > rows - 1) shed = Math.min(this.#cy - (rows - 1), this.#rows);
       for (let y = 0; y < shed; y++) {
         if (!this.#alt) this.#scrolled.push(trimRight(this.#cells[y]!.join('')));
       }
@@ -304,9 +300,7 @@ export class Terminal {
       this.#styles[y] = this.#styles[y + 1]!;
     }
     this.#cells[this.#bottom] = new Array<string>(this.#cols).fill(' ');
-    this.#styles[this.#bottom] = new Array<readonly number[]>(this.#cols).fill(
-      EMPTY_SGR,
-    );
+    this.#styles[this.#bottom] = new Array<readonly number[]>(this.#cols).fill(EMPTY_SGR);
   }
 
   #print(ch: string): void {
@@ -315,12 +309,7 @@ export class Terminal {
       this.#cx = 0;
       this.#lineFeed();
     }
-    if (
-      this.#cy >= 0 &&
-      this.#cy < this.#rows &&
-      this.#cx >= 0 &&
-      this.#cx < this.#cols
-    ) {
+    if (this.#cy >= 0 && this.#cy < this.#rows && this.#cx >= 0 && this.#cx < this.#cols) {
       this.#cells[this.#cy]![this.#cx] = ch;
       this.#styles[this.#cy]![this.#cx] = this.#sgr;
     }
@@ -436,8 +425,7 @@ export class Terminal {
       case 'r': {
         const parts = params.split(';').filter((p) => p !== '');
         const top = parts.length > 0 ? parseInt(parts[0]!, 10) - 1 : 0;
-        const bottom =
-          parts.length > 1 ? parseInt(parts[1]!, 10) - 1 : this.#rows - 1;
+        const bottom = parts.length > 1 ? parseInt(parts[1]!, 10) - 1 : this.#rows - 1;
         this.#top = Math.max(0, Math.min(top, this.#rows - 1));
         this.#bottom = Math.max(0, Math.min(bottom, this.#rows - 1));
         if (this.#bottom < this.#top) {
@@ -503,9 +491,7 @@ export class Terminal {
 
   #applySgr(params: string): void {
     const parts =
-      params === ''
-        ? [0]
-        : params.split(';').map((p) => (p === '' ? 0 : parseInt(p, 10)));
+      params === '' ? [0] : params.split(';').map((p) => (p === '' ? 0 : parseInt(p, 10)));
     let i = 0;
     while (i < parts.length) {
       const p = parts[i]!;

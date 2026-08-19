@@ -1,29 +1,29 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/navigation.stories — gallery stories for breadcrumbs, pagers, and step strips.
+ * internal:ui/components/navigation.preview — preview previews for breadcrumbs, pagers, and step strips.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
 import { createSignal } from 'fino:ui';
 import { Breadcrumbs, Pagination, Steps, Text, VStack, styles } from 'fino:ui/components';
 import { page } from 'fino:ui/web';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function navigationStories(): StoryGroup {
+export function navigationPreviews(): PreviewGroup {
   const crumbTrail = [
     { key: 'root', label: '~' },
     { key: 'src', label: 'src' },
     { key: 'ui', label: 'ui' },
-    { key: 'gallery', label: 'gallery.tsx' },
+    { key: 'preview', label: 'preview.tsx' },
   ];
-  const crumb = createSignal('gallery');
+  const crumb = createSignal('preview');
   const pageAt = createSignal(1);
   return {
     title: 'Navigation',
-    stories: [
+    previews: [
       {
         key: 'breadcrumbs',
         name: 'Breadcrumbs',

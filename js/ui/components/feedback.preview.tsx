@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/feedback.stories — gallery stories for spinners, progress bars, and toasts.
+ * internal:ui/components/feedback.preview — preview previews for spinners, progress bars, and toasts.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -20,9 +20,9 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { StatusVariant } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function feedbackStories(): StoryGroup {
+export function feedbackPreviews(): PreviewGroup {
   const toasts = createSignal<Array<{ id: string; message: string; variant?: StatusVariant }>>([]);
   let toastId = 0;
   const pushToast = (variant: StatusVariant, message: string): void => {
@@ -34,7 +34,7 @@ export function feedbackStories(): StoryGroup {
   };
   return {
     title: 'Feedback',
-    stories: [
+    previews: [
       {
         key: 'spinner',
         name: 'Spinner',

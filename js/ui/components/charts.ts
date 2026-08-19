@@ -22,11 +22,7 @@
  * @internal
  */
 import { h, type Props, type VNode } from 'fino:ui';
-import {
-  VIRTUAL_ROW_PX,
-  cssColor,
-  idAttr,
-} from 'internal:ui/components/html-runtime';
+import { VIRTUAL_ROW_PX, cssColor } from 'internal:ui/components/html-runtime';
 import type { Color } from 'fino:tty/style';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
 
@@ -259,6 +255,10 @@ export function plotBraille(
   return out;
 }
 
+// Fixed SVG canvas width; height scales with the `height` prop at the same
+// px-per-row (`VIRTUAL_ROW_PX`) the virtual list already uses, so a chart's
+// visual density matches the rest of the web target rather than inventing a
+// second unit.
 const CHART_SVG_WIDTH = 480;
 
 function chartSvgHeight(height: number | undefined): number {
@@ -290,6 +290,13 @@ export interface BarChartProps extends FlexChildProps, Props {
  * targets. The terminal draws sub-cell-precise bars with the block
  * elements `▁▂▃▄▅▆▇█`; the web draws an inline `<svg>` of `<rect>`s.
  */
+// Most SVG presentation attributes are plain lowercase (`fill`, `stroke`),
+// but a few multi-word ones (`font-size`, `text-anchor`,
+// `dominant-baseline`, `stroke-width`) are NOT in the HTML parser's small
+// SVG camelCase-restoration table (unlike `viewBox`/`preserveAspectRatio`,
+// which are) — written as camelCase object keys they'd serialize as
+// `fontsize`/`textanchor`/… and silently do nothing once parsed as inline
+// SVG. They're passed as explicit kebab-case string keys below instead.
 export function BarChart(all: BarChartProps): VNode {
   const { children = [], ...props } = all as BarChartProps & { children?: NormalizedChild[] };
   const { series, labels, height, horizontal, showValues, id } = props;

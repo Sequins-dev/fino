@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/disclosure.stories — gallery stories for expanders, details, accordions, and tabs.
+ * internal:ui/components/disclosure.preview — preview previews for expanders, details, accordions, and tabs.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -21,9 +21,9 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { ExpanderPosition } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function disclosureStories(): StoryGroup {
+export function disclosurePreviews(): PreviewGroup {
   const details = createDisclosure(true);
   const tab = createSignal('one');
   const expanded = createSignal(false);
@@ -31,7 +31,7 @@ export function disclosureStories(): StoryGroup {
   const accordionMulti = createAccordion();
   return {
     title: 'Disclosure',
-    stories: [
+    previews: [
       {
         key: 'expander',
         name: 'Expander',
@@ -59,7 +59,7 @@ export function disclosureStories(): StoryGroup {
           const state = args.single === true ? accordionSingle : accordionMulti;
           return (
             <Accordion
-              id="gallery-accordion"
+              id="preview-accordion"
               sections={[
                 { key: 'general', title: 'General', content: <Text>Session defaults.</Text> },
                 { key: 'network', title: 'Network', content: <Text>Proxy and TLS.</Text> },

@@ -352,7 +352,11 @@ function lowerNode(node: VNode, target: RenderTargetName, depth: number): VNode 
   const impl = lowering ?? (typeof node.type === 'function' ? node.type : undefined);
   if (impl !== undefined) {
     const composed = impl({ ...node.props, children: node.children });
-    return lowerNode(node.key === null ? composed : { ...composed, key: node.key }, target, depth + 1);
+    return lowerNode(
+      node.key === null ? composed : { ...composed, key: node.key },
+      target,
+      depth + 1,
+    );
   }
   const spec = renderTargets.get(target);
   const type = node.type as string;

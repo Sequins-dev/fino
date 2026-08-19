@@ -5,11 +5,21 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Input, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { applyTextAreaEdit, applyTextEdit } from 'internal:ui/components/text-edit';
-import { Button, NumberInput, RadioGroup, Slider, TextArea, TextInput , Checkbox, Radio, Switch } from 'internal:ui/components/forms';
+import {
+  Button,
+  NumberInput,
+  RadioGroup,
+  Slider,
+  TextArea,
+  TextInput,
+  Checkbox,
+  Radio,
+  Switch,
+} from 'internal:ui/components/forms';
 import type {
   CheckboxProps,
   RadioProps,
@@ -43,8 +53,7 @@ mapRenderTargetLowering(Button, 'tui', (all: ButtonProps): VNode => {
 
 mapRenderTargetLowering(RadioGroup, 'tui', (all: RadioGroupProps): VNode => {
   const { children = [], ...props } = all as RadioGroupProps & { children?: NormalizedChild[] };
-  const { value, options, onChange, direction, gap, focusedKey, id, ...rest } =
-    props;
+  const { value, options, onChange, direction, gap, focusedKey, id, ...rest } = props;
   return (
     <Box id={id} direction={direction ?? 'column'} gap={gap ?? 0} {...rest}>
       {options.map((option) => (
@@ -112,8 +121,7 @@ mapRenderTargetLowering(TextInput, 'tui', (all: TextInputProps): VNode => {
 
 mapRenderTargetLowering(TextArea, 'tui', (all: TextAreaProps): VNode => {
   const { children = [], ...props } = all as TextAreaProps & { children?: NormalizedChild[] };
-  const { value, caret, selection, rows, focused, onChange, onSubmit, onKey, id, ...rest } =
-    props;
+  const { value, caret, selection, rows, focused, onChange, onSubmit, onKey, id, ...rest } = props;
   const editKey =
     onChange !== undefined || onSubmit !== undefined
       ? (event: Parameters<NonNullable<TextAreaProps['onKey']>>[0]): boolean | void => {
@@ -143,8 +151,7 @@ mapRenderTargetLowering(TextArea, 'tui', (all: TextAreaProps): VNode => {
 
 mapRenderTargetLowering(NumberInput, 'tui', (all: NumberInputProps): VNode => {
   const { children = [], ...props } = all as NumberInputProps & { children?: NormalizedChild[] };
-  const { value, min, max, step, onChange, focused, disabled, id, ...rest } =
-    props;
+  const { value, min, max, step, onChange, focused, disabled, id, ...rest } = props;
   const s = step ?? 1;
   const canDec = onChange !== undefined && disabled !== true && (min === undefined || value > min);
   const canInc = onChange !== undefined && disabled !== true && (max === undefined || value < max);

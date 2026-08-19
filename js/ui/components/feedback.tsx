@@ -14,7 +14,6 @@ import {
   actionForm,
   actionsActive,
   handlerOf,
-  idAttr,
   register,
   tone,
 } from 'internal:ui/components/html-runtime';

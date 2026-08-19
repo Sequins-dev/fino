@@ -1,19 +1,19 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/layout.stories — gallery stories for stacks and panels.
+ * internal:ui/components/layout.preview — preview previews for stacks and panels.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
 import { Box, HStack, Panel, Rule, Spacer, Text, VStack, styles } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function layoutStories(): StoryGroup {
+export function layoutPreviews(): PreviewGroup {
   return {
     title: 'Layout',
-    stories: [
+    previews: [
       {
         key: 'panel',
         name: 'Panel',

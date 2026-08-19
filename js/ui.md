@@ -171,8 +171,8 @@ The vocabulary components are written in lives in
 `ui:checkbox` node carrying its values, and each render target owns the
 presentation. The terminal is a retained host in `fino:tty/tui` with its own
 lowering to glyph compositions, and `fino:ui/components/html` lowers the same
-nodes to native web markup. `fino:ui/gallery` — run as `fino gallery` —
-renders the catalog's stories in both targets, so a component can be seen (and
+nodes to native web markup. `fino:ui/preview` — run as `fino preview` —
+renders the catalog's previews in both targets, so a component can be seen (and
 tested) everywhere it will ship.
 
 ## Choosing

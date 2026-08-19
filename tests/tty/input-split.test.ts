@@ -31,10 +31,7 @@ async function echoPty(name: string): Promise<Awaited<ReturnType<typeof openPty>
 }
 
 function seen(pty: { term: { text(): string[] } }): string {
-  return pty.term
-    .text()
-    .join('')
-    .replace(/\s+/g, '');
+  return pty.term.text().join('').replace(/\s+/g, '');
 }
 
 describe('fino:tty/tui terminal input reassembly', () => {

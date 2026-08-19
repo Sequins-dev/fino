@@ -5,15 +5,11 @@
  * @internal
  */
 import { h, mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { Field, Fieldset, Panel } from 'internal:ui/components/layout';
-import type {
-  FieldProps,
-  FieldsetProps,
-  PanelProps,
-} from 'internal:ui/components/layout';
+import type { FieldProps, FieldsetProps, PanelProps } from 'internal:ui/components/layout';
 
 mapRenderTargetLowering(Panel, 'tui', (all: PanelProps): VNode => {
   const { children = [], ...props } = all as PanelProps & { children?: NormalizedChild[] };

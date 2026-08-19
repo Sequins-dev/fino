@@ -94,12 +94,7 @@ export function Popover(all: PopoverProps): VNode {
   const { children = [], ...props } = all as PopoverProps & { children?: NormalizedChild[] };
   const { open, onDismiss } = props;
   if (open !== true) return emptyNode();
-  return h(
-    'div',
-    { className: 'ui-popover' },
-    dismissButton(onDismiss),
-    ...children,
-  );
+  return h('div', { className: 'ui-popover' }, dismissButton(onDismiss), ...children);
 }
 
 /** Props accepted by `Tooltip`. */
@@ -200,7 +195,9 @@ export interface FloatingActionBarProps extends Props {
  * centers it for real with flexbox.
  */
 export function FloatingActionBar(all: FloatingActionBarProps): VNode {
-  const { children = [], ...props } = all as FloatingActionBarProps & { children?: NormalizedChild[] };
+  const { children = [], ...props } = all as FloatingActionBarProps & {
+    children?: NormalizedChild[];
+  };
   const { placement } = props;
   const align =
     placement === 'bottom-end'

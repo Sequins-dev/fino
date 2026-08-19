@@ -721,9 +721,8 @@ describe('FdReader / FdWriter', () => {
     // that do not await their writes issue them — a terminal painting frames,
     // a logger. Each is larger than the coalesce buffer, so each is its own
     // emission rather than being merged into a neighbour's.
-    const chunks = Array.from(
-      { length: 6 },
-      (_, index) => new Uint8Array(96 * 1024).fill(index + 1),
+    const chunks = Array.from({ length: 6 }, (_, index) =>
+      new Uint8Array(96 * 1024).fill(index + 1),
     );
     try {
       const fillerBytes = fillPipe(pipe.writeFd);

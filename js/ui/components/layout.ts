@@ -8,7 +8,6 @@ import { h, type NormalizedChild, type Child, type Props, type VNode } from 'fin
 import {
   borderShorthand,
   flexChildCss,
-  idAttr,
   injectFirstControlAria,
   lowerChildren,
   sizeCss,

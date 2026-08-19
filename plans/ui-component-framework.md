@@ -117,7 +117,7 @@ plus composition down to primitives; every component renders in both targets fro
 
 **Module layout.** The catalog is grouped into `internal:ui/components/*` modules — one per
 component family — with `fino:ui/components` as the single public entry point over them, and
-each module's gallery stories beside it in `<module>.stories.tsx`. The barrel's re-exports are
+each module's preview previews beside it in `<module>.previews.tsx`. The barrel's re-exports are
 the public API: components, props types, the data types those props name, and the state models
 an app holds across renders. The pure helpers that exist so the two lowerings agree (edit
 reducers, icon registry lookups, calendar and axis math, the braille rasterizer) stay off the
@@ -204,12 +204,12 @@ interaction tests run inside the normal `fino test` suite:
 ## Phase 1 validation gate
 
 Phase 2 does not start until: every catalog component has unit + HTML + TUI
-tests, with PTY tests for interactive ones; the gallery renders every story in
+tests, with PTY tests for interactive ones; the preview renders every preview in
 both targets from one component tree (this is the conformance surface — a
 separate demo app was considered and dropped as redundant); docs are written
 (`js/ui.md` updated, `js/ui/components.md` added) and every new `fino:*`
 specifier is registered in `src/loader.rs` and `benchmarks/COVERAGE.md`; and
-the component API has passed an ergonomics review over the gallery.
+the component API has passed an ergonomics review over the preview.
 
 Decided and not pursued: clickable terminal hyperlinks (OSC 8). They cannot
 survive the frame pipeline without teaching `Segment`/`Row` about

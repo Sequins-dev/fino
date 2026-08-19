@@ -5,12 +5,21 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Layer, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { MenuList } from 'internal:ui/components/menu';
 import { Panel } from 'internal:ui/components/layout';
-import { ContextMenu, FloatingActionBar, HoverCard, Modal, Popover, Toast, ToastStack, Tooltip } from 'internal:ui/components/overlay';
+import {
+  ContextMenu,
+  FloatingActionBar,
+  HoverCard,
+  Modal,
+  Popover,
+  Toast,
+  ToastStack,
+  Tooltip,
+} from 'internal:ui/components/overlay';
 import type {
   ContextMenuProps,
   FloatingActionBarProps,
@@ -183,8 +192,20 @@ mapRenderTargetLowering(HoverCard, 'tui', (all: HoverCardProps): VNode => {
   );
 });
 
+// `Layer` has no notion of "this node's own enclosing container" — anchoring
+// always means anchoring to a known hit id (the container must expose one
+// via `anchorId`), and its placement model offers only start/end alignment
+// relative to that anchor point, never centering. `top-start`/`top-end`
+// (rather than `bottom-start`/`bottom-end`) land the bar just inside the
+// anchor's bottom edge instead of pushed below it entirely — the closest
+// approximation of "floating over the container's bottom" the engine
+// currently supports. `'bottom-center'` has no anchored-center counterpart
+// to fall back on, so it renders with the same left alignment as
+// `'top-start'` here; the web target centers it for real with flexbox.
 mapRenderTargetLowering(FloatingActionBar, 'tui', (all: FloatingActionBarProps): VNode => {
-  const { children = [], ...props } = all as FloatingActionBarProps & { children?: NormalizedChild[] };
+  const { children = [], ...props } = all as FloatingActionBarProps & {
+    children?: NormalizedChild[];
+  };
   const { placement, anchorId } = props;
   // `within` keeps the bar inside its container's rect, and the anchor now
   // carries width, so centering is measured against the container rather

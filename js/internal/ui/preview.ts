@@ -1,26 +1,26 @@
 /**
- * internal:ui/story — the story vocabulary the component gallery is built
+ * internal:ui/preview — the preview vocabulary the component preview is built
  * from.
  *
- * A story is one named demonstration of a component, optionally exposing
+ * A preview is one named demonstration of a component, optionally exposing
  * controls so the same component can be viewed under several configurations
- * without writing a story per configuration. Stories live beside the
- * components they demonstrate (`js/ui/components/*.stories.tsx`), and
- * `fino:ui/gallery` composes every group into the browsable catalog. The
- * types live here rather than in the gallery so a stories file does not have
- * to import the gallery's runners — and so the gallery can import the
- * stories without a cycle.
+ * without writing a preview per configuration. Previews live beside the
+ * components they demonstrate (`js/ui/components/*.previews.tsx`), and
+ * `fino:ui/preview` composes every group into the browsable catalog. The
+ * types live here rather than in the preview so a previews file does not have
+ * to import the preview's runners — and so the preview can import the
+ * previews without a cycle.
  *
  * @internal
  */
 import type { VNode } from 'fino:ui';
 
-/** A value a story control can hold. */
+/** A value a preview control can hold. */
 export type ControlValue = string | number | boolean;
 
 /**
- * An adjustable input a story exposes, so a component can be viewed under
- * different configurations without writing a story per configuration.
+ * An adjustable input a preview exposes, so a component can be viewed under
+ * different configurations without writing a preview per configuration.
  */
 export type Control =
   | { type: 'boolean'; label?: string; default: boolean }
@@ -28,30 +28,30 @@ export type Control =
   | { type: 'number'; label?: string; default: number; step?: number; min?: number; max?: number }
   | { type: 'select'; label?: string; options: string[]; default: string };
 
-/** The current values of a story's controls, passed to its view. */
-export type StoryArgs = Record<string, ControlValue>;
+/** The current values of a preview's controls, passed to its view. */
+export type PreviewArgs = Record<string, ControlValue>;
 
 /**
  * One named component demonstration. `view` receives the current control
- * values; a story without controls receives an empty object.
+ * values; a preview without controls receives an empty object.
  */
-export interface Story {
+export interface Preview {
   key: string;
   name: string;
   controls?: Record<string, Control>;
-  view: (args: StoryArgs) => VNode;
+  view: (args: PreviewArgs) => VNode;
 }
 
-/** A titled group of stories. */
-export interface StoryGroup {
+/** A titled group of previews. */
+export interface PreviewGroup {
   title: string;
-  stories: Story[];
+  previews: Preview[];
 }
 
-/** The default argument values a story's controls declare. */
-export function defaultArgs(story: Story): StoryArgs {
-  const args: StoryArgs = {};
-  for (const [name, control] of Object.entries(story.controls ?? {})) {
+/** The default argument values a preview's controls declare. */
+export function defaultArgs(preview: Preview): PreviewArgs {
+  const args: PreviewArgs = {};
+  for (const [name, control] of Object.entries(preview.controls ?? {})) {
     args[name] = control.default;
   }
   return args;
@@ -65,9 +65,9 @@ function clampNumber(control: Extract<Control, { type: 'number' }>, value: numbe
 }
 
 /** Parse control values from strings (query params, CLI args). */
-export function parseArgs(story: Story, raw: Record<string, string>): StoryArgs {
-  const args = defaultArgs(story);
-  for (const [name, control] of Object.entries(story.controls ?? {})) {
+export function parseArgs(preview: Preview, raw: Record<string, string>): PreviewArgs {
+  const args = defaultArgs(preview);
+  for (const [name, control] of Object.entries(preview.controls ?? {})) {
     const value = raw[name];
     if (value === undefined) continue;
     if (control.type === 'boolean') args[name] = value === 'true' || value === 'on';

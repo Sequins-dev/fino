@@ -5,7 +5,7 @@
  * @internal
  */
 import { h, mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { nearestAnsi256, supportsTruecolor } from 'fino:tty/style';
 import type { Color } from 'fino:tty/style';
 import type { NiceScale, Series } from 'internal:ui/components/charts';
@@ -16,10 +16,7 @@ import { env } from 'fino:process';
 import { niceScale, plotBraille } from 'internal:ui/components/charts';
 import { seriesColor } from 'internal:ui/components/charts';
 import { BarChart, LineChart } from 'internal:ui/components/charts';
-import type {
-  BarChartProps,
-  LineChartProps,
-} from 'internal:ui/components/charts';
+import type { BarChartProps, LineChartProps } from 'internal:ui/components/charts';
 
 function resolveChartColor(color: Color, truecolor: boolean): Color {
   if (typeof color === 'string' || 'ansi256' in color) return color;
@@ -40,14 +37,12 @@ function formatChartValue(value: number): string {
 const BLOCK_LEVELS = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 const HORIZONTAL_BAR_TRACK = 24;
 
-
 const BRAILLE_BLANK = String.fromCodePoint(0x2800);
 
 interface ChartCell {
   char: string;
   color: Color | null;
 }
-
 
 function axisGutter(
   series: readonly Series[],
@@ -240,6 +235,13 @@ mapRenderTargetLowering(BarChart, 'tui', (all: BarChartProps): VNode => {
   );
 });
 
+// Chart series colors resolve through the same truecolor-capability check
+// ColorPicker's swatches use: `fino:tty/style`'s SGR codec would happily
+// emit a raw 24-bit escape for an explicit `{ rgb }` series color even on a
+// terminal that can't render it, so it's downgraded to the nearest
+// xterm-256 index here — in the lowering, never inside the chart
+// components, matching the "environment detection stays out of components"
+// rule `colorPicker` already established.
 mapRenderTargetLowering(LineChart, 'tui', (all: LineChartProps): VNode => {
   const { children = [], ...props } = all as LineChartProps & { children?: NormalizedChild[] };
   const { series, height, showAxis, showLegend, id, ...rest } = props;

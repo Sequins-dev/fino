@@ -5,7 +5,7 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Input, Layer, Rule, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { applyTextEdit } from 'internal:ui/components/text-edit';
@@ -72,8 +72,7 @@ mapRenderTargetLowering(MenuList, 'tui', (all: MenuListProps): VNode => {
 
 mapRenderTargetLowering(Select, 'tui', (all: SelectProps): VNode => {
   const { children = [], ...props } = all as SelectProps & { children?: NormalizedChild[] };
-  const { value, options, open, onOpenChange, onChange, placeholder, focused, id } =
-    props;
+  const { value, options, open, onOpenChange, onChange, placeholder, focused, id } = props;
   const current = options.find((option) => option.key === value);
   const label = current?.label ?? placeholder ?? 'Select…';
   return (
@@ -216,7 +215,9 @@ mapRenderTargetLowering(ComboBox, 'tui', (all: ComboBoxProps): VNode => {
   );
 });
 
-mapRenderTargetLowering(MenuHeader, 'tui', (props: { label: string }): VNode => (
-  <Text style={[styles.dim, styles.bold]}>{props.label}</Text>
-));
+mapRenderTargetLowering(
+  MenuHeader,
+  'tui',
+  (props: { label: string }): VNode => <Text style={[styles.dim, styles.bold]}>{props.label}</Text>,
+);
 mapRenderTargetLowering(MenuSeparator, 'tui', (): VNode => <Rule style={[styles.dim]} />);

@@ -17,7 +17,6 @@ import {
   actionsActive,
   changeAttrs,
   handlerOf,
-  idAttr,
   register,
 } from 'internal:ui/components/html-runtime';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';
@@ -172,8 +171,7 @@ export interface CalendarProps extends FlexChildProps, Props {
  */
 export function Calendar(all: CalendarProps): VNode {
   const { children = [], ...props } = all as CalendarProps & { children?: NormalizedChild[] };
-  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id } =
-    props;
+  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id } = props;
   const select = handlerOf<(date: string) => void>(onSelect);
   const monthChange = handlerOf<(month: string) => void>(onMonthChange);
   const { year, month: m } = parseIsoMonth(month);
@@ -298,6 +296,13 @@ export interface DatePickerProps extends Props {
  * web target renders only a native `<input type="date">` — see the module
  * guide for why the popover calendar is terminal-only.
  */
+// The web target renders only the native `<input type="date">` — no
+// duplicate popover calendar. Native date inputs already provide a full,
+// localized, keyboard-operable picker UI for free; pairing it with our own
+// overlay would be a second, non-native affordance fighting the platform's
+// own for the same job, and we would own its focus-trap/dismiss logic for no
+// benefit. The popover `Calendar` composition stays terminal-only, where
+// there is no native equivalent to defer to.
 export function DatePicker(all: DatePickerProps): VNode {
   const { children = [], ...props } = all as DatePickerProps & { children?: NormalizedChild[] };
   const { value, onChange, disabled, placeholder, id } = props;
@@ -378,10 +383,15 @@ export interface TimePickerProps extends Props {
  * columns, mirroring `Select`/`DatePicker`. The web target renders only a
  * native `<input type="time" step>`.
  */
+// Same native-only rationale as `DatePicker`: `<input type="time" step>`
+// gets a platform picker for free. `step` is minutes in this catalog's API
+// (it sizes the terminal's minute column/arrow-key increment) but the native
+// attribute is seconds, so it is multiplied here; `seconds` forces step=1s
+// so the browser shows the seconds field, since a whole-minute step and a
+// sub-minute step can't both be expressed by one native attribute value.
 export function TimePicker(all: TimePickerProps): VNode {
   const { children = [], ...props } = all as TimePickerProps & { children?: NormalizedChild[] };
-  const { value, onChange, step, seconds, disabled, placeholder, id } =
-    props;
+  const { value, onChange, step, seconds, disabled, placeholder, id } = props;
   const change = handlerOf<(time: string) => void>(onChange);
   const attrs: Props = { className: 'ui-field', type: 'time', ...idAttr(id) };
   if (value !== undefined) attrs.value = value;

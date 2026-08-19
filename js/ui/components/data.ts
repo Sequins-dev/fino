@@ -9,7 +9,6 @@ import {
   actionForm,
   actionsActive,
   handlerOf,
-  idAttr,
   register,
   tone,
 } from 'internal:ui/components/html-runtime';
@@ -101,13 +100,9 @@ function treeNodesHtml(
       // select handler the name toggles too, so the whole row expands.
       // Registered in visual order so ids follow the markup.
       const toggleId =
-        actionsActive() && ctx.toggle !== undefined
-          ? register(() => ctx.toggle!(entry.key))
-          : null;
+        actionsActive() && ctx.toggle !== undefined ? register(() => ctx.toggle!(entry.key)) : null;
       const selectId =
-        actionsActive() && ctx.select !== undefined
-          ? register(() => ctx.select!(entry.key))
-          : null;
+        actionsActive() && ctx.select !== undefined ? register(() => ctx.select!(entry.key)) : null;
       const children = h(
         'div',
         { className: 'ui-tree-children' },
@@ -235,8 +230,7 @@ export function fileIcon(
  */
 export function FileTree(all: FileTreeProps): VNode {
   const { children = [], ...props } = all as FileTreeProps & { children?: NormalizedChild[] };
-  const { nodes, expanded, selectedKey, icons, folderIcons, onToggle, onSelect, id } =
-    props;
+  const { nodes, expanded, selectedKey, icons, folderIcons, onToggle, onSelect, id } = props;
   const toggle = handlerOf<(key: string) => void>(onToggle);
   const select = handlerOf<(key: string) => void>(onSelect);
   const ctx: TreeContext = { icons, folderIcons, toggle, select };

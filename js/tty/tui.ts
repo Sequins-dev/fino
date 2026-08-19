@@ -30,7 +30,6 @@ import {
   createRenderer,
   createSignal,
   batch,
-  type Child,
   type Props,
   type Root,
   type Sink,
@@ -52,13 +51,7 @@ import {
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
 import { layout as layoutPrimitives, measure as measurePrimitives } from 'internal:tty/layout';
-import type {
-  BorderStyle,
-  Constraints,
-  LayoutNode,
-  Measured,
-  WrapMode,
-} from 'internal:tty/layout';
+import type { BorderStyle, Constraints, LayoutNode, Measured, WrapMode } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
 import { holdSpinnerClock, lowerTui } from 'internal:tty/lower';
@@ -76,10 +69,7 @@ export type { BorderStyle, Constraints, Measured, WrapMode };
  * An already-lowered tree passes through untouched.
  */
 export function measure(node: VNode | LayoutNode | string, constraints: Constraints): Measured {
-  return measurePrimitives(
-    typeof node === 'string' ? node : lowerTui(node as VNode),
-    constraints,
-  );
+  return measurePrimitives(typeof node === 'string' ? node : lowerTui(node as VNode), constraints);
 }
 
 /**

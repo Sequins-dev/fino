@@ -65,7 +65,7 @@ surface for what you are building:
 - [Components and Render Programs](./ui.md) — the component model, sinks and
   lifetimes, rendering in a realm, and the portable tree contract.
 - [The Component Catalog](./ui/components.md) — structural primitives, the
-  semantic component catalog, state helpers, focus, icons, and the gallery.
+  semantic component catalog, state helpers, focus, icons, and the preview.
 - [Server-Driven Web UI](./ui/web.md) — progressive enhancement, live SSE
   patches, cleanup, deployment, and operational guidance.
 

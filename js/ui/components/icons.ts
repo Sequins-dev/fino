@@ -13,7 +13,6 @@ import {
   actionForm,
   actionsActive,
   handlerOf,
-  idAttr,
   register,
 } from 'internal:ui/components/html-runtime';
 import type { FlexChildProps, StyleProps } from 'internal:ui/components/primitives';

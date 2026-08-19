@@ -5,7 +5,7 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { iconForm } from 'internal:ui/components/icons';

@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/data.stories — gallery stories for file trees, tables, timelines, and virtual lists.
+ * internal:ui/components/data.preview — preview previews for file trees, tables, timelines, and virtual lists.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -22,9 +22,9 @@ import {
   styles,
 } from 'fino:ui/components';
 import type { FileTreeNode } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-export function dataStories(): StoryGroup {
+export function dataPreviews(): PreviewGroup {
   const tree = createTreeState(['src']);
   const picked = createSignal<string | null>('a');
   const row = createSignal(0);
@@ -51,13 +51,13 @@ export function dataStories(): StoryGroup {
   ];
   return {
     title: 'Data views',
-    stories: [
+    previews: [
       {
         key: 'file-tree',
         name: 'FileTree',
         view: () => (
           <FileTree
-            id="gallery-tree"
+            id="preview-tree"
             nodes={nodes}
             expanded={tree.expanded.get()}
             selectedKey={picked.get()}
@@ -71,7 +71,7 @@ export function dataStories(): StoryGroup {
         name: 'Table',
         view: () => (
           <Table
-            id="gallery-table"
+            id="preview-table"
             columns={[
               { key: 'name', header: 'Name' },
               { key: 'size', header: 'Size', align: 'end' },

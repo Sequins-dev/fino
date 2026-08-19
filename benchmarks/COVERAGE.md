@@ -48,8 +48,8 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:ui/components` | not yet benchmarked |
 | `fino:ui/components/theme` | not yet benchmarked |
 | `fino:ui/components/html` | not yet benchmarked |
-| `fino:ui/gallery` | not yet benchmarked |
-| `fino:commands/gallery` | not yet benchmarked |
+| `fino:ui/preview` | not yet benchmarked |
+| `fino:commands/preview` | not yet benchmarked |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
 | `fino:net/tls` | `benchmarks/net/tls.bench.ts` |
 | `fino:net/dns` | `benchmarks/net/dns.bench.ts` |

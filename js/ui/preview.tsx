@@ -1,25 +1,25 @@
 /** @jsxImportSource fino:ui */
 /**
- * fino:ui/gallery — a storybook for the component catalog, in both render
+ * fino:ui/preview — a browsable preview of the component catalog, in both render
  * targets.
  *
- * A story is a named view function; groups of stories describe the catalog.
- * The same stories drive two runners: `runGalleryTui()` renders a live,
- * navigable gallery in the terminal (sidebar + preview, arrow keys and mouse),
- * and `runGalleryHtml()` serves the gallery over HTTP with each story
+ * A preview is a named view function; groups of previews describe the catalog.
+ * The same previews drive two runners: `runPreviewTui()` renders a live,
+ * navigable preview in the terminal (sidebar + preview, arrow keys and mouse),
+ * and `runPreviewHtml()` serves the preview over HTTP with each preview
  * transformed to HTML by `fino:ui/components/html`. Because both consume the
- * identical story trees, the gallery doubles as the dual-target conformance
+ * identical preview trees, the preview doubles as the dual-target conformance
  * surface: a component that renders sensibly in one target and not the other
  * is a bug you can see.
  *
  * ```ts no_run
- * import { runGalleryTui } from 'fino:ui/gallery';
- * await runGalleryTui();               // fino gallery.ts, in a terminal
+ * import { runPreviewTui } from 'fino:ui/preview';
+ * await runPreviewTui();               // fino preview.ts, in a terminal
  * ```
  *
  * ```ts no_run
- * import { runGalleryHtml } from 'fino:ui/gallery';
- * await runGalleryHtml({ port: 3080 }); // then open http://localhost:3080
+ * import { runPreviewHtml } from 'fino:ui/preview';
+ * await runPreviewHtml({ port: 3080 }); // then open http://localhost:3080
  * ```
  */
 import { Signal, createSignal } from 'fino:ui';
@@ -47,70 +47,76 @@ import { App, cookies, sessions } from 'fino:net/http/app';
 import { memoryCache } from 'fino:cache';
 import { ViewActionError, clientScriptPath, page, view, webUI } from 'fino:ui/web';
 import { InMemoryViewStore } from 'fino:ui/web/state';
-import { defaultArgs, parseArgs } from 'internal:ui/story';
-import type { Control, ControlValue, Story, StoryArgs, StoryGroup } from 'internal:ui/story';
-import { layoutStories } from 'internal:ui/components/layout.stories';
-import { formsStories } from 'internal:ui/components/forms.stories';
-import { indicatorsStories } from 'internal:ui/components/indicators.stories';
-import { feedbackStories } from 'internal:ui/components/feedback.stories';
-import { navigationStories } from 'internal:ui/components/navigation.stories';
-import { disclosureStories } from 'internal:ui/components/disclosure.stories';
-import { overlayStories } from 'internal:ui/components/overlay.stories';
-import { dataStories } from 'internal:ui/components/data.stories';
-import { typographyStories } from 'internal:ui/components/typography.stories';
-import { displayStories } from 'internal:ui/components/display.stories';
-import { pickersStories } from 'internal:ui/components/pickers.stories';
-import { chartsStories } from 'internal:ui/components/charts.stories';
+import { defaultArgs, parseArgs } from 'internal:ui/preview';
+import type {
+  Control,
+  ControlValue,
+  Preview,
+  PreviewArgs,
+  PreviewGroup,
+} from 'internal:ui/preview';
+import { layoutPreviews } from 'internal:ui/components/layout.preview';
+import { formsPreviews } from 'internal:ui/components/forms.preview';
+import { indicatorsPreviews } from 'internal:ui/components/indicators.preview';
+import { feedbackPreviews } from 'internal:ui/components/feedback.preview';
+import { navigationPreviews } from 'internal:ui/components/navigation.preview';
+import { disclosurePreviews } from 'internal:ui/components/disclosure.preview';
+import { overlayPreviews } from 'internal:ui/components/overlay.preview';
+import { dataPreviews } from 'internal:ui/components/data.preview';
+import { typographyPreviews } from 'internal:ui/components/typography.preview';
+import { displayPreviews } from 'internal:ui/components/display.preview';
+import { pickersPreviews } from 'internal:ui/components/pickers.preview';
+import { chartsPreviews } from 'internal:ui/components/charts.preview';
 
 export { defaultArgs, parseArgs };
-export type { Control, ControlValue, Story, StoryArgs, StoryGroup };
+export type { Control, ControlValue, Preview, PreviewArgs, PreviewGroup };
 
 /**
- * Every story group in catalog order. Each group lives beside the components
- * it demonstrates, in `js/ui/components/*.stories.tsx`.
+ * Every preview group in catalog order. Each group lives beside the components
+ * it demonstrates, in `js/ui/components/*.previews.tsx`.
  */
-export function catalogStories(): StoryGroup[] {
+export function catalogPreviews(): PreviewGroup[] {
   return [
-    layoutStories(),
-    formsStories(),
-    indicatorsStories(),
-    feedbackStories(),
-    navigationStories(),
-    disclosureStories(),
-    overlayStories(),
-    dataStories(),
-    typographyStories(),
-    displayStories(),
-    pickersStories(),
-    chartsStories(),
+    layoutPreviews(),
+    formsPreviews(),
+    indicatorsPreviews(),
+    feedbackPreviews(),
+    navigationPreviews(),
+    disclosurePreviews(),
+    overlayPreviews(),
+    dataPreviews(),
+    typographyPreviews(),
+    displayPreviews(),
+    pickersPreviews(),
+    chartsPreviews(),
   ];
 }
 
-function storyItems(groups: StoryGroup[]): MenuItem[] {
+function storyItems(groups: PreviewGroup[]): MenuItem[] {
   const items: MenuItem[] = [];
   for (const group of groups) {
     items.push({ kind: 'header', label: group.title });
-    for (const story of group.stories) items.push({ key: story.key, label: story.name });
+    for (const preview of group.previews) items.push({ key: preview.key, label: preview.name });
   }
   return items;
 }
 
-function findStory(groups: StoryGroup[], key: string | null): Story | undefined {
+function findPreview(groups: PreviewGroup[], key: string | null): Preview | undefined {
   for (const group of groups) {
-    for (const story of group.stories) if (story.key === key) return story;
+    for (const preview of group.previews) if (preview.key === key) return preview;
   }
   return undefined;
 }
 
 interface ControlsPaneProps {
-  story: Story;
-  args: StoryArgs;
+  preview: Preview;
+  args: PreviewArgs;
   onChange: (name: string, value: ControlValue) => void;
 }
 
 function ControlsPane(props: ControlsPaneProps): VNode {
-  const { story, args, onChange } = props;
-  const entries = Object.entries(story.controls ?? {});
+  const { preview, args, onChange } = props;
+  const entries = Object.entries(preview.controls ?? {});
   return (
     <VStack>
       <Rule style={[styles.dim]} />
@@ -206,12 +212,12 @@ function ControlsPane(props: ControlsPaneProps): VNode {
 }
 
 /**
- * Run the gallery as a live fullscreen terminal app. Arrow keys and clicks
- * choose a story, the preview stays interactive, control rows adjust the
- * story's configuration in place (click text controls to focus, then type),
+ * Run the preview as a live fullscreen terminal app. Arrow keys and clicks
+ * choose a preview, the preview stays interactive, control rows adjust the
+ * preview's configuration in place (click text controls to focus, then type),
  * and `q` quits.
  */
-export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Promise<void> {
+export async function runPreviewTui(groups: PreviewGroup[] = catalogPreviews()): Promise<void> {
   const size = createSignal(getTerminalSize());
   const selection = new ListSelection({ maxRows: Math.max(4, size.get().height - 6) });
   selection.setItems(storyItems(groups));
@@ -221,13 +227,13 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
     size.set(next);
   });
   const selected = createSignal<string | null>(selection.selectedKey);
-  const argsByStory = new Map<string, ReturnType<typeof createSignal<StoryArgs>>>();
+  const argsByPreview = new Map<string, ReturnType<typeof createSignal<PreviewArgs>>>();
 
-  function argsFor(story: Story): ReturnType<typeof createSignal<StoryArgs>> {
-    let existing = argsByStory.get(story.key);
+  function argsFor(preview: Preview): ReturnType<typeof createSignal<PreviewArgs>> {
+    let existing = argsByPreview.get(preview.key);
     if (!existing) {
-      existing = createSignal<StoryArgs>(defaultArgs(story));
-      argsByStory.set(story.key, existing);
+      existing = createSignal<PreviewArgs>(defaultArgs(preview));
+      argsByPreview.set(preview.key, existing);
     }
     return existing;
   }
@@ -238,11 +244,11 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
   });
 
   const view = (): VNode => {
-    const story = findStory(groups, selected.get());
-    const args = story ? argsFor(story) : null;
+    const preview = findPreview(groups, selected.get());
+    const args = preview ? argsFor(preview) : null;
     return (
       <HStack grow={1} gap={1} height={size.get().height}>
-        <Panel title="Stories" width={24} height={size.get().height}>
+        <Panel title="Previews" width={24} height={size.get().height}>
           <Clickable
             focusable={false}
             direction="column"
@@ -255,7 +261,7 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
             }}
           >
             <MenuList
-              id="stories"
+              id="previews"
               items={selection.items as MenuItem[]}
               selectedKey={selected.get()}
               top={selection.top}
@@ -267,22 +273,22 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
             />
           </Clickable>
         </Panel>
-        <Panel title={story?.name ?? '—'} grow={1} height={size.get().height}>
+        <Panel title={preview?.name ?? '—'} grow={1} height={size.get().height}>
           <Box grow={1} direction="column">
-            {story && args ? (
-              story.view(args.get())
+            {preview && args ? (
+              preview.view(args.get())
             ) : (
-              <Text style={[styles.muted]}>No story selected</Text>
+              <Text style={[styles.muted]}>No preview selected</Text>
             )}
           </Box>
-          {story && args && story.controls ? (
+          {preview && args && preview.controls ? (
             <ControlsPane
-              story={story}
+              preview={preview}
               args={args.get()}
               onChange={(name, value) => args.set({ ...args.get(), [name]: value })}
             />
           ) : null}
-          <Text style={[styles.dim]}>↑↓ story · q quit</Text>
+          <Text style={[styles.dim]}>↑↓ preview · q quit</Text>
         </Panel>
       </HStack>
     );
@@ -305,12 +311,12 @@ export async function runGalleryTui(groups: StoryGroup[] = catalogStories()): Pr
   await done;
 }
 
-function controlsForm(story: Story, args: StoryArgs, action?: unknown): VNode {
+function controlsForm(preview: Preview, args: PreviewArgs, action?: unknown): VNode {
   // With a fino:ui/web action descriptor the form posts as a JSON envelope
   // and the page updates over SSE; the client's change listener handles
   // auto-submit. Without one, plain GET forms with inline resubmission.
   const change: Props = action === undefined ? { onchange: 'this.form.submit()' } : {};
-  const rows = Object.entries(story.controls ?? {}).map(([name, control]) => {
+  const rows = Object.entries(preview.controls ?? {}).map(([name, control]) => {
     const label = control.label ?? name;
     const value = args[name] ?? control.default;
     let field: VNode;
@@ -359,7 +365,7 @@ function controlsForm(story: Story, args: StoryArgs, action?: unknown): VNode {
   return (
     <form {...formProps}>
       <div style={{ opacity: '0.55', fontWeight: 'bold' }}>controls</div>
-      {action === undefined ? <input type="hidden" name="story" value={story.key} /> : null}
+      {action === undefined ? <input type="hidden" name="preview" value={preview.key} /> : null}
       {rows}
       <button
         type="submit"
@@ -376,17 +382,17 @@ function controlsForm(story: Story, args: StoryArgs, action?: unknown): VNode {
   );
 }
 
-function sidebarNav(groups: StoryGroup[], activeKey: string | undefined): VNode {
+function sidebarNav(groups: PreviewGroup[], activeKey: string | undefined): VNode {
   return (
     <nav style={{ minWidth: '12rem', display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
       {groups.flatMap((group) => [
         <div key={group.title} style={{ opacity: '0.55', marginTop: '0.75rem' }}>
           {group.title}
         </div>,
-        ...group.stories.map((entry) => (
+        ...group.previews.map((entry) => (
           <a
             key={entry.key}
-            href={`?story=${entry.key}`}
+            href={`?preview=${entry.key}`}
             style={entry.key === activeKey ? { fontWeight: 'bold' } : {}}
           >
             {entry.name}
@@ -398,62 +404,66 @@ function sidebarNav(groups: StoryGroup[], activeKey: string | undefined): VNode 
 }
 
 /**
- * Render one gallery page: sidebar links, the selected story rendered under
+ * Render one preview page: sidebar links, the selected preview rendered under
  * its current control values, and a form to change them.
  *
- * The story tree is always lowered with an action collector so handler ids
+ * The preview tree is always lowered with an action collector so handler ids
  * (`a0`, `a1`, …) are assigned consistently; pass `actions` to receive the
  * id → invoke map for a `do=` request.
  */
-export function galleryPage(
-  groups: StoryGroup[],
+export function previewPage(
+  groups: PreviewGroup[],
   selectedKey: string | null,
   rawArgs: Record<string, string> = {},
   actions?: Map<string, (value?: string) => void>,
 ): string {
-  const story = findStory(groups, selectedKey) ?? groups[0]?.stories[0];
-  const sidebar = sidebarNav(groups, story?.key);
-  const args = story ? parseArgs(story, rawArgs) : {};
-  const fields: Record<string, string> = story ? { story: story.key } : {};
+  const preview = findPreview(groups, selectedKey) ?? groups[0]?.previews[0];
+  const sidebar = sidebarNav(groups, preview?.key);
+  const args = preview ? parseArgs(preview, rawArgs) : {};
+  const fields: Record<string, string> = preview ? { preview: preview.key } : {};
   for (const [name, value] of Object.entries(args)) fields[name] = String(value);
   const collector = actions ?? new Map<string, (value?: string) => void>();
-  const preview = (
+  const pane = (
     <main style={{ flex: '1 0 auto', position: 'relative' }}>
-      <h1 style={{ fontSize: '1rem', marginBottom: '1lh' }}>{story?.name ?? 'No stories'}</h1>
-      {story ? toHtml(story.view(args), { actions: collector, fields }) : <p>Nothing to show.</p>}
-      {story?.controls ? controlsForm(story, args) : null}
+      <h1 style={{ fontSize: '1rem', marginBottom: '1lh' }}>{preview?.name ?? 'No previews'}</h1>
+      {preview ? (
+        toHtml(preview.view(args), { actions: collector, fields })
+      ) : (
+        <p>Nothing to show.</p>
+      )}
+      {preview?.controls ? controlsForm(preview, args) : null}
     </main>
   );
   const document = (
     <div style={{ display: 'flex', gap: '4ch' }}>
       {sidebar}
-      {preview}
+      {pane}
     </div>
   );
-  return htmlPage(renderToHtml(document), { title: `fino ui — ${story?.name ?? 'gallery'}` });
+  return htmlPage(renderToHtml(document), { title: `fino ui — ${preview?.name ?? 'preview'}` });
 }
 
-let galleryAppCounter = 0;
+let previewAppCounter = 0;
 
 /**
- * Build the gallery's HTTP application on `fino:ui/web`: the page loads once,
+ * Build the preview's HTTP application on `fino:ui/web`: the page loads once,
  * interactions POST JSON action envelopes (no navigation), the server invokes
- * the story handler against its signals, and the updated tree returns over
- * SSE for in-place DOM patching. Only sidebar story links navigate. Without
+ * the preview handler against its signals, and the updated tree returns over
+ * SSE for in-place DOM patching. Only sidebar preview links navigate. Without
  * JavaScript, the same forms fall back to POST-redirect-GET.
  */
-export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
-  const instance = galleryAppCounter++;
-  const secret = `fino-gallery-${instance}-${Math.random().toString(36).slice(2)}`;
+export function createPreviewApp(groups: PreviewGroup[] = catalogPreviews()): App {
+  const instance = previewAppCounter++;
+  const secret = `fino-preview-${instance}-${Math.random().toString(36).slice(2)}`;
   const app = new App();
   const routes = app
     .value('cookies', cookies())
     .value(
       'session',
       sessions({
-        store: memoryCache({ namespace: `gallery-sessions-${instance}` }),
-        keys: [{ id: 'gallery', secret: `${secret}-session` }],
-        // The gallery is a localhost dev tool served over plain http; a
+        store: memoryCache({ namespace: `preview-sessions-${instance}` }),
+        keys: [{ id: 'preview', secret: `${secret}-session` }],
+        // The preview is a localhost dev tool served over plain http; a
         // Secure cookie would be dropped by the browser, minting a fresh
         // session per request and looping the live view's navigate fallback.
         cookieOptions: { secure: false },
@@ -463,24 +473,24 @@ export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
     .layer(webUI({ store: new InMemoryViewStore(), secret, sweepIntervalMs: false }));
 
   const storyView = view({
-    id: `fino:gallery/story-${instance}`,
+    id: `fino:preview/preview-${instance}`,
     state: () => ({
-      story: new Signal(''),
+      preview: new Signal(''),
       args: new Signal<Record<string, string>>({}),
     }),
     actions: {
-      // One generic action per interaction: the story tree is re-lowered to
+      // One generic action per interaction: the preview tree is re-lowered to
       // rebuild the tree-order id map, then the submitted id's handler runs
-      // against the story's own signals.
+      // against the preview's own signals.
       invoke: {
         handler({ state }, input) {
-          const story = findStory(groups, state.story.get() as string);
-          if (story === undefined) {
+          const preview = findPreview(groups, state.preview.get() as string);
+          if (preview === undefined) {
             throw new ViewActionError('action_not_found', { status: 404, recoverable: false });
           }
-          const args = parseArgs(story, state.args.get() as Record<string, string>);
+          const args = parseArgs(preview, state.args.get() as Record<string, string>);
           const collector = new Map<string, (value?: string) => void>();
-          toHtml(story.view(args), { actions: collector });
+          toHtml(preview.view(args), { actions: collector });
           const body = input as { do?: unknown; value?: unknown };
           const invoke = typeof body.do === 'string' ? collector.get(body.do) : undefined;
           if (invoke === undefined) {
@@ -500,15 +510,15 @@ export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
       },
     },
     render({ state, actions: refs }) {
-      const story = findStory(groups, state.story.get() as string) ?? groups[0]?.stories[0];
-      if (story === undefined) return <p>No stories</p>;
-      const args = parseArgs(story, state.args.get() as Record<string, string>);
+      const preview = findPreview(groups, state.preview.get() as string) ?? groups[0]?.previews[0];
+      if (preview === undefined) return <p>No previews</p>;
+      const args = parseArgs(preview, state.args.get() as Record<string, string>);
       const collector = new Map<string, (value?: string) => void>();
       return (
         <main style={{ flex: '1 1 auto', position: 'relative' }}>
-          <h1 style={{ fontSize: '1rem', marginBottom: '1rem' }}>{story.name}</h1>
-          {toHtml(story.view(args), { actions: collector, action: refs.invoke })}
-          {story.controls ? controlsForm(story, args, refs.configure) : null}
+          <h1 style={{ fontSize: '1rem', marginBottom: '1rem' }}>{preview.name}</h1>
+          {toHtml(preview.view(args), { actions: collector, action: refs.invoke })}
+          {preview.controls ? controlsForm(preview, args, refs.configure) : null}
         </main>
       );
     },
@@ -516,10 +526,10 @@ export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
 
   routes.get('/').handle(async (ctx) => {
     const url = new URL(ctx.request.url);
-    const story = findStory(groups, url.searchParams.get('story')) ?? groups[0]?.stories[0];
+    const preview = findPreview(groups, url.searchParams.get('preview')) ?? groups[0]?.previews[0];
     const rawArgs: Record<string, string> = {};
     for (const name of new Set(url.searchParams.keys())) {
-      if (name === 'story') continue;
+      if (name === 'preview') continue;
       // A hidden 'false' precedes each checkbox, so the last value wins.
       const values = url.searchParams.getAll(name);
       rawArgs[name] = values[values.length - 1]!;
@@ -528,17 +538,17 @@ export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
       <html>
         <head>
           <meta charset="utf-8" />
-          <title>{`fino ui — ${story?.name ?? 'gallery'}`}</title>
+          <title>{`fino ui — ${preview?.name ?? 'preview'}`}</title>
           <style>{rawHtml(PAGE_CSS)}</style>
         </head>
         <body>
           <div className="ui-root" style={{ display: 'flex', gap: '3rem' }}>
-            {sidebarNav(groups, story?.key)}
+            {sidebarNav(groups, preview?.key)}
             <div style={{ flex: '1 1 auto' }}>
-              {story !== undefined ? (
-                storyView.mount(inner, { story: story.key, args: rawArgs })
+              {preview !== undefined ? (
+                storyView.mount(inner, { preview: preview.key, args: rawArgs })
               ) : (
-                <p>No stories</p>
+                <p>No previews</p>
               )}
             </div>
           </div>
@@ -551,13 +561,13 @@ export function createGalleryApp(groups: StoryGroup[] = catalogStories()): App {
 }
 
 /**
- * Serve the gallery over HTTP. The story signals live in this process, so
+ * Serve the preview over HTTP. The preview signals live in this process, so
  * every interaction round trip renders their current state.
  */
-export function runGalleryHtml(
-  options: { port?: number; hostname?: string; groups?: StoryGroup[] } = {},
+export function runPreviewHtml(
+  options: { port?: number; hostname?: string; groups?: PreviewGroup[] } = {},
 ): ServeServer {
-  const app = createGalleryApp(options.groups ?? catalogStories());
+  const app = createPreviewApp(options.groups ?? catalogPreviews());
   return app.listen({
     port: options.port ?? 3080,
     hostname: options.hostname ?? '127.0.0.1',

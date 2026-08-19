@@ -10,7 +10,6 @@ import {
   actionsActive,
   changeAttrs,
   handlerOf,
-  idAttr,
   register,
 } from 'internal:ui/components/html-runtime';
 import type { TextSelection, UiKeyEvent } from 'internal:ui/components/primitives';

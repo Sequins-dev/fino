@@ -149,7 +149,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
-    source_builtin!("fino:commands/gallery", "commands/gallery"),
+    source_builtin!("fino:commands/preview", "commands/preview"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),
@@ -282,55 +282,55 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/icons.tui",
         "ui/components/icons.tui"
     ),
-    // internal: gallery stories, one file beside each component module.
-    source_builtin!("internal:ui/story", "internal/ui/story"),
+    // internal: preview previews, one file beside each component module.
+    source_builtin!("internal:ui/preview", "internal/ui/preview"),
     source_builtin!(
-        "internal:ui/components/layout.stories",
-        "ui/components/layout.stories"
+        "internal:ui/components/layout.preview",
+        "ui/components/layout.preview"
     ),
     source_builtin!(
-        "internal:ui/components/forms.stories",
-        "ui/components/forms.stories"
+        "internal:ui/components/forms.preview",
+        "ui/components/forms.preview"
     ),
     source_builtin!(
-        "internal:ui/components/indicators.stories",
-        "ui/components/indicators.stories"
+        "internal:ui/components/indicators.preview",
+        "ui/components/indicators.preview"
     ),
     source_builtin!(
-        "internal:ui/components/feedback.stories",
-        "ui/components/feedback.stories"
+        "internal:ui/components/feedback.preview",
+        "ui/components/feedback.preview"
     ),
     source_builtin!(
-        "internal:ui/components/navigation.stories",
-        "ui/components/navigation.stories"
+        "internal:ui/components/navigation.preview",
+        "ui/components/navigation.preview"
     ),
     source_builtin!(
-        "internal:ui/components/disclosure.stories",
-        "ui/components/disclosure.stories"
+        "internal:ui/components/disclosure.preview",
+        "ui/components/disclosure.preview"
     ),
     source_builtin!(
-        "internal:ui/components/overlay.stories",
-        "ui/components/overlay.stories"
+        "internal:ui/components/overlay.preview",
+        "ui/components/overlay.preview"
     ),
     source_builtin!(
-        "internal:ui/components/data.stories",
-        "ui/components/data.stories"
+        "internal:ui/components/data.preview",
+        "ui/components/data.preview"
     ),
     source_builtin!(
-        "internal:ui/components/typography.stories",
-        "ui/components/typography.stories"
+        "internal:ui/components/typography.preview",
+        "ui/components/typography.preview"
     ),
     source_builtin!(
-        "internal:ui/components/display.stories",
-        "ui/components/display.stories"
+        "internal:ui/components/display.preview",
+        "ui/components/display.preview"
     ),
     source_builtin!(
-        "internal:ui/components/pickers.stories",
-        "ui/components/pickers.stories"
+        "internal:ui/components/pickers.preview",
+        "ui/components/pickers.preview"
     ),
     source_builtin!(
-        "internal:ui/components/charts.stories",
-        "ui/components/charts.stories"
+        "internal:ui/components/charts.preview",
+        "ui/components/charts.preview"
     ),
     // internal: compression
     source_builtin!("internal:compress/common", "internal/compress/common"),
@@ -411,7 +411,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ui/components", "ui/components"),
     source_builtin!("fino:ui/components/theme", "ui/components/theme"),
     source_builtin!("fino:ui/components/html", "ui/components/html"),
-    source_builtin!("fino:ui/gallery", "ui/gallery"),
+    source_builtin!("fino:ui/preview", "ui/preview"),
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
     source_builtin!("fino:tty/style", "tty/style"),

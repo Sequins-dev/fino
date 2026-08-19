@@ -2,7 +2,41 @@
 import { describe, it } from 'fino:test/test';
 import { createRenderer, createSignal } from 'fino:ui';
 import type { VNode } from 'fino:ui';
-import { Accordion, Badge, Box, Breadcrumbs, Button, Card, Clickable, ContextMenu, EmptyState, FileTree, FloatingActionBar, HStack, HoverCard, KeyHint, Modal, Pagination, Popover, ProgressBar, Spinner, Stat, StatusDot, Steps, Table, Tag, TagGroup, Text, Timeline, Toast, ToastStack, Tooltip, VStack, createAccordion, createTreeState } from 'fino:ui/components';
+import {
+  Accordion,
+  Badge,
+  Box,
+  Breadcrumbs,
+  Button,
+  Card,
+  Clickable,
+  ContextMenu,
+  EmptyState,
+  FileTree,
+  FloatingActionBar,
+  HStack,
+  HoverCard,
+  KeyHint,
+  Modal,
+  Pagination,
+  Popover,
+  ProgressBar,
+  Spinner,
+  Stat,
+  StatusDot,
+  Steps,
+  Table,
+  Tag,
+  TagGroup,
+  Text,
+  Timeline,
+  Toast,
+  ToastStack,
+  Tooltip,
+  VStack,
+  createAccordion,
+  createTreeState,
+} from 'fino:ui/components';
 import { fileIcon } from 'internal:ui/components/data';
 import { SPINNER_FRAMES } from 'internal:ui/components/feedback';
 import { iconForm } from 'internal:ui/components/icons';
@@ -868,8 +902,8 @@ describe('fino:ui/components catalog display — html', () => {
   });
 });
 
-// Every overlay story renders closed, so a lowering that only runs while open
-// is invisible to the gallery snapshot. These render them open in both wire
+// Every overlay preview renders closed, so a lowering that only runs while open
+// is invisible to the preview snapshot. These render them open in both wire
 // modes — the shape that hid a missing `dismissButton` and a missing `menuUl`.
 describe('fino:ui/components overlays render open — html', () => {
   const ref = { action: 'invoke', url: '/x', view: 'v1', revision: 0, request: 'r1' };

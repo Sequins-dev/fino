@@ -91,8 +91,8 @@ The catalog is grouped into `internal:ui/components/*` modules — one per
 component family (`primitives`, `layout`, `forms`, `text-edit`, `disclosure`,
 `menu`, `overlay`, `feedback`, `navigation`, `icons`, `data`, `virtual`,
 `typography`, `display`, `pickers`, `charts`) — and `fino:ui/components` is
-the single public entry point over them. Each module keeps its gallery stories
-beside it, in `<module>.stories.tsx`, so a component and its demonstration
+the single public entry point over them. Each module keeps its preview previews
+beside it, in `<module>.previews.tsx`, so a component and its demonstration
 move together.
 
 What the barrel re-exports *is* the public API: components, their props types,
@@ -560,7 +560,7 @@ mixing them *inside* a `Text` (`<Text>plain <Bold>bold</Bold></Text>`)
 silently drops the nested styling in the terminal, even though the same tree
 renders correctly nested on the web. Compose mixed inline runs as **row
 siblings** instead — `<HStack gap={0}><Text>plain </Text><Bold>bold</Bold></HStack>`
-— which both targets render correctly; the gallery's Typography stories use
+— which both targets render correctly; the preview's Typography previews use
 this pattern throughout.
 
 `List` takes its rows as `items: Child[]` rather than a `ListItem` child
@@ -570,7 +570,7 @@ component — an entry can be a plain string or a nested tree (`Text` runs,
 of `<li>`s on the web.
 
 `Blockquote` gives every child its own `│` gutter row in the terminal —
-pass one line per child (as the gallery story does) and each carries the
+pass one line per child (as the preview preview does) and each carries the
 gutter, matching Markdown's `>` on every quoted line. A single child that
 word-wraps internally only gets one gutter for that block, since how many
 rows it wraps to is decided by layout, after the terminal composer has
@@ -634,20 +634,20 @@ degrades to inert rather than becoming an XSS vector.
 
 ## Seeing both targets
 
-`fino:ui/gallery` is the catalog's storybook, and it is dual-target by
-construction: the same story trees drive a live terminal gallery and an
-HTML gallery served over HTTP, so a component that renders sensibly in one
+`fino:ui/preview` is the catalog's browsable preview, and it is dual-target by
+construction: the same preview trees drive a live terminal preview and an
+HTML preview served over HTTP, so a component that renders sensibly in one
 target and not the other is a bug you can see.
 
 ```sh
-fino gallery                    # built-in catalog stories, in the terminal
-fino gallery stories.tsx        # your components, in the terminal
-fino gallery --html --port 4000 # serve the same stories to a browser
+fino preview                    # built-in catalog previews, in the terminal
+fino preview previews.tsx        # your components, in the terminal
+fino preview --html --port 4000 # serve the same previews to a browser
 ```
 
-A stories module default-exports `StoryGroup[]`; each story is a named view
+A previews module default-exports `PreviewGroup[]`; each preview is a named view
 function with optional controls, adjustable live in either target. The runners
-are importable directly as `runGalleryTui()` and `runGalleryHtml()`.
+are importable directly as `runPreviewTui()` and `runPreviewHtml()`.
 
 Tests cover both targets without a browser or a real terminal session.
 `renderFrame()` from `fino:tty/tui` paints any tree to a deterministic string,

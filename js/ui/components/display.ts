@@ -5,12 +5,7 @@
  * @internal
  */
 import { h, type NormalizedChild, type Child, type Props, type VNode } from 'fino:ui';
-import {
-  idAttr,
-  safeHref,
-  slotChildren,
-  tone,
-} from 'internal:ui/components/html-runtime';
+import { safeHref, tone } from 'internal:ui/components/html-runtime';
 import type { FlexChildProps } from 'internal:ui/components/primitives';
 import { iconForm } from 'internal:ui/components/icons';
 import type { IconForms } from 'internal:ui/components/icons';
@@ -73,7 +68,6 @@ const TREND_LABEL: Record<Trend, string> = {
 };
 
 const TREND_TONE: Record<Trend, string> = { up: 'success', down: 'danger', flat: 'muted' };
-
 
 const STATUS_TONE: Record<StatusDotStatus, string> = {
   ok: 'success',

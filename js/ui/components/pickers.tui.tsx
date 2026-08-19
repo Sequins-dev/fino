@@ -5,15 +5,31 @@
  * @internal
  */
 import { h, mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Layer, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { env } from 'fino:process';
 import { nearestAnsi256, supportsTruecolor } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { parseHexColor } from 'internal:ui/components/pickers';
-import { formatClockTime, formatTimeParts, monthGrid, monthLabel, parseClockTime, parseIsoMonth, shiftMonth, timeColumnWindow, weekdayLabels } from 'internal:ui/components/pickers';
-import { Calendar, ColorPicker, DatePicker, DigitalClock, TimePicker } from 'internal:ui/components/pickers';
+import {
+  formatClockTime,
+  formatTimeParts,
+  monthGrid,
+  monthLabel,
+  parseClockTime,
+  parseIsoMonth,
+  shiftMonth,
+  timeColumnWindow,
+  weekdayLabels,
+} from 'internal:ui/components/pickers';
+import {
+  Calendar,
+  ColorPicker,
+  DatePicker,
+  DigitalClock,
+  TimePicker,
+} from 'internal:ui/components/pickers';
 import type { ClockParts } from 'internal:ui/components/pickers';
 import type {
   CalendarProps,
@@ -51,8 +67,7 @@ function nearestOptionIndex(options: number[], value: number): number {
 
 mapRenderTargetLowering(Calendar, 'tui', (all: CalendarProps): VNode => {
   const { children = [], ...props } = all as CalendarProps & { children?: NormalizedChild[] };
-  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id, ...rest } =
-    props;
+  const { month, selected, today, weekStartsOn, onSelect, onMonthChange, id, ...rest } = props;
   const { year, month: m } = parseIsoMonth(month);
   const weeks = monthGrid(year, m, weekStartsOn ?? 0);
   const labels = weekdayLabels(weekStartsOn ?? 0);
@@ -183,6 +198,12 @@ mapRenderTargetLowering(DatePicker, 'tui', (all: DatePickerProps): VNode => {
   );
 });
 
+// Columns are click-selectable lists, as requested, and — since a component
+// cannot hold "which column has arrow-key focus" as state of its own —
+// Up/Down and Left/Right step the whole value directly (minutes and hours
+// respectively) while the popover is open, the same directly-manipulated
+// idiom `NumberInput`/`Slider` already use elsewhere in this catalog, rather
+// than inventing per-column keyboard focus state that has nowhere to live.
 mapRenderTargetLowering(TimePicker, 'tui', (all: TimePickerProps): VNode => {
   const { children = [], ...props } = all as TimePickerProps & { children?: NormalizedChild[] };
   const { value, open, onOpenChange, onChange, step, seconds, focused, disabled, placeholder, id } =
@@ -303,6 +324,11 @@ mapRenderTargetLowering(TimePicker, 'tui', (all: TimePickerProps): VNode => {
   );
 });
 
+// Truecolor detection (env.COLORTERM via fino:process) happens here, in the
+// lowering — never inside the `ColorPicker` component function, which stays
+// clock- and environment-free like every other catalog component. Terminals
+// that don't report `truecolor`/`24bit` fall back to the nearest of the
+// xterm 256-color palette (`nearestAnsi256`) for every swatch cell.
 mapRenderTargetLowering(ColorPicker, 'tui', (all: ColorPickerProps): VNode => {
   const { children = [], ...props } = all as ColorPickerProps & { children?: NormalizedChild[] };
   const { value, onChange, swatches, open, onOpenChange, id, ...rest } = props;

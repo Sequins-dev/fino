@@ -5,11 +5,20 @@
  * @internal
  */
 import { mapRenderTargetLowering } from 'fino:ui';
-import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { NormalizedChild, VNode } from 'fino:ui';
 import { Box, Clickable, Rule, Text } from 'internal:ui/components/primitives';
 import { styles } from 'fino:ui/components/theme';
 import { highlightLines } from 'fino:format/typescript';
-import { Blockquote, Bold, Code, Heading, InlineCode, Italic, Link, List } from 'internal:ui/components/typography';
+import {
+  Blockquote,
+  Bold,
+  Code,
+  Heading,
+  InlineCode,
+  Italic,
+  Link,
+  List,
+} from 'internal:ui/components/typography';
 import type {
   BlockquoteProps,
   BoldProps,
@@ -28,9 +37,6 @@ const CODE_TONE = {
   comment: styles.muted,
   regexp: styles.warning,
 } as const;
-
-
-
 
 const TREND_GLYPH: Record<Trend, string> = { up: '▲', down: '▼', flat: '–' };
 const TREND_TONE: Record<Trend, Style> = {
@@ -78,6 +84,12 @@ mapRenderTargetLowering(Italic, 'tui', (all: ItalicProps): VNode => {
   );
 });
 
+// `Link` is the one catalog component allowed to navigate. With `onActivate`
+// it becomes a focusable Clickable, same as any other click-like control.
+// Terminals get no clickable hyperlinks: OSC 8 cannot survive the frame
+// pipeline (parseAnsi drops non-SGR escapes so segments stay free of control
+// codes), and carrying links through Segment/Row is a frame-model change we
+// chose not to make. An href-only link renders as styled, underlined text.
 mapRenderTargetLowering(Link, 'tui', (all: LinkProps): VNode => {
   const { children = [], ...props } = all as LinkProps & { children?: NormalizedChild[] };
   const { href: _href, onActivate, id, ...rest } = props;
@@ -96,6 +108,13 @@ mapRenderTargetLowering(Link, 'tui', (all: LinkProps): VNode => {
   );
 });
 
+// Each child gets its own gutter row, so a quote built from several `Text`
+// lines carries `│` beside every one of them — matching Markdown's `>` on
+// every quoted line. A single child that word-wraps internally still only
+// carries one gutter for that block: how many rows it wraps to is a
+// layout-time decision made after this composer runs, and repeating the
+// gutter per wrapped row would mean teaching the frame/cell layer about a
+// tiling left border, which is out of scope for a component lowering.
 mapRenderTargetLowering(Blockquote, 'tui', (all: BlockquoteProps): VNode => {
   const { children = [], ...props } = all as BlockquoteProps & { children?: NormalizedChild[] };
   const { id, ...rest } = props;

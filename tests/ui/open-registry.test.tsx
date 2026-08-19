@@ -72,9 +72,7 @@ describe('fino:ui lowering registry is open', () => {
     mapRenderTargetLowering(Loud, 'tui', (props: { children?: Child }) => (
       <Text bold>{props.children}</Text>
     ));
-    const frame = frameToAnsi(
-      layoutFrame(h(Loud, null, 'shout'), { width: 10, height: 1 }),
-    );
+    const frame = frameToAnsi(layoutFrame(h(Loud, null, 'shout'), { width: 10, height: 1 }));
     t.ok(frame.includes('shout'), 'the terminal used the registered override');
     t.ok(frame.includes('[1m'), 'with the bold attribute the lowering asked for');
   });

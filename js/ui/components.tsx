@@ -38,7 +38,7 @@
  * ## Module layout
  *
  * The catalog is grouped into `internal:ui/components/*` modules — one per
- * component family, each with its stories file beside it — and this module is
+ * component family, each with its previews file beside it — and this module is
  * the single public entry point over them. What it re-exports *is* the public
  * API: components, their props types, the data types those props name, and
  * the state models (`createTextField`, `ListSelection`, `VirtualScroll`, …)

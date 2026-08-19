@@ -1,17 +1,17 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/charts.stories — gallery stories for bar and line charts.
+ * internal:ui/components/charts.preview — preview previews for bar and line charts.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
 import { BarChart, LineChart } from 'fino:ui/components';
 import type { Series } from 'fino:ui/components';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
-// Fixed sample data — deterministic, no `Math.random()`, so the gallery (and
+// Fixed sample data — deterministic, no `Math.random()`, so the preview (and
 // anything that snapshots it, e.g. the HTML target's markup assertions in
 // tests) renders identically on every run.
 const BAR_CATEGORIES = ['Q1', 'Q2', 'Q3', 'Q4'];
@@ -26,10 +26,10 @@ const LINE_SERIES: Series[] = [
   { key: 'errors', label: 'error rate', points: [1, 2, 1, 3, 2, 2, 4, 3, 2, 1] },
 ];
 
-export function chartsStories(): StoryGroup {
+export function chartsPreviews(): PreviewGroup {
   return {
     title: 'Charts',
-    stories: [
+    previews: [
       {
         key: 'bar-chart',
         name: 'BarChart',

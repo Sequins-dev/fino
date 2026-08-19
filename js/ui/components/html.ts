@@ -46,120 +46,28 @@ import {
   Text,
 } from 'internal:ui/components/primitives';
 import {
-  actionForm,
   actionsActive,
   borderShorthand,
-  changeAttrs,
   cssColor,
-  emptyNode,
   flexChildCss,
-  handlerOf,
-  idAttr,
-  VIRTUAL_ROW_PX,
-  injectFirstControlAria,
   setChildTransform,
-  inlineStyleAttrs,
   justifyCss,
   num,
-  register,
   resolveStyle,
-  safeHref,
   sizeCss,
-  slotChildren,
   styleCss,
   tone,
   withActions,
 } from 'internal:ui/components/html-runtime';
 export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
 import type { ToHtmlOptions } from 'internal:ui/components/html-runtime';
-import type { Child, NormalizedChild, Props, VNode } from 'fino:ui';
-import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
-import type { Color, Style } from 'fino:tty/style';
+import type { NormalizedChild, Props, VNode } from 'fino:ui';
+import type { Color } from 'fino:tty/style';
 import { rawHtml, renderToHtml } from 'fino:ui/html';
 // The pure helpers a lowering shares with the terminal target — the same
 // filter, the same icon names, the same axis ticks — are not part of the
 // public `fino:ui/components` surface; they come from the catalog module
 // that owns each one.
-import { defaultComboBoxFilter } from 'internal:ui/components/menu';
-import { iconForm } from 'internal:ui/components/icons';
-import { fileIcon } from 'internal:ui/components/data';
-import { paginationRange } from 'internal:ui/components/navigation';
-import { niceScale, seriesColor } from 'internal:ui/components/charts';
-import {
-  formatClockTime,
-  monthGrid,
-  monthLabel,
-  parseIsoMonth,
-  shiftMonth,
-  weekdayLabels,
-} from 'internal:ui/components/pickers';
-import { highlightLines } from 'fino:format/typescript';
-import type {
-  BarChartProps,
-  BlockquoteProps,
-  BoldProps,
-  BreadcrumbsProps,
-  ButtonProps,
-  CalendarProps,
-  CardProps,
-  CheckboxProps,
-  CodeProps,
-  ColorPickerProps,
-  ComboBoxProps,
-  ContextMenuProps,
-  DatePickerProps,
-  DetailsProps,
-  DigitalClockProps,
-  EmptyStateProps,
-  ExpanderPosition,
-  ExpanderProps,
-  FieldProps,
-  FieldsetProps,
-  FileTreeNode,
-  FileTreeProps,
-  FloatingActionBarProps,
-  HeadingProps,
-  HoverCardProps,
-  IconButtonProps,
-  IconProps,
-  InlineCodeProps,
-  ItalicProps,
-  LineChartProps,
-  LinkProps,
-  ListProps,
-  MenuItem,
-  MenuListProps,
-  MenuRowProps,
-  ModalProps,
-  NumberInputProps,
-  PaginationProps,
-  PanelProps,
-  PopoverProps,
-  RadioGroupProps,
-  RadioProps,
-  SelectProps,
-  Series,
-  SliderProps,
-  StatProps,
-  StatusDotProps,
-  StatusDotStatus,
-  StepsProps,
-  SwitchProps,
-  TabItem,
-  TabListProps,
-  TableProps,
-  TabsProps,
-  TextAreaProps,
-  TextInputProps,
-  TimelineProps,
-  TimePickerProps,
-  ToastProps,
-  ToastStackProps,
-  TooltipProps,
-  Trend,
-  VirtualListProps,
-} from 'fino:ui/components';
-
 
 function boxNode(node: VNode, children: NormalizedChild[]): VNode {
   const props = node.props;
@@ -277,127 +185,6 @@ function transformChildren(children: readonly NormalizedChild[]): NormalizedChil
 
 /** Collector receiving `id → invoke` pairs during an interactive transform. */
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Fixed row height (px) for `ui:virtual-list` in the HTML target. The
-// container's height and its top/bottom spacers all size off this same
-// constant, and it rides along as `data-fi-row-height` so the client can
-// convert a scroll container's `scrollTop` back into the row-offset unit
-// `VirtualScroll` works in — see internal:ui/web/client's scroll listener.
-
-
-/**
- * `ui:virtual-list` on the web: there is no wheel event to hook, so instead
- * of `onMouse` this wires `onScroll` to a real scrollable `<div>` — marked
- * `data-fi-scroll` with its row height, and (when interactive) wrapped in an
- * action form carrying a hidden `value` field the client fills in with the
- * scrolled-to row before submitting. Without an `onScroll` handler the
- * container renders inert, same as any other handler-less control.
- */
-
-
-
-
-
-// Schemes and relative forms an <a href> may carry. Anything else — most
-// dangerously `javascript:`/`vbscript:`/`data:` — is app-controlled content
-// (chat messages, agent output, file metadata) that must never reach a live
-// anchor, so it is dropped rather than escaped.
-// its text, styled, just without a `href` attribute.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-// The web target renders only the native `<input type="date">` — no
-// duplicate popover calendar. Native date inputs already provide a full,
-// localized, keyboard-operable picker UI for free; pairing it with our own
-// overlay would be a second, non-native affordance fighting the platform's
-// own for the same job, and we would own its focus-trap/dismiss logic for no
-// benefit. The popover `Calendar` composition stays terminal-only, where
-// there is no native equivalent to defer to.
-
-// Same native-only rationale as `DatePicker`: `<input type="time" step>`
-// gets a platform picker for free. `step` is minutes in this catalog's API
-// (it sizes the terminal's minute column/arrow-key increment) but the native
-// attribute is seconds, so it is multiplied here; `seconds` forces step=1s
-// so the browser shows the seconds field, since a whole-minute step and a
-// sub-minute step can't both be expressed by one native attribute value.
-
-
-// Fixed SVG canvas width; height scales with the `height` prop at the same
-// px-per-row (`VIRTUAL_ROW_PX`) the virtual list already uses, so a chart's
-// visual density matches the rest of the web target rather than inventing a
-// second unit.
-
-
-// Most SVG presentation attributes are plain lowercase (`fill`, `stroke`),
-// but a few multi-word ones (`font-size`, `text-anchor`,
-// `dominant-baseline`, `stroke-width`) are NOT in the HTML parser's small
-// SVG camelCase-restoration table (unlike `viewBox`/`preserveAspectRatio`,
-// which are) — written as camelCase object keys they'd serialize as
-// `fontsize`/`textanchor`/… and silently do nothing once parsed as inline
-// SVG. They're passed as explicit kebab-case string keys below instead.
-
-
-
-const NATIVE: Record<string, (node: VNode) => VNode> = {
-};
-
 /**
  * Transform a `fino:ui` tree into HTML VNodes.
  *
@@ -460,18 +247,6 @@ function transformUnwalked(node: VNode, depth: number): VNode {
   if (typeof node.type !== 'string') {
     const impl = renderTargetLowering(node.type, 'html') ?? node.type;
     return substitute(node, impl, depth);
-  }
-  const native = NATIVE[node.type];
-  if (native) {
-    const composed = native(node);
-    // A lowering emits finished markup, so its output is *not* run back
-    // through the element switch below — `text`, `input` and `rule` are
-    // primitive names here and real HTML/SVG element names there, and the two
-    // meanings would collide. What is re-visited is anything the lowering
-    // composed rather than emitted: nested components and semantic nodes.
-    const resolved = resolveNested(node.key === null ? composed : { ...composed, key: node.key }, depth);
-    walked.add(resolved);
-    return resolved;
   }
   const elementLowering = renderTargetLowering(node.type, 'html');
   if (elementLowering !== undefined) return substitute(node, elementLowering, depth);
@@ -541,11 +316,7 @@ function transformUnwalked(node: VNode, depth: number): VNode {
  */
 function resolveNested(node: VNode, depth: number): VNode {
   if (walked.has(node)) return node;
-  if (
-    typeof node.type !== 'string' ||
-    NATIVE[node.type] !== undefined ||
-    renderTargetLowering(node.type, 'html') !== undefined
-  ) {
+  if (typeof node.type !== 'string' || renderTargetLowering(node.type, 'html') !== undefined) {
     return transformUnwalked(node, depth + 1);
   }
   let changed = false;
@@ -627,7 +398,11 @@ mapRenderTargetLowering(Input, 'html', (props: PrimitiveProps) => {
 });
 mapRenderTargetLowering(Scroll, 'html', (props: PrimitiveProps) => {
   const { children } = asNode(props);
-  const css: Record<string, string> = { overflow: 'auto', display: 'flex', flexDirection: 'column' };
+  const css: Record<string, string> = {
+    overflow: 'auto',
+    display: 'flex',
+    flexDirection: 'column',
+  };
   sizeCss(props, css);
   flexChildCss(props, css);
   return h('div', { style: css }, ...children);

@@ -1,12 +1,12 @@
 import { describe, it } from 'fino:test/test';
 import { openPty } from 'fino:test/pty';
 import { execPath } from 'fino:process';
-describe('gallery fills its window', () => {
+describe('preview fills its window', () => {
   it('closes borders and fits at several widths', async (t) => {
     for (const cols of [70, 90] as const) {
-      const pty = await openPty(execPath, ['gallery'], { cols, rows: 26 });
+      const pty = await openPty(execPath, ['preview'], { cols, rows: 26 });
       try {
-        await pty.waitFor((term) => term.text().some((l) => l.includes('Stories')));
+        await pty.waitFor((term) => term.text().some((l) => l.includes('Previews')));
         for (let i = 0; i < 90; i++) {
           if (pty.term.text().some((l) => l.includes('─ LineChart'))) break;
           await pty.sendMouse('wheel-down', 6, 4);

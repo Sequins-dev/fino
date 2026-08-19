@@ -1,9 +1,9 @@
 /** @jsxImportSource fino:ui */
 /**
- * internal:ui/components/indicators.stories — gallery stories for badges, icons, key hints, and tags.
+ * internal:ui/components/indicators.preview — preview previews for badges, icons, key hints, and tags.
  *
  * Lives beside the components it demonstrates so the two stay in step;
- * `fino:ui/gallery` composes every group into the browsable catalog.
+ * `fino:ui/preview` composes every group into the browsable catalog.
  *
  * @internal
  */
@@ -23,11 +23,11 @@ import {
 } from 'fino:ui/components';
 import type { ToneVariant } from 'fino:ui/components';
 import { ICONS } from 'internal:ui/components/icons';
-import type { StoryGroup } from 'internal:ui/story';
+import type { PreviewGroup } from 'internal:ui/preview';
 
 const TONE_VARIANTS: ToneVariant[] = ['accent', 'muted', 'danger', 'success', 'warning'];
 
-export function indicatorsStories(): StoryGroup {
+export function indicatorsPreviews(): PreviewGroup {
   const tagLabels = ['alpha', 'beta', 'gamma', 'delta'];
   const tagColors: Record<string, ToneVariant> = {
     alpha: 'accent',
@@ -38,7 +38,7 @@ export function indicatorsStories(): StoryGroup {
   const tags = createSignal(tagLabels);
   return {
     title: 'Indicators',
-    stories: [
+    previews: [
       {
         key: 'badge',
         name: 'Badge',
