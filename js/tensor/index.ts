@@ -31,10 +31,15 @@
  * contract's §1 for what stability they do and do not promise.
  *
  * `device('auto')` prefers a GPU when one is present — Metal on Apple hardware,
- * Vulkan elsewhere — and falls back to the reference CPU backend, which always
- * registers and so cannot fail. The reference backend is the oracle every other
+ * CUDA on NVIDIA hardware when the Driver API and NVRTC are installed, then Vulkan —
+ * and falls back to the reference CPU backend, which always registers and so cannot
+ * fail. The reference backend is the oracle every other
  * backend is differentially tested against, but it is a scalar TypeScript
  * implementation and should never be quoted as this engine's performance.
+ * CUDA requires the NVIDIA driver, NVRTC, and CUDA runtime headers. Nonstandard
+ * installations can set `FINO_CUDA_LIBRARY`, `FINO_CUDA_NVRTC_LIBRARY`, and
+ * `FINO_CUDA_INCLUDE`; an incomplete installation is reported by
+ * `gpuUnavailableReasons()` without preventing the other backends from loading.
  *
  * `f64` and `i64` are CPU-only: no GPU this engine targets represents them, and
  * asking a GPU to hold one is refused rather than silently narrowed.
@@ -42,7 +47,7 @@
 import { registerBackend, registerDevice, resolveDevice } from './backend.ts';
 import type { Device } from './backend.ts';
 import { RefBackend, refProvider } from './ref/backend.ts';
-import { metalProvider, vulkanProvider } from './gpu/index.ts';
+import { cudaProvider, metalProvider, vulkanProvider } from './gpu/index.ts';
 import { fromHostValues, defaultDevice, setDefaultDevice } from './create.ts';
 import { DTYPE_BYTES } from './dtype.ts';
 import type { DType, HostArray } from './dtype.ts';
@@ -68,6 +73,7 @@ registerDevice(new RefBackend());
 // is too much to do at import. `device('auto')` and `listDevices()` probe on demand,
 // and a provider that finds nothing simply yields no devices.
 registerBackend(metalProvider);
+registerBackend(cudaProvider);
 registerBackend(vulkanProvider);
 
 // Importing the operations registers every primitive and installs the Tensor
@@ -153,7 +159,12 @@ function inferShape(value: NestedArray): number[] {
  *
  * @internal
  */
-function flattenInto(value: NestedArray, shape: readonly number[], depth: number, out: number[]): void {
+function flattenInto(
+  value: NestedArray,
+  shape: readonly number[],
+  depth: number,
+  out: number[],
+): void {
   if (depth === shape.length) {
     if (Array.isArray(value)) throw new Error('nested array is deeper than its first row');
     out.push(typeof value === 'boolean' ? (value ? 1 : 0) : value);
@@ -179,8 +190,7 @@ export async function tensor(
   let flat: number[];
   let shape: readonly number[];
   const flatArray =
-    Array.isArray(values) &&
-    values.every((v) => typeof v === 'number' || typeof v === 'boolean');
+    Array.isArray(values) && values.every((v) => typeof v === 'number' || typeof v === 'boolean');
   if (flatArray) {
     // A flat array plus an explicit shape is the common case for generated data,
     // and does not need to be nested first.
@@ -218,10 +228,7 @@ export async function zeros(
 }
 
 /** A tensor of ones. */
-export async function ones(
-  shape: readonly number[],
-  options: CreateOptions = {},
-): Promise<Tensor> {
+export async function ones(shape: readonly number[], options: CreateOptions = {}): Promise<Tensor> {
   const { dtype, device } = await resolve(options);
   const out = fillOf(shape, dtype, device, 1);
   out.requiresGrad = options.requiresGrad ?? false;
@@ -298,13 +305,7 @@ export { to } from './transfer.ts';
 export { GradScaler, autocast, autocastDType } from './amp.ts';
 export type { GradScalerOptions } from './amp.ts';
 export type { SliceSpec } from './shape.ts';
-export {
-  MAX_RANK,
-  broadcastShapes,
-  broadcastAll,
-  matmulShape,
-  numel,
-} from './shape.ts';
+export { MAX_RANK, broadcastShapes, broadcastAll, matmulShape, numel } from './shape.ts';
 export { currentGraph } from './graph.ts';
 export { chainRunCount } from './dispatch.ts';
 export { gpuUnavailableReasons } from './gpu/index.ts';

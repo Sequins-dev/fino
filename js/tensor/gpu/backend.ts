@@ -174,7 +174,6 @@ const ROW_PER_THREAD_OCCUPANCY = 16;
 /** Operations that are not implemented on the GPU path. */
 const UNSUPPORTED: ReadonlySet<OpKind> = new Set<OpKind>();
 
-
 /**
  * A `DeviceBackend` backed by a GPU driver.
  */
@@ -221,7 +220,8 @@ export class GpuBackend implements DeviceBackend {
     this.device = { type: driver.caps.type, index };
     this.caps = {
       class: 'kernel',
-      kernelCompile: driver.caps.type === 'metal' ? 'msl' : 'spirv',
+      kernelCompile:
+        driver.caps.type === 'metal' ? 'msl' : driver.caps.type === 'cuda' ? 'cuda-c' : 'spirv',
       dispatch: 'per-op',
       captureReplay: typeof driver.captureBegin === 'function',
       dtypes: driver.caps.f16 ? GPU_DTYPES : GPU_DTYPES.filter((d) => d !== 'f16'),
@@ -403,20 +403,11 @@ export class GpuBackend implements DeviceBackend {
     });
   }
 
-  copyD2H(
-    dst: PinnedBuffer,
-    src: DeviceBuffer,
-    srcOffset: number,
-    bytes: number,
-  ): void {
+  copyD2H(dst: PinnedBuffer, src: DeviceBuffer, srcOffset: number, bytes: number): void {
     this.#enqueue(async () => {
       // `read` waits for work already submitted, so the values are the ones the
       // kernels produced rather than whatever the buffer held beforehand.
-      const data = await this.#driver.read(
-        src as unknown as DriverBuffer,
-        srcOffset,
-        bytes,
-      );
+      const data = await this.#driver.read(src as unknown as DriverBuffer, srcOffset, bytes);
       new Uint8Array((dst as unknown as DriverBuffer).host!).set(data);
     });
   }
@@ -516,9 +507,10 @@ export class GpuBackend implements DeviceBackend {
     // would cost a microtask turn per launch — and worse, a synchronous loop that
     // never yields would accumulate every launch as a pending closure rather than
     // submitting any of them, so a long compute loop grew until the process died.
-    const ready = this.#pending === 0 && this.#driver.canLaunch()
-      ? this.#cache.peekReady(built.key, this.#driver.target)
-      : null;
+    const ready =
+      this.#pending === 0 && this.#driver.canLaunch()
+        ? this.#cache.peekReady(built.key, this.#driver.target)
+        : null;
     if (ready !== null) {
       const packed = packParams(built.ir.params, params);
       this.#driver.launch(ready, driverBuffers, packed, groups);
@@ -646,7 +638,10 @@ export class GpuBackend implements DeviceBackend {
     if (scalar !== null) {
       // A scalar operand rides in the parameter block, so one buffer is bound.
       const inputScalar = this.#scalar(inputs[0]!);
-      const lanes = ewLanes(count, [{ dtype: inputScalar, layout: 'cont' }], outScalar, [inputs[0]!, out]);
+      const lanes = ewLanes(count, [{ dtype: inputScalar, layout: 'cont' }], outScalar, [
+        inputs[0]!,
+        out,
+      ]);
       const groups = count / lanes;
       this.#run(
         () => buildScalarElementwise(op, inputScalar, outScalar, onLeft, lanes),
@@ -705,11 +700,7 @@ export class GpuBackend implements DeviceBackend {
    *
    * @internal
    */
-  #stretch(
-    input: TensorDesc,
-    shape: readonly number[],
-    scratch: DriverBuffer[],
-  ): TensorDesc {
+  #stretch(input: TensorDesc, shape: readonly number[], scratch: DriverBuffer[]): TensorDesc {
     const own = contiguousStrides(input.shape);
     const rank = shape.length;
     const strides = new Array<number>(rank).fill(0);
@@ -726,7 +717,13 @@ export class GpuBackend implements DeviceBackend {
       offset: 0,
     };
     this.copyStrided(
-      { buffer: input.buffer, dtype: input.dtype, shape: [...shape], strides, offset: input.offset },
+      {
+        buffer: input.buffer,
+        dtype: input.dtype,
+        shape: [...shape],
+        strides,
+        offset: input.offset,
+      },
       target,
     );
     return target;
@@ -788,7 +785,10 @@ export class GpuBackend implements DeviceBackend {
   cast(x: TensorDesc, out: TensorDesc): void {
     const count = numel(out.shape);
     if (count === 0) return;
-    const lanes = ewLanes(count, [{ dtype: this.#scalar(x), layout: 'cont' }], this.#scalar(out), [x, out]);
+    const lanes = ewLanes(count, [{ dtype: this.#scalar(x), layout: 'cont' }], this.#scalar(out), [
+      x,
+      out,
+    ]);
     const groups = count / lanes;
     this.#run(
       () => castKernel(this.#scalar(x), this.#scalar(out), { vec: lanes }),
@@ -1062,12 +1062,7 @@ export class GpuBackend implements DeviceBackend {
     );
   }
 
-  scatterAdd(
-    out: TensorDesc,
-    indices: TensorDesc,
-    src: TensorDesc,
-    axis: number,
-  ): void {
+  scatterAdd(out: TensorDesc, indices: TensorDesc, src: TensorDesc, axis: number): void {
     const elements = numel(src.shape);
     if (elements === 0) return;
     this.#run(
@@ -1083,12 +1078,7 @@ export class GpuBackend implements DeviceBackend {
     );
   }
 
-  scatterAddAt(
-    out: TensorDesc,
-    indices: TensorDesc,
-    src: TensorDesc,
-    axis: number,
-  ): void {
+  scatterAddAt(out: TensorDesc, indices: TensorDesc, src: TensorDesc, axis: number): void {
     const elements = numel(src.shape);
     if (elements === 0) return;
     this.#run(
@@ -1104,12 +1094,7 @@ export class GpuBackend implements DeviceBackend {
     );
   }
 
-  indexSelect(
-    x: TensorDesc,
-    indices: TensorDesc,
-    out: TensorDesc,
-    axis: number,
-  ): void {
+  indexSelect(x: TensorDesc, indices: TensorDesc, out: TensorDesc, axis: number): void {
     const elements = numel(out.shape);
     if (elements === 0) return;
     this.#run(
@@ -1173,11 +1158,7 @@ export class GpuBackend implements DeviceBackend {
     );
   }
 
-  optimizerStep(
-    kind: 'sgd' | 'adam',
-    tensors: readonly TensorDesc[],
-    attrs: OpAttrs,
-  ): void {
+  optimizerStep(kind: 'sgd' | 'adam', tensors: readonly TensorDesc[], attrs: OpAttrs): void {
     const count = numel(tensors[0]!.shape);
     if (count === 0) return;
     const momentum = kind === 'sgd' && tensors.length > 2;

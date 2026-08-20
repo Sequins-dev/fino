@@ -12,7 +12,8 @@ surfaces carry weaker stability promises than the rest of the runtime — see §
 that document.
 
 `device('auto')` prefers a GPU when one is present — Metal on Apple hardware,
-Vulkan elsewhere — and falls back to the reference CPU backend:
+CUDA on NVIDIA hardware when the Driver API and NVRTC are installed, then Vulkan —
+and falls back to the reference CPU backend:
 
 ```ts
 import { device, listDevices, tensor } from 'fino:tensor';
@@ -22,7 +23,11 @@ const x = await tensor([[1, 2], [3, 4]]);   // on the GPU, if there is one
 const y = await tensor([1, 2], { device: 'cpu' }); // or pin it
 ```
 
-Both GPU backends are tested differentially against the reference backend, which
+CUDA needs the NVIDIA Driver API, NVRTC, and CUDA runtime headers. Set
+`FINO_CUDA_LIBRARY`, `FINO_CUDA_NVRTC_LIBRARY`, or `FINO_CUDA_INCLUDE` when those
+components are outside the platform's normal library and include paths.
+
+Every GPU backend is tested differentially against the reference backend, which
 is the oracle, and an MLP trains to convergence on each. The reference backend
 always registers, so `device('auto')` cannot fail, but it is a scalar TypeScript
 implementation and is not this engine's performance story.
@@ -177,7 +182,7 @@ cotangent back into zeros at the positions it came from.
 import { device, listDevices } from 'fino:tensor';
 
 console.log(await listDevices());
-const dev = await device('auto'); // or 'cpu', 'metal:1', …
+const dev = await device('auto'); // or 'cpu', 'cuda', 'metal:1', …
 ```
 
 `device('auto')` picks the highest-priority available backend and cannot fail,

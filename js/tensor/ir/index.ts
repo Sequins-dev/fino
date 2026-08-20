@@ -70,6 +70,8 @@ export type { MslOptions } from './lower/msl.ts';
 export { lowerToMSL } from './lower/msl.ts';
 export type { SpirvOptions } from './lower/spirv.ts';
 export { lowerToSPIRV } from './lower/spirv.ts';
+export type { CudaOptions } from './lower/cuda.ts';
+export { lowerToCUDA } from './lower/cuda.ts';
 
 export type { EwContext, EwInput, EwSpec } from './templates/elementwise.ts';
 export {
@@ -93,12 +95,7 @@ export {
   gemmIsExact,
   gemmKernel,
 } from './templates/gemm.ts';
-export {
-  GEMM_MMA_THREADS,
-  gemmMmaFits,
-  gemmMmaGrid,
-  gemmMmaKernel,
-} from './templates/gemm-mma.ts';
+export { GEMM_MMA_THREADS, gemmMmaFits, gemmMmaGrid, gemmMmaKernel } from './templates/gemm-mma.ts';
 export type { GemmMmaSpec } from './templates/gemm-mma.ts';
 
 export type { LayerNormSpec, ReduceOp, ReduceSpec, SoftmaxSpec } from './templates/reduce.ts';

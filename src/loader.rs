@@ -940,6 +940,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/gpu", "tensor/gpu/index"),
     source_builtin!("internal:tensor/gpu/driver", "tensor/gpu/driver"),
     source_builtin!("internal:tensor/gpu/backend", "tensor/gpu/backend"),
+    source_builtin!("internal:tensor/gpu/cuda-driver", "tensor/gpu/cuda-driver"),
     source_builtin!(
         "internal:tensor/gpu/metal-driver",
         "tensor/gpu/metal-driver"
@@ -975,6 +976,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tensor/ir/key", "tensor/ir/key"),
     source_builtin!("internal:tensor/ir/msl", "tensor/ir/lower/msl"),
     source_builtin!("internal:tensor/ir/spirv", "tensor/ir/lower/spirv"),
+    source_builtin!("internal:tensor/ir/cuda", "tensor/ir/lower/cuda"),
     source_builtin!(
         "internal:tensor/ir/templates/elementwise",
         "tensor/ir/templates/elementwise"

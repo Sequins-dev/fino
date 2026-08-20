@@ -14,21 +14,15 @@
  */
 import type { BackendProvider, DeviceBackend } from '../backend.ts';
 import { GpuBackend } from './backend.ts';
+import { createCudaDriver, cudaDriverAvailable, cudaDriverReason } from './cuda-driver.ts';
 import { createMetalDriver, metalDriverAvailable, metalDriverReason } from './metal-driver.ts';
-import {
-  createVulkanDriver,
-  vulkanDriverAvailable,
-  vulkanDriverReason,
-} from './vulkan-driver.ts';
+import { createVulkanDriver, vulkanDriverAvailable, vulkanDriverReason } from './vulkan-driver.ts';
 
 export type { DriverBuffer, DriverCaps, DriverKernel, GpuDriver } from './driver.ts';
 export { GpuBackend } from './backend.ts';
+export { createCudaDriver, cudaDriverAvailable, cudaDriverReason } from './cuda-driver.ts';
 export { createMetalDriver, metalDriverAvailable, metalDriverReason } from './metal-driver.ts';
-export {
-  createVulkanDriver,
-  vulkanDriverAvailable,
-  vulkanDriverReason,
-} from './vulkan-driver.ts';
+export { createVulkanDriver, vulkanDriverAvailable, vulkanDriverReason } from './vulkan-driver.ts';
 
 /**
  * Metal provider.
@@ -49,6 +43,28 @@ export const metalProvider: BackendProvider = {
       return [new GpuBackend(createMetalDriver())];
     } catch (cause) {
       probeFailures.metal = (cause as Error).message;
+      return [];
+    }
+  },
+};
+
+/**
+ * CUDA provider.
+ *
+ * Preferred over Vulkan on NVIDIA systems because it reaches the native compute
+ * stack directly and leaves room for CUDA-specific capabilities such as tensor cores.
+ */
+export const cudaProvider: BackendProvider = {
+  type: 'cuda',
+  priority: 200,
+  async probe(): Promise<DeviceBackend[]> {
+    return cudaProvider.probeSync!();
+  },
+  probeSync(): DeviceBackend[] {
+    if (!cudaDriverAvailable()) return [];
+    try {
+      return [new GpuBackend(createCudaDriver())];
+    } catch {
       return [];
     }
   },
@@ -81,6 +97,7 @@ export const vulkanProvider: BackendProvider = {
 export function gpuUnavailableReasons(): Record<string, string | null> {
   return {
     metal: metalDriverReason(),
+    cuda: cudaDriverReason(),
     vulkan: vulkanDriverReason(),
   };
 }
