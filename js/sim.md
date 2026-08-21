@@ -99,7 +99,7 @@ Pass `realTime: true` to keep the clock real while leaving randomness seeded.
 
 ## Recording and replay
 
-A cassette stores the ordered realm-session frames as structured-clone bytes,
+A cassette stores the ordered realm-channel frames as structured-clone bytes,
 so `Map`, `Set`, `Date`, `BigInt`, typed arrays, and cycles survive a round
 trip. Its manifest fixes the entry, effective import map, runtime, seed, clock,
 latency, and hashes of every file in the loaded module graph:

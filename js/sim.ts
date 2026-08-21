@@ -37,6 +37,7 @@ import { Facade, ImportMap, Realm, type ImportRule } from 'fino:realm';
 import { resolveSimConfig, type SimConfig } from 'internal:sim/config';
 import { createSeededRandom } from 'internal:sim/random';
 import { EnvelopeKind } from 'internal:realm/envelope';
+import type { TransportPort } from 'internal:realm/transport-port';
 import { digest } from 'internal:openssl';
 import {
   SimJournal,
@@ -247,21 +248,6 @@ function facadeFromObject(specifier: string, provider: Record<string, unknown>):
 function isAsyncGenerator(value: unknown): boolean {
   const name = (value as { constructor?: { name?: string } }).constructor?.name;
   return name === 'AsyncGeneratorFunction';
-}
-function beforeBind(
-  facade: Facade,
-  hook: (port: Parameters<Facade['_bind']>[0]) => unknown,
-): Facade {
-  const bind = facade._bind.bind(facade);
-  const ports = new WeakSet<object>();
-  facade._bind = (port) => {
-    if (!ports.has(port)) {
-      ports.add(port);
-      hook(port);
-    }
-    bind(port);
-  };
-  return facade;
 }
 /**
  * One reply in a `FakeNet` route table.
@@ -764,21 +750,16 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
     options.faults?.errorRate !== undefined && !replaying
       ? createSeededRandom(`${String(config.seed)}:faults`)
       : null;
+  const faultSpecifiers = new Set<string>();
   for (const [specifier, provider] of Object.entries(world)) {
     const injectHere =
       faultRandom !== null &&
       (options.faults?.only === undefined || options.faults.only.includes(specifier));
-    const facade =
-      replay === null
-        ? provider instanceof Facade
-          ? provider
-          : facadeFromObject(specifier, provider)
-        : replayFacade(specifier, provider, replay);
+    if (injectHere) faultSpecifiers.add(specifier);
+    const facade = provider instanceof Facade ? provider : facadeFromObject(specifier, provider);
     rules.push({
       pattern: specifier,
-      directive: injectHere
-        ? injectFaults(facade, specifier, faultRandom!, options.faults!)
-        : facade,
+      directive: facade,
     });
   }
   rules.push(...(options.overrides ?? []));
@@ -790,6 +771,11 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
     entry: options.entry,
     overrides: importMap,
     observe: journal._observer(recording || replaying),
+    _configurePort: (port) => {
+      if (replay !== null) replay.bind(port);
+      else if (faultRandom !== null)
+        bindFaults(port, faultSpecifiers, faultRandom, options.faults!);
+    },
     sim: {
       seed: config.seed,
       startTime: config.startTime,
@@ -818,7 +804,6 @@ class CassettePeer {
   #cassette: Cassette;
   #frames: CassetteFrame[];
   #position = 0;
-  #ports = new WeakSet<object>();
   #correlations = new Map<number, { live: number; send(kind: number, value: unknown): void }>();
   #failure: Error | null = null;
   constructor(cassette: Cassette) {
@@ -847,7 +832,7 @@ class CassettePeer {
   verifyFrames(frames: readonly CassetteFrame[]): void {
     if (frames.length !== this.#cassette.frames.length) {
       throw new Error(
-        `fino:sim — session frame count differs from the cassette (${frames.length} != ${this.#cassette.frames.length})`,
+        `fino:sim — channel frame count differs from the cassette (${frames.length} != ${this.#cassette.frames.length})`,
       );
     }
     for (let index = 0; index < frames.length; index++) {
@@ -859,32 +844,22 @@ class CassettePeer {
         actual.correlation !== expected.correlation ||
         !equalValue(decodeFrame(actual), decodeFrame(expected))
       ) {
-        throw new Error(`fino:sim — session traffic differs at frame ${index}`);
+        throw new Error(`fino:sim — channel traffic differs at frame ${index}`);
       }
     }
   }
 
   /** Install one replay dispatcher before the port's live Facade dispatcher. */
-  bind(port: {
-    _addControlHandler?(
-      handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
-    ): () => void;
-    _postControl?(kind: number, correlation: number, value: unknown): void;
-  }): void {
-    if (this.#ports.has(port)) return;
-    if (typeof port._addControlHandler !== 'function' || typeof port._postControl !== 'function') {
-      throw new TypeError('Cassette replay requires a session-backed realm port');
-    }
-    this.#ports.add(port);
+  bind(port: TransportPort): void {
     port._addControlHandler((envelope, value) => {
       if (!isFacadeFrameKind(envelope.kind)) return false;
       try {
         this.#acceptInbound(envelope.kind, envelope.correlation, value, (kind, payload) =>
-          port._postControl!(kind, envelope.correlation, payload),
+          port._postControl(kind, envelope.correlation, payload),
         );
       } catch (error) {
         this.#failure = error instanceof Error ? error : new Error(String(error));
-        port._postControl!(
+        port._postControl(
           envelope.kind === EnvelopeKind.RpcStreamRequest
             ? EnvelopeKind.RpcError
             : EnvelopeKind.RpcResponse,
@@ -961,51 +936,41 @@ class CassettePeer {
     }
   }
 }
-function replayFacade(specifier: string, provider: SimProvider, replay: CassettePeer): Facade {
-  const shape = provider instanceof Facade ? provider : facadeFromObject(specifier, provider);
-  return beforeBind(shape, (port) => replay.bind(port));
-}
 /**
- * Wrap a facade so a seeded share of its calls fail before reaching the handler.
+ * Claim a seeded share of facade requests before they reach live handlers.
  *
  * Recording observes the resulting channel frames, so injected failures are
  * journaled exactly as the guest receives them.
  */
-function injectFaults(
-  facade: Facade,
-  specifier: string,
+function bindFaults(
+  port: TransportPort,
+  specifiers: ReadonlySet<string>,
   random: ReturnType<typeof createSeededRandom>,
   faults: SimFaultOptions,
-): Facade {
+): void {
   const rate = faults.errorRate ?? 0;
-  return beforeBind(facade, (port) => {
-    const channel = port as unknown as {
-      _addControlHandler?(
-        handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
-      ): () => void;
-      _postControl?(kind: number, correlation: number, value: unknown): void;
-    };
-    channel._addControlHandler?.((envelope, value) => {
-      if (
-        envelope.kind !== EnvelopeKind.RpcRequest &&
-        envelope.kind !== EnvelopeKind.RpcStreamRequest &&
-        envelope.kind !== EnvelopeKind.SinkStart
-      ) {
-        return false;
-      }
-      const request = (value ?? {}) as { specifier?: unknown; method?: unknown };
-      if (request.specifier !== specifier || random.nextFloat() >= rate) return false;
-      const error =
-        faults.message ?? `fino:sim — injected fault in ${specifier}.${String(request.method)}`;
-      channel._postControl?.(
-        envelope.kind === EnvelopeKind.RpcStreamRequest
-          ? EnvelopeKind.RpcError
-          : EnvelopeKind.RpcResponse,
-        envelope.correlation,
-        { error },
-      );
-      return true;
-    });
+  port._addControlHandler((envelope, value) => {
+    if (
+      envelope.kind !== EnvelopeKind.RpcRequest &&
+      envelope.kind !== EnvelopeKind.RpcStreamRequest &&
+      envelope.kind !== EnvelopeKind.SinkStart
+    ) {
+      return false;
+    }
+    const request = (value ?? {}) as { specifier?: unknown; method?: unknown };
+    if (typeof request.specifier !== 'string' || !specifiers.has(request.specifier)) return false;
+    if (random.nextFloat() >= rate) return false;
+    const error =
+      faults.message ??
+      `fino:sim — injected fault in ${request.specifier}.${String(request.method)}`;
+    port._postControl(
+      envelope.kind === EnvelopeKind.RpcStreamRequest
+        ? EnvelopeKind.RpcError
+        : EnvelopeKind.RpcResponse,
+      envelope.correlation,
+      { error },
+    );
+    return true;
   });
 }
 /**

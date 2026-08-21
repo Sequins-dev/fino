@@ -3,7 +3,7 @@
  *
  * When a facade proxy module calls `call(specifier, method, args)`, this module:
  *   1. Allocates a request id and stores a Promise resolver in `_pending`.
- *   2. Sends the request through the child realm's shared session port.
+ *   2. Sends the request through the child realm's transport port.
  *   3. Returns the Promise.
  *
  * When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
@@ -73,14 +73,14 @@ const _pendingStreams = new Map<number, UnboundedChannel<unknown>>();
  * side classifies and correlates the frame without trusting anything the
  * payload claims about itself.
  */
-/** Install the bootstrap-owned session endpoint used by every facade proxy. @internal */
+/** Install the bootstrap-owned transport endpoint used by every facade proxy. @internal */
 export function _installRealmPort(port: typeof _realmPort): void {
   _realmPort = port;
 }
 
 function _sendControl(kind: number, reqId: number, payload: unknown): void {
   if (_realmPort === undefined) {
-    throw new Error('Facade RPC requires a realm session port');
+    throw new Error('Facade RPC requires a realm transport port');
   }
   _realmPort._postControl(kind, reqId, payload);
 }

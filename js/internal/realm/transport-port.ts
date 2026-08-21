@@ -1,10 +1,19 @@
 /**
- * Internal transport-backed realm ports.
+ * Internal transport-backed realm communication.
  *
- * Thread, process, and cluster realms expose MessagePort-compatible endpoints,
- * but their implementations are runtime transports rather than web messaging
- * globals. This module owns the shared transport lifecycle and the thread-realm
- * port used by realm bootstrap.
+ * `TransportPort` is the one ordered duplex stream at a realm boundary. It
+ * owns serialization, explicit transfer, physical-link readiness, control
+ * routing, application messages, and lazy observation. `observe()` tees the
+ * stream at its serialized boundary; it is not a second session layered over
+ * the channel.
+ *
+ * Tee filters see frame metadata before payload materialization. Matching
+ * branches can request an independent structured-clone snapshot or stable
+ * storage bytes, each produced at most once and shared for that frame. With no
+ * matching branch, live delivery performs no observation clone or byte copy.
+ *
+ * Clone and transfer behavior follows WHATWG safe passing of structured data:
+ * <https://html.spec.whatwg.org/multipage/structured-data.html#safe-passing-of-structured-data>.
  *
  * @internal
  */
@@ -24,25 +33,92 @@ import {
   type Envelope,
 } from 'internal:realm/envelope';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
-import { RealmSession, type RealmObserver } from 'internal:realm/session';
 import { sandboxPortRecv, sandboxPortSend } from 'internal:realm-native';
 import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
+/** Direction relative to the observed transport endpoint. @internal */
+export type TransportFrameDirection = 'outbound' | 'inbound';
+
+/** Payload representation requested by a transport tee. @internal */
+export type TransportCapture = 'metadata' | 'snapshot' | 'storage';
+
+/** Frame data available without cloning or copying its payload. @internal */
+export interface TransportFrameMetadata extends Envelope {
+  /** Order among frames seen while this port has tee branches. */
+  sequence: number;
+  /** Whether the frame is leaving or entering this endpoint. */
+  direction: TransportFrameDirection;
+  /** Serialized payload and transfer-store bytes. */
+  payloadBytes: number;
+  /** Transferred `ArrayBuffer` backing stores. */
+  arrayBufferTransfers: number;
+  /** Transferred `MessagePort` channels. */
+  portTransfers: number;
+}
+
+/** A metadata-only tee item. @internal */
+export interface TransportMetadataFrame extends TransportFrameMetadata {
+  capture: 'metadata';
+}
+
+/** A tee item with an independent structured-clone value. @internal */
+export interface TransportSnapshotFrame extends TransportFrameMetadata {
+  capture: 'snapshot';
+  value: unknown;
+}
+
+/** A tee item with stable structured-clone bytes. @internal */
+export interface TransportStorageFrame extends TransportFrameMetadata {
+  capture: 'storage';
+  parts: readonly Uint8Array[];
+}
+
+/** One item emitted by a transport tee branch. @internal */
+export type TransportFrame =
+  | TransportMetadataFrame
+  | TransportSnapshotFrame
+  | TransportStorageFrame;
+
+/** One lazy branch split from a `TransportPort` frame stream. @internal */
+export interface TransportObserver {
+  /** Representation needed by this branch. Defaults to metadata. */
+  capture?: TransportCapture;
+  /** Match inexpensive metadata before a payload representation is made. */
+  filter?(metadata: TransportFrameMetadata): boolean;
+  /** Consume each matching frame. */
+  next(frame: TransportFrame): void;
+  /** Receive branch failures without affecting live channel delivery. */
+  error?(error: unknown): void;
+  /** Reject live child-channel transfer because the branch must be portable. */
+  portable?: boolean;
+}
+
+interface TransportTeeInput {
+  direction: TransportFrameDirection;
+  envelope: Envelope;
+  payloadBytes: number;
+  arrayBufferTransfers: number;
+  portTransfers: number;
+  snapshot(): unknown;
+  storage(): readonly Uint8Array[];
+}
+
 /**
- * Shared lifecycle and dispatch logic for transport-backed realm ports.
+ * One MessagePort-compatible endpoint over a {@link RealmLink}.
  *
- * This is an internal base for thread, process, and cluster realm ports.
- * Subclasses implement `postMessage()`, override `_onStart()` and `_onClose()`,
- * and call `_dispatchMessage()` from their drain logic.
+ * All realm transports use this implementation with a different physical link.
+ * Readiness only wakes the link drain; every drained frame then follows the
+ * same decode, tee, and routing path.
  *
  * @internal
  */
-export abstract class BaseTransportPort extends EventTarget {
-  /** Observation boundary shared by every concrete realm transport. */
-  #session = new RealmSession();
+export class TransportPort extends EventTarget {
+  #link: RealmLink;
+  #observers = new Set<TransportObserver>();
+  #sequence = 0;
   /**
    * True once start() has run; _dispatchMessage drops messages while the port
    * is unstarted.
@@ -67,22 +143,32 @@ export abstract class BaseTransportPort extends EventTarget {
   #messagesPaused = false;
   #pendingMessages: MessageEvent[] = [];
   #portable = false;
+  #onmessageerror: ((ev: Event) => void) | null = null;
   /**
    * Handlers for runtime protocol frames.
    *
    * @internal
    */
   #controlHandlers = new Set<(envelope: Envelope, value: unknown) => boolean>();
+
+  constructor(link: RealmLink) {
+    super();
+    this.#link = link;
+  }
+
+  /** Which physical link carries this channel. */
+  get transport(): RealmLink['transport'] {
+    return this.#link.transport;
+  }
   /**
    * Start delivery for this transport-backed port.
    *
-   * Repeated calls and calls after close() are ignored. Subclasses are notified
-   * through _onStart().
+   * Repeated calls and calls after close() are ignored.
    */
   start(): void {
     if (this._started || this._closed) return;
     this._started = true;
-    this._onStart();
+    if (this.#link.wakeFd >= 0) void this.#watchLoop();
   }
   /** Register a listener and release bootstrap-held messages to its first consumer. */
   override addEventListener(
@@ -97,9 +183,12 @@ export abstract class BaseTransportPort extends EventTarget {
    * Close this port and stop delivery.
    */
   close(): void {
+    if (this._closed) return;
     this._closed = true;
     this._started = false;
-    this._onClose();
+    if (this.#link.wakeFd >= 0) removeRead(this.#link.wakeFd);
+    this.#link.close?.();
+    this.#pendingMessages.length = 0;
   }
   /**
    * Close the port when it leaves a `using` declaration's scope.
@@ -108,47 +197,71 @@ export abstract class BaseTransportPort extends EventTarget {
     this.close();
   }
   /**
-   * Subclass hook invoked when start() transitions the port to started.
-   *
-   * @internal
+   * Split a lazy observation branch from this channel's ordered frame stream.
+   * The returned function removes the branch.
    */
-  protected _onStart(): void {}
-  /**
-   * Subclass hook invoked when close() runs.
-   *
-   * @internal
-   */
-  protected _onClose(): void {}
-  /**
-   * Hand an encoded message to the concrete transport.
-   *
-   * @internal
-   */
-  protected abstract _send(
-    header: Uint8Array,
-    data: Uint8Array,
-    stores: Uint8Array[],
-    ports: [number, number][],
-  ): void;
-  /**
-   * Observe semantic frames crossing this endpoint.
-   *
-   * @internal
-   */
-  _observe(observer: RealmObserver): () => void {
-    return this.#session.observe(observer);
+  observe(observer: TransportObserver): () => void {
+    this.#observers.add(observer);
+    return () => this.#observers.delete(observer);
   }
-  /**
-   * Whether this transport can move a live `MessagePort` to the far side.
-   *
-   * A transit channel is a pair of descriptors in one process, so only
-   * transports that stay inside it can carry one. Declaring this up front means
-   * the port is rejected before a channel is created for it, rather than after.
-   *
-   * @internal
-   */
-  protected _supportsPortTransfer(): boolean {
-    return true;
+
+  /** Offer one live frame to matching tee branches. */
+  #tee(input: TransportTeeInput): void {
+    const metadata: TransportFrameMetadata = {
+      sequence: this.#sequence++,
+      direction: input.direction,
+      kind: input.envelope.kind,
+      correlation: input.envelope.correlation,
+      payloadBytes: input.payloadBytes,
+      arrayBufferTransfers: input.arrayBufferTransfers,
+      portTransfers: input.portTransfers,
+    };
+    const groups: [TransportObserver[], TransportObserver[], TransportObserver[]] = [[], [], []];
+    for (const observer of this.#observers) {
+      let matched = true;
+      try {
+        matched = observer.filter?.(metadata) ?? true;
+      } catch (error) {
+        this.#report(observer, error);
+        matched = false;
+      }
+      if (!matched) continue;
+      const index = observer.capture === 'snapshot' ? 1 : observer.capture === 'storage' ? 2 : 0;
+      groups[index].push(observer);
+    }
+    this.#deliver(groups[0], { ...metadata, capture: 'metadata' });
+    if (groups[1].length > 0) {
+      try {
+        this.#deliver(groups[1], { ...metadata, capture: 'snapshot', value: input.snapshot() });
+      } catch (error) {
+        for (const observer of groups[1]) this.#report(observer, error);
+      }
+    }
+    if (groups[2].length > 0) {
+      try {
+        this.#deliver(groups[2], { ...metadata, capture: 'storage', parts: input.storage() });
+      } catch (error) {
+        for (const observer of groups[2]) this.#report(observer, error);
+      }
+    }
+  }
+
+  #deliver(observers: TransportObserver[], frame: TransportFrame): void {
+    for (const observer of observers) {
+      try {
+        observer.next(frame);
+      } catch (error) {
+        this.#report(observer, error);
+      }
+    }
+  }
+
+  #report(observer: TransportObserver, error: unknown): void {
+    try {
+      observer.error?.(error);
+    } catch {
+      // A tee branch cannot break primary channel delivery.
+    }
   }
   /**
    * Serialize `message` and send it under `envelope`.
@@ -176,14 +289,14 @@ export abstract class BaseTransportPort extends EventTarget {
       } else if (item instanceof MessagePort) {
         if (
           this.#portable ||
-          this.#session.portable ||
+          [...this.#observers].some((observer) => observer.portable === true) ||
           (globalThis as Record<PropertyKey, unknown>)[Symbol.for('fino.sim.active')] === true
         ) {
           throw new TypeError(
-            'Replayable realm sessions cannot transfer MessagePort values; expose a facade channel instead',
+            'Portable realm channels cannot transfer MessagePort values; expose a facade channel instead',
           );
         }
-        if (!this._supportsPortTransfer()) {
+        if (!this.#link.supportsPortTransfer) {
           throw new TypeError(
             `${this.constructor.name} transfer list only supports ArrayBuffer values`,
           );
@@ -209,9 +322,9 @@ export abstract class BaseTransportPort extends EventTarget {
       transferABs.length > 0 ? transferABs : undefined,
     );
     const [data, ...stores] = parts;
-    this._send(encodeEnvelope(envelope), data!, stores, portInfos);
-    if (this.#session.observed) {
-      this.#session._capture({
+    this.#link.send(encodeEnvelope(envelope), data!, stores, portInfos);
+    if (this.#observers.size > 0) {
+      this.#tee({
         direction: 'outbound',
         envelope,
         payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
@@ -266,9 +379,9 @@ export abstract class BaseTransportPort extends EventTarget {
   ): void {
     if (!this._started) return;
     const envelope = decodeEnvelope(header);
-    if (this.#session.observed) {
+    if (this.#observers.size > 0) {
       const parts = stores === undefined ? [buf] : [buf, ...stores];
-      this.#session._capture({
+      this.#tee({
         direction: 'inbound',
         envelope,
         payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
@@ -385,6 +498,38 @@ export abstract class BaseTransportPort extends EventTarget {
       this.start();
     }
   }
+
+  /** Message error handler property. */
+  get onmessageerror() {
+    return this.#onmessageerror;
+  }
+
+  /** Set or clear the message error handler. */
+  set onmessageerror(fn: ((ev: Event) => void) | null) {
+    if (this.#onmessageerror !== null)
+      this.removeEventListener('messageerror', this.#onmessageerror);
+    this.#onmessageerror = typeof fn === 'function' ? fn : null;
+    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
+  }
+
+  /** Drain every wire frame currently queued by the physical link. @internal */
+  _drain(): void {
+    for (const [byteArr, portArr, header] of this.#link.drain()) {
+      const [buf, ...stores] = byteArr;
+      if (!buf) continue;
+      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
+      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports, header);
+    }
+  }
+
+  /** Route physical readiness back into the channel drain. */
+  async #watchLoop(): Promise<void> {
+    while (!this._closed) {
+      await readable(this.#link.wakeFd);
+      if (this._closed) break;
+      this._drain();
+    }
+  }
 }
 
 /**
@@ -393,7 +538,7 @@ export abstract class BaseTransportPort extends EventTarget {
  *
  * @internal
  */
-export type RealmFrame = [bytes: Uint8Array[], ports: [number, number][], header?: Uint8Array];
+export type RealmWireFrame = [bytes: Uint8Array[], ports: [number, number][], header?: Uint8Array];
 
 /**
  * One end of a realm message channel.
@@ -406,7 +551,7 @@ export type RealmFrame = [bytes: Uint8Array[], ports: [number, number][], header
  */
 export interface RealmLink {
   /**
-   * Which transport moves this link's bytes. Reported by `RealmPort.transport`
+   * Which transport moves this link's bytes. Reported by `TransportPort.transport`
    * so a port's channel stays identifiable now that every transport shares one
    * port class.
    */
@@ -420,103 +565,9 @@ export interface RealmLink {
   readonly supportsPortTransfer: boolean;
   send(header: Uint8Array, data: Uint8Array, stores: Uint8Array[], ports: [number, number][]): void;
   /** Take every frame currently queued. */
-  drain(): RealmFrame[];
+  drain(): RealmWireFrame[];
   /** Release transport-owned resources when the port closes. */
   close?(): void;
-}
-
-/**
- * MessagePort-compatible endpoint over a {@link RealmLink}.
- *
- * Every realm transport — reactor-pooled, process, cluster — is this one class
- * with a different link. It is not a web global; application code should treat
- * `Realm.port` as a port-like object and use `MessagePort`/`MessageChannel` for
- * web-compatible channel messaging.
- *
- * @internal
- */
-export class RealmPort extends BaseTransportPort {
-  #link: RealmLink;
-  #onmessageerror: ((ev: Event) => void) | null = null;
-
-  constructor(link: RealmLink) {
-    super();
-    this.#link = link;
-  }
-
-  /** Which transport carries this port's messages. */
-  get transport(): RealmLink['transport'] {
-    return this.#link.transport;
-  }
-
-  /** @internal */
-  protected override _send(
-    header: Uint8Array,
-    data: Uint8Array,
-    stores: Uint8Array[],
-    ports: [number, number][],
-  ): void {
-    this.#link.send(header, data, stores, ports);
-  }
-
-  /** @internal */
-  protected override _supportsPortTransfer(): boolean {
-    return this.#link.supportsPortTransfer;
-  }
-
-  /** @internal */
-  protected override _onStart(): void {
-    if (this.#link.wakeFd >= 0) void this.#watchLoop();
-  }
-
-  /** @internal */
-  protected override _onClose(): void {
-    if (this.#link.wakeFd >= 0) removeRead(this.#link.wakeFd);
-    this.#link.close?.();
-  }
-
-  /** Message error handler property. */
-  get onmessageerror() {
-    return this.#onmessageerror;
-  }
-
-  /** Set or clear the messageerror handler property. */
-  set onmessageerror(fn: ((ev: Event) => void) | null) {
-    if (this.#onmessageerror !== null)
-      this.removeEventListener('messageerror', this.#onmessageerror);
-    this.#onmessageerror = typeof fn === 'function' ? fn : null;
-    if (this.#onmessageerror !== null) this.addEventListener('messageerror', this.#onmessageerror);
-  }
-
-  /**
-   * Await readable() on the link's descriptor and drain on each signal.
-   *
-   * @internal
-   */
-  async #watchLoop(): Promise<void> {
-    while (!this._closed) {
-      await readable(this.#link.wakeFd);
-      if (this._closed) break;
-      this._drain();
-    }
-  }
-
-  /**
-   * Dispatch every frame currently queued on the link.
-   *
-   * Realm completion drains synchronously before closing the port, so a final
-   * response cannot lose a race with the separate completion signal.
-   *
-   * @internal
-   */
-  _drain(): void {
-    for (const [byteArr, portArr, header] of this.#link.drain()) {
-      const [buf, ...stores] = byteArr;
-      if (!buf) continue;
-      const ports = portArr.map(([handle, wakeFd]) => MessagePort._fromTransit(handle, wakeFd));
-      this._dispatchMessage(buf, stores.length > 0 ? stores : undefined, ports, header);
-    }
-  }
 }
 
 /**
@@ -533,7 +584,7 @@ export function parentRealmLink(wakeFd: number): RealmLink {
       (
         nativeSend as (h: Uint8Array, b: Uint8Array, s: Uint8Array[], p: [number, number][]) => void
       )(header, data, stores, ports),
-    drain: () => (nativeRecv as () => RealmFrame[])(),
+    drain: () => (nativeRecv as () => RealmWireFrame[])(),
   };
 }
 
@@ -548,7 +599,7 @@ export function scheduledRealmLink(handle: number, wakeFd: number): RealmLink {
     wakeFd,
     supportsPortTransfer: true,
     send: (header, data, stores, ports) => scheduledRealmSend(handle, header, data, stores, ports),
-    drain: () => scheduledRealmRecv(handle) as RealmFrame[],
+    drain: () => scheduledRealmRecv(handle) as RealmWireFrame[],
   };
 }
 
@@ -577,7 +628,7 @@ export function sandboxRealmLink(handle: number, wakeFd: number): RealmLink {
           p: [number, number][],
         ) => void
       )(handle, header, data, stores, ports),
-    drain: () => (sandboxPortRecv as (handle: number) => RealmFrame[])(handle),
+    drain: () => (sandboxPortRecv as (handle: number) => RealmWireFrame[])(handle),
   };
 }
 
@@ -586,8 +637,8 @@ export function sandboxRealmLink(handle: number, wakeFd: number): RealmLink {
  *
  * @internal
  */
-export function createSandboxPort(wakeFd: number, handle: number): RealmPort {
-  return new RealmPort(sandboxRealmLink(handle, wakeFd));
+export function createSandboxPort(wakeFd: number, handle: number): TransportPort {
+  return new TransportPort(sandboxRealmLink(handle, wakeFd));
 }
 
 /**
@@ -595,8 +646,8 @@ export function createSandboxPort(wakeFd: number, handle: number): RealmPort {
  *
  * @internal
  */
-export function createParentPort(wakeFd: number): RealmPort {
-  return new RealmPort(parentRealmLink(wakeFd));
+export function createParentPort(wakeFd: number): TransportPort {
+  return new TransportPort(parentRealmLink(wakeFd));
 }
 
 /**
@@ -604,6 +655,6 @@ export function createParentPort(wakeFd: number): RealmPort {
  *
  * @internal
  */
-export function createScheduledPort(wakeFd: number, handle: number): RealmPort {
-  return new RealmPort(scheduledRealmLink(handle, wakeFd));
+export function createScheduledPort(wakeFd: number, handle: number): TransportPort {
+  return new TransportPort(scheduledRealmLink(handle, wakeFd));
 }

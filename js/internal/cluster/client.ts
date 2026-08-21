@@ -17,7 +17,7 @@
  * - Exposes registerPort() so ClusterPort instances can receive PORT_MSG.
  *
  * `ClusterPort` is the parent-side handle for a remotely spawned realm: a
- * `RealmPort` whose messages travel as PORT_MSG cluster frames
+ * `TransportPort` whose messages travel as PORT_MSG cluster frames
  * instead of an in-process channel. Ports register themselves with the
  * client on construction, queue outbound messages until SPAWN_ACK assigns
  * the child port ID, and preserve transferred ArrayBuffers end-to-end as raw
@@ -136,7 +136,7 @@ import {
   takeScheduledRealmStatus,
 } from 'internal:scheduler-native';
 import { readable, removeRead } from 'internal:runtime/loop';
-import { RealmPort, type RealmLink } from 'internal:realm/transport-port';
+import { TransportPort, type RealmLink } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
 const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
@@ -851,7 +851,7 @@ export class ClusterClient {
  *
  * Outbound messages are serialized and sent as `PORT_MSG` cluster messages;
  * inbound payloads are deserialized and dispatched through the shared
- * shared realm-port machinery. Messages posted before the child port ID is
+ * realm-port machinery. Messages posted before the child port ID is
  * assigned are queued and flushed once `SPAWN_ACK` delivers the ID.
  *
  * ```ts no_run
@@ -863,7 +863,7 @@ export class ClusterClient {
  *
  * @internal
  */
-export class ClusterPort extends RealmPort {
+export class ClusterPort extends TransportPort {
   /**
    * Parent-side port ID used for seed routing and inbound lookup.
    *

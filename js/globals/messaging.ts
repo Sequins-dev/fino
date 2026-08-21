@@ -28,7 +28,7 @@
  * | --- | --- | --- |
  * | Same-isolate `MessagePort` | Runtime structured-clone subset. | `ArrayBuffer` and `MessagePort`. |
  * | Thread `ThreadPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
- * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
+ * | Process realm link | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
  * | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
  *
  * ## Example

@@ -55,12 +55,13 @@ import {
 import { getRealmBootstrapData } from 'internal:realm-bridge';
 import type { SimConfig } from 'internal:sim/config';
 import { os } from 'internal:process';
-import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import {
   createSandboxPort,
   createScheduledPort,
-  RealmPort,
+  TransportPort,
   type RealmLink,
+  type TransportFrame as InternalRealmObservation,
+  type TransportObserver as InternalRealmObserver,
 } from 'internal:realm/transport-port';
 import type {
   ProcessSandboxNetworkRule,
@@ -78,10 +79,6 @@ import {
 } from 'internal:scheduler-native';
 import { serialize } from 'internal:serializer';
 import { EnvelopeKind } from 'internal:realm/envelope';
-import {
-  type RealmObservation as InternalRealmObservation,
-  type RealmObserver as InternalRealmObserver,
-} from 'internal:realm/session';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
@@ -768,7 +765,7 @@ export class FacadeHandle {
 // portObj -> (reqId -> channel) for active write streams on this port.
 const _portWriteSources = new WeakMap<object, Map<number, UnboundedChannel<unknown>>>();
 function _getOrCreateWriteSourceRegistry(
-  port: MessagePort | RealmPort | ProcessPort | ClusterPort,
+  port: TransportPort,
 ): Map<number, UnboundedChannel<unknown>> {
   const key = port as object;
   let reg = _portWriteSources.get(key);
@@ -794,9 +791,7 @@ const _portRpcRegistries = new WeakMap<object, Map<string, _RpcEntry>>();
 // what else was running — which a simulation journal or cassette would record
 // as a difference in behaviour.
 const _handleSeqByRegistry = new WeakMap<Map<string, _RpcEntry>, { next: number }>();
-function _getOrCreateRpcRegistry(
-  port: MessagePort | RealmPort | ProcessPort | ClusterPort,
-): Map<string, _RpcEntry> {
+function _getOrCreateRpcRegistry(port: TransportPort): Map<string, _RpcEntry> {
   const key = port as object;
   let reg = _portRpcRegistries.get(key);
   if (reg) return reg;
@@ -804,14 +799,8 @@ function _getOrCreateRpcRegistry(
   _portRpcRegistries.set(key, reg);
   const registry = reg;
   const wsSources = _getOrCreateWriteSourceRegistry(port);
-  const control = port as unknown as {
-    _addControlHandler?(
-      handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
-    ): () => void;
-    _postControl?(kind: number, correlation: number, message: unknown): void;
-  };
   const reply = (kind: number, correlation: number, message: unknown): void => {
-    control._postControl?.(kind, correlation, message);
+    port._postControl(kind, correlation, message);
   };
   const fail = (correlation: number, error: unknown): void => {
     reply(EnvelopeKind.RpcResponse, correlation, { error: String(error) });
@@ -825,7 +814,7 @@ function _getOrCreateRpcRegistry(
     }
   };
   // One shared dispatcher per port serves facades and their returned handles.
-  control._addControlHandler?.((envelope, value) => {
+  port._addControlHandler((envelope, value) => {
     const reqId = envelope.correlation;
     switch (envelope.kind) {
       case EnvelopeKind.SinkChunk: {
@@ -944,16 +933,14 @@ function _registerHandle(
   };
 }
 function _sendResult(
-  port: {
-    _postControl?(kind: number, correlation: number, message: unknown): void;
-  },
+  port: TransportPort,
   reg: Map<string, _RpcEntry>,
   reqId: number,
   result: unknown,
 ): void {
   const payload =
     result instanceof FacadeHandle ? { result: _registerHandle(reg, result) } : { result };
-  port._postControl?.(EnvelopeKind.RpcResponse, reqId, payload);
+  port._postControl(EnvelopeKind.RpcResponse, reqId, payload);
 }
 /**
  * Public facade exposed to a child realm as a synthetic module.
@@ -1394,7 +1381,7 @@ export class Facade {
    *
    * @internal
    */
-  _bind(port: MessagePort | RealmPort | ProcessPort | ClusterPort): void {
+  _bind(port: TransportPort): void {
     _getOrCreateRpcRegistry(port).set(this.#specifier, {
       scalar: this.#handlers,
       streams: this.#streamHandlers,
@@ -2005,6 +1992,16 @@ export interface RealmOptions {
    */
   observe?: RealmObserver | readonly RealmObserver[];
   /**
+   * Install internal channel routes before facades bind or the child starts.
+   *
+   * Simulation uses this hook to replay or fault-inject the same transport
+   * stream that carries live facade traffic. It is intentionally internal;
+   * ordinary observation belongs in `observe` or `realm.port.observe()`.
+   *
+   * @internal
+   */
+  _configurePort?(port: TransportPort): void;
+  /**
    * OTLP/HTTP collector endpoint for CLI OpenTelemetry bootstrap in this realm.
    *
    * When omitted, the child inherits the current realm's CLI endpoint, if one
@@ -2100,27 +2097,6 @@ export interface RealmSourceOptions extends Omit<RealmOptions, 'entry' | 'watch'
  * ```
  */
 export type RealmFn = (...args: any[]) => any;
-// ---------------------------------------------------------------------------
-// ProcessPort - cross-process transport
-// ---------------------------------------------------------------------------
-/**
- * ProcessPort wraps the process realm native functions, registers its wake fd
- * with `loop.readable()`, drains messages on each wake, and dispatches
- * MessageEvents.
- *
- * Process ports are created by `new Realm({ process: true })`; application code
- * normally uses the port through `realm.port`. Posting to a closed port is a
- * no-op. Only transferable `ArrayBuffer` values are extracted from transfer
- * lists.
- *
- * ```ts no_run
- * import { Realm } from 'fino:realm';
- *
- * const realm = new Realm({ entry: './worker.ts', process: true });
- * realm.port.postMessage({ ready: true });
- * realm.port.start();
- * ```
- */
 /**
  * Link to a realm running in a separate OS process.
  *
@@ -2145,23 +2121,9 @@ function processRealmLink(handle: number, wakeFd: number): RealmLink {
   };
 }
 
-/**
- * MessagePort-compatible endpoint for a realm running in a separate process.
- *
- * Process ports are created by `new Realm({ process: true })`; application code
- * reaches one through `realm.port` rather than constructing it directly.
- *
- * ```ts no_run
- * import { Realm } from 'fino:realm';
- *
- * const realm = new Realm({ entry: './worker.ts', process: true });
- * realm.port.postMessage({ job: 'start' });
- * ```
- */
-export class ProcessPort extends RealmPort {
-  constructor(wakeReadFd: number, handle: number) {
-    super(processRealmLink(handle, wakeReadFd));
-  }
+/** Create the shared transport port over a process link. @internal */
+function createProcessPort(wakeReadFd: number, handle: number): TransportPort {
+  return new TransportPort(processRealmLink(handle, wakeReadFd));
 }
 // ---------------------------------------------------------------------------
 // Active children tracking
@@ -2402,19 +2364,24 @@ export class Realm<F extends RealmFn = RealmFn> {
   /**
    * Parent-side port for general communication with the child realm.
    *
-   * Reactor-pooled realms expose a `RealmPort`, process realms expose a
-   * `ProcessPort`, and remote realms expose a `ClusterPort`. Start the port
-   * before listening for messages.
+   * Every execution mode exposes the same transport-backed channel contract.
+   * The underlying link may be scheduled, sandboxed, process-local, or remote,
+   * but serialization, routing, transfer, and observation stay identical.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
    *
    * const realm = new Realm({ entry: './worker.ts' });
+   * const stopObserving = realm.port.observe({
+   *   capture: 'metadata',
+   *   next: (frame) => console.log(frame.direction, frame.kind),
+   * });
    * realm.port.addEventListener('message', (event) => console.log(event.data));
    * realm.port.start();
+   * // Call stopObserving() when the tee is no longer needed.
    * ```
    */
-  port: MessagePort | RealmPort | ProcessPort | ClusterPort;
+  port!: TransportPort;
   /** Completion driven by the process scheduler for a scheduled realm. @internal */
   #scheduledCompletion: Promise<void> | null = null;
   /**
@@ -2550,16 +2517,17 @@ export class Realm<F extends RealmFn = RealmFn> {
    *
    * @internal
    */
-  #activeChildPort: ProcessPort | null = null;
+  #activeChildPort: TransportPort | null = null;
 
-  /** Attach construction-time observers before a port is started. @internal */
-  #observePort(port: RealmPort | ProcessPort | ClusterPort): void {
-    for (const observer of this.#observers) port._observe(observer);
+  /** Configure the integrated channel before facades bind or delivery starts. @internal */
+  #configurePort(port: TransportPort, opts: RealmOptions): void {
+    for (const observer of this.#observers) port.observe(observer);
+    opts._configurePort?.(port);
   }
 
   /** Send all parent-owned bootstrap state through the observed channel. @internal */
   #bootstrapPort(
-    port: RealmPort | ProcessPort | ClusterPort,
+    port: TransportPort,
     opts: RealmOptions,
     serializedData = serializeRealmData(opts.data),
   ): void {
@@ -2682,7 +2650,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#handle = scheduled.handle;
     const port = createScheduledPort(scheduled.portWakeFd, scheduled.handle);
     this.port = port;
-    this.#observePort(port);
+    this.#configurePort(port, opts);
     registerReactorWake(scheduled.owner, scheduled.wakeFd);
     if (reloading) {
       for (const rule of rules) {
@@ -2809,7 +2777,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       const portId = `${cluster.nodeId}/p-${_nextPortHandle++}`;
       const clusterPort = new ClusterPort(portId, cluster);
       this.port = clusterPort;
-      this.#observePort(clusterPort);
+      this.#configurePort(clusterPort, opts);
       const config = {
         entry: opts.entry,
         root: opts.root ?? '',
@@ -2832,7 +2800,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getSandboxPortWakeReadFd(handle) as number;
       this.port = createSandboxPort(wakeReadFd, handle);
-      this.#observePort(this.port);
+      this.#configurePort(this.port, opts);
     } else if (opts.process) {
       this.#kind = 'process';
       const handle = createProcessContext(
@@ -2845,8 +2813,8 @@ export class Realm<F extends RealmFn = RealmFn> {
       ) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
-      this.port = new ProcessPort(wakeReadFd, handle);
-      this.#observePort(this.port);
+      this.port = createProcessPort(wakeReadFd, handle);
+      this.#configurePort(this.port, opts);
     } else {
       if (!usesProcessReadiness()) {
         throw new Error(
@@ -2855,7 +2823,6 @@ export class Realm<F extends RealmFn = RealmFn> {
       }
       this.#kind = 'scheduled';
       this.#handle = -1;
-      this.port = undefined as unknown as RealmPort;
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
       this.#scheduledCompletion = this.#startScheduledRealm(opts, rules);
@@ -2870,14 +2837,14 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
-      const port = this.port as MessagePort | RealmPort | ProcessPort | ClusterPort;
+      const port = this.port;
       for (const rule of rules) {
         if (rule.directive instanceof Facade) {
           (rule.directive as Facade)._bind(port);
         }
       }
     }
-    this.#bootstrapPort(this.port as RealmPort | ProcessPort | ClusterPort, opts, serializedData);
+    this.#bootstrapPort(this.port, opts, serializedData);
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
     if (_topicRealmSpawn.hasSubscribers) {
@@ -2923,8 +2890,8 @@ export class Realm<F extends RealmFn = RealmFn> {
       undefined,
       '{"channelBootstrap":true}',
     ) as number;
-    this.#activeChildPort = new ProcessPort(getProcessSocketFd(handle) as number, handle);
-    this.#observePort(this.#activeChildPort);
+    this.#activeChildPort = createProcessPort(getProcessSocketFd(handle) as number, handle);
+    this.#configurePort(this.#activeChildPort, opts);
     for (const rule of this.#watchRules) {
       if (rule.directive instanceof Facade) rule.directive._bind(this.#activeChildPort);
     }
@@ -2983,9 +2950,7 @@ export class Realm<F extends RealmFn = RealmFn> {
           handle: self.#handle,
           kind,
           drainMessages: () =>
-            kind === 'sandbox'
-              ? (self.port as RealmPort)._drain()
-              : (self.#activeChildPort ?? (self.port as ProcessPort))._drain(),
+            kind === 'sandbox' ? self.port._drain() : (self.#activeChildPort ?? self.port)._drain(),
           onReload:
             self.#watchOpts !== null
               ? (): number | null => {
@@ -3028,7 +2993,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     let base: Promise<Awaited<ReturnType<F>>>;
     if (kind === 'scheduled') {
-      const port = this.port as RealmPort;
+      const port = this.port;
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
         let settled = false;
         const stop = port._addControlHandler((envelope, value) => {
@@ -3111,7 +3076,7 @@ export class Realm<F extends RealmFn = RealmFn> {
           () => reject(new Error('Realm exited before returning a call result')),
           reject,
         );
-        const port = this.port as ProcessPort;
+        const port = this.port;
         const stop = port._addControlHandler((envelope, value) => {
           if (
             envelope.kind !== EnvelopeKind.CallResult &&
@@ -3179,7 +3144,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#watchTerminated = true;
     if (this.#kind === 'scheduled') {
       this.#disposeScheduledShutdownRegistration();
-      (this.port as RealmPort)._postControl(EnvelopeKind.Terminate, 0, null);
+      this.port._postControl(EnvelopeKind.Terminate, 0, null);
       // A realm spinning in synchronous JavaScript never returns to its loop to
       // observe the request above, and holds its reactor thread until it does.
       // Forcing interrupts execution so the thread is released.
@@ -3191,17 +3156,17 @@ export class Realm<F extends RealmFn = RealmFn> {
       forceSandboxContext(this.#handle);
       this.port.close();
     } else if (this.#kind === 'sandbox') {
-      (this.port as RealmPort)._postControl(EnvelopeKind.Terminate, 0, null);
+      this.port._postControl(EnvelopeKind.Terminate, 0, null);
       this.port.close();
     } else if (this.#kind === 'process' && options.force === true) {
       killProcessContext(this.#handle);
-      const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
+      const activePort = this.#activeChildPort ?? this.port;
       activePort.close();
     } else {
       // After a watch-mode reload, this.port still points to the first child's
       // port.  Use #activeChildPort when set (updated by #spawnChild on reload)
       // so the terminate message reaches the currently-running child.
-      const activePort = this.#activeChildPort ?? (this.port as ProcessPort);
+      const activePort = this.#activeChildPort ?? this.port;
       activePort._postControl(EnvelopeKind.Terminate, 0, null);
       activePort.close();
     }

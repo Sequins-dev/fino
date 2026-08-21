@@ -168,7 +168,7 @@ import {
   BroadcastChannel,
 } from '../globals/global.ts';
 import { FileReaderSync } from '../globals/blob.ts';
-import { createParentPort, type RealmPort } from 'internal:realm/transport-port';
+import { createParentPort, type TransportPort } from 'internal:realm/transport-port';
 import { getWakeReadFd } from 'internal:thread-port';
 interface StackFrame {
   getFileName?(): string | null;
@@ -458,7 +458,7 @@ const _childEntry = getEntryPath() as string | undefined;
 // A realm reached over a wake pipe (every reactor-pooled and process realm)
 // talks to its parent through a realm port. A root realm has none.
 const _threadWakeReadFd = getWakeReadFd() as number;
-const _childPort: RealmPort | undefined =
+const _childPort: TransportPort | undefined =
   _threadWakeReadFd >= 0 ? createParentPort(_threadWakeReadFd) : undefined;
 _installRealmPort(_childPort);
 // Expose the child port as `realmPort` on globalThis so entry modules can

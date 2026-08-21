@@ -116,8 +116,8 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     try {
       t.throws(
         () => realm.port.postMessage({ port: port1 }, [port1]),
-        /Replayable realm sessions cannot transfer MessagePort/,
-        'portable session rejects a child channel before transfer',
+        /Portable realm channels cannot transfer MessagePort/,
+        'portable channel rejects a child channel before transfer',
       );
     } finally {
       realm.terminate();
@@ -134,7 +134,7 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
     try {
       t.throws(
         () => realm.port.postMessage({ port: port1 }, [port1]),
-        /Replayable realm sessions cannot transfer MessagePort/,
+        /Portable realm channels cannot transfer MessagePort/,
         'simulation rejects an untracked child channel',
       );
     } finally {

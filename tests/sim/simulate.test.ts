@@ -93,7 +93,7 @@ describe('simulate()', () => {
       cassette: { mode: 'record' },
     });
     t.ok(recorded.cassette !== undefined, 'cassette produced');
-    t.equal(requestFrames(recorded.cassette!).length, 2, 'both calls are session frames');
+    t.equal(requestFrames(recorded.cassette!).length, 2, 'both calls are channel frames');
     // Replay against a world that would answer differently if it were consulted.
     const replayed = await simulate({
       entry: KV_GUEST,
@@ -188,7 +188,7 @@ describe('simulate()', () => {
       'unused cassette entries are reported after the guest returns',
     );
   });
-  it('projects ordered scalar and stream traffic from the realm session', async (t) => {
+  it('projects ordered scalar and stream traffic from the realm channel', async (t) => {
     const report = await simulate({
       entry: SESSION_GUEST,
       world: { 'app:session': sessionFacade() },

@@ -19,7 +19,7 @@
  * ```
  */
 import { usesProcessReadiness } from 'internal:scheduler-native';
-import type { RealmPort } from '../internal/realm/transport-port.ts';
+import type { TransportPort } from '../internal/realm/transport-port.ts';
 /**
  * Message port passed to this child realm, or `undefined` when none exists.
  *
@@ -38,7 +38,7 @@ import type { RealmPort } from '../internal/realm/transport-port.ts';
 export const port = usesProcessReadiness()
   ? (
       globalThis as {
-        realmPort?: RealmPort;
+        realmPort?: TransportPort;
       }
     ).realmPort
   : undefined;

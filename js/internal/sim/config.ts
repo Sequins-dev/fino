@@ -1,7 +1,7 @@
 /**
  * internal:sim/config — the simulation settings a realm is created with.
  *
- * The parent serializes this plain-data shape into the realm session's
+ * The parent serializes this plain-data shape into the realm transport's
  * bootstrap frame. The child installs it before importing the entry module.
  *
  * ```ts no_run

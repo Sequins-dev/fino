@@ -1,14 +1,14 @@
 /**
  * internal:sim/journal — the record of everything that crossed the boundary.
  *
- * A simulated realm's I/O crosses one realm session. The cassette stores that
- * session's serialized frames directly; the human-friendly facade call list is
- * only a projection used for assertions and reports.
+ * A simulated realm's I/O crosses one transport channel. The cassette stores
+ * that channel's serialized frames directly; the human-friendly facade call
+ * list is only a projection used for assertions and reports.
  *
- * The journal is a projection of the realm session's request, chunk,
+ * The journal is a projection of the transport's request, chunk,
  * completion, and error frames. Snapshot capture freezes values at the moment
  * they cross the boundary, before a handler or caller can mutate them. A
- * Recording asks the session for its storage representation, preserving
+ * Recording asks the channel tee for its storage representation, preserving
  * `Map`, `Set`, `Date`, `BigInt`, typed arrays, and cycles without serializing
  * completed calls a second time.
  *
@@ -24,11 +24,11 @@
 import { deserialize, serialize } from 'internal:serializer';
 import { EnvelopeKind } from 'internal:realm/envelope';
 import type {
-  RealmFrameMetadata,
-  RealmObservation,
-  RealmObserver,
-  RealmStorageObservation,
-} from 'internal:realm/session';
+  TransportFrameMetadata,
+  TransportFrame,
+  TransportObserver,
+  TransportStorageFrame,
+} from 'internal:realm/transport-port';
 /**
  * How a facade method was invoked.
  *
@@ -88,7 +88,7 @@ export interface CassetteManifest {
   modules: CassetteModule[];
 }
 
-/** One exact serialized frame from the realm session. @internal */
+/** One exact serialized frame from the realm transport. @internal */
 export interface CassetteFrame {
   /** Direction relative to the parent endpoint. */
   direction: 'outbound' | 'inbound';
@@ -131,7 +131,7 @@ export function decodeFrame(frame: CassetteFrame): unknown {
 }
 /**
  * Compare values through the same structured-clone representation used by the
- * session recorder.
+ * transport recorder.
  *
  * @internal
  */
@@ -180,7 +180,10 @@ export class SimJournal {
     return [];
   }
   /** Build an observer suitable for `RealmOptions.observe`. @internal */
-  _observer(recordFrames = false, pending: Map<number, PendingCall> = new Map()): RealmObserver {
+  _observer(
+    recordFrames = false,
+    pending: Map<number, PendingCall> = new Map(),
+  ): TransportObserver {
     return {
       capture: recordFrames ? 'storage' : 'snapshot',
       portable: recordFrames,
@@ -192,7 +195,7 @@ export class SimJournal {
     };
   }
 
-  #recordFrame(observation: RealmStorageObservation): void {
+  #recordFrame(observation: TransportStorageFrame): void {
     this.#frames.push({
       direction: observation.direction,
       kind: observation.kind,
@@ -201,7 +204,7 @@ export class SimJournal {
     });
   }
 
-  #project(observation: RealmObservation, pending: Map<number, PendingCall>): void {
+  #project(observation: TransportFrame, pending: Map<number, PendingCall>): void {
     if (observation.capture === 'metadata') return;
     const value =
       observation.capture === 'snapshot' ? observation.value : decodeStoredObservation(observation);
@@ -340,7 +343,7 @@ export class SimJournal {
   }
 }
 
-function decodeStoredObservation(observation: RealmStorageObservation): unknown {
+function decodeStoredObservation(observation: TransportStorageFrame): unknown {
   const [data, ...stores] = observation.parts;
   if (data === undefined) throw new Error('fino:sim — observed frame has no payload');
   return (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
@@ -358,7 +361,7 @@ interface PendingCall {
   chunks: unknown[];
 }
 
-function isFacadeFrame(metadata: RealmFrameMetadata): boolean {
+function isFacadeFrame(metadata: TransportFrameMetadata): boolean {
   return isFacadeFrameKind(metadata.kind);
 }
 

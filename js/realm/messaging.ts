@@ -19,7 +19,7 @@
  * | Realm port | Clone path | Transfer support |
  * | --- | --- | --- |
  * | Reactor-pooled `ScheduledPort` | Serializer transport. | `ArrayBuffer` and `MessagePort`. |
- * | Process `ProcessPort` | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
+ * | Process realm link | Serializer transport over process realm handles. | `ArrayBuffer`; `MessagePort` rejects. |
  * | Remote/cluster calls | Cluster transport serialization. | No live `MessagePort` transfer contract. |
  *
  * A transferred `MessagePort` is neutered on the sender side and re-entangled
