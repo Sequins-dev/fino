@@ -15,6 +15,7 @@ import type facadeUnknownFn from './fixtures/facade-unknown-method.ts';
 import type facadeStreamFn from './fixtures/facade-stream-fn.ts';
 import type facadeStreamErrorFn from './fixtures/facade-stream-error-fn.ts';
 import type facadeHandleFn from './fixtures/facade-handle-fn.ts';
+import type facadeHandleSinkFn from './fixtures/facade-handle-sink-fn.ts';
 import type facadeSinkFn from './fixtures/facade-sink-fn.ts';
 import type facadeSinkAbortFn from './fixtures/facade-sink-abort-fn.ts';
 describe('Facade RPC — reactor-pooled realm', () => {
@@ -465,6 +466,36 @@ describe('Facade RPC — FacadeHandle (reactor-pooled realm)', () => {
         'error mentions missing method: ' + (err as Error).message,
       );
     }
+  });
+  it('handle sink methods use the shared per-port dispatcher', async (t) => {
+    const facade = new Facade('fino:test-facade', ['openHandle']).handle(
+      'openHandle',
+      async () =>
+        new FacadeHandle(
+          {},
+          {},
+          {
+            writeChunks: async (args, source) => {
+              const chunks: unknown[] = [];
+              for await (const chunk of source) chunks.push(chunk);
+              return { args, chunks };
+            },
+          },
+        ),
+    );
+    const realm = new Realm<typeof facadeHandleSinkFn>({
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'fino:test-facade', directive: facade },
+      ]),
+      entry: new URL('./fixtures/facade-handle-sink-fn.ts', import.meta.url).pathname,
+    });
+
+    t.deepEqual(
+      await realm.call(),
+      { args: ['log'], chunks: ['one', 'two'] },
+      'handle sink start, chunks, end, and result share one dispatcher',
+    );
   });
 });
 // ---------------------------------------------------------------------------

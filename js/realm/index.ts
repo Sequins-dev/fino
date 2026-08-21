@@ -763,29 +763,29 @@ function _getOrCreateWriteSourceRegistry(
   return reg;
 }
 // ---------------------------------------------------------------------------
-// Per-port handle registry
+// Per-port facade and handle registry
 // ---------------------------------------------------------------------------
-interface _HandleEntry {
+interface _RpcEntry {
   scalar: Map<string, (...args: unknown[]) => unknown>;
   streams: Map<string, (...args: unknown[]) => AsyncIterable<unknown>>;
   sinks: Map<string, (args: unknown[], source: AsyncIterable<unknown>) => Promise<unknown>>;
 }
-// WeakMap: port -> (handleId -> HandleEntry). GC'd when the port is collected.
-const _portHandleRegistries = new WeakMap<object, Map<string, _HandleEntry>>();
+// WeakMap: port -> (facade specifier or handle id -> handlers).
+const _portRpcRegistries = new WeakMap<object, Map<string, _RpcEntry>>();
 // Handle ids count per registry rather than per process. A shared counter made
 // the id a function of how many handles every other realm happened to allocate
 // first, so the same run could name the same handle differently depending on
 // what else was running — which a simulation journal or cassette would record
 // as a difference in behaviour.
-const _handleSeqByRegistry = new WeakMap<Map<string, _HandleEntry>, { next: number }>();
-function _getOrCreateHandleRegistry(
+const _handleSeqByRegistry = new WeakMap<Map<string, _RpcEntry>, { next: number }>();
+function _getOrCreateRpcRegistry(
   port: MessagePort | RealmPort | ProcessPort | ClusterPort,
-): Map<string, _HandleEntry> {
+): Map<string, _RpcEntry> {
   const key = port as object;
-  let reg = _portHandleRegistries.get(key);
+  let reg = _portRpcRegistries.get(key);
   if (reg) return reg;
-  reg = new Map<string, _HandleEntry>();
-  _portHandleRegistries.set(key, reg);
+  reg = new Map<string, _RpcEntry>();
+  _portRpcRegistries.set(key, reg);
   const registry = reg;
   const wsSources = _getOrCreateWriteSourceRegistry(port);
   const control = port as unknown as {
@@ -800,16 +800,50 @@ function _getOrCreateHandleRegistry(
   const fail = (correlation: number, error: unknown): void => {
     reply(EnvelopeKind.RpcResponse, correlation, { error: String(error) });
   };
-  // One shared dispatcher per port serves every handle method call.
+  const streamOut = async (correlation: number, iterable: AsyncIterable<unknown>) => {
+    try {
+      for await (const chunk of iterable) reply(EnvelopeKind.RpcChunk, correlation, chunk);
+      reply(EnvelopeKind.RpcEnd, correlation, null);
+    } catch (err: unknown) {
+      reply(EnvelopeKind.RpcError, correlation, { error: String(err) });
+    }
+  };
+  // One shared dispatcher per port serves facades and their returned handles.
   control._addControlHandler?.((envelope, value) => {
     const reqId = envelope.correlation;
+    switch (envelope.kind) {
+      case EnvelopeKind.SinkChunk: {
+        const source = wsSources.get(reqId);
+        if (!source) return false;
+        void source.writer.write(value);
+        return true;
+      }
+      case EnvelopeKind.SinkEnd: {
+        const source = wsSources.get(reqId);
+        if (!source) return false;
+        wsSources.delete(reqId);
+        void source.writer.close();
+        return true;
+      }
+      case EnvelopeKind.SinkError: {
+        const source = wsSources.get(reqId);
+        if (!source) return false;
+        wsSources.delete(reqId);
+        void source.writer.close(
+          new Error(String((value as { error?: unknown })?.error ?? 'sink aborted')),
+        );
+        return true;
+      }
+    }
     const body = (value ?? {}) as {
       specifier?: string;
       method?: string;
       args?: unknown[];
     };
     const isRequest =
-      envelope.kind === EnvelopeKind.RpcRequest || envelope.kind === EnvelopeKind.SinkStart;
+      envelope.kind === EnvelopeKind.RpcRequest ||
+      envelope.kind === EnvelopeKind.RpcStreamRequest ||
+      envelope.kind === EnvelopeKind.SinkStart;
     if (!isRequest) return false;
     const entry = registry.get(body.specifier ?? '');
     if (!entry) return false;
@@ -818,12 +852,12 @@ function _getOrCreateHandleRegistry(
     if (envelope.kind === EnvelopeKind.SinkStart) {
       const sinkFn = entry.sinks.get(method);
       if (!sinkFn) {
-        fail(reqId, `No sendStream method '${method}' on handle '${body.specifier}'`);
+        fail(reqId, `No sendStream handler for ${body.specifier}#${method}`);
         return true;
       }
       const source = new UnboundedChannel<unknown>();
       wsSources.set(reqId, source);
-      sinkFn(args, source.reader).then(
+      new Promise<unknown>((resolve) => resolve(sinkFn(args, source.reader))).then(
         (result) => {
           wsSources.delete(reqId);
           _sendResult(port, registry, reqId, result);
@@ -837,30 +871,29 @@ function _getOrCreateHandleRegistry(
     }
     const streamFn = entry.streams.get(method);
     if (streamFn) {
-      let iter: AsyncIterable<unknown>;
+      let iterable: AsyncIterable<unknown>;
       try {
-        iter = streamFn(...args);
+        iterable = streamFn(...args);
       } catch (err: unknown) {
         fail(reqId, err);
         return true;
       }
-      void (async () => {
-        try {
-          for await (const chunk of iter) reply(EnvelopeKind.RpcChunk, reqId, chunk);
-          reply(EnvelopeKind.RpcEnd, reqId, null);
-        } catch (err: unknown) {
-          reply(EnvelopeKind.RpcError, reqId, { error: String(err) });
-        }
-      })().catch(() => {});
+      void streamOut(reqId, iterable).catch(() => {});
       return true;
     }
     const scalarFn = entry.scalar.get(method);
     if (!scalarFn) {
-      fail(reqId, `No method '${method}' on handle '${body.specifier}'`);
+      fail(reqId, `No handler for ${body.specifier}#${method}`);
       return true;
     }
     new Promise<unknown>((res) => res(scalarFn(...args))).then(
-      (result) => _sendResult(port, registry, reqId, result),
+      (result) => {
+        if (_isAsyncIterable(result)) {
+          void streamOut(reqId, result as AsyncIterable<unknown>).catch(() => {});
+        } else {
+          _sendResult(port, registry, reqId, result);
+        }
+      },
       (err: unknown) => fail(reqId, err),
     );
     return true;
@@ -868,7 +901,7 @@ function _getOrCreateHandleRegistry(
   return reg;
 }
 function _registerHandle(
-  reg: Map<string, _HandleEntry>,
+  reg: Map<string, _RpcEntry>,
   h: FacadeHandle,
 ): {
   __handle: string;
@@ -898,7 +931,7 @@ function _sendResult(
   port: {
     _postControl?(kind: number, correlation: number, message: unknown): void;
   },
-  reg: Map<string, _HandleEntry>,
+  reg: Map<string, _RpcEntry>,
   reqId: number,
   result: unknown,
 ): void {
@@ -1307,9 +1340,9 @@ export class Facade {
   /**
    * Replace every registered handler with `wrap(handler, method, kind)`.
    *
-   * Used by `fino:sim` to record calls without the recorder needing to know how
-   * a facade was built. Applies to handlers registered so far; register the
-   * handlers first, then wrap.
+   * Used by `fino:sim` for replay and fault injection without needing to know
+   * how a facade was built. Applies to handlers registered so far; register
+   * the handlers first, then wrap.
    *
    * ```ts no_run
    * import { Facade } from 'fino:realm';
@@ -1396,118 +1429,10 @@ export class Facade {
    * @internal
    */
   _bind(port: MessagePort | RealmPort | ProcessPort | ClusterPort): void {
-    const specifier = this.#specifier;
-    const handlers = this.#handlers;
-    const streamHandlers = this.#streamHandlers;
-    const sinkHandlers = this.#sinkHandlers;
-    const reg = _getOrCreateHandleRegistry(port);
-    const wsSources = _getOrCreateWriteSourceRegistry(port);
-    const control = port as unknown as {
-      _addControlHandler?(
-        handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
-      ): () => void;
-      _postControl?(kind: number, correlation: number, message: unknown): void;
-    };
-    const reply = (kind: number, correlation: number, message: unknown): void => {
-      control._postControl?.(kind, correlation, message);
-    };
-    const fail = (correlation: number, error: unknown): void => {
-      reply(EnvelopeKind.RpcResponse, correlation, { error: String(error) });
-    };
-    const streamOut = async (correlation: number, iterable: AsyncIterable<unknown>) => {
-      try {
-        for await (const chunk of iterable) reply(EnvelopeKind.RpcChunk, correlation, chunk);
-        reply(EnvelopeKind.RpcEnd, correlation, null);
-      } catch (err: unknown) {
-        reply(EnvelopeKind.RpcError, correlation, { error: String(err) });
-      }
-    };
-    control._addControlHandler?.((envelope, value) => {
-      const reqId = envelope.correlation;
-      const body = (value ?? {}) as {
-        specifier?: string;
-        method?: string;
-        args?: unknown[];
-      };
-      switch (envelope.kind) {
-        case EnvelopeKind.SinkStart: {
-          if (body.specifier !== specifier) return false;
-          const method = body.method as string;
-          const args = body.args ?? [];
-          const fn = sinkHandlers.get(method);
-          if (!fn) {
-            fail(reqId, `No sendStream handler for ${specifier}#${method}`);
-            return true;
-          }
-          const source = new UnboundedChannel<unknown>();
-          wsSources.set(reqId, source);
-          fn(args, source.reader).then(
-            (result) => {
-              wsSources.delete(reqId);
-              _sendResult(port, reg, reqId, result);
-            },
-            (err: unknown) => fail(reqId, err),
-          );
-          return true;
-        }
-        case EnvelopeKind.SinkChunk: {
-          const source = wsSources.get(reqId);
-          if (!source) return false;
-          void source.writer.write(value);
-          return true;
-        }
-        case EnvelopeKind.SinkEnd: {
-          const source = wsSources.get(reqId);
-          if (!source) return false;
-          wsSources.delete(reqId);
-          void source.writer.close();
-          return true;
-        }
-        case EnvelopeKind.SinkError: {
-          const source = wsSources.get(reqId);
-          if (!source) return false;
-          wsSources.delete(reqId);
-          void source.writer.close((value as { error: Error }).error);
-          return true;
-        }
-        case EnvelopeKind.RpcRequest:
-          break;
-        default:
-          return false;
-      }
-      if (body.specifier !== specifier) return false;
-      const method = body.method as string;
-      const args = body.args ?? [];
-      const streamFn = streamHandlers.get(method);
-      if (streamFn) {
-        let iterable: AsyncIterable<unknown>;
-        try {
-          iterable = streamFn(...args);
-        } catch (err: unknown) {
-          fail(reqId, err);
-          return true;
-        }
-        void streamOut(reqId, iterable).catch(() => {});
-        return true;
-      }
-      const handler = handlers.get(method);
-      if (!handler) {
-        fail(reqId, `No handler for ${specifier}#${method}`);
-        return true;
-      }
-      new Promise<unknown>((res) => res(handler(...args))).then(
-        (result) => {
-          if (result instanceof FacadeHandle) {
-            reply(EnvelopeKind.RpcResponse, reqId, { result: _registerHandle(reg, result) });
-          } else if (_isAsyncIterable(result)) {
-            void streamOut(reqId, result as AsyncIterable<unknown>).catch(() => {});
-          } else {
-            reply(EnvelopeKind.RpcResponse, reqId, { result });
-          }
-        },
-        (err: unknown) => fail(reqId, err),
-      );
-      return true;
+    _getOrCreateRpcRegistry(port).set(this.#specifier, {
+      scalar: this.#handlers,
+      streams: this.#streamHandlers,
+      sinks: this.#sinkHandlers,
     });
     port.start();
   }

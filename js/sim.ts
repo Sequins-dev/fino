@@ -38,6 +38,7 @@ import { createSeededRandom } from 'internal:sim/random';
 import {
   SimJournal,
   decodeValue as decodeValueFromCassette,
+  equalValue,
   type Cassette,
   type SimCall,
   type SimCallKind,
@@ -169,7 +170,7 @@ export interface SimReport {
   cassette?: Cassette;
 }
 /**
- * Build a facade from a plain object, recording every call into `journal`.
+ * Build a facade from a plain object, recording its session traffic into `journal`.
  *
  * Async generator methods become read streams; everything else becomes a scalar
  * call. This is what `simulate()` applies to each entry in `world`.
@@ -215,10 +216,11 @@ function isAsyncGenerator(value: unknown): boolean {
   return name === 'AsyncGeneratorFunction';
 }
 /**
- * Wrap a facade so every call it serves is recorded.
+ * Attach a journal projection when a facade binds to a realm session.
  *
- * Register the handlers before wrapping; handlers added afterwards are not
- * recorded.
+ * Recording observes protocol frames rather than wrapping handlers, so scalar,
+ * read-stream, and write-stream traffic share the same ordering and snapshot
+ * semantics. Handlers may be registered before or after this call.
  *
  * ```ts no_run
  * import { Facade } from 'fino:realm';
@@ -230,55 +232,16 @@ function isAsyncGenerator(value: unknown): boolean {
  * ```
  */
 export function recordFacade(facade: Facade, journal: SimJournal, specifier: string): Facade {
-  return facade._wrapHandlers((handler, method, kind) => {
-    if (kind === 'stream') {
-      return function recordedStream(...args: never[]): AsyncIterable<unknown> {
-        const source = (handler as (...a: never[]) => AsyncIterable<unknown>)(...args);
-        const chunks: unknown[] = [];
-        return {
-          async *[Symbol.asyncIterator]() {
-            try {
-              for await (const chunk of source) {
-                chunks.push(chunk);
-                yield chunk;
-              }
-            } catch (error) {
-              journal.record({
-                specifier,
-                method,
-                kind,
-                args: [...args],
-                outcome: 'error',
-                error: String(error),
-                chunks,
-              });
-              throw error;
-            }
-            journal.record({ specifier, method, kind, args: [...args], chunks });
-          },
-        };
-      } as (...args: never[]) => unknown;
+  const bind = facade._bind.bind(facade);
+  const observed = new WeakSet<object>();
+  facade._bind = (port) => {
+    if (!observed.has(port)) {
+      observed.add(port);
+      journal._observe(port, specifier);
     }
-    return async function recorded(...args: never[]): Promise<unknown> {
-      // A sink handler is called as (args, source); a scalar one spreads.
-      const recordedArgs = kind === 'sink' ? ((args[0] as unknown[]) ?? []) : [...args];
-      try {
-        const result = await (handler as (...a: never[]) => Promise<unknown>)(...args);
-        journal.record({ specifier, method, kind, args: recordedArgs, result });
-        return result;
-      } catch (error) {
-        journal.record({
-          specifier,
-          method,
-          kind,
-          args: recordedArgs,
-          outcome: 'error',
-          error: String(error),
-        });
-        throw error;
-      }
-    } as (...args: never[]) => unknown;
-  });
+    bind(port);
+  };
+  return facade;
 }
 /**
  * One reply in a `FakeNet` route table.
@@ -787,8 +750,10 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
       (options.faults?.only === undefined || options.faults.only.includes(specifier));
     const facade =
       replay === null
-        ? mockFacade(specifier, provider, journal)
-        : replayFacade(specifier, provider, journal, replay);
+        ? provider instanceof Facade
+          ? provider
+          : facadeFromObject(specifier, provider)
+        : replayFacade(specifier, provider, replay);
     rules.push({
       pattern: specifier,
       directive: injectHere
@@ -807,7 +772,13 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
       ...(config.latency !== null ? { latency: config.latency } : {}),
     },
   });
-  const result = await realm.call(...(options.args ?? []));
+  const stopJournal = journal._observe(realm.port);
+  let result: unknown;
+  try {
+    result = await realm.call(...(options.args ?? []));
+  } finally {
+    stopJournal();
+  }
   const report: SimReport = {
     result,
     journal,
@@ -831,62 +802,73 @@ class CassetteReader {
   /**
    * Take the next recorded entry, checking it is the call that was expected.
    */
-  next(specifier: string, method: string): Cassette['entries'][number] {
+  next(
+    specifier: string,
+    method: string,
+    kind: SimCallKind,
+    args: unknown[],
+  ): Cassette['entries'][number] {
     const entry = this.#entries[this.#position];
     if (entry === undefined) {
       throw new Error(
         `fino:sim — the guest called ${specifier}.${method} but the cassette ended after ${this.#position} calls`,
       );
     }
-    if (entry.specifier !== specifier || entry.method !== method) {
+    if (entry.specifier !== specifier || entry.method !== method || entry.kind !== kind) {
       throw new Error(
-        `fino:sim — divergence at call ${this.#position}: the cassette recorded ${entry.specifier}.${entry.method} but the guest called ${specifier}.${method}`,
+        `fino:sim — divergence at call ${this.#position}: the cassette recorded ${entry.kind} ${entry.specifier}.${entry.method} but the guest called ${kind} ${specifier}.${method}`,
+      );
+    }
+    if (!equalValue(decodeValueFromCassette(entry.args), args)) {
+      throw new Error(
+        `fino:sim — divergence at call ${this.#position}: arguments to ${specifier}.${method} differ from the cassette`,
       );
     }
     this.#position++;
     return entry;
   }
 }
-function replayFacade(
-  specifier: string,
-  provider: SimProvider,
-  journal: SimJournal,
-  replay: CassetteReader,
-): Facade {
+function replayFacade(specifier: string, provider: SimProvider, replay: CassetteReader): Facade {
   const shape = provider instanceof Facade ? provider : facadeFromObject(specifier, provider);
   return shape._wrapHandlers((_handler, method, kind) => {
     if (kind === 'stream') {
       return function replayedStream(...args: never[]): AsyncIterable<unknown> {
         return {
           async *[Symbol.asyncIterator]() {
-            const entry = replay.next(specifier, method);
-            if (entry.outcome === 'error') throw new Error(entry.error ?? 'recorded failure');
-            const chunks = decodeCassetteValue(entry) as unknown[];
-            journal.record({ specifier, method, kind, args: [...args], chunks });
+            const entry = replay.next(specifier, method, kind, [...args]);
+            const chunks = decodeCassetteChunks(entry);
             for (const chunk of chunks) yield chunk;
+            if (entry.outcome === 'error') throw new Error(entry.error ?? 'recorded failure');
           },
         };
       } as (...args: never[]) => unknown;
     }
     return async function replayed(...args: never[]): Promise<unknown> {
       const recordedArgs = kind === 'sink' ? ((args[0] as unknown[]) ?? []) : [...args];
-      const entry = replay.next(specifier, method);
+      const entry = replay.next(specifier, method, kind, recordedArgs);
+      if (kind === 'sink') {
+        const chunks: unknown[] = [];
+        for await (const chunk of args[1] as AsyncIterable<unknown>) chunks.push(chunk);
+        if (
+          entry.chunks !== undefined &&
+          !equalValue(decodeValueFromCassette(entry.chunks), chunks)
+        ) {
+          throw new Error(
+            `fino:sim — divergence at call ${entry.seq}: sink chunks for ${specifier}.${method} differ from the cassette`,
+          );
+        }
+      }
       if (entry.outcome === 'error') {
-        journal.record({
-          specifier,
-          method,
-          kind,
-          args: recordedArgs,
-          outcome: 'error',
-          error: entry.error,
-        });
         throw new Error(entry.error ?? 'recorded failure');
       }
       const result = decodeCassetteValue(entry);
-      journal.record({ specifier, method, kind, args: recordedArgs, result });
       return result;
     } as (...args: never[]) => unknown;
   });
+}
+function decodeCassetteChunks(entry: Cassette['entries'][number]): unknown[] {
+  const encoded = entry.chunks ?? entry.value;
+  return encoded === undefined ? [] : (decodeValueFromCassette(encoded) as unknown[]);
 }
 function decodeCassetteValue(entry: Cassette['entries'][number]): unknown {
   if (entry.value === undefined) return undefined;
