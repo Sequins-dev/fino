@@ -19,6 +19,7 @@ import {
   type Envelope,
 } from 'internal:realm/envelope';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
+import { RealmSession, type RealmObserver } from 'internal:realm/session';
 import { sandboxPortRecv, sandboxPortSend } from 'internal:realm-native';
 import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
 import { createTransitChannel } from 'internal:transit-port';
@@ -35,6 +36,8 @@ import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal
  * @internal
  */
 export abstract class BaseTransportPort extends EventTarget {
+  /** Observation boundary shared by every concrete realm transport. */
+  #session = new RealmSession();
   /**
    * True once start() has run; _dispatchMessage drops messages while the port
    * is unstarted.
@@ -111,6 +114,14 @@ export abstract class BaseTransportPort extends EventTarget {
     ports: [number, number][],
   ): void;
   /**
+   * Observe semantic frames crossing this endpoint.
+   *
+   * @internal
+   */
+  _observe(observer: RealmObserver): () => void {
+    return this.#session.observe(observer);
+  }
+  /**
    * Whether this transport can move a live `MessagePort` to the far side.
    *
    * A transit channel is a pair of descriptors in one process, so only
@@ -173,6 +184,21 @@ export abstract class BaseTransportPort extends EventTarget {
     );
     const [data, ...stores] = parts;
     this._send(encodeEnvelope(envelope), data!, stores, portInfos);
+    if (this.#session.observed) {
+      this.#session._capture({
+        direction: 'outbound',
+        envelope,
+        payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
+        arrayBufferTransfers: stores.length,
+        portTransfers: portInfos.length,
+        snapshot: () =>
+          (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+            data!,
+            stores.length > 0 ? stores : undefined,
+          ),
+        storage: () => parts.map((part) => part.slice()),
+      });
+    }
   }
   /**
    * Send runtime control traffic — a call, a result, a termination request, or
@@ -214,6 +240,18 @@ export abstract class BaseTransportPort extends EventTarget {
   ): void {
     if (!this._started) return;
     const envelope = decodeEnvelope(header);
+    if (this.#session.observed) {
+      const parts = stores === undefined ? [buf] : [buf, ...stores];
+      this.#session._capture({
+        direction: 'inbound',
+        envelope,
+        payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
+        arrayBufferTransfers: stores?.length ?? 0,
+        portTransfers: ports.length,
+        snapshot: () => (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(buf, stores),
+        storage: () => parts.map((part) => part.slice()),
+      });
+    }
     let value: unknown;
     try {
       value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(

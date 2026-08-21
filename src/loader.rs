@@ -135,6 +135,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!("internal:realm/envelope", "internal/realm/envelope"),
+    source_builtin!("internal:realm/session", "internal/realm/session"),
     source_builtin!(
         "internal:realm/transport-port",
         "internal/realm/transport-port"

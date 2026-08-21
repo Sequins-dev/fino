@@ -39,6 +39,8 @@ run skills, plugins, and untrusted code with only the imports you grant.
   between parent and child.
 - [Facades](./realm/facades.md) — exposing parent-side logic as a virtual
   module the child imports.
+- [Realm communication sessions](./realm/session-design.md) — the staged design
+  for observing, recording, and replaying all realm boundary traffic.
 - [Import Capabilities](./realm/capabilities.md) — the import rule system that
   shapes what a child may load.
 - [Deterministic Simulation](./sim.md) — running code in a realm with a virtual

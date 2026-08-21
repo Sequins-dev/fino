@@ -32,5 +32,8 @@ The guides in this section:
   and child using ports and `BroadcastChannel`.
 - [Facades](./realm/facades.md) — exposing parent-side logic to the child as a
   virtual module the child can import and call like any other module.
+- [Realm communication sessions](./realm/session-design.md) — the staged design
+  for observing, recording, and replaying all boundary traffic through the
+  existing envelope protocol.
 - [Import Capabilities](./realm/capabilities.md) — shaping what a child realm
   is allowed to import, using import rules and provider configs.
