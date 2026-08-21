@@ -1,7 +1,7 @@
 import { chunks, fast, mutate, slow, upload } from 'app:session';
 
 export default async function () {
-  const calls = await Promise.all([slow('first'), fast('second')]);
+  const calls = await Promise.all([slow(new Map([['first', new Set([1n])]])), fast('second')]);
   const input = { state: 'before' };
   await mutate(input);
   const streamed: unknown[] = [];

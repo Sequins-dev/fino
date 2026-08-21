@@ -8,7 +8,12 @@
  *
  * @internal
  */
-import { EventTarget, _markEventTrusted } from '../../globals/eventtarget.ts';
+import {
+  EventTarget,
+  _markEventTrusted,
+  type AddEventListenerOptions,
+  type EventCallback,
+} from '../../globals/eventtarget.ts';
 import { MessageEvent, MessagePort } from '../../globals/messaging.ts';
 import { serialize, deserialize } from 'internal:serializer';
 import {
@@ -59,6 +64,9 @@ export abstract class BaseTransportPort extends EventTarget {
    * @internal
    */
   #onmessage: ((ev: Event) => void) | null = null;
+  #messagesPaused = false;
+  #pendingMessages: MessageEvent[] = [];
+  #portable = false;
   /**
    * Handlers for runtime protocol frames.
    *
@@ -75,6 +83,15 @@ export abstract class BaseTransportPort extends EventTarget {
     if (this._started || this._closed) return;
     this._started = true;
     this._onStart();
+  }
+  /** Register a listener and release bootstrap-held messages to its first consumer. */
+  override addEventListener(
+    type: string,
+    callback: EventCallback | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    super.addEventListener(type, callback, options);
+    if (type === 'message' && callback !== null) this._resumeMessages();
   }
   /**
    * Close this port and stop delivery.
@@ -157,6 +174,15 @@ export abstract class BaseTransportPort extends EventTarget {
       if (item instanceof ArrayBuffer) {
         transferABs.push(item);
       } else if (item instanceof MessagePort) {
+        if (
+          this.#portable ||
+          this.#session.portable ||
+          (globalThis as Record<PropertyKey, unknown>)[Symbol.for('fino.sim.active')] === true
+        ) {
+          throw new TypeError(
+            'Replayable realm sessions cannot transfer MessagePort values; expose a facade channel instead',
+          );
+        }
         if (!this._supportsPortTransfer()) {
           throw new TypeError(
             `${this.constructor.name} transfer list only supports ArrayBuffer values`,
@@ -302,7 +328,27 @@ export abstract class BaseTransportPort extends EventTarget {
       ports,
     });
     _markEventTrusted(event);
+    if (this.#messagesPaused) {
+      this.#pendingMessages.push(event);
+      return;
+    }
     this.dispatchEvent(event);
+  }
+  /** Hold application messages while bootstrap evaluates the entry module. @internal */
+  _pauseMessages(): void {
+    this.#messagesPaused = true;
+  }
+
+  /** Deliver application messages held during bootstrap in arrival order. @internal */
+  _resumeMessages(): void {
+    if (!this.#messagesPaused) return;
+    this.#messagesPaused = false;
+    for (const event of this.#pendingMessages.splice(0)) this.dispatchEvent(event);
+  }
+
+  /** Require values on both sides of this link to remain cassette-portable. @internal */
+  _requirePortable(): void {
+    this.#portable = true;
   }
   /**
    * Register a handler for runtime protocol frames on this port.

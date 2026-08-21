@@ -57,6 +57,14 @@ export const EnvelopeKind = {
   SinkError: 13,
   /** Begin a parent-to-child read stream. Payload holds specifier/method/args. */
   RpcStreamRequest: 14,
+  /** Parent-provided user data and runtime bootstrap settings. */
+  Bootstrap: 15,
+  /** One formatted console line emitted by a deterministic guest. */
+  Console: 16,
+  /** One OpenTelemetry topic event emitted by a deterministic guest. */
+  Telemetry: 17,
+  /** Realm spawn and entry lifecycle information. */
+  Lifecycle: 18,
 } as const;
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];

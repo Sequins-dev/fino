@@ -185,13 +185,10 @@ export interface SerializedSpawnConfig {
    */
   rules: unknown[];
   /**
-   * Optional runtime bootstrap metadata for the target realm.
-   *
-   * The cluster layer currently defines the CLI OpenTelemetry bootstrap
-   * fields used by realm startup. Unknown fields are not forwarded.
+   * Marks a child that waits for its bootstrap frame on the realm channel.
    *
    * ```ts
-   * const config = { entry: 'main.ts', root: '.', rules: [], bootstrapData: { cliOtel: { endpoint: 'http://127.0.0.1:4318' } } };
+   * const config = { entry: 'main.ts', root: '.', rules: [], bootstrapData: { channelBootstrap: true } };
    * config.bootstrapData;
    * ```
    */
@@ -375,14 +372,8 @@ interface WireRule {
   directive?: WireDirective;
 }
 
-interface WireCliOtel {
-  endpoint?: string;
-  script?: string;
-  debug?: boolean;
-}
-
 interface WireBootstrapData {
-  cliOtel?: WireCliOtel;
+  channelBootstrap?: boolean;
 }
 
 interface WireSpawnConfig {
@@ -438,13 +429,8 @@ const RuleMessage = defineMessage<WireRule>({
   pattern: { number: 2, type: 'string', optional: true },
   directive: { number: 3, type: DirectiveMessage, optional: true },
 });
-const CliOtelMessage = defineMessage<WireCliOtel>({
-  endpoint: { number: 1, type: 'string', optional: true },
-  script: { number: 2, type: 'string', optional: true },
-  debug: { number: 3, type: 'bool', optional: true },
-});
 const BootstrapDataMessage = defineMessage<WireBootstrapData>({
-  cliOtel: { number: 1, type: CliOtelMessage, optional: true },
+  channelBootstrap: { number: 1, type: 'bool', optional: true },
 });
 const SpawnConfigMessage = defineMessage<WireSpawnConfig>({
   entry: { number: 1, type: 'string', optional: true },
@@ -565,16 +551,10 @@ function decodeRule(value: WireRule): Record<string, unknown> {
 
 function encodeBootstrapData(value: unknown): WireBootstrapData {
   if (!isRecord(value)) throw protocolError('config.bootstrapData must be an object');
-  if (value.cliOtel === undefined) return {};
-  if (!isRecord(value.cliOtel))
-    throw protocolError('config.bootstrapData.cliOtel must be an object');
-  const cliOtel = value.cliOtel;
   return {
-    cliOtel: {
-      ...(cliOtel.endpoint === undefined ? {} : { endpoint: requireString(cliOtel, 'endpoint') }),
-      ...(cliOtel.script === undefined ? {} : { script: requireString(cliOtel, 'script') }),
-      ...(cliOtel.debug === undefined ? {} : { debug: requireBoolean(cliOtel, 'debug') }),
-    },
+    ...(value.channelBootstrap === undefined
+      ? {}
+      : { channelBootstrap: requireBoolean(value, 'channelBootstrap') }),
   };
 }
 

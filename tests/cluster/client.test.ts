@@ -264,14 +264,14 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
       entry: './fn.ts',
       root: '/app',
       rules: [],
-      bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
+      bootstrapData: { channelBootstrap: true },
     });
     // The SPAWN message should have been sent immediately (synchronous in spawnRemote)
     const spawns = transport.sentOfType('SPAWN');
     t.equal(spawns.length, 1, 'one SPAWN sent to seed');
     t.deepEqual(
       spawns[0]?.config.bootstrapData,
-      { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
+      { channelBootstrap: true },
       'bootstrap metadata is sent with SPAWN',
     );
     const { spawnReqId } = spawns[0]!;

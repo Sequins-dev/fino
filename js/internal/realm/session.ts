@@ -70,6 +70,8 @@ export interface RealmObserver {
   next(observation: RealmObservation): void;
   /** Receive capture or callback failures without affecting live delivery. */
   error?(error: unknown): void;
+  /** Reject live `MessagePort` transfers because they cannot be persisted. */
+  portable?: boolean;
 }
 
 /** Inputs supplied by a transport only when the session has observers. @internal */
@@ -97,6 +99,12 @@ export class RealmSession {
   /** Whether the transport needs to offer frames to this session. */
   get observed(): boolean {
     return this.#observers.size > 0;
+  }
+
+  /** Whether any observer requires a portable, replayable stream. */
+  get portable(): boolean {
+    for (const observer of this.#observers) if (observer.portable === true) return true;
+    return false;
   }
 
   /** Subscribe until the returned disposer is called. */

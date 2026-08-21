@@ -3,9 +3,9 @@ weight: 16
 ---
 # Realm communication sessions
 
-Status: staged implementation. Transport observation, the `SimJournal` call
-projection, and cassette replay now use the shared session stream. Cassettes
-still persist completed call summaries until the event-stream format lands.
+Status: implemented. Realm transport, facade RPC, bootstrap, deterministic
+diagnostics, recording, replay, and journal projections share the session
+stream. There is no separate capability gate or call-summary cassette.
 
 ## Goal
 
@@ -14,11 +14,8 @@ leaving it should cross one communication session that can run live, be
 observed, be recorded, or be replayed without changing the application-facing
 module or messaging APIs.
 
-This session is not a new transport and not another RPC implementation. It is
-the semantic event layer over the existing realm envelope protocol. Thread,
-process, and cluster links continue to move bytes; facades continue to make
-module-shaped RPC convenient; the session gives those systems one common place
-for observation and replay.
+This semantic layer observes the existing envelope protocol; transport and
+module-shaped facade RPC remain unchanged.
 
 ## Constraints
 
@@ -29,14 +26,10 @@ for observation and replay.
   module export shape needed by such services.
 - The hot path with no observer performs no extra structured clone, encoding,
   or payload allocation.
-- Filters run against envelope metadata before any observed payload is
-  materialized.
-- A matched observer explicitly asks for metadata, an in-memory snapshot, or a
-  storage representation. Each requested representation is produced at most
-  once per frame and shared by matching observers.
-- Transfer remains explicit. The live receiver may take ownership of a
-  transferred value; observation makes a copy only when an attached observer
-  needs one.
+- Filters run before payload materialization. Matching observers choose
+  metadata, snapshot, or storage capture; each representation is produced at
+  most once per frame.
+- Transfer remains explicit, and observation copies only when requested.
 - Same-process and remote/process realms use the same semantic events even
   though their transport costs differ.
 
@@ -52,10 +45,8 @@ adds only boundary metadata:
 - envelope kind and correlation id;
 - serialized payload size and transfer counts.
 
-This is enough to derive higher-level views. A facade call is the request frame
-plus correlated response, chunk, end, or error frames. `SimJournal.calls()` can
-therefore become a projection over the event stream rather than a second
-recorder embedded in facade handlers.
+Facade calls are projections of request frames and their correlated response,
+chunk, end, or error frames; they need no second recorder.
 
 The three capture levels are:
 
@@ -64,17 +55,15 @@ The three capture levels are:
    inspection.
 3. `storage`: stable structured-clone bytes for persistence and replay.
 
-When there are no subscriptions, the port bypasses the session entirely. When
-subscriptions exist but none match the metadata, the session does not invoke
-either payload materializer. Multiple matching subscriptions share the one
-snapshot and/or one byte copy produced for that frame.
+With no matching subscription, the port invokes no payload materializer.
+Matching subscriptions share any snapshot or byte copy.
 
 ## Recording and replay
 
-A cassette should contain two sections:
+A version-2 cassette contains two sections:
 
 - an execution manifest: entry and module-graph hashes, effective import map,
-  runtime version, seed, clock configuration, and bootstrap data;
+  runtime identity, seed, and clock/latency configuration;
 - the ordered session event stream.
 
 Recording is a storage-capture subscription. Buffering for test assertions is
@@ -85,8 +74,9 @@ the recorded response-side events through the same session API.
 Persistent recording of a transferred `ArrayBuffer` necessarily copies its
 bytes because the live transfer detaches the sender. With no recorder attached,
 there is no observer copy. Transferred `MessagePort` values cannot be flattened
-into a portable cassette; they must become named child sessions or be rejected
-when replayability is required. `SharedArrayBuffer` is incompatible with
+into a portable cassette, so portable observers reject them on both endpoints
+before transfer. A future named child session can relax that limit without
+changing the frame format. `SharedArrayBuffer` is incompatible with
 deterministic replay and remains rejected.
 
 The clone and transfer behavior follows the WHATWG structured-data model:
@@ -100,41 +90,33 @@ The completed session boundary must cover:
 
 - realm calls and results;
 - facade scalar, read-stream, write-stream, and handle traffic;
-- `postMessage` and transferred child channels;
+- `postMessage`, with transferred child channels rejected for portable sessions;
 - initial realm data and lifecycle events;
 - console and telemetry output when deterministic mode is enabled.
 
-Strict deterministic mode will reject host-backed imports that are not
-provided by facades, reject nested realms that do not inherit the parent
-session, and disable direct external telemetry exporters. This is behavioral
-isolation for reproducibility; import rules do not replace process or kernel
-security boundaries.
+Strict deterministic mode rejects host-backed imports that are not provided by
+facades, nested realms that could escape the root session, transferred child
+ports, and direct external telemetry exporters. This is behavioral isolation
+for reproducibility; import rules do not replace process or kernel security
+boundaries.
 
 ## Implementation stages
 
-1. Add lazy observation to the shared envelope boundary. This is implemented;
-   it adds no serialization when unobserved.
-2. Expose a session subscription at realm construction time so module
-   evaluation and bootstrap traffic cannot race observer attachment.
-3. Replace facade handler wrapping in `recordFacade()` with a session-stream
-   projection. This is implemented; `SimJournal` remains as the compatibility
-   call view while cassettes use their version-1 format.
-4. Introduce the event-stream cassette and a replay peer. The replay peer is
-   implemented and validates arguments, invocation kind, sink chunks, missing
-   calls, partial streams, and errors. Persisting correlated frames instead of
-   completed call summaries remains.
-5. Route initial data, console, telemetry, lifecycle, and nested/transferred
-   channels through sessions. Add execution-manifest verification.
-6. Remove the version-1 journal/cassette compatibility layer after its migration
-   window, leaving one RPC/event representation and one stream queue/producer
-   implementation.
+1. Lazy observation at the shared envelope boundary, with no observation work
+   on an unobserved port.
+2. Construction-time `RealmOptions.observe`, attached before the port starts.
+3. `SimJournal` as a snapshot/storage projection over session frames.
+4. Version-2 event cassettes and a replay peer that consumes the same correlated
+   RPC frames produced by live facades.
+5. Channel bootstrap for user data and runtime settings, plus console,
+   telemetry, and lifecycle envelope kinds and verified execution manifests.
+6. Portable-session enforcement: deterministic nested realms and live port
+   transfer reject rather than creating an unrecorded side channel.
 
 ## Deletion targets
 
-The migration should reduce code, not preserve both systems indefinitely. The
-`recordFacade()` and replay handler wrappers are gone. Remaining targets are
-delayed serialization in `SimJournal.toCassette()` and the version-1 cassette
-compatibility layer. The read-stream and sink source queues now share
-`RealmStreamQueue`, and facades and returned handles share one per-port
-dispatcher. New abstractions must replace at least as much special-case
-machinery as they add before the migration is considered complete.
+The migration does not preserve both systems. Handler wrappers, delayed
+call-summary serialization, direct facade native-send fallback, and the
+version-1 cassette are gone. Read streams and sinks share `RealmStreamQueue`;
+facades and returned handles share one per-port dispatcher; recording and
+replay use the port session itself.

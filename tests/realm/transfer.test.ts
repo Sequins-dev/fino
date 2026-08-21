@@ -107,6 +107,42 @@ describe('ArrayBuffer transfer via ThreadPort', () => {
       realm.terminate();
     }
   });
+  it('rejects live port transfer when an observer requires replayability', (t) => {
+    const realm = new Realm({
+      entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname,
+      observe: { capture: 'storage', portable: true, next: () => {} },
+    });
+    const { port1, port2 } = new MessageChannel();
+    try {
+      t.throws(
+        () => realm.port.postMessage({ port: port1 }, [port1]),
+        /Replayable realm sessions cannot transfer MessagePort/,
+        'portable session rejects a child channel before transfer',
+      );
+    } finally {
+      realm.terminate();
+      port1.close();
+      port2.close();
+    }
+  });
+  it('rejects live port transfer for a deterministic realm', (t) => {
+    const realm = new Realm({
+      entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname,
+      sim: { seed: 1 },
+    });
+    const { port1, port2 } = new MessageChannel();
+    try {
+      t.throws(
+        () => realm.port.postMessage({ port: port1 }, [port1]),
+        /Replayable realm sessions cannot transfer MessagePort/,
+        'simulation rejects an untracked child channel',
+      );
+    } finally {
+      realm.terminate();
+      port1.close();
+      port2.close();
+    }
+  });
 });
 describe('Process realm transfer behavior', () => {
   it('round-trips ArrayBuffer data over the process realm port', async (t) => {

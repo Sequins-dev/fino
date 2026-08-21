@@ -3,21 +3,10 @@ weight: 115
 ---
 # Deterministic Simulation
 
-A simulation runs code in a realm whose entire contact with the outside world is
-a set of facades you supply. Inside that realm the clock is virtual, every
-random source is seeded, and timers fire in deadline order — so two runs of the
-same simulation execute identically, producing the same values, the same
-interleaving, and the same sequence of calls out.
+A simulation exposes a realm through supplied facades. Its virtual clock,
+seeded randomness, and ordered timers make runs repeatable.
 
-One property, three uses:
-
-- **Tests that involve time, randomness, or I/O become reproducible.** A retry
-  with exponential backoff is tested in microseconds instead of being skipped
-  for being slow.
-- **A failure becomes replayable.** Record a run to a cassette and play it back;
-  a seed alone reproduces a failing schedule.
-- **Unknown code becomes observable.** The journal records every call it makes
-  to the simulated world.
+This makes tests reproducible, failures replayable, and guests observable.
 
 ```ts
 import { simulate } from 'fino:sim';
@@ -42,14 +31,11 @@ console.log(report.journal.calls('app:kv', 'get').length);
 A simulated realm starts from a deny-all import map. It can reach the
 specifiers in `world` and `grant`, and nothing else.
 
-Ambient I/O is closed at simulation startup. `fetch` can only call a facade at
-`fino:net/fetch`; `WebSocket`, `WebTransport`, `EventSource`, and
-`BroadcastChannel` throw because no deterministic transport is defined for
-them. A guest with no corresponding world entry therefore has no network path.
+Ambient I/O is closed at startup. `fetch` requires a `fino:net/fetch` facade;
+other network globals throw because no deterministic transport serves them.
 
-Random bytes used by `Math.random`, Web Crypto, and `fino:security/random` come
-from the seed. Crypto operations whose entropy is internal to OpenSSL, such as
-EC/RSA key generation, are rejected instead of silently breaking determinism.
+`Math.random`, Web Crypto, and `fino:security/random` use the seed. OpenSSL
+operations with internal entropy are rejected.
 
 ## Faking the network
 
@@ -73,8 +59,7 @@ const report = await simulate({
 });
 ```
 
-A request matching no route gets a 502, so a guest reaching somewhere the
-simulation did not describe fails loudly rather than silently succeeding.
+A request matching no route gets a 502.
 
 `FakeFs` is the filesystem equivalent, and it drops in for `fino:file`: a
 guest's `import { DiskFileSystem } from 'fino:file'` resolves to a compatible
@@ -94,31 +79,15 @@ const report = await simulate({
 console.log(fs.snapshot()); // everything the guest wrote
 ```
 
-`world()` is what every mock exposes. Spread as many as you need:
-`world: { ...fs.world(), ...net.world() }`. `FakeFs` places a shape-aware
-facade directly at `fino:file`, so the import map has no secondary guest module
-or redirection to keep in sync.
-
-Behind `FakeFs` is an ordinary [`MemoryFileSystem`](./file/memory.ts) from
-`fino:file/memory`, reachable as `fs.filesystem` for setup the constructor
-cannot express:
-
-```ts
-const fs = new FakeFs({ '/real/app.conf': 'debug=true' });
-await fs.filesystem.mkdir('/var');
-await fs.filesystem.symlink('/real/app.conf', '/etc/app.conf');
-```
-
-That same class is a plain `fino:file` provider usable outside a simulation
-entirely, wherever a test wants a filesystem without a temp directory.
-
-`FakeFs.provider()` returns that facade directly when you need to compose the
-import rule yourself.
+Spread mocks together as `world: { ...fs.world(), ...net.world() }`. `FakeFs`
+uses [`MemoryFileSystem`](./file/memory.ts), exposed as `fs.filesystem` for
+additional setup. `provider()` returns the shape-aware facade directly for
+manual import-map composition.
 
 ## Virtual time
 
-Timers do not wait. A simulated realm advances its clock only once it has run
-out of real work, then jumps straight to the next deadline:
+Timers do not wait. Once real work is exhausted, the realm jumps to the next
+deadline:
 
 ```ts
 // Completes immediately; the guest observes a full day passing.
@@ -126,16 +95,14 @@ await new Promise((resolve) => setTimeout(resolve, 86_400_000));
 ```
 
 `Date.now()`, `new Date()`, and `performance.now()` all read the virtual clock.
-Time does not advance while the guest is waiting on a facade response, so a
-timer can never be observed overtaking a reply depending on how long the parent
-really took.
-
 Pass `realTime: true` to keep the clock real while leaving randomness seeded.
 
 ## Recording and replay
 
-A cassette stores what crossed the boundary as structured-clone bytes, so
-`Map`, `Set`, `Date`, `BigInt`, typed arrays, and cycles survive a round trip:
+A cassette stores the ordered realm-session frames as structured-clone bytes,
+so `Map`, `Set`, `Date`, `BigInt`, typed arrays, and cycles survive a round
+trip. Its manifest fixes the entry, effective import map, runtime, seed, clock,
+latency, and hashes of every file in the loaded module graph:
 
 ```ts
 const recorded = await simulate({
@@ -151,10 +118,14 @@ const replayed = await simulate({
 });
 ```
 
-During replay the providers are not consulted; recorded answers are served in
-order. If the guest makes a different call than the recording expects, the run
-fails and names the first divergence — which makes a cassette a behavioural
-assertion, not just a fixture.
+Replay serves recorded answers without consulting providers and reports the
+first divergent call.
+
+Deterministic realms also send bootstrap data, console lines, telemetry, and
+lifecycle records through the session. Live `MessagePort` transfer and nested
+realms are rejected because either would create a channel that a portable
+cassette cannot represent. `ArrayBuffer` transfer remains supported; recorder
+copies are made only when storage capture is active.
 
 ## Faults and sweeps
 
@@ -169,9 +140,7 @@ const failing = outcomes.filter((outcome) => outcome.error !== undefined);
 console.log(failing.map((outcome) => outcome.seed));
 ```
 
-Where a single run answers "does this work", a sweep answers "for which
-schedules does this work". A failing seed is a complete reproduction: pass it
-back to `simulate()` to get the same failure again.
+A failing seed can be passed back to `simulate()` to reproduce it.
 
 Responses can also be given latency, charged to the virtual clock:
 
@@ -183,54 +152,25 @@ await simulate({
 });
 ```
 
-A simulated 500ms round trip costs nothing in real time. What it does cost is
-the assumption that replies arrive instantly — with latency, a timer scheduled
-before a call can fire before the response comes back, which is the ordering
-bug that an instant fake world hides. Delays are drawn from a generator seeded
-separately from the guest's own randomness, so adding latency does not shift the
-values the guest draws.
-
-Read-stream chunks are delayed the same way: each chunk draws its own latency in
-arrival order, and deliveries are chained per stream so a short delay never lets
-a later chunk overtake an earlier one. End-of-stream draws no delay of its own —
-it is the FIN riding behind the last chunk — but queues behind the chunks in
-flight.
+Latency costs no real time, but allows timers to overtake responses. It uses a
+separate seeded generator, preserves stream chunk order, and applies no extra
+delay to end-of-stream.
 
 ## What stays nondeterministic
 
-- **Read streams hold nothing.** A subscription stays open for as long as the
-  guest iterates it, so virtual time is not held while one is open; the parent
-  decides when chunks exist, and `faults.latency` only shapes when the guest
-  sees them.
+- **Read streams hold nothing.** The parent still decides when chunks exist;
+  `faults.latency` only shapes when the guest sees them.
 - **`SharedArrayBuffer` is unavailable** inside a simulated realm. Shared memory
   is written outside the simulation and would not replay, so the constructor
   throws rather than letting a run record something it cannot reproduce.
-- **Facade errors** are stringified as they cross the boundary, so stacks,
-  custom error classes, and `cause` do not survive — with or without a journal.
+- **Facade errors** cross as strings, without stacks, classes, or `cause`.
 - **GC timing**, `WeakRef`, and `FinalizationRegistry` are outside the model.
 
 ## In tests
 
 `fino:test/sim` ties a cassette to the test that owns it — record on the first
-run, replay on every run after, fail on divergence:
-
-```ts
-import { describe, it } from 'fino:test/test';
-import { simulated } from 'fino:test/sim';
-
-describe('checkout', () => {
-  it('charges once', async (t) => {
-    const report = await simulated(t, {
-      entry: './checkout.ts',
-      world: { 'app:payments': { charge: async () => ({ ok: true }) } },
-    });
-    t.equal(report.journal.calls('app:payments', 'charge').length, 1);
-  });
-});
-```
-
-Delete the cassette file to re-record it, or pass `noCassette` to always run
-against the live world.
+run and replay afterwards. Delete the cassette to re-record, or pass
+`noCassette` to run against the live world.
 
 ## Relationship to realms
 

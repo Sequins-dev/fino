@@ -1,7 +1,8 @@
-//! `internal:realm-bridge` — read-only view of the current Realm's FinoState.
+//! `internal:realm-bridge` — access to the current Realm's FinoState.
 //!
-//! Readable from within a child Realm context; provides the entry path,
-//! termination flag, and MessagePort stored in the child's FinoState.
+//! The bootstrap module reads the entry path, termination state, and transport
+//! port here. It also stores user data received through the session channel so
+//! existing public getters need no second data path.
 
 use std::sync::atomic::Ordering;
 
@@ -21,6 +22,8 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "getReplMode",
         "getRealmData",
         "getRealmBootstrapData",
+        "setRealmData",
+        "setRealmBootstrapData",
         "setSandboxCgroupPath",
     ]
     .iter()
@@ -51,6 +54,13 @@ fn eval_steps<'a>(
         module,
         "getRealmBootstrapData",
         get_realm_bootstrap_data
+    );
+    crate::set_fn!(scope, module, "setRealmData", set_realm_data);
+    crate::set_fn!(
+        scope,
+        module,
+        "setRealmBootstrapData",
+        set_realm_bootstrap_data
     );
     crate::set_fn!(
         scope,
@@ -114,6 +124,40 @@ fn get_realm_bootstrap_data(
         }
         None => rv.set(v8::undefined(scope).into()),
     }
+}
+
+/// Stores the JSON user-data string received through the realm channel.
+fn set_realm_data(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let value = args.get(0);
+    let data = if value.is_undefined() {
+        None
+    } else {
+        value
+            .to_string(scope)
+            .map(|value| value.to_rust_string_lossy(scope))
+    };
+    get_state(scope).borrow_mut().realm_data = data;
+}
+
+/// Stores runtime bootstrap metadata received through the realm channel.
+fn set_realm_bootstrap_data(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let value = args.get(0);
+    let data = if value.is_undefined() {
+        None
+    } else {
+        value
+            .to_string(scope)
+            .map(|value| value.to_rust_string_lossy(scope))
+    };
+    get_state(scope).borrow_mut().realm_bootstrap_data = data;
 }
 
 /// Record the threaded cgroup joined by this sandbox Realm so its parent can

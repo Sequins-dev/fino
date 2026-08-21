@@ -1,31 +1,34 @@
 /**
  * internal:sim/journal — the record of everything that crossed the boundary.
  *
- * A simulated realm's I/O crosses its facades, so the sequence of facade calls
- * records that interaction. The journal is that sequence: an assertion target
- * while testing, a behaviour report when analysing unknown code, and the
- * cassette a later run replays.
+ * A simulated realm's I/O crosses one realm session. The cassette stores that
+ * session's serialized frames directly; the human-friendly facade call list is
+ * only a projection used for assertions and reports.
  *
  * The journal is a projection of the realm session's request, chunk,
  * completion, and error frames. Snapshot capture freezes values at the moment
  * they cross the boundary, before a handler or caller can mutate them. A
- * cassette later persists those snapshots with the same structured-clone
- * serializer, preserving `Map`, `Set`, `Date`, `BigInt`, typed arrays, and
- * cycles that JSON would flatten.
+ * Recording asks the session for its storage representation, preserving
+ * `Map`, `Set`, `Date`, `BigInt`, typed arrays, and cycles without serializing
+ * completed calls a second time.
  *
  * ```ts no_run
  * import { SimJournal } from 'internal:sim/journal';
  *
  * const journal = new SimJournal();
- * journal.record({ specifier: 'app:kv', method: 'get', kind: 'call', args: ['k'] });
- * console.log(journal.entries.length); // 1
+ * console.log(journal.entries.length); // projected calls observed so far
  * ```
  *
  * @internal
  */
 import { deserialize, serialize } from 'internal:serializer';
 import { EnvelopeKind } from 'internal:realm/envelope';
-import type { RealmFrameMetadata, RealmObservation, RealmObserver } from 'internal:realm/session';
+import type {
+  RealmFrameMetadata,
+  RealmObservation,
+  RealmObserver,
+  RealmStorageObservation,
+} from 'internal:realm/session';
 /**
  * How a facade method was invoked.
  *
@@ -40,8 +43,6 @@ export type SimCallKind = 'call' | 'stream' | 'sink';
 export interface SimCall {
   /** Position in the run, from 0. Stable across runs of the same simulation. */
   seq: number;
-  /** Virtual milliseconds when the guest made the call, when it reported one. */
-  virtualTime: number | null;
   /** Module specifier the guest imported. */
   specifier: string;
   /** Method it called. */
@@ -59,24 +60,44 @@ export interface SimCall {
   /** Message, for a handler that threw. */
   error?: string;
 }
-/**
- * A journal entry plus the bytes needed to replay it.
- *
- * @internal
- */
-export interface CassetteEntry {
-  seq: number;
-  specifier: string;
-  method: string;
-  kind: SimCallKind;
-  outcome: 'ok' | 'error';
-  /** Base64 structured-clone bytes of the arguments. */
-  args: string;
-  /** Base64 structured-clone bytes of the result, or of a read-stream chunk array. */
-  value?: string;
-  /** Base64 structured-clone bytes of read-stream or sink chunks. */
-  chunks?: string;
-  error?: string;
+/** One module loaded by the recorded guest. @internal */
+export interface CassetteModule {
+  /** Absolute loader path. */
+  path: string;
+  /** SHA-256 of the loaded file bytes, when the module came from disk. */
+  sha256?: string;
+}
+
+/** Inputs that must agree before a session can be replayed. @internal */
+export interface CassetteManifest {
+  /** Guest entry specifier. */
+  entry: string;
+  /** Effective import rules after facades are normalized to module shapes. */
+  imports: readonly unknown[];
+  /** Seed used by deterministic random sources. */
+  seed: number | string;
+  /** Initial wall-clock milliseconds. */
+  startTime: number;
+  /** Whether the realm clock advanced virtually. */
+  virtualTime: boolean;
+  /** Seeded facade latency range, or `null` when responses are immediate. */
+  latency: [number, number] | null;
+  /** Runtime identity recorded by the parent environment. */
+  runtime: string;
+  /** Loaded filesystem modules and their content hashes. */
+  modules: CassetteModule[];
+}
+
+/** One exact serialized frame from the realm session. @internal */
+export interface CassetteFrame {
+  /** Direction relative to the parent endpoint. */
+  direction: 'outbound' | 'inbound';
+  /** Realm envelope kind. */
+  kind: number;
+  /** Correlation identifier recorded on the wire. */
+  correlation: number;
+  /** Base64 structured-clone main payload followed by transfer stores. */
+  parts: string[];
 }
 /**
  * A recorded run, as written to disk.
@@ -84,10 +105,9 @@ export interface CassetteEntry {
  * @internal
  */
 export interface Cassette {
-  version: 1;
-  seed: number | string;
-  startTime: number;
-  entries: CassetteEntry[];
+  version: 2;
+  manifest: CassetteManifest;
+  frames: CassetteFrame[];
 }
 function toBase64(bytes: Uint8Array): string {
   let binary = '';
@@ -100,104 +120,27 @@ function fromBase64(text: string): Uint8Array {
   for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
   return bytes;
 }
-/**
- * Encode a value as base64 structured-clone bytes.
- *
- * @internal
- */
-export function encodeValue(value: unknown): string {
-  return toBase64((serialize as (v: unknown) => Uint8Array[])(value)[0]!);
+/** Decode the payload carried by one recorded frame. @internal */
+export function decodeFrame(frame: CassetteFrame): unknown {
+  const [data, ...stores] = frame.parts.map(fromBase64);
+  if (data === undefined) throw new Error('fino:sim — cassette frame has no payload');
+  return (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+    data,
+    stores.length === 0 ? undefined : stores,
+  );
 }
 /**
- * Decode a value written by `encodeValue`.
+ * Compare values through the same structured-clone representation used by the
+ * session recorder.
  *
  * @internal
  */
-export function decodeValue(text: string): unknown {
-  return (deserialize as (b: Uint8Array) => unknown)(fromBase64(text));
-}
-/**
- * Compare structured-clone values without assuming their wire bytes are
- * canonical.
- *
- * @internal
- */
-export function equalValue(
-  left: unknown,
-  right: unknown,
-  seen: WeakMap<object, object> = new WeakMap(),
-): boolean {
-  if (Object.is(left, right)) return true;
-  if (left === null || right === null || typeof left !== 'object' || typeof right !== 'object') {
-    return false;
-  }
-  const prior = seen.get(left);
-  if (prior !== undefined) return prior === right;
-  seen.set(left, right);
-  if (left instanceof Date || right instanceof Date) {
-    return (
-      left instanceof Date && right instanceof Date && Object.is(left.getTime(), right.getTime())
-    );
-  }
-  if (left instanceof RegExp || right instanceof RegExp) {
-    return (
-      left instanceof RegExp &&
-      right instanceof RegExp &&
-      left.source === right.source &&
-      left.flags === right.flags
-    );
-  }
-  if (left instanceof Map || right instanceof Map) {
-    if (!(left instanceof Map) || !(right instanceof Map) || left.size !== right.size) return false;
-    const rightEntries = [...right];
-    return [...left].every(
-      ([key, value], index) =>
-        equalValue(key, rightEntries[index]?.[0], seen) &&
-        equalValue(value, rightEntries[index]?.[1], seen),
-    );
-  }
-  if (left instanceof Set || right instanceof Set) {
-    if (!(left instanceof Set) || !(right instanceof Set) || left.size !== right.size) return false;
-    const rightValues = [...right];
-    return [...left].every((value, index) => equalValue(value, rightValues[index], seen));
-  }
-  if (left instanceof ArrayBuffer || right instanceof ArrayBuffer) {
-    if (!(left instanceof ArrayBuffer) || !(right instanceof ArrayBuffer)) return false;
-    return equalBytes(new Uint8Array(left), new Uint8Array(right));
-  }
-  if (ArrayBuffer.isView(left) || ArrayBuffer.isView(right)) {
-    if (!ArrayBuffer.isView(left) || !ArrayBuffer.isView(right)) return false;
-    return (
-      left.constructor === right.constructor &&
-      equalBytes(
-        new Uint8Array(left.buffer, left.byteOffset, left.byteLength),
-        new Uint8Array(right.buffer, right.byteOffset, right.byteLength),
-      )
-    );
-  }
-  if (left instanceof Error || right instanceof Error) {
-    return (
-      left instanceof Error &&
-      right instanceof Error &&
-      left.name === right.name &&
-      left.message === right.message
-    );
-  }
-  if (Array.isArray(left) !== Array.isArray(right)) return false;
-  const leftKeys = Object.keys(left);
-  const rightKeys = Object.keys(right);
+export function equalValue(left: unknown, right: unknown): boolean {
+  const leftParts = serialize(left);
+  const rightParts = serialize(right);
   return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key, index) =>
-        key === rightKeys[index] &&
-        Object.prototype.hasOwnProperty.call(right, key) &&
-        equalValue(
-          (left as Record<string, unknown>)[key],
-          (right as Record<string, unknown>)[key],
-          seen,
-        ),
-    )
+    leftParts.length === rightParts.length &&
+    leftParts.every((part, index) => equalBytes(part, rightParts[index]!))
   );
 }
 
@@ -205,19 +148,13 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.byteLength === right.byteLength && left.every((byte, index) => byte === right[index]);
 }
 /**
- * Fields a caller supplies when recording; `seq` is assigned by the journal.
- *
- * @internal
- */
-export type SimCallInput = Omit<SimCall, 'seq' | 'outcome' | 'virtualTime'> &
-  Partial<Pick<SimCall, 'outcome' | 'virtualTime'>>;
-/**
  * The ordered record of a simulation run.
  *
  * @internal
  */
 export class SimJournal {
   #entries: SimCall[] = [];
+  #frames: CassetteFrame[] = [];
   #nextSequence = 0;
   /**
    * Every call so far, in the order the guest made them.
@@ -225,64 +162,56 @@ export class SimJournal {
   get entries(): readonly SimCall[] {
     return this.#entries;
   }
-  /**
-   * Append a call and return the stored entry.
-   */
-  record(call: SimCallInput): SimCall {
-    const entry: SimCall = {
-      seq: this.#nextSequence++,
-      virtualTime: call.virtualTime ?? null,
-      specifier: call.specifier,
-      method: call.method,
-      kind: call.kind,
-      args: call.args,
-      outcome: call.outcome ?? 'ok',
-      ...(call.result !== undefined ? { result: call.result } : {}),
-      ...(call.chunks !== undefined ? { chunks: call.chunks } : {}),
-      ...(call.error !== undefined ? { error: call.error } : {}),
-    };
-    this.#entries.push(entry);
-    this.#entries.sort((left, right) => left.seq - right.seq);
-    return entry;
+  /** Exact frames captured for a cassette. Empty for snapshot-only journals. @internal */
+  get frames(): readonly CassetteFrame[] {
+    return this.#frames;
   }
-  /**
-   * Project facade calls from a realm port's session traffic.
-   *
-   * The optional `specifier` narrows the projection for `recordFacade()`.
-   * `simulate()` omits it and observes the whole realm boundary once.
-   *
-   * @internal
-   */
-  _observe(
-    port: {
-      _observe?(observer: RealmObserver): () => void;
-    },
-    specifier?: string,
-  ): () => void {
-    if (typeof port._observe !== 'function') {
-      throw new TypeError('SimJournal requires a session-backed realm port');
+
+  /** Files reported by the guest after its entry module graph loaded. @internal */
+  modulePaths(): string[] {
+    for (let index = this.#frames.length - 1; index >= 0; index--) {
+      const frame = this.#frames[index]!;
+      if (frame.direction !== 'inbound' || frame.kind !== EnvelopeKind.Lifecycle) continue;
+      const event = decodeFrame(frame) as { modules?: unknown };
+      if (Array.isArray(event?.modules)) {
+        return event.modules.filter((path): path is string => typeof path === 'string').sort();
+      }
     }
-    const pending = new Map<number, PendingCall>();
-    return port._observe({
-      capture: 'snapshot',
-      filter: isFacadeFrame,
-      next: (observation) => this.#project(observation, pending, specifier),
+    return [];
+  }
+  /** Build an observer suitable for `RealmOptions.observe`. @internal */
+  _observer(recordFrames = false, pending: Map<number, PendingCall> = new Map()): RealmObserver {
+    return {
+      capture: recordFrames ? 'storage' : 'snapshot',
+      portable: recordFrames,
+      filter: recordFrames ? undefined : isFacadeFrame,
+      next: (observation) => {
+        if (recordFrames && observation.capture === 'storage') this.#recordFrame(observation);
+        this.#project(observation, pending);
+      },
+    };
+  }
+
+  #recordFrame(observation: RealmStorageObservation): void {
+    this.#frames.push({
+      direction: observation.direction,
+      kind: observation.kind,
+      correlation: observation.correlation,
+      parts: observation.parts.map(toBase64),
     });
   }
 
-  #project(
-    observation: RealmObservation,
-    pending: Map<number, PendingCall>,
-    onlySpecifier?: string,
-  ): void {
-    if (observation.capture !== 'snapshot') return;
+  #project(observation: RealmObservation, pending: Map<number, PendingCall>): void {
+    if (observation.capture === 'metadata') return;
+    const value =
+      observation.capture === 'snapshot' ? observation.value : decodeStoredObservation(observation);
     const correlation = observation.correlation;
     switch (observation.kind) {
       case EnvelopeKind.RpcRequest:
       case EnvelopeKind.RpcStreamRequest:
       case EnvelopeKind.SinkStart: {
         if (observation.direction !== 'inbound') return;
-        const request = (observation.value ?? {}) as {
+        const request = (value ?? {}) as {
           specifier?: unknown;
           method?: unknown;
           args?: unknown;
@@ -290,8 +219,7 @@ export class SimJournal {
         if (
           typeof request.specifier !== 'string' ||
           typeof request.method !== 'string' ||
-          !Array.isArray(request.args) ||
-          (onlySpecifier !== undefined && request.specifier !== onlySpecifier)
+          !Array.isArray(request.args)
         ) {
           return;
         }
@@ -312,7 +240,7 @@ export class SimJournal {
       }
       case EnvelopeKind.SinkChunk:
         if (observation.direction === 'inbound') {
-          pending.get(correlation)?.chunks.push(observation.value);
+          pending.get(correlation)?.chunks.push(value);
         }
         return;
       case EnvelopeKind.SinkError: {
@@ -321,7 +249,7 @@ export class SimJournal {
         if (call === undefined) return;
         this.#finish(pending, correlation, call, {
           outcome: 'error',
-          error: String((observation.value as { error?: unknown })?.error ?? observation.value),
+          error: String((value as { error?: unknown })?.error ?? value),
         });
         return;
       }
@@ -330,7 +258,7 @@ export class SimJournal {
         const call = pending.get(correlation);
         if (call === undefined) return;
         call.kind = 'stream';
-        call.chunks.push(observation.value);
+        call.chunks.push(value);
         return;
       }
       case EnvelopeKind.RpcEnd: {
@@ -345,7 +273,7 @@ export class SimJournal {
         if (call === undefined) return;
         this.#finish(pending, correlation, call, {
           outcome: 'error',
-          error: String((observation.value as { error?: unknown })?.error ?? observation.value),
+          error: String((value as { error?: unknown })?.error ?? value),
         });
         return;
       }
@@ -353,7 +281,7 @@ export class SimJournal {
         if (observation.direction !== 'outbound') return;
         const call = pending.get(correlation);
         if (call === undefined) return;
-        const response = (observation.value ?? {}) as { result?: unknown; error?: unknown };
+        const response = (value ?? {}) as { result?: unknown; error?: unknown };
         this.#finish(
           pending,
           correlation,
@@ -376,7 +304,6 @@ export class SimJournal {
     pending.delete(correlation);
     const entry: SimCall = {
       seq: call.seq,
-      virtualTime: null,
       specifier: call.specifier,
       method: call.method,
       kind: call.kind,
@@ -404,28 +331,22 @@ export class SimJournal {
   /**
    * Encode the run as a cassette.
    */
-  toCassette(seed: number | string, startTime: number): Cassette {
+  toCassette(manifest: CassetteManifest): Cassette {
     return {
-      version: 1,
-      seed,
-      startTime,
-      entries: this.#entries.map((entry) => ({
-        seq: entry.seq,
-        specifier: entry.specifier,
-        method: entry.method,
-        kind: entry.kind,
-        outcome: entry.outcome,
-        args: encodeValue(entry.args),
-        ...(entry.outcome === 'ok'
-          ? { value: encodeValue(entry.kind === 'stream' ? (entry.chunks ?? []) : entry.result) }
-          : {}),
-        ...(entry.chunks !== undefined && (entry.kind === 'sink' || entry.outcome === 'error')
-          ? { chunks: encodeValue(entry.chunks) }
-          : {}),
-        ...(entry.error !== undefined ? { error: entry.error } : {}),
-      })),
+      version: 2,
+      manifest,
+      frames: [...this.#frames],
     };
   }
+}
+
+function decodeStoredObservation(observation: RealmStorageObservation): unknown {
+  const [data, ...stores] = observation.parts;
+  if (data === undefined) throw new Error('fino:sim — observed frame has no payload');
+  return (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
+    data,
+    stores.length === 0 ? undefined : stores,
+  );
 }
 
 interface PendingCall {
@@ -438,15 +359,21 @@ interface PendingCall {
 }
 
 function isFacadeFrame(metadata: RealmFrameMetadata): boolean {
+  return isFacadeFrameKind(metadata.kind);
+}
+
+/** Whether an envelope kind belongs to facade or handle RPC. @internal */
+export function isFacadeFrameKind(kind: number): boolean {
   return (
-    metadata.kind === EnvelopeKind.RpcRequest ||
-    metadata.kind === EnvelopeKind.RpcStreamRequest ||
-    metadata.kind === EnvelopeKind.RpcResponse ||
-    metadata.kind === EnvelopeKind.RpcChunk ||
-    metadata.kind === EnvelopeKind.RpcEnd ||
-    metadata.kind === EnvelopeKind.RpcError ||
-    metadata.kind === EnvelopeKind.SinkStart ||
-    metadata.kind === EnvelopeKind.SinkChunk ||
-    metadata.kind === EnvelopeKind.SinkError
+    kind === EnvelopeKind.RpcRequest ||
+    kind === EnvelopeKind.RpcStreamRequest ||
+    kind === EnvelopeKind.RpcResponse ||
+    kind === EnvelopeKind.RpcChunk ||
+    kind === EnvelopeKind.RpcEnd ||
+    kind === EnvelopeKind.RpcError ||
+    kind === EnvelopeKind.SinkStart ||
+    kind === EnvelopeKind.SinkChunk ||
+    kind === EnvelopeKind.SinkEnd ||
+    kind === EnvelopeKind.SinkError
   );
 }

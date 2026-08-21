@@ -3,11 +3,15 @@
  * crossed the boundary.
  */
 import { describe, it } from 'fino:test/test';
-import { Facade, FacadeHandle, ImportMap, Realm } from 'fino:realm';
-import { mockFacade, SimJournal, simulate } from 'fino:sim';
+import { Facade, FacadeHandle } from 'fino:realm';
+import { simulate } from 'fino:sim';
+import { EnvelopeKind } from 'internal:realm/envelope';
+import { decodeFrame, type Cassette, type CassetteFrame } from 'internal:sim/journal';
 const KV_GUEST = new URL('./fixtures/kv-guest.ts', import.meta.url).pathname;
 const SESSION_GUEST = new URL('./fixtures/session-traffic-guest.ts', import.meta.url).pathname;
 const HANDLE_GUEST = new URL('../realm/fixtures/facade-handle-fn.ts', import.meta.url).pathname;
+const DIAGNOSTICS_GUEST = new URL('./fixtures/diagnostics-guest.ts', import.meta.url).pathname;
+const NESTED_GUEST = new URL('./fixtures/nested-realm-guest.ts', import.meta.url).pathname;
 function kvWorld() {
   const store = new Map<string, unknown>();
   return {
@@ -57,6 +61,15 @@ function handleFacade(fail = false): Facade {
     );
   });
 }
+function requestFrames(cassette: Cassette): CassetteFrame[] {
+  return cassette.frames.filter(
+    (frame) =>
+      frame.direction === 'inbound' &&
+      (frame.kind === EnvelopeKind.RpcRequest ||
+        frame.kind === EnvelopeKind.RpcStreamRequest ||
+        frame.kind === EnvelopeKind.SinkStart),
+  );
+}
 describe('simulate()', () => {
   it('serves the guest from facades and journals every call', async (t) => {
     const report = await simulate({ entry: KV_GUEST, seed: 1, world: kvWorld() });
@@ -80,7 +93,7 @@ describe('simulate()', () => {
       cassette: { mode: 'record' },
     });
     t.ok(recorded.cassette !== undefined, 'cassette produced');
-    t.equal(recorded.cassette!.entries.length, 2, 'both calls on the cassette');
+    t.equal(requestFrames(recorded.cassette!).length, 2, 'both calls are session frames');
     // Replay against a world that would answer differently if it were consulted.
     const replayed = await simulate({
       entry: KV_GUEST,
@@ -102,7 +115,34 @@ describe('simulate()', () => {
       world: kvWorld(),
       cassette: { mode: 'record' },
     });
-    const shortened = { ...recorded.cassette!, entries: recorded.cassette!.entries.slice(0, 1) };
+    const second = requestFrames(recorded.cassette!)[1]!;
+    await t.rejects(
+      () =>
+        simulate({
+          entry: KV_GUEST,
+          seed: 5,
+          world: kvWorld(),
+          cassette: {
+            mode: 'replay',
+            data: {
+              ...recorded.cassette!,
+              manifest: { ...recorded.cassette!.manifest, runtime: 'different-runtime' },
+            },
+          },
+        }),
+      /manifest differs/,
+      'manifest divergence is rejected before guest execution',
+    );
+    const shortened = {
+      ...recorded.cassette!,
+      frames: recorded.cassette!.frames.filter(
+        (frame) =>
+          !(
+            frame.correlation === second.correlation &&
+            (frame.kind === EnvelopeKind.RpcRequest || frame.kind === EnvelopeKind.RpcResponse)
+          ),
+      ),
+    };
     await t.rejects(
       () =>
         simulate({
@@ -114,10 +154,11 @@ describe('simulate()', () => {
       /cassette ended|divergence/,
       'divergence is reported',
     );
+    const requests = requestFrames(recorded.cassette!);
     const wrongArgs = {
       ...recorded.cassette!,
-      entries: recorded.cassette!.entries.map((entry, index, entries) =>
-        index === 0 ? { ...entry, args: entries[1]!.args } : entry,
+      frames: recorded.cassette!.frames.map((frame) =>
+        frame === requests[0] ? { ...frame, parts: requests[1]!.parts } : frame,
       ),
     };
     await t.rejects(
@@ -133,7 +174,7 @@ describe('simulate()', () => {
     );
     const extraCall = {
       ...recorded.cassette!,
-      entries: [...recorded.cassette!.entries, recorded.cassette!.entries[0]!],
+      frames: [...recorded.cassette!.frames, requests[0]!],
     };
     await t.rejects(
       () =>
@@ -143,7 +184,7 @@ describe('simulate()', () => {
           world: kvWorld(),
           cassette: { mode: 'replay', data: extraCall },
         }),
-      /did not call/,
+      /did not send/,
       'unused cassette entries are reported after the guest returns',
     );
   });
@@ -169,7 +210,10 @@ describe('simulate()', () => {
     t.deepEqual(calls[3]!.chunks, ['alpha', { beta: 2 }], 'read chunks are projected');
     t.deepEqual(calls[4]!.chunks, ['one', { two: 2 }], 'sink chunks are projected');
     t.equal(calls[4]!.result, 2, 'sink result is correlated with its chunks');
-    t.ok(report.cassette!.entries[4]!.chunks !== undefined, 'cassette stores sink chunks');
+    t.ok(
+      report.cassette!.frames.some((frame) => frame.kind === EnvelopeKind.SinkChunk),
+      'cassette stores each sink chunk as a frame',
+    );
 
     const replayed = await simulate({
       entry: SESSION_GUEST,
@@ -178,10 +222,16 @@ describe('simulate()', () => {
     });
     t.deepEqual(replayed.result, report.result, 'scalar and stream traffic replays together');
 
+    const sinkChunk = report.cassette!.frames.find(
+      (frame) => frame.kind === EnvelopeKind.SinkChunk,
+    )!;
+    const readChunk = report.cassette!.frames.find(
+      (frame) => frame.kind === EnvelopeKind.RpcChunk,
+    )!;
     const wrongChunks = {
       ...report.cassette!,
-      entries: report.cassette!.entries.map((entry, index, entries) =>
-        index === 4 ? { ...entry, chunks: entries[3]!.value } : entry,
+      frames: report.cassette!.frames.map((frame) =>
+        frame === sinkChunk ? { ...frame, parts: readChunk.parts } : frame,
       ),
     };
     await t.rejects(
@@ -191,28 +241,8 @@ describe('simulate()', () => {
           world: { 'app:session': sessionFacade() },
           cassette: { mode: 'replay', data: wrongChunks },
         }),
-      /sink chunks.*differ/,
+      /differ/,
       'sink chunk divergence is reported',
-    );
-  });
-
-  it('mockFacade records through the port session when bound directly', async (t) => {
-    const journal = new SimJournal();
-    const facade = mockFacade('app:kv', kvWorld()['app:kv'], journal);
-    const realm = new Realm({
-      entry: KV_GUEST,
-      overrides: ImportMap.deny([
-        { pattern: 'internal:runtime/loop', directive: 'inherit' },
-        { pattern: 'app:kv', directive: facade },
-      ]),
-    });
-
-    await realm.call();
-
-    t.deepEqual(
-      journal.calls('app:kv').map((call) => call.method),
-      ['set', 'get'],
-      'standalone facade uses the shared session recorder',
     );
   });
 
@@ -223,7 +253,9 @@ describe('simulate()', () => {
       cassette: { mode: 'record' },
     });
     t.ok(
-      recorded.cassette!.entries.some((entry) => entry.specifier === '__h0'),
+      requestFrames(recorded.cassette!).some(
+        (frame) => (decodeFrame(frame) as { specifier?: unknown }).specifier === '__h0',
+      ),
       'handle method traffic is part of the cassette',
     );
 
@@ -234,5 +266,33 @@ describe('simulate()', () => {
     });
 
     t.deepEqual(replayed.result, recorded.result, 'handle scalar and stream methods replay');
+  });
+
+  it('records bootstrap, console, telemetry, lifecycle, and the module graph', async (t) => {
+    const report = await simulate({
+      entry: DIAGNOSTICS_GUEST,
+      grant: ['fino:context/topic'],
+      cassette: { mode: 'record' },
+    });
+    const kinds = report.cassette!.frames.map((frame) => frame.kind);
+    t.ok(kinds.includes(EnvelopeKind.Bootstrap), 'bootstrap crossed the session');
+    t.ok(kinds.includes(EnvelopeKind.Console), 'console output crossed the session');
+    t.ok(kinds.includes(EnvelopeKind.Telemetry), 'telemetry crossed the session');
+    t.ok(kinds.includes(EnvelopeKind.Lifecycle), 'lifecycle crossed the session');
+    t.ok(
+      report.cassette!.manifest.modules.some(
+        (module) => module.path === DIAGNOSTICS_GUEST && module.sha256 !== undefined,
+      ),
+      'loaded entry is content-addressed in the manifest',
+    );
+  });
+
+  it('rejects untracked nested realms in deterministic mode', async (t) => {
+    const report = await simulate({ entry: NESTED_GUEST, grant: ['fino:realm'] });
+    t.match(
+      String(report.result),
+      /nested Realm construction is not replayable/,
+      'a nested realm cannot bypass the root session',
+    );
   });
 });

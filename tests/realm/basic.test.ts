@@ -2,15 +2,28 @@
  * Tests for fino:realm — basic Realm construction and lifecycle.
  */
 import { describe, it } from 'fino:test/test';
-import { Realm, ImportMap } from 'fino:realm';
+import { Realm, ImportMap, type RealmObservation } from 'fino:realm';
 import { loopFd } from 'internal:runtime/loop';
 import type realmDataFn from './fixtures/realm-data-fn.ts';
 import type loopFdFn from './fixtures/loop-fd-fn.ts';
+import { EnvelopeKind } from 'internal:realm/envelope';
 describe('Realm lifecycle', () => {
   it('creates and runs a child realm that exits naturally', async (t) => {
-    const realm = new Realm({ entry: new URL('./fixtures/hello.ts', import.meta.url).pathname });
+    const frames: RealmObservation[] = [];
+    const realm = new Realm({
+      entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
+      observe: { capture: 'snapshot', next: (frame) => frames.push(frame) },
+    });
     await realm.run();
-    t.ok(true, 'child realm exited');
+    t.ok(
+      frames.some(
+        (frame) =>
+          frame.capture === 'snapshot' &&
+          frame.kind === EnvelopeKind.Lifecycle &&
+          (frame.value as { phase?: unknown }).phase === 'entry:loaded',
+      ),
+      'child lifecycle crossed the observed channel',
+    );
   });
   it('uses the thread reactor directly for parent and child realms', async (t) => {
     const realm = new Realm<typeof loopFdFn>({
@@ -57,13 +70,24 @@ describe('Realm lifecycle', () => {
     t.ok(true, 'disposed realm resolved');
   });
   it('keeps RealmOptions.data separate from OTLP endpoint metadata', async (t) => {
+    const frames: RealmObservation[] = [];
     const realm = new Realm<typeof realmDataFn>({
       entry: new URL('./fixtures/realm-data-fn.ts', import.meta.url).pathname,
       data: { role: 'worker' },
       otlpEndpoint: 'http://collector.example:4318/base',
+      observe: { capture: 'snapshot', next: (frame) => frames.push(frame) },
     });
     const raw = await realm.call();
     t.equal(raw, JSON.stringify({ role: 'worker' }), 'child sees only caller-provided data');
+    t.ok(
+      frames.some(
+        (frame) =>
+          frame.capture === 'snapshot' &&
+          frame.kind === EnvelopeKind.Bootstrap &&
+          (frame.value as { data?: unknown }).data === JSON.stringify({ role: 'worker' }),
+      ),
+      'initial data crossed the observed channel',
+    );
   });
   it('rejects empty Realm OTLP endpoints', (t) => {
     t.throws(

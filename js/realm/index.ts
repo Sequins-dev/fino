@@ -19,9 +19,10 @@
  *
  * The import rule list uses last-match-wins semantics. Declare a wildcard
  * first as the baseline and more specific patterns afterwards as overrides.
- * CLI OpenTelemetry bootstrap metadata follows realm construction separately
- * from user data: children inherit a `fino run --otlp-endpoint` endpoint by
- * default, `otlpEndpoint` overrides it for one subtree, and `false` disables it.
+ * User data and runtime bootstrap metadata share the realm channel's initial
+ * `Bootstrap` frame while remaining separate fields. Children inherit a
+ * `fino run --otlp-endpoint` endpoint by default; `otlpEndpoint` overrides it
+ * for one subtree and `false` disables it.
  *
  * @example
  * ```ts no_run
@@ -77,6 +78,10 @@ import {
 } from 'internal:scheduler-native';
 import { serialize } from 'internal:serializer';
 import { EnvelopeKind } from 'internal:realm/envelope';
+import {
+  type RealmObservation as InternalRealmObservation,
+  type RealmObserver as InternalRealmObserver,
+} from 'internal:realm/session';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
@@ -89,6 +94,18 @@ import { UnboundedChannel } from '../internal/stream.ts';
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
 const _topicRealmCall = topic(otelRuntimeTopic('realm', 'call', 'start'));
 const _topicRealmCallEnd = topic(otelRuntimeTopic('realm', 'call', 'end'));
+
+/** A lazily materialized frame crossing a realm's parent-side channel. */
+export type RealmObservation = InternalRealmObservation;
+
+/**
+ * Subscription installed before a child can deliver bootstrap or module traffic.
+ *
+ * Metadata filters run before payload materialization. Choose `snapshot` for an
+ * in-memory structured clone or `storage` for stable serialized parts suitable
+ * for persistence and replay.
+ */
+export interface RealmObserver extends InternalRealmObserver {}
 // ---------------------------------------------------------------------------
 // Import rule types
 // ---------------------------------------------------------------------------
@@ -279,6 +296,9 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
   // realm is simulated only when it says so itself, so nesting a real workload
   // inside a simulation stays possible.
   if (opts.sim !== undefined) data.sim = opts.sim;
+  // Deterministic realms never start a direct exporter. Their telemetry is
+  // emitted over the realm channel and may be observed or recorded there.
+  if (opts.sim !== undefined) return data;
   const endpointOption = opts.otlpEndpoint;
   if (endpointOption === false) return Object.keys(data).length === 0 ? undefined : data;
   if (opts.sandbox !== undefined && endpointOption === undefined) return data;
@@ -293,10 +313,6 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
   }
   if (endpoint) data.cliOtel = { endpoint };
   return Object.keys(data).length === 0 ? undefined : data;
-}
-function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
-  const data = realmBootstrapData(opts);
-  return data === undefined ? undefined : JSON.stringify(data);
 }
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
@@ -1959,10 +1975,10 @@ export interface RealmOptions {
   repl?: boolean;
   /**
    * Arbitrary JSON-serializable configuration delivered to the child realm.
-   * The child reads it via `internal:realm-bridge.getRealmData()` before the
-   * entry module is imported, so it can shape application-specific worker
-   * configuration. Runtime bootstrap metadata such as `otlpEndpoint` is stored
-   * separately and does not appear here. Not supported with `remote: true`.
+   * The initial channel frame installs it before the entry module is imported;
+   * the child reads it via `internal:realm-bridge.getRealmData()`. Runtime
+   * bootstrap metadata such as `otlpEndpoint` is a separate field in that frame
+   * and does not appear here.
    *
    * ```ts no_run
    * import type { RealmOptions } from 'fino:realm';
@@ -1971,6 +1987,23 @@ export interface RealmOptions {
    * ```
    */
   data?: unknown;
+  /**
+   * Observe channel traffic from the first bootstrap frame onward.
+   *
+   * Observers are attached before facade dispatchers start the port, avoiding
+   * races with top-level module evaluation. With no observers, the transport
+   * performs no observation clone or storage copy.
+   *
+   * ```ts no_run
+   * import { Realm } from 'fino:realm';
+   *
+   * const realm = new Realm({
+   *   entry: './worker.ts',
+   *   observe: { capture: 'metadata', next: (frame) => console.log(frame.kind) },
+   * });
+   * ```
+   */
+  observe?: RealmObserver | readonly RealmObserver[];
   /**
    * OTLP/HTTP collector endpoint for CLI OpenTelemetry bootstrap in this realm.
    *
@@ -1995,9 +2028,11 @@ export interface RealmOptions {
    * Run this Realm as a deterministic simulation container.
    *
    * Seeds every random source in the child, virtualizes its clocks and timers,
-   * and hides the parent port, so that two runs with the same seed and the same
-   * facade responses execute identically. Prefer `simulate()` from `fino:sim`,
-   * which builds this option along with the facade world and the journal.
+   * and hides the application-facing parent port, so that two runs with the
+   * same seed and facade responses execute identically. Nested realms and live
+   * port transfer reject because they would escape the replayable session.
+   * Prefer `simulate()` from `fino:sim`, which builds this option along with the
+   * facade world and journal.
    *
    * Not supported with `remote: true`.
    *
@@ -2318,6 +2353,8 @@ function _resolveCallResponse<R>(
  * ```
  */
 export class Realm<F extends RealmFn = RealmFn> {
+  /** Construction-time channel observers, reused when a watch realm reloads. @internal */
+  #observers: readonly RealmObserver[] = [];
   /**
    * Private property `#handle` used by `Realm`.
    *
@@ -2466,6 +2503,8 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @internal
    */
   #watchSerializedRules = '[]';
+  /** Import rules rebound when a process watch realm reloads. @internal */
+  #watchRules: ImportRule[] = [];
   /**
    * Private property `#watchTerminated` used by `Realm`.
    *
@@ -2512,6 +2551,35 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @internal
    */
   #activeChildPort: ProcessPort | null = null;
+
+  /** Attach construction-time observers before a port is started. @internal */
+  #observePort(port: RealmPort | ProcessPort | ClusterPort): void {
+    for (const observer of this.#observers) port._observe(observer);
+  }
+
+  /** Send all parent-owned bootstrap state through the observed channel. @internal */
+  #bootstrapPort(
+    port: RealmPort | ProcessPort | ClusterPort,
+    opts: RealmOptions,
+    serializedData = serializeRealmData(opts.data),
+  ): void {
+    if (this.#observers.length > 0) port._pauseMessages();
+    const bootstrap = realmBootstrapData(opts);
+    const portable =
+      opts.sim !== undefined || this.#observers.some((observer) => observer.portable === true);
+    if (portable) port._requirePortable();
+    port._postControl(EnvelopeKind.Bootstrap, 0, {
+      data: serializedData,
+      runtime: bootstrap === undefined ? undefined : JSON.stringify(bootstrap),
+      portable,
+    });
+    port._postControl(EnvelopeKind.Lifecycle, 0, {
+      phase: 'spawn',
+      kind: this.#kind,
+      entry: opts.entry,
+    });
+    if (this.#observers.length > 0) port.start();
+  }
   /**
    * Create a Realm whose entrypoint is in-memory module source.
    *
@@ -2601,29 +2669,26 @@ export class Realm<F extends RealmFn = RealmFn> {
   }
 
   /** Create one movable isolate and await its scalar completion signal. @internal */
-  #startScheduledRealm(
-    opts: RealmOptions,
-    rules: ImportRule[],
-    reloading = false,
-    bootstrapData = realmBootstrapData(opts),
-  ): Promise<void> {
+  #startScheduledRealm(opts: RealmOptions, rules: ImportRule[], reloading = false): Promise<void> {
     const scheduled = createScheduledRealm(
       opts.root ?? '',
       opts.entry,
       normaliseRules(rules),
       opts.watch ?? false,
-      opts.data,
-      bootstrapData,
+      undefined,
+      { channelBootstrap: true },
       opts.repl ?? false,
     );
     this.#handle = scheduled.handle;
     const port = createScheduledPort(scheduled.portWakeFd, scheduled.handle);
     this.port = port;
+    this.#observePort(port);
     registerReactorWake(scheduled.owner, scheduled.wakeFd);
     if (reloading) {
       for (const rule of rules) {
         if (rule.directive instanceof Facade) rule.directive._bind(port);
       }
+      this.#bootstrapPort(port, opts);
     }
     return (async () => {
       let status: ReturnType<typeof takeScheduledRealmStatus>;
@@ -2671,6 +2736,13 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @param opts Realm construction and loader options.
    */
   constructor(opts: RealmOptions) {
+    this.#observers =
+      opts.observe === undefined ? [] : Array.isArray(opts.observe) ? opts.observe : [opts.observe];
+    if (currentRealmBootstrapData()?.sim !== undefined) {
+      throw new Error(
+        'fino:sim — nested Realm construction is not replayable; expose the work through a facade channel',
+      );
+    }
     const isolatedModes = [opts.sandbox !== undefined, opts.process, opts.remote].filter(
       Boolean,
     ).length;
@@ -2720,12 +2792,10 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
-    if (opts.remote && serializedData !== undefined) {
-      throw new Error('fino:realm — data is not supported with remote: true');
-    }
     if (opts.watch) {
       this.#watchOpts = opts;
       this.#watchSerializedRules = serializedRules;
+      this.#watchRules = rules;
     }
     if (opts.remote) {
       const cluster = getCluster();
@@ -2739,12 +2809,12 @@ export class Realm<F extends RealmFn = RealmFn> {
       const portId = `${cluster.nodeId}/p-${_nextPortHandle++}`;
       const clusterPort = new ClusterPort(portId, cluster);
       this.port = clusterPort;
-      const bootstrapData = realmBootstrapData(opts);
+      this.#observePort(clusterPort);
       const config = {
         entry: opts.entry,
         root: opts.root ?? '',
         rules: normaliseRules(rules),
-        ...(bootstrapData === undefined ? {} : { bootstrapData }),
+        bootstrapData: { channelBootstrap: true },
       };
       this.#spawnPromise = cluster.spawnRemote(portId, config).then((childPortId: string) => {
         clusterPort._setChildPortId(childPortId);
@@ -2752,31 +2822,31 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (opts.sandbox !== undefined) {
       this.#kind = 'sandbox';
-      const bootstrapData = realmBootstrapData(opts);
       const handle = createSandboxContext(
         opts.root ?? '',
         opts.entry,
         serializedRules,
-        serializedData,
-        bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData),
+        undefined,
+        '{"channelBootstrap":true}',
       ) as number;
       this.#handle = handle;
       const wakeReadFd = getSandboxPortWakeReadFd(handle) as number;
       this.port = createSandboxPort(wakeReadFd, handle);
+      this.#observePort(this.port);
     } else if (opts.process) {
       this.#kind = 'process';
-      const bootstrapData = realmBootstrapData(opts);
       const handle = createProcessContext(
         opts.root ?? '',
         opts.entry,
         serializedRules,
         watch,
-        serializedData,
-        bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData),
+        undefined,
+        '{"channelBootstrap":true}',
       ) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
+      this.#observePort(this.port);
     } else {
       if (!usesProcessReadiness()) {
         throw new Error(
@@ -2784,12 +2854,11 @@ export class Realm<F extends RealmFn = RealmFn> {
         );
       }
       this.#kind = 'scheduled';
-      const bootstrapData = realmBootstrapData(opts);
       this.#handle = -1;
       this.port = undefined as unknown as RealmPort;
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
-      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules, false, bootstrapData);
+      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules);
       this.#scheduledShutdownRegistration = registerShutdownHook(() => {
         if (this.#activeCalls === 0) this.terminate({ force: true });
         return this.#scheduledCompletion!.catch(() => {});
@@ -2808,6 +2877,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         }
       }
     }
+    this.#bootstrapPort(this.port as RealmPort | ProcessPort | ClusterPort, opts, serializedData);
     // Emit OTel realm spawn event (gated on hasSubscribers to avoid cost in
     // the common case where no OTel subscriber is registered).
     if (_topicRealmSpawn.hasSubscribers) {
@@ -2850,10 +2920,15 @@ export class Realm<F extends RealmFn = RealmFn> {
       opts.entry,
       this.#watchSerializedRules,
       true,
-      serializeRealmData(opts.data),
-      serializeRealmBootstrapData(opts),
+      undefined,
+      '{"channelBootstrap":true}',
     ) as number;
     this.#activeChildPort = new ProcessPort(getProcessSocketFd(handle) as number, handle);
+    this.#observePort(this.#activeChildPort);
+    for (const rule of this.#watchRules) {
+      if (rule.directive instanceof Facade) rule.directive._bind(this.#activeChildPort);
+    }
+    this.#bootstrapPort(this.#activeChildPort, opts);
     return handle;
   }
   /**

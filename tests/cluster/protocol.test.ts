@@ -67,7 +67,7 @@ describe('ClusterMessage encode/decode', () => {
             },
           },
         ],
-        bootstrapData: { cliOtel: { endpoint: 'http://collector.example:4318/remote' } },
+        bootstrapData: { channelBootstrap: true },
       },
     };
     const got = roundTrip(msg);
@@ -76,9 +76,7 @@ describe('ClusterMessage encode/decode', () => {
       t.equal(got.spawnReqId, 'req-1');
       t.equal(got.parentPortId, 'nodeA/p-0');
       t.equal(got.config.entry, './fn.ts');
-      t.deepEqual(got.config.bootstrapData, {
-        cliOtel: { endpoint: 'http://collector.example:4318/remote' },
-      });
+      t.deepEqual(got.config.bootstrapData, { channelBootstrap: true });
       t.equal(
         (got.config.rules[0]?.directive as { source?: string }).source,
         'export class Clock {}',

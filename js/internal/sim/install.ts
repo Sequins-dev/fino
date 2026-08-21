@@ -71,6 +71,12 @@ function _simDateNow(): number {
  * @internal
  */
 export function installSimRealm(config: ResolvedSimConfig): void {
+  Object.defineProperty(globalThis, Symbol.for('fino.sim.active'), {
+    value: true,
+    writable: false,
+    enumerable: false,
+    configurable: false,
+  });
   if (_queue !== null) return;
   const queue = new VirtualTimerQueue(config.startTime);
   _queue = queue;

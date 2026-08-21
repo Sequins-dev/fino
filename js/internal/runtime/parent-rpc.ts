@@ -3,8 +3,7 @@
  *
  * When a facade proxy module calls `call(specifier, method, args)`, this module:
  *   1. Allocates a request id and stores a Promise resolver in `_pending`.
- *   2. Serialises `{__rpc_req, specifier, method, reqId, args}` and sends it to
- *      the parent via the realm's native channel (nativeSend).
+ *   2. Sends the request through the child realm's shared session port.
  *   3. Returns the Promise.
  *
  * When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
@@ -25,9 +24,6 @@
  * allocated from a single monotonic counter across scalar, stream, and sink
  * calls, which lets one drain path disambiguate a response by its id.
  *
- * Only available in thread and process child Realms (where `nativeSend` has a live
- * channel_tx). Embedded child Realms are not a primary facade target.
- *
  * This is an internal transport primitive; application code should use the
  * `fino:realm` Facade proxy modules, which build on top of it.
  *
@@ -45,26 +41,17 @@
  *
  * @internal
  */
-import { nativeSend } from 'internal:thread-port';
-import { encodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
-import { serialize } from 'internal:serializer';
+import { EnvelopeKind } from 'internal:realm/envelope';
 import { UnboundedChannel } from 'internal:stream';
-// ---------------------------------------------------------------------------
-// Transport selection
-//
-// For reactor-pooled and process child realms, `globalThis.realmPort` is a
-// whose `.postMessage()` routes through the Rust native channel (same as
-// calling nativeSend directly).  For embedded realms it is a MessagePort
-// backed by an in-process IntraPort queue.  Using `.postMessage()` uniformly
-// means parent-rpc works for all realm kinds without special-casing.
-//
-// Fallback: if realmPort is not set yet (shouldn't happen in normal operation),
-// we call nativeSend directly so thread/process realms always work.
-// ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Pending scalar call registry
 // ---------------------------------------------------------------------------
 let _nextId = 0;
+let _realmPort:
+  | {
+      _postControl(kind: number, correlation: number, message: unknown): void;
+    }
+  | undefined;
 const _pending = new Map<
   number,
   {
@@ -77,11 +64,6 @@ const _pending = new Map<
 // ---------------------------------------------------------------------------
 const _pendingStreams = new Map<number, UnboundedChannel<unknown>>();
 // ---------------------------------------------------------------------------
-// Lazy locals (avoid import-time side-effects)
-// ---------------------------------------------------------------------------
-const _ser = serialize;
-const _send = nativeSend;
-// ---------------------------------------------------------------------------
 // Internal send helper
 // ---------------------------------------------------------------------------
 /**
@@ -91,25 +73,16 @@ const _send = nativeSend;
  * side classifies and correlates the frame without trusting anything the
  * payload claims about itself.
  */
+/** Install the bootstrap-owned session endpoint used by every facade proxy. @internal */
+export function _installRealmPort(port: typeof _realmPort): void {
+  _realmPort = port;
+}
+
 function _sendControl(kind: number, reqId: number, payload: unknown): void {
-  // Prefer the realm port, which encodes the envelope for us.
-  const port = (globalThis as Record<string, unknown>).realmPort as
-    | {
-        _postControl(kind: number, correlation: number, message: unknown): void;
-      }
-    | undefined;
-  if (port?._postControl) {
-    port._postControl(kind, reqId, payload);
-    return;
+  if (_realmPort === undefined) {
+    throw new Error('Facade RPC requires a realm session port');
   }
-  // Fallback: direct native send for realms whose port is not installed yet.
-  const bytes = (_ser as (v: unknown) => Uint8Array[])(payload)[0]!;
-  (_send as (h: Uint8Array, b: Uint8Array, s: Uint8Array[], p: unknown[]) => void)(
-    encodeEnvelope({ kind: kind as 0, correlation: reqId }),
-    bytes,
-    [],
-    [],
-  );
+  _realmPort._postControl(kind, reqId, payload);
 }
 let _responseDelay: (() => Promise<void>) | null = null;
 /**

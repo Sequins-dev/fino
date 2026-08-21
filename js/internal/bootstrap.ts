@@ -86,9 +86,13 @@ import {
   requestReload,
   getWatchMode,
   getReplMode,
-  getRealmData,
   getRealmBootstrapData,
+  setRealmData,
+  setRealmBootstrapData,
 } from 'internal:realm-bridge';
+import { _pushConsoleCapture } from '../globals/console.ts';
+import { subscribeMatching } from '../context/topic.ts';
+import { _installRealmPort } from './runtime/parent-rpc.ts';
 import { runShutdownHooks } from 'internal:shutdown';
 import {
   finishRealmCoverage,
@@ -451,35 +455,16 @@ export function driveLoop(
 // If the entry has no default function export, the child stays alive (for
 // multi-event messaging) until the parent calls terminate().
 const _childEntry = getEntryPath() as string | undefined;
-interface RuntimeBootstrapData {
-  cliOtel?: {
-    endpoint?: string;
-    script?: string;
-    debug?: boolean;
-  };
-  sandbox?: unknown;
-  coverage?: CoverageRealmContext;
-  sim?: unknown;
-}
-const _runtimeBootstrapData = (() => {
-  const raw = (getRealmBootstrapData as () => string | undefined)();
-  if (raw === undefined) return undefined;
-  try {
-    return JSON.parse(raw) as RuntimeBootstrapData;
-  } catch {
-    return undefined;
-  }
-})();
 // A realm reached over a wake pipe (every reactor-pooled and process realm)
 // talks to its parent through a realm port. A root realm has none.
 const _threadWakeReadFd = getWakeReadFd() as number;
 const _childPort: RealmPort | undefined =
   _threadWakeReadFd >= 0 ? createParentPort(_threadWakeReadFd) : undefined;
+_installRealmPort(_childPort);
 // Expose the child port as `realmPort` on globalThis so entry modules can
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
 if (_childEntry) {
-  startRealmCoverage(_runtimeBootstrapData?.coverage);
   let _childDone = false;
   let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
@@ -491,12 +476,52 @@ if (_childEntry) {
   // module loading. An early call is queued and replayed once its handler is up.
   let _earlyCall: unknown[] | null = null;
   let _callHandlerInstalled = false;
+  let _entryListenersReady = false;
+  let _bootstrapResolved = false;
+  let _resolveBootstrap!: () => void;
+  const _bootstrapReady = new Promise<void>((resolve) => {
+    _resolveBootstrap = resolve;
+  });
+  const _nativeBootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
+  let _expectsChannelBootstrap = false;
+  if (_nativeBootstrapRaw !== undefined) {
+    try {
+      _expectsChannelBootstrap =
+        (JSON.parse(_nativeBootstrapRaw) as { channelBootstrap?: unknown }).channelBootstrap ===
+        true;
+    } catch {}
+  }
+  // Scheduler task realms have no JS parent port handshake.
+  if (!_expectsChannelBootstrap) {
+    _bootstrapResolved = true;
+    _resolveBootstrap();
+  }
   if (_childPort !== undefined) {
+    _childPort._pauseMessages();
     _childPort.start();
     _childPort._addControlHandler((envelope, value) => {
       if (envelope.kind === EnvelopeKind.Terminate) {
         _childDone = true;
         _externalTerminate = true;
+        if (!_bootstrapResolved) {
+          _bootstrapResolved = true;
+          _resolveBootstrap();
+        }
+        return true;
+      }
+      if (envelope.kind === EnvelopeKind.Bootstrap) {
+        const bootstrap = (value ?? {}) as {
+          data?: unknown;
+          runtime?: unknown;
+          portable?: unknown;
+        };
+        (setRealmData as (data: unknown) => void)(bootstrap.data);
+        (setRealmBootstrapData as (data: unknown) => void)(bootstrap.runtime);
+        if (bootstrap.portable === true) _childPort?._requirePortable();
+        if (!_bootstrapResolved) {
+          _bootstrapResolved = true;
+          _resolveBootstrap();
+        }
         return true;
       }
       if (envelope.kind === EnvelopeKind.Call && !_callHandlerInstalled) {
@@ -512,9 +537,33 @@ if (_childEntry) {
   async function _loadChildEntry(): Promise<{
     default?: unknown;
   }> {
-    let sandboxPolicy = _runtimeBootstrapData?.sandbox;
-    let cliOtel = _runtimeBootstrapData?.cliOtel;
-    const simConfig = _runtimeBootstrapData?.sim;
+    await _bootstrapReady;
+    let sandboxPolicy: unknown;
+    let simConfig: unknown;
+    let coverage: CoverageRealmContext | undefined;
+    let cliOtel:
+      | {
+          endpoint?: string;
+          script?: string;
+          debug?: boolean;
+        }
+      | undefined;
+    const bootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
+    if (bootstrapRaw !== undefined) {
+      try {
+        const bootstrap = JSON.parse(bootstrapRaw) as {
+          cliOtel?: typeof cliOtel;
+          sandbox?: unknown;
+          sim?: unknown;
+          coverage?: CoverageRealmContext;
+        };
+        cliOtel = bootstrap.cliOtel;
+        sandboxPolicy = bootstrap.sandbox;
+        simConfig = bootstrap.sim;
+        coverage = bootstrap.coverage;
+      } catch {}
+    }
+    startRealmCoverage(coverage);
     // Before anything else the entry could observe: the guest must not be able
     // to read a real clock or draw real entropy even during module evaluation.
     if (simConfig !== undefined) {
@@ -523,22 +572,21 @@ if (_childEntry) {
         import('internal:sim/config'),
       ]);
       installSimRealm(resolveSimConfig(simConfig as import('./sim/config.ts').SimConfig));
+      _pushConsoleCapture((record) => {
+        _childPort?._postControl(EnvelopeKind.Console, 0, record);
+      });
+      subscribeMatching(
+        (name) => name.startsWith('otel:'),
+        (event, name) => {
+          _childPort?._postControl(EnvelopeKind.Telemetry, 0, { name, event });
+        },
+      );
     }
     if (sandboxPolicy !== undefined) {
       const { installSandboxRealmPolicy } = await import('internal:security/sandbox/realm');
       installSandboxRealmPolicy(
         sandboxPolicy as import('./security/sandbox/plan.ts').SandboxPolicy,
       );
-    }
-    const raw = (getRealmData as () => string | undefined)();
-    if (sandboxPolicy === undefined && cliOtel === undefined && raw !== undefined) {
-      try {
-        cliOtel = (
-          JSON.parse(raw) as {
-            cliOtel?: typeof cliOtel;
-          }
-        ).cliOtel;
-      } catch {}
     }
     if (cliOtel && typeof cliOtel.endpoint === 'string' && cliOtel.endpoint) {
       const { createCliOtelRuntime } = await import('internal:opentelemetry/bootstrap');
@@ -552,16 +600,42 @@ if (_childEntry) {
         cliOtel.script ?? _childEntry!,
         debug,
       );
-      return runWithTracerProvider(rt.tracerProvider, () =>
+      _childPort?._postControl(EnvelopeKind.Lifecycle, 0, {
+        phase: 'entry:start',
+        entry: _childEntry,
+      });
+      const loaded = await runWithTracerProvider(rt.tracerProvider, () =>
         runWithLoggerProvider(rt.loggerProvider, () =>
           runWithMeterProvider(rt.meterProvider, () => import(_childEntry!)),
         ),
       );
+      _childPort?._postControl(EnvelopeKind.Lifecycle, 0, {
+        phase: 'entry:loaded',
+        entry: _childEntry,
+        modules: (getLoadedFsPaths as () => string[])(),
+      });
+      return loaded;
     }
-    return import(_childEntry!);
+    _childPort?._postControl(EnvelopeKind.Lifecycle, 0, {
+      phase: 'entry:start',
+      entry: _childEntry,
+    });
+    const loaded = await import(_childEntry!);
+    _childPort?._postControl(EnvelopeKind.Lifecycle, 0, {
+      phase: 'entry:loaded',
+      entry: _childEntry,
+      modules: (getLoadedFsPaths as () => string[])(),
+    });
+    return loaded;
+  }
+  function _releaseEarlyMessages(): void {
+    if (_entryListenersReady) return;
+    _entryListenersReady = true;
+    _childPort?._resumeMessages();
   }
   _loadChildEntry().then(
     function _onChildEntryDone(mod: { default?: unknown }) {
+      _releaseEarlyMessages();
       // A default-exported Task (branded via Symbol.for('fino.task')) exposes
       // its worker dispatcher as the Realm.call() target.
       let _entryCallable: ((...args: unknown[]) => unknown) | undefined;
@@ -620,6 +694,12 @@ if (_childEntry) {
     },
     function _onChildEntryError(err: unknown) {
       _entryFailed = true;
+      _childPort?._postControl(EnvelopeKind.Lifecycle, 0, {
+        phase: 'entry:error',
+        entry: _childEntry,
+        error: err instanceof Error ? err.message : String(err),
+        modules: (getLoadedFsPaths as () => string[])(),
+      });
       try {
         const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
         (setEntryError as (m: string) => void)(msg);

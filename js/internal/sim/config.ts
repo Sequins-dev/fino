@@ -1,10 +1,8 @@
 /**
  * internal:sim/config — the simulation settings a realm is created with.
  *
- * This travels to the child inside the realm bootstrap payload, which is an
- * opaque JSON string end to end, so the shape is plain data with no imports.
- * The parent writes it; `internal:sim/install` reads it before the entry module
- * is imported.
+ * The parent serializes this plain-data shape into the realm session's
+ * bootstrap frame. The child installs it before importing the entry module.
  *
  * ```ts no_run
  * import { resolveSimConfig } from 'internal:sim/config';
