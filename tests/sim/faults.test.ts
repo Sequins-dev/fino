@@ -2,8 +2,11 @@
  * Seeded fault injection and seed sweeps.
  */
 import { describe, it } from 'fino:test/test';
+import { Facade } from 'fino:realm';
 import { simulate, sweep } from 'fino:sim';
 const RETRY_GUEST = new URL('./fixtures/retry-guest.ts', import.meta.url).pathname;
+const STREAM_GUEST = new URL('../realm/fixtures/facade-stream-fn.ts', import.meta.url).pathname;
+const SINK_GUEST = new URL('../realm/fixtures/facade-sink-fn.ts', import.meta.url).pathname;
 const world = { 'app:api': { fetchRecord: async (id: unknown) => ({ id, ok: true }) } };
 describe('fault injection', () => {
   it('injects failures on a seeded schedule that the seed reproduces', async (t) => {
@@ -49,5 +52,26 @@ describe('fault injection', () => {
       /injected fault/,
       `seed ${String(seed)} reproduces the failure by itself`,
     );
+  });
+  it('injects read-stream and sink failures at the channel boundary', async (t) => {
+    const stream = new Facade('fino:test-facade', []).stream('chunks', async function* () {
+      yield 'unreachable';
+    });
+    const sink = new Facade('fino:test-facade', []).sendStream('writeChunks', async () => 0);
+    for (const [entry, provider] of [
+      [STREAM_GUEST, stream],
+      [SINK_GUEST, sink],
+    ] as const) {
+      await t.rejects(
+        () =>
+          simulate({
+            entry,
+            world: { 'fino:test-facade': provider },
+            faults: { errorRate: 1, message: 'channel fault' },
+          }),
+        /channel fault/,
+        `${entry === STREAM_GUEST ? 'stream' : 'sink'} request was intercepted`,
+      );
+    }
   });
 });

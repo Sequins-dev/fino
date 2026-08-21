@@ -3,9 +3,9 @@ weight: 16
 ---
 # Realm communication sessions
 
-Status: staged implementation. Transport observation and the `SimJournal` call
-projection now use the shared session stream. Cassettes still persist completed
-call summaries until the event-stream format and replay peer land.
+Status: staged implementation. Transport observation, the `SimJournal` call
+projection, and cassette replay now use the shared session stream. Cassettes
+still persist completed call summaries until the event-stream format lands.
 
 ## Goal
 
@@ -119,9 +119,10 @@ security boundaries.
 3. Replace facade handler wrapping in `recordFacade()` with a session-stream
    projection. This is implemented; `SimJournal` remains as the compatibility
    call view while cassettes use their version-1 format.
-4. Introduce the event-stream cassette and a replay peer. Validate arguments,
-   invocation kind, sink chunks, partial streams, completion order, and errors
-   as correlated events rather than completed call summaries.
+4. Introduce the event-stream cassette and a replay peer. The replay peer is
+   implemented and validates arguments, invocation kind, sink chunks, missing
+   calls, partial streams, and errors. Persisting correlated frames instead of
+   completed call summaries remains.
 5. Route initial data, console, telemetry, lifecycle, and nested/transferred
    channels through sessions. Add execution-manifest verification.
 6. Remove the version-1 journal/cassette compatibility layer after its migration
@@ -131,10 +132,9 @@ security boundaries.
 ## Deletion targets
 
 The migration should reduce code, not preserve both systems indefinitely. The
-`recordFacade()` handler wrappers are gone. Remaining targets are
-`CassetteReader`'s call-summary matcher, delayed serialization in
-`SimJournal.toCassette()`, and the version-1 cassette compatibility layer. The
-read-stream and sink source queues now share `RealmStreamQueue`, and facades
-and returned handles share one per-port dispatcher. New abstractions must
-replace at least as much special-case machinery as they add before the
-migration is considered complete.
+`recordFacade()` and replay handler wrappers are gone. Remaining targets are
+delayed serialization in `SimJournal.toCassette()` and the version-1 cassette
+compatibility layer. The read-stream and sink source queues now share
+`RealmStreamQueue`, and facades and returned handles share one per-port
+dispatcher. New abstractions must replace at least as much special-case
+machinery as they add before the migration is considered complete.

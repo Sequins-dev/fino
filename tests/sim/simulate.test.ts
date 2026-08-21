@@ -3,10 +3,11 @@
  * crossed the boundary.
  */
 import { describe, it } from 'fino:test/test';
-import { Facade, ImportMap, Realm } from 'fino:realm';
+import { Facade, FacadeHandle, ImportMap, Realm } from 'fino:realm';
 import { mockFacade, SimJournal, simulate } from 'fino:sim';
 const KV_GUEST = new URL('./fixtures/kv-guest.ts', import.meta.url).pathname;
 const SESSION_GUEST = new URL('./fixtures/session-traffic-guest.ts', import.meta.url).pathname;
+const HANDLE_GUEST = new URL('../realm/fixtures/facade-handle-fn.ts', import.meta.url).pathname;
 function kvWorld() {
   const store = new Map<string, unknown>();
   return {
@@ -39,6 +40,22 @@ function sessionFacade(): Facade {
       for await (const chunk of source) chunks.push(chunk);
       return chunks.length;
     });
+}
+function handleFacade(fail = false): Facade {
+  return new Facade('fino:test-facade', ['openHandle']).handle('openHandle', async (key) => {
+    if (fail) throw new Error('live handle provider must not run during replay');
+    return new FacadeHandle(
+      {
+        getValue: async () => `value-for-${String(key)}`,
+        close: async () => undefined,
+      },
+      {
+        readChunks: async function* (count) {
+          for (let index = 0; index < Number(count); index++) yield `chunk-${index}`;
+        },
+      },
+    );
+  });
 }
 describe('simulate()', () => {
   it('serves the guest from facades and journals every call', async (t) => {
@@ -114,6 +131,21 @@ describe('simulate()', () => {
       /arguments.*differ/,
       'argument divergence is reported before replaying a response',
     );
+    const extraCall = {
+      ...recorded.cassette!,
+      entries: [...recorded.cassette!.entries, recorded.cassette!.entries[0]!],
+    };
+    await t.rejects(
+      () =>
+        simulate({
+          entry: KV_GUEST,
+          seed: 5,
+          world: kvWorld(),
+          cassette: { mode: 'replay', data: extraCall },
+        }),
+      /did not call/,
+      'unused cassette entries are reported after the guest returns',
+    );
   });
   it('projects ordered scalar and stream traffic from the realm session', async (t) => {
     const report = await simulate({
@@ -182,5 +214,25 @@ describe('simulate()', () => {
       ['set', 'get'],
       'standalone facade uses the shared session recorder',
     );
+  });
+
+  it('replays returned handles through the same channel peer', async (t) => {
+    const recorded = await simulate({
+      entry: HANDLE_GUEST,
+      world: { 'fino:test-facade': handleFacade() },
+      cassette: { mode: 'record' },
+    });
+    t.ok(
+      recorded.cassette!.entries.some((entry) => entry.specifier === '__h0'),
+      'handle method traffic is part of the cassette',
+    );
+
+    const replayed = await simulate({
+      entry: HANDLE_GUEST,
+      world: { 'fino:test-facade': handleFacade(true) },
+      cassette: { mode: 'replay', data: recorded.cassette },
+    });
+
+    t.deepEqual(replayed.result, recorded.result, 'handle scalar and stream methods replay');
   });
 });

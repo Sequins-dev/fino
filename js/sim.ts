@@ -35,6 +35,7 @@ import { MemoryFileSystem } from 'fino:file/memory';
 import { Facade, ImportMap, Realm, type ImportRule } from 'fino:realm';
 import { resolveSimConfig, type SimConfig } from 'internal:sim/config';
 import { createSeededRandom } from 'internal:sim/random';
+import { EnvelopeKind } from 'internal:realm/envelope';
 import {
   SimJournal,
   decodeValue as decodeValueFromCassette,
@@ -232,12 +233,19 @@ function isAsyncGenerator(value: unknown): boolean {
  * ```
  */
 export function recordFacade(facade: Facade, journal: SimJournal, specifier: string): Facade {
+  return beforeBind(facade, (port) => journal._observe(port, specifier));
+}
+
+function beforeBind(
+  facade: Facade,
+  hook: (port: Parameters<Facade['_bind']>[0]) => unknown,
+): Facade {
   const bind = facade._bind.bind(facade);
-  const observed = new WeakSet<object>();
+  const ports = new WeakSet<object>();
   facade._bind = (port) => {
-    if (!observed.has(port)) {
-      observed.add(port);
-      journal._observe(port, specifier);
+    if (!ports.has(port)) {
+      ports.add(port);
+      hook(port);
     }
     bind(port);
   };
@@ -730,7 +738,7 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
   const replaying =
     cassetteMode === 'replay' || (cassetteMode === 'auto' && options.cassette?.data !== undefined);
   const journal = new SimJournal();
-  const replay = replaying ? new CassetteReader(options.cassette!.data!) : null;
+  const replay = replaying ? new CassettePeer(options.cassette!.data!) : null;
   const rules: ImportRule[] = [
     // The loop is infrastructure: without it the realm cannot run its event loop.
     { pattern: 'internal:runtime/loop', directive: 'inherit' },
@@ -776,6 +784,7 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
   let result: unknown;
   try {
     result = await realm.call(...(options.args ?? []));
+    replay?.assertComplete();
   } finally {
     stopJournal();
   }
@@ -791,18 +800,127 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
   return report;
 }
 /**
- * Serves recorded answers in place of a provider's own, in cassette order.
+ * Serves recorded answers over a realm's ordinary RPC channel.
  */
-class CassetteReader {
+class CassettePeer {
   #entries: Cassette['entries'];
   #position = 0;
+  #ports = new WeakSet<object>();
   constructor(cassette: Cassette) {
     this.#entries = cassette.entries;
   }
+
+  /** Install one replay dispatcher before the port's live Facade dispatcher. */
+  bind(port: {
+    _addControlHandler?(
+      handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
+    ): () => void;
+    _postControl?(kind: number, correlation: number, value: unknown): void;
+  }): void {
+    if (this.#ports.has(port)) return;
+    if (typeof port._addControlHandler !== 'function' || typeof port._postControl !== 'function') {
+      throw new TypeError('Cassette replay requires a session-backed realm port');
+    }
+    this.#ports.add(port);
+    const sinks = new Map<number, { entry: Cassette['entries'][number]; chunks: unknown[] }>();
+    port._addControlHandler((envelope, value) => {
+      const reply = (kind: number, payload: unknown) =>
+        port._postControl!(kind, envelope.correlation, payload);
+      const sink = sinks.get(envelope.correlation);
+      if (sink !== undefined) {
+        if (envelope.kind === EnvelopeKind.SinkChunk) {
+          sink.chunks.push(value);
+          return true;
+        }
+        if (envelope.kind === EnvelopeKind.SinkEnd || envelope.kind === EnvelopeKind.SinkError) {
+          sinks.delete(envelope.correlation);
+          try {
+            this.#validateSink(sink.entry, sink.chunks);
+            this.#reply(reply, sink.entry);
+          } catch (error) {
+            reply(EnvelopeKind.RpcResponse, { error: String(error) });
+          }
+          return true;
+        }
+      }
+      if (
+        envelope.kind !== EnvelopeKind.RpcRequest &&
+        envelope.kind !== EnvelopeKind.RpcStreamRequest &&
+        envelope.kind !== EnvelopeKind.SinkStart
+      ) {
+        return false;
+      }
+      const request = (value ?? {}) as {
+        specifier?: unknown;
+        method?: unknown;
+        args?: unknown;
+      };
+      if (
+        typeof request.specifier !== 'string' ||
+        typeof request.method !== 'string' ||
+        !Array.isArray(request.args)
+      ) {
+        reply(EnvelopeKind.RpcResponse, { error: 'fino:sim — malformed replay request' });
+        return true;
+      }
+      const kind: SimCallKind =
+        envelope.kind === EnvelopeKind.SinkStart
+          ? 'sink'
+          : envelope.kind === EnvelopeKind.RpcStreamRequest
+            ? 'stream'
+            : 'call';
+      try {
+        const entry = this.#next(request.specifier, request.method, kind, request.args);
+        if (kind === 'sink') {
+          sinks.set(envelope.correlation, { entry, chunks: [] });
+        } else {
+          this.#reply(reply, entry);
+        }
+      } catch (error) {
+        reply(EnvelopeKind.RpcResponse, { error: String(error) });
+      }
+      return true;
+    });
+  }
+
+  /** Fail when the guest returned without making every recorded call. */
+  assertComplete(): void {
+    if (this.#position === this.#entries.length) return;
+    const entry = this.#entries[this.#position]!;
+    throw new Error(
+      `fino:sim — divergence after call ${this.#position}: the guest did not call ${entry.specifier}.${entry.method}`,
+    );
+  }
+
+  #reply(send: (kind: number, payload: unknown) => void, entry: Cassette['entries'][number]): void {
+    if (entry.kind === 'stream') {
+      for (const chunk of decodeCassetteChunks(entry)) send(EnvelopeKind.RpcChunk, chunk);
+      send(
+        entry.outcome === 'error' ? EnvelopeKind.RpcError : EnvelopeKind.RpcEnd,
+        entry.outcome === 'error' ? { error: entry.error ?? 'recorded failure' } : null,
+      );
+      return;
+    }
+    send(
+      EnvelopeKind.RpcResponse,
+      entry.outcome === 'error'
+        ? { error: entry.error ?? 'recorded failure' }
+        : { result: decodeCassetteValue(entry) },
+    );
+  }
+
+  #validateSink(entry: Cassette['entries'][number], chunks: unknown[]): void {
+    if (entry.chunks !== undefined && !equalValue(decodeValueFromCassette(entry.chunks), chunks)) {
+      throw new Error(
+        `fino:sim — divergence at call ${entry.seq}: sink chunks for ${entry.specifier}.${entry.method} differ from the cassette`,
+      );
+    }
+  }
+
   /**
    * Take the next recorded entry, checking it is the call that was expected.
    */
-  next(
+  #next(
     specifier: string,
     method: string,
     kind: SimCallKind,
@@ -828,43 +946,9 @@ class CassetteReader {
     return entry;
   }
 }
-function replayFacade(specifier: string, provider: SimProvider, replay: CassetteReader): Facade {
+function replayFacade(specifier: string, provider: SimProvider, replay: CassettePeer): Facade {
   const shape = provider instanceof Facade ? provider : facadeFromObject(specifier, provider);
-  return shape._wrapHandlers((_handler, method, kind) => {
-    if (kind === 'stream') {
-      return function replayedStream(...args: never[]): AsyncIterable<unknown> {
-        return {
-          async *[Symbol.asyncIterator]() {
-            const entry = replay.next(specifier, method, kind, [...args]);
-            const chunks = decodeCassetteChunks(entry);
-            for (const chunk of chunks) yield chunk;
-            if (entry.outcome === 'error') throw new Error(entry.error ?? 'recorded failure');
-          },
-        };
-      } as (...args: never[]) => unknown;
-    }
-    return async function replayed(...args: never[]): Promise<unknown> {
-      const recordedArgs = kind === 'sink' ? ((args[0] as unknown[]) ?? []) : [...args];
-      const entry = replay.next(specifier, method, kind, recordedArgs);
-      if (kind === 'sink') {
-        const chunks: unknown[] = [];
-        for await (const chunk of args[1] as AsyncIterable<unknown>) chunks.push(chunk);
-        if (
-          entry.chunks !== undefined &&
-          !equalValue(decodeValueFromCassette(entry.chunks), chunks)
-        ) {
-          throw new Error(
-            `fino:sim — divergence at call ${entry.seq}: sink chunks for ${specifier}.${method} differ from the cassette`,
-          );
-        }
-      }
-      if (entry.outcome === 'error') {
-        throw new Error(entry.error ?? 'recorded failure');
-      }
-      const result = decodeCassetteValue(entry);
-      return result;
-    } as (...args: never[]) => unknown;
-  });
+  return beforeBind(shape, (port) => replay.bind(port));
 }
 function decodeCassetteChunks(entry: Cassette['entries'][number]): unknown[] {
   const encoded = entry.chunks ?? entry.value;
@@ -877,8 +961,8 @@ function decodeCassetteValue(entry: Cassette['entries'][number]): unknown {
 /**
  * Wrap a facade so a seeded share of its calls fail before reaching the handler.
  *
- * Applied outside the recording wrapper, so an injected failure is journaled as
- * the failure the guest actually saw.
+ * Recording observes the resulting channel frames, so injected failures are
+ * journaled exactly as the guest receives them.
  */
 function injectFaults(
   facade: Facade,
@@ -887,27 +971,34 @@ function injectFaults(
   faults: SimFaultOptions,
 ): Facade {
   const rate = faults.errorRate ?? 0;
-  return facade._wrapHandlers((handler, method, kind) => {
-    if (kind === 'stream') {
-      return function faultyStream(...args: never[]): AsyncIterable<unknown> {
-        if (random.nextFloat() < rate) {
-          return {
-            async *[Symbol.asyncIterator]() {
-              throw new Error(
-                faults.message ?? `fino:sim — injected fault in ${specifier}.${method}`,
-              );
-            },
-          };
-        }
-        return (handler as (...a: never[]) => AsyncIterable<unknown>)(...args);
-      } as (...args: never[]) => unknown;
-    }
-    return async function faulty(...args: never[]): Promise<unknown> {
-      if (random.nextFloat() < rate) {
-        throw new Error(faults.message ?? `fino:sim — injected fault in ${specifier}.${method}`);
+  return beforeBind(facade, (port) => {
+    const channel = port as unknown as {
+      _addControlHandler?(
+        handler: (envelope: { kind: number; correlation: number }, value: unknown) => boolean,
+      ): () => void;
+      _postControl?(kind: number, correlation: number, value: unknown): void;
+    };
+    channel._addControlHandler?.((envelope, value) => {
+      if (
+        envelope.kind !== EnvelopeKind.RpcRequest &&
+        envelope.kind !== EnvelopeKind.RpcStreamRequest &&
+        envelope.kind !== EnvelopeKind.SinkStart
+      ) {
+        return false;
       }
-      return (handler as (...a: never[]) => Promise<unknown>)(...args);
-    } as (...args: never[]) => unknown;
+      const request = (value ?? {}) as { specifier?: unknown; method?: unknown };
+      if (request.specifier !== specifier || random.nextFloat() >= rate) return false;
+      const error =
+        faults.message ?? `fino:sim — injected fault in ${specifier}.${String(request.method)}`;
+      channel._postControl?.(
+        envelope.kind === EnvelopeKind.RpcStreamRequest
+          ? EnvelopeKind.RpcError
+          : EnvelopeKind.RpcResponse,
+        envelope.correlation,
+        { error },
+      );
+      return true;
+    });
   });
 }
 /**

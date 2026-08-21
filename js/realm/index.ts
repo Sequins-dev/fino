@@ -1338,56 +1338,6 @@ export class Facade {
     return this;
   }
   /**
-   * Replace every registered handler with `wrap(handler, method, kind)`.
-   *
-   * Used by `fino:sim` for replay and fault injection without needing to know
-   * how a facade was built. Applies to handlers registered so far; register
-   * the handlers first, then wrap.
-   *
-   * ```ts no_run
-   * import { Facade } from 'fino:realm';
-   *
-   * const facade = new Facade('app:api', ['ping']).handle('ping', async () => 'pong');
-   * facade._wrapHandlers((fn) => fn);
-   * ```
-   *
-   * @internal
-   */
-  _wrapHandlers(
-    wrap: (
-      handler: (...args: never[]) => unknown,
-      method: string,
-      kind: 'call' | 'stream' | 'sink',
-    ) => (...args: never[]) => unknown,
-  ): this {
-    for (const [method, fn] of this.#handlers) {
-      this.#handlers.set(
-        method,
-        wrap(fn as (...args: never[]) => unknown, method, 'call') as (
-          ...args: unknown[]
-        ) => Promise<unknown>,
-      );
-    }
-    for (const [method, fn] of this.#streamHandlers) {
-      this.#streamHandlers.set(
-        method,
-        wrap(fn as (...args: never[]) => unknown, method, 'stream') as (
-          ...args: unknown[]
-        ) => AsyncIterable<unknown>,
-      );
-    }
-    for (const [method, fn] of this.#sinkHandlers) {
-      this.#sinkHandlers.set(
-        method,
-        wrap(fn as (...args: never[]) => unknown, method, 'sink') as (
-          args: unknown[],
-          source: AsyncIterable<unknown>,
-        ) => Promise<unknown>,
-      );
-    }
-    return this;
-  }
-  /**
    * Convert this facade to the import-rule directive sent to the native loader.
    *
    * The directive contains the specifier plus the current scalar, stream, and
