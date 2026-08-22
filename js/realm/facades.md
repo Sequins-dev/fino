@@ -131,7 +131,10 @@ const fileApi = new Facade('app:fs', ['open'])
 
 ## Wrapping an existing object
 
-`Facade.from()` inspects an object's own and prototype methods and creates a facade with handlers for each callable member. Use this when you already have a service object and want to expose its full API without listing methods manually:
+`Facade.from()` inspects an object's own and immediate prototype methods and
+creates scalar or read-stream handlers for each callable member. Use this when
+you already have a service object and want to expose its API without listing
+methods manually:
 
 ```ts
 class ConfigService {
@@ -143,7 +146,10 @@ const service = new ConfigService();
 const facade = Facade.from(service, { specifier: 'app:config' });
 ```
 
-Non-function properties and `constructor` are excluded. The original object is the handler receiver for every call.
+Non-function properties and `constructor` are excluded. Async generator methods
+become streams, and the original object is the handler receiver for every call.
+Pass `methods: [...]` to expose an explicit subset or inherited methods; invalid
+names throw during facade construction.
 
 ## Proxying a lazy service
 

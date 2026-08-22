@@ -68,7 +68,7 @@ represent the supported API surface.
 Because capabilities arrive through imports, this boundary is also a security
 surface: child realms can be restricted to a narrow set of importable modules
 through import rules. See the [runtime model](./runtime-model.md) and
-[Import Capabilities](./realm/capabilities.md).
+[Import maps](./realm/import-maps.md).
 
 ## Installed Packages
 

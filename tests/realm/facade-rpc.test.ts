@@ -170,12 +170,16 @@ describe('Facade RPC — reactor-pooled realm', () => {
     t.deepEqual(result, [], 'empty stream returns empty array');
   });
   it('Facade.from() wraps object methods', async (t) => {
-    const service = {
+    class Greeter {
       async greet(name: unknown) {
         return `greetings ${name}`;
-      },
-    };
-    const facade = Facade.from(service, { specifier: 'fino:test-facade' });
+      }
+    }
+    const facade = Facade.from(new (class extends Greeter {})(), {
+      specifier: 'fino:test-facade',
+      methods: ['greet'],
+    });
+    t.deepEqual(facade.toDirective().exports, ['greet'], 'allowlisted method is exported');
     const realm = new Realm<typeof facadeCallFn>({
       overrides: ImportMap.deny([
         {
@@ -190,7 +194,31 @@ describe('Facade RPC — reactor-pooled realm', () => {
       entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname,
     });
     const result = await realm.call();
-    t.equal(result, 'greetings world', 'Facade.from wraps method correctly');
+    t.equal(result, 'greetings world', 'Facade.from binds an allowed inherited method');
+    t.throws(
+      () => Facade.from({}, { specifier: 'app:invalid', methods: ['missing'] }),
+      /missing is not a method/,
+      'an invalid explicit method fails at facade construction',
+    );
+  });
+  it('Facade.from() preserves async generator methods as streams', async (t) => {
+    const facade = Facade.from(
+      {
+        async *chunks() {
+          yield 'one';
+          yield 'two';
+        },
+      },
+      { specifier: 'fino:test-facade' },
+    );
+    const realm = new Realm<typeof facadeStreamFn>({
+      entry: new URL('./fixtures/facade-stream-fn.ts', import.meta.url).pathname,
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'fino:test-facade', directive: facade },
+      ]),
+    });
+    t.deepEqual(await realm.call(), ['one', 'two'], 'stream shape is preserved');
   });
   it('handle() declares scalar exports without a duplicate constructor list', async (t) => {
     const facade = new Facade('fino:test-facade', []).handle(

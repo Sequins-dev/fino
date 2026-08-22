@@ -271,7 +271,7 @@ describe('simulate()', () => {
   it('records bootstrap, console, telemetry, lifecycle, and the module graph', async (t) => {
     const report = await simulate({
       entry: DIAGNOSTICS_GUEST,
-      grant: ['fino:context/topic'],
+      overrides: [{ pattern: 'fino:context/topic', directive: 'inherit' }],
       cassette: { mode: 'record' },
     });
     const kinds = report.cassette!.frames.map((frame) => frame.kind);
@@ -288,7 +288,10 @@ describe('simulate()', () => {
   });
 
   it('rejects untracked nested realms in deterministic mode', async (t) => {
-    const report = await simulate({ entry: NESTED_GUEST, grant: ['fino:realm'] });
+    const report = await simulate({
+      entry: NESTED_GUEST,
+      overrides: [{ pattern: 'fino:realm', directive: 'inherit' }],
+    });
     t.match(
       String(report.result),
       /nested Realm construction is not replayable/,

@@ -29,7 +29,7 @@ console.log(report.journal.calls('app:kv', 'get').length);
 ## The world is the whole world
 
 A simulated realm starts from a deny-all import map. It can reach the
-specifiers in `world` and `grant`, and nothing else.
+specifier facades in `world` and explicit `overrides`, and nothing else.
 
 Ambient I/O is closed at startup. `fetch` requires a `fino:net/fetch` facade;
 other network globals throw because no deterministic transport serves them.

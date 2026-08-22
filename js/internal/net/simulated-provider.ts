@@ -46,6 +46,7 @@ import {
   type SocketAddress,
 } from './provider.ts';
 import { BufferedBytesChannelState, BytesReader, BytesWriter } from '../stream.ts';
+import { createSeededRandom, type RandomSource } from 'internal:sim/random';
 type QueueResolver<T> = {
   resolve(value: T): void;
   reject(error: unknown): void;
@@ -362,21 +363,8 @@ function maybeTruncate(data: Uint8Array, maxBytes: number): Uint8Array {
   if (data.byteLength <= maxBytes) return data;
   return data.subarray(0, maxBytes);
 }
-class DeterministicRandom {
-  #state: number;
-  constructor(seed: number) {
-    this.#state = seed >>> 0;
-    if (this.#state === 0) this.#state = 1;
-  }
-  next(): number {
-    this.#state = (Math.imul(1664525, this.#state) + 1013904223) >>> 0;
-    return this.#state / 4294967296;
-  }
-  chance(rate: number): boolean {
-    if (rate <= 0) return false;
-    if (rate >= 1) return true;
-    return this.next() < rate;
-  }
+function chance(random: RandomSource, rate: number): boolean {
+  return rate >= 1 || (rate > 0 && random.nextFloat() < rate);
 }
 class AsyncQueue<T> {
   #items: T[] = [];
@@ -638,7 +626,7 @@ class SimulatedDatagramSocket implements DatagramSocket {
  */
 export class SimulatedNetworkProvider extends NetworkProvider {
   #clock = 0;
-  #rng: DeterministicRandom;
+  #rng: RandomSource;
   #defaultLink: RequiredLinkOptions;
   #links = new Map<string, LinkState>();
   #datagrams = new Map<string, SimulatedDatagramSocket>();
@@ -678,7 +666,7 @@ export class SimulatedNetworkProvider extends NetworkProvider {
    */
   constructor(options: SimulatedNetworkProviderOptions = {}) {
     super();
-    this.#rng = new DeterministicRandom(options.seed ?? 1);
+    this.#rng = createSeededRandom(options.seed ?? 1);
     this.#defaultLink = resolveLinkOptions(options.defaultLink);
   }
   /** Current simulated time in milliseconds. */
@@ -982,7 +970,7 @@ export class SimulatedNetworkProvider extends NetworkProvider {
       this.#traceDatagramDrop(localAddress, source, dest, bytes, 'mtu');
       return;
     }
-    if (this.#rng.chance(options.lossRate)) {
+    if (chance(this.#rng, options.lossRate)) {
       this.#traceDatagramDrop(localAddress, source, dest, bytes, 'loss');
       return;
     }
@@ -1008,7 +996,7 @@ export class SimulatedNetworkProvider extends NetworkProvider {
       'datagram:queued',
       ecn,
     );
-    if (this.#rng.chance(options.duplicateRate)) {
+    if (chance(this.#rng, options.duplicateRate)) {
       this.#schedule(
         link.key,
         localAddress,
@@ -1119,17 +1107,17 @@ export class SimulatedNetworkProvider extends NetworkProvider {
     return undefined;
   }
   #dueAt(options: RequiredLinkOptions, bytes: number): number {
-    const jitter = options.jitterMs === 0 ? 0 : (this.#rng.next() * 2 - 1) * options.jitterMs;
+    const jitter = options.jitterMs === 0 ? 0 : (this.#rng.nextFloat() * 2 - 1) * options.jitterMs;
     const bandwidthDelay =
       options.bandwidthBytesPerMs === Infinity || options.bandwidthBytesPerMs <= 0
         ? 0
         : Math.ceil(bytes / options.bandwidthBytesPerMs);
-    const reorderDelay = this.#rng.chance(options.reorderRate) ? options.reorderDelayMs : 0;
+    const reorderDelay = chance(this.#rng, options.reorderRate) ? options.reorderDelayMs : 0;
     return this.#clock + Math.max(0, options.latencyMs + jitter) + bandwidthDelay + reorderDelay;
   }
   #maybeCorrupt(data: Uint8Array, options: RequiredLinkOptions): Uint8Array {
     const out = cloneBytes(data);
-    if (out.byteLength > 0 && this.#rng.chance(options.corruptionRate)) {
+    if (out.byteLength > 0 && chance(this.#rng, options.corruptionRate)) {
       out[0] = options.corruptByte ?? out[0]! ^ 255;
     }
     return out;

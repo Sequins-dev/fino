@@ -36,14 +36,18 @@ import { MemoryFileSystem } from 'fino:file/memory';
 import { Facade, ImportMap, Realm, type ImportRule } from 'fino:realm';
 import { resolveSimConfig, type SimConfig } from 'internal:sim/config';
 import { createSeededRandom } from 'internal:sim/random';
-import { EnvelopeKind } from 'internal:realm/envelope';
+import {
+  EnvelopeKind,
+  isRpcEnvelopeKind,
+  isRpcRequestKind,
+  isRpcTerminalKind,
+} from 'internal:realm/envelope';
 import type { TransportPort } from 'internal:realm/transport-port';
 import { digest } from 'internal:openssl';
 import {
   SimJournal,
   decodeFrame,
   equalValue,
-  isFacadeFrameKind,
   type Cassette,
   type CassetteFrame,
   type CassetteManifest,
@@ -91,13 +95,6 @@ export interface SimulateOptions {
   startTime?: number;
   /** Modules the guest may import, by specifier. */
   world?: Record<string, SimProvider>;
-  /**
-   * Real modules to let through untouched, by specifier.
-   *
-   * Use sparingly: anything granted here is outside the journal, and anything
-   * that reaches real I/O is outside the simulation's determinism guarantee.
-   */
-  grant?: string[];
   /**
    * Extra import rules appended after the world's. Last match wins, so these
    * can override world entries.
@@ -220,34 +217,6 @@ function hex(bytes: Uint8Array): string {
   let value = '';
   for (const byte of bytes) value += byte.toString(16).padStart(2, '0');
   return value;
-}
-function facadeFromObject(specifier: string, provider: Record<string, unknown>): Facade {
-  const scalars: Array<[string, (...args: unknown[]) => unknown]> = [];
-  const streams: Array<[string, (...args: unknown[]) => AsyncIterable<unknown>]> = [];
-  for (const [name, value] of Object.entries(provider)) {
-    if (typeof value !== 'function') continue;
-    if (isAsyncGenerator(value)) {
-      streams.push([name, value as (...args: unknown[]) => AsyncIterable<unknown>]);
-    } else {
-      scalars.push([name, value as (...args: unknown[]) => unknown]);
-    }
-  }
-  // Scalar export names come from the constructor — `handle()` registers an
-  // implementation but does not declare the export, so the guest's import would
-  // otherwise fail to link.
-  const facade = new Facade(
-    specifier,
-    scalars.map(([name]) => name),
-  );
-  for (const [name, fn] of scalars) {
-    facade.handle(name, async (...args: unknown[]) => fn(...args));
-  }
-  for (const [name, fn] of streams) facade.stream(name, fn);
-  return facade;
-}
-function isAsyncGenerator(value: unknown): boolean {
-  const name = (value as { constructor?: { name?: string } }).constructor?.name;
-  return name === 'AsyncGeneratorFunction';
 }
 /**
  * One reply in a `FakeNet` route table.
@@ -373,7 +342,7 @@ import {
   S_IFMT, S_IFREG, S_IFDIR, S_IFLNK, S_IFSOCK, S_IFIFO, S_IFBLK, S_IFCHR,
   SEEK_SET, SEEK_CUR, SEEK_END,
   DT_UNKNOWN, DT_FIFO, DT_CHR, DT_DIR, DT_BLK, DT_REG, DT_LNK, DT_SOCK,
-} from 'internal:file/bindings';
+} from 'internal:file/constants';
 export {
   FileSystem, Stat, Entry, FileEntry, DirEntry, Glob,
   F_OK, R_OK, W_OK, X_OK,
@@ -621,68 +590,44 @@ export class FakeFs implements SimMock {
    */
   provider(): Facade {
     const fs = this.#fs;
-    const bytesOf = (data: unknown): Uint8Array =>
-      typeof data === 'string'
-        ? new TextEncoder().encode(data)
-        : new Uint8Array(data as Uint8Array);
-    const handlers = {
-      readFile: async (path: unknown) => fs.readFile(String(path)),
-      readTextFile: async (path: unknown) =>
-        new TextDecoder().decode(await fs.readFile(String(path))),
-      writeFile: async (path: unknown, contents: unknown) => {
-        await fs.writeFile(String(path), bytesOf(contents));
-        return null;
-      },
-      exists: async (path: unknown) => {
-        try {
-          await fs.stat(String(path));
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      remove: async (path: unknown) => {
-        try {
-          await fs.unlink(String(path));
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      list: async () => Object.keys(fs.snapshot()).sort(),
-      // The guest shim treats a null stat as "not there", so a missing path is
-      // an answer rather than a facade error it would have to decode.
-      stat: async (path: unknown) => describe(() => fs.stat(String(path))),
-      lstat: async (path: unknown) => describe(() => fs.lstat(String(path))),
-      symlink: async (target: unknown, linkpath: unknown) => {
-        await fs.symlink(String(target), String(linkpath));
-        return null;
-      },
-      readlink: async (path: unknown) => fs.readlink(String(path)),
-      readdir: async (path: unknown) =>
-        (await fs.readdir(String(path))).map((entry) => ({
-          name: entry.name,
-          kind: entry.isDirectory() ? 'dir' : entry.isSymlink() ? 'link' : 'file',
-        })),
-      mkdir: async (path: unknown) => {
-        await fs.mkdir(String(path));
-        return null;
-      },
-      rmdir: async (path: unknown) => {
-        await fs.rmdir(String(path));
-        return null;
-      },
-      unlink: async (path: unknown) => {
-        await fs.unlink(String(path));
-        return null;
-      },
-      rename: async (oldPath: unknown, newPath: unknown) => {
-        await fs.rename(String(oldPath), String(newPath));
-        return null;
-      },
-      realpath: async (path: unknown) => fs.realpath(String(path)),
-    };
-    return Facade.from(handlers, { specifier: FakeFs.specifier }).module(FAKE_FILE_MODULE);
+    return (
+      Facade.from(fs, {
+        specifier: FakeFs.specifier,
+        methods: [
+          'readFile',
+          'writeFile',
+          'stat',
+          'lstat',
+          'readdir',
+          'symlink',
+          'readlink',
+          'mkdir',
+          'rmdir',
+          'unlink',
+          'rename',
+          'realpath',
+        ],
+      })
+        .handle('exists', async (path: unknown) => {
+          try {
+            await fs.stat(String(path));
+            return true;
+          } catch {
+            return false;
+          }
+        })
+        // The guest shim treats a null stat as "not there", so a missing path is
+        // an answer rather than a facade error it would have to decode.
+        .handle('stat', async (path: unknown) => describe(() => fs.stat(String(path))))
+        .handle('lstat', async (path: unknown) => describe(() => fs.lstat(String(path))))
+        .handle('readdir', async (path: unknown) =>
+          (await fs.readdir(String(path))).map((entry) => ({
+            name: entry.name,
+            kind: entry.isDirectory() ? 'dir' : entry.isSymlink() ? 'link' : 'file',
+          })),
+        )
+        .module(FAKE_FILE_MODULE)
+    );
   }
 }
 /**
@@ -713,8 +658,8 @@ async function describe(
  * Run `options.entry` as a deterministic simulation.
  *
  * The guest starts from a deny-all import map: it can reach the specifiers in
- * `world` and `grant`, and nothing else. Ambient I/O is replaced with the
- * simulation boundary before the guest entry loads.
+ * `world` and explicit import rules, and nothing else. Ambient I/O is replaced
+ * with the simulation boundary before the guest entry loads.
  *
  * ```ts no_run
  * import { simulate } from 'fino:sim';
@@ -741,9 +686,6 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
     // The loop is infrastructure: without it the realm cannot run its event loop.
     { pattern: 'internal:runtime/loop', directive: 'inherit' },
   ];
-  for (const specifier of options.grant ?? []) {
-    rules.push({ pattern: specifier, directive: 'inherit' });
-  }
   // Faults are drawn parent-side from a generator seeded by the run seed and
   // consulted in call order, so the same seed fails the same calls.
   const faultRandom =
@@ -756,7 +698,7 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
       faultRandom !== null &&
       (options.faults?.only === undefined || options.faults.only.includes(specifier));
     if (injectHere) faultSpecifiers.add(specifier);
-    const facade = provider instanceof Facade ? provider : facadeFromObject(specifier, provider);
+    const facade = provider instanceof Facade ? provider : Facade.from(provider, { specifier });
     rules.push({
       pattern: specifier,
       directive: facade,
@@ -811,7 +753,7 @@ class CassettePeer {
       throw new Error('fino:sim — cassette version 2 is required');
     }
     this.#cassette = cassette;
-    this.#frames = cassette.frames.filter((frame) => isFacadeFrameKind(frame.kind));
+    this.#frames = cassette.frames.filter((frame) => isRpcEnvelopeKind(frame.kind));
   }
 
   /** Verify deterministic inputs before starting the guest. */
@@ -852,7 +794,7 @@ class CassettePeer {
   /** Install one replay dispatcher before the port's live Facade dispatcher. */
   bind(port: TransportPort): void {
     port._addControlHandler((envelope, value) => {
-      if (!isFacadeFrameKind(envelope.kind)) return false;
+      if (!isRpcEnvelopeKind(envelope.kind)) return false;
       try {
         this.#acceptInbound(envelope.kind, envelope.correlation, value, (kind, payload) =>
           port._postControl(kind, envelope.correlation, payload),
@@ -926,11 +868,7 @@ class CassettePeer {
       }
       target.send(frame.kind, decodeFrame(frame));
       this.#position++;
-      if (
-        frame.kind === EnvelopeKind.RpcResponse ||
-        frame.kind === EnvelopeKind.RpcEnd ||
-        frame.kind === EnvelopeKind.RpcError
-      ) {
+      if (isRpcTerminalKind(frame.kind)) {
         this.#correlations.delete(frame.correlation);
       }
     }
@@ -950,13 +888,7 @@ function bindFaults(
 ): void {
   const rate = faults.errorRate ?? 0;
   port._addControlHandler((envelope, value) => {
-    if (
-      envelope.kind !== EnvelopeKind.RpcRequest &&
-      envelope.kind !== EnvelopeKind.RpcStreamRequest &&
-      envelope.kind !== EnvelopeKind.SinkStart
-    ) {
-      return false;
-    }
+    if (!isRpcRequestKind(envelope.kind)) return false;
     const request = (value ?? {}) as { specifier?: unknown; method?: unknown };
     if (typeof request.specifier !== 'string' || !specifiers.has(request.specifier)) return false;
     if (random.nextFloat() >= rate) return false;

@@ -3,7 +3,7 @@
  */
 import { after, describe, it } from 'fino:test/test';
 import { Process, cwd, execPath } from 'fino:process';
-import { Facade, ImportMap, Realm, SystemDnsConfig, SystemNetConfig } from 'fino:realm';
+import { Facade, ImportMap, Realm } from 'fino:realm';
 import { leaveCluster } from 'fino:cluster';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
@@ -237,12 +237,12 @@ describe('Realm remote mode', { exclusive: true }, () => {
       t.equal(result.joined, 'hello world!', 'remote sink preserved chunk order');
     });
   });
-  it('remote import overrides and legacy provider options serialize to the worker', async (t) => {
+  it('remote import overrides serialize to the worker', async (t) => {
     await withRemoteWorker(async () => {
       const blocked = new Realm({
         entry: fixture('import-ffi.ts'),
         remote: true,
-        blocked: ['fino:ffi'],
+        overrides: ImportMap.inherit([{ pattern: 'fino:ffi', directive: 'block' }]),
       });
       await withTimeout(blocked.run(), 3e3, 'remote blocked import');
       const allowed = new Realm({
@@ -254,13 +254,9 @@ describe('Realm remote mode', { exclusive: true }, () => {
             directive: 'inherit',
           },
         ]),
-        providers: {
-          net: new SystemNetConfig(),
-          dns: new SystemDnsConfig(),
-        },
       });
-      await withTimeout(allowed.run(), 3e3, 'remote import/provider parity');
-      t.ok(true, 'remote realm accepted import rules and legacy providers');
+      await withTimeout(allowed.run(), 3e3, 'remote import parity');
+      t.ok(true, 'remote realm accepted import rules');
     });
   });
 });

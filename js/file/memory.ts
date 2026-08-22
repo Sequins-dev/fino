@@ -37,7 +37,7 @@ import {
   R_OK,
   W_OK,
   X_OK,
-} from '../internal/file/bindings.ts';
+} from '../internal/file/constants.ts';
 import { DirEntry, Entry, FileEntry } from '../internal/file/entry.ts';
 import { FileSystem, type ByteWriter, type FileHandle } from '../internal/file/provider.ts';
 import { Stat } from '../internal/file/stat.ts';

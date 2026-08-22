@@ -69,6 +69,40 @@ export const EnvelopeKind = {
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];
 
+const RPC_REQUEST_KINDS = new Set<number>([
+  EnvelopeKind.RpcRequest,
+  EnvelopeKind.RpcStreamRequest,
+  EnvelopeKind.SinkStart,
+]);
+const RPC_TERMINAL_KINDS = new Set<number>([
+  EnvelopeKind.RpcResponse,
+  EnvelopeKind.RpcEnd,
+  EnvelopeKind.RpcError,
+]);
+const RPC_KINDS = new Set<number>([
+  ...RPC_REQUEST_KINDS,
+  ...RPC_TERMINAL_KINDS,
+  EnvelopeKind.RpcChunk,
+  EnvelopeKind.SinkChunk,
+  EnvelopeKind.SinkEnd,
+  EnvelopeKind.SinkError,
+]);
+
+/** Whether `kind` belongs to facade or returned-handle RPC. */
+export function isRpcEnvelopeKind(kind: number): boolean {
+  return RPC_KINDS.has(kind);
+}
+
+/** Whether `kind` starts a scalar, read-stream, or write-stream RPC. */
+export function isRpcRequestKind(kind: number): boolean {
+  return RPC_REQUEST_KINDS.has(kind);
+}
+
+/** Whether `kind` completes a correlated RPC response stream. */
+export function isRpcTerminalKind(kind: number): boolean {
+  return RPC_TERMINAL_KINDS.has(kind);
+}
+
 /** Envelope metadata describing a realm message. */
 export interface Envelope {
   kind: EnvelopeKindValue;

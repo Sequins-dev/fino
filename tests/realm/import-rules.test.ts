@@ -6,64 +6,6 @@
  */
 import { describe, it } from 'fino:test/test';
 import { Realm, ImportMap } from 'fino:realm';
-describe('Realm import policy precedence', () => {
-  it('overrides take precedence over legacy blocked specifiers', async (t) => {
-    const realm = Realm.fromSource(
-      [
-        "import { Pointer } from 'fino:ffi';",
-        'export default () => Pointer !== undefined;',
-        '',
-      ].join('\n'),
-      {
-        overrides: ImportMap.inherit([
-          {
-            pattern: 'fino:ffi',
-            directive: 'inherit',
-          },
-        ]),
-        blocked: ['fino:ffi'],
-      },
-    );
-    t.equal(await realm.call(), true, 'blocked is ignored when overrides are present');
-  });
-  it('legacy blocked specifiers apply when overrides are absent', async (t) => {
-    const realm = new Realm({
-      blocked: ['fino:ffi'],
-      entry: new URL('./fixtures/import-ffi.ts', import.meta.url).pathname,
-    });
-    await realm.run();
-    t.ok(true, 'blocked applies in legacy policy mode');
-  });
-  it('overrides take precedence over legacy provider conversion', (t) => {
-    const throwingProviders = {
-      fs: {
-        toRules(): never {
-          throw new Error('legacy provider conversion should not run');
-        },
-      },
-    };
-    const realm = Realm.fromSource('export default () => true;\n', {
-      overrides: ImportMap.inherit([]),
-      providers: throwingProviders as any,
-    });
-    t.ok(realm instanceof Realm, 'realm constructs without converting legacy providers');
-  });
-  it('legacy provider conversion is used when overrides are absent', (t) => {
-    const throwingProviders = {
-      fs: {
-        toRules(): never {
-          throw new Error('legacy provider conversion ran');
-        },
-      },
-    };
-    t.throws(
-      () =>
-        Realm.fromSource('export default () => true;\n', { providers: throwingProviders as any }),
-      /legacy provider conversion ran/,
-      'providers are converted in legacy policy mode',
-    );
-  });
-});
 describe('ImportMap.deny', () => {
   it('prepends a block-all default before caller rules', (t) => {
     t.deepEqual(
@@ -227,7 +169,7 @@ describe('Exact pattern beats Prefix (last-match-wins)', () => {
     }
   });
 });
-describe('Capability narrowing', () => {
+describe('Import rule narrowing', () => {
   it('rejects child realm that tries to escalate past a parent block', async (t) => {
     try {
       const _realm = new Realm({

@@ -35,5 +35,5 @@ The guides in this section:
 - [Realm transport channels](./realm/transport-design.md) — the integrated design
   for observing, recording, and replaying all boundary traffic through the
   existing envelope protocol.
-- [Import Capabilities](./realm/capabilities.md) — shaping what a child realm
-  is allowed to import, using import rules and provider configs.
+- [Import maps](./realm/import-maps.md) — shaping what a child realm is allowed
+  to import, including facade-backed services.

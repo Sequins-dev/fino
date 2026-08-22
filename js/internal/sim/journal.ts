@@ -22,7 +22,7 @@
  * @internal
  */
 import { deserialize, serialize } from 'internal:serializer';
-import { EnvelopeKind } from 'internal:realm/envelope';
+import { EnvelopeKind, isRpcEnvelopeKind } from 'internal:realm/envelope';
 import type {
   TransportFrameMetadata,
   TransportFrame,
@@ -205,7 +205,7 @@ export class SimJournal {
   }
 
   #project(observation: TransportFrame, pending: Map<number, PendingCall>): void {
-    if (observation.capture === 'metadata') return;
+    if (observation.capture === 'metadata' || !isRpcEnvelopeKind(observation.kind)) return;
     const value =
       observation.capture === 'snapshot' ? observation.value : decodeStoredObservation(observation);
     const correlation = observation.correlation;
@@ -362,21 +362,5 @@ interface PendingCall {
 }
 
 function isFacadeFrame(metadata: TransportFrameMetadata): boolean {
-  return isFacadeFrameKind(metadata.kind);
-}
-
-/** Whether an envelope kind belongs to facade or handle RPC. @internal */
-export function isFacadeFrameKind(kind: number): boolean {
-  return (
-    kind === EnvelopeKind.RpcRequest ||
-    kind === EnvelopeKind.RpcStreamRequest ||
-    kind === EnvelopeKind.RpcResponse ||
-    kind === EnvelopeKind.RpcChunk ||
-    kind === EnvelopeKind.RpcEnd ||
-    kind === EnvelopeKind.RpcError ||
-    kind === EnvelopeKind.SinkStart ||
-    kind === EnvelopeKind.SinkChunk ||
-    kind === EnvelopeKind.SinkEnd ||
-    kind === EnvelopeKind.SinkError
-  );
+  return isRpcEnvelopeKind(metadata.kind);
 }

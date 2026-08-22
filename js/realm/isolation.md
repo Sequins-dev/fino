@@ -35,12 +35,11 @@ Landlock policy. Applying one of those controls to a worker would affect every
 realm scheduled there, while async FFI can run on the process-wide blocking
 pool instead.
 
-Import rules and provider overrides are still useful capability boundaries for
-cooperating application code. They are not substitutes for OS enforcement:
-native or FFI code running in the process can bypass a hidden filesystem or
-network provider. macOS scheduling QoS and Linux thread controls may govern
-reactor workers as a group, but Fino does not expose them as per-realm security
-or resource limits.
+Import maps are still useful boundaries for cooperating application code. They
+are not substitutes for OS enforcement: native or FFI code running in the
+process can bypass a facade-backed filesystem or network. macOS scheduling QoS
+and Linux thread controls may govern reactor workers as a group, but Fino does
+not expose them as per-realm security or resource limits.
 
 ## Linux sandbox thread
 

@@ -41,7 +41,7 @@ run skills, plugins, and untrusted code with only the imports you grant.
   module the child imports.
 - [Realm transport channels](./realm/transport-design.md) — the integrated design
   for observing, recording, and replaying all realm boundary traffic.
-- [Import Capabilities](./realm/capabilities.md) — the import rule system that
+- [Import maps](./realm/import-maps.md) — the import rule system that
   shapes what a child may load.
 - [Deterministic Simulation](./sim.md) — running code in a realm with a virtual
   clock, seeded randomness, and a journal of its facade interactions.

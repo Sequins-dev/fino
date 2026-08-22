@@ -103,5 +103,12 @@ separate security boundary.
    through channel envelopes.
 4. Make journals projections and cassettes storage-tee buffers.
 5. Attach replay and seeded faults as channel routes, before live facade routes.
-6. Delete `RealmSession`, facade bind wrappers, the capability gate, guest
-   filesystem special cases, and call-summary recording.
+6. Delete `RealmSession`, facade bind wrappers, the capability gate, legacy
+   provider options, and call-summary recording.
+7. Keep `ImportMap` as the only module-policy vocabulary, including in
+   simulation; services are facade directives and pure inherited modules use
+   explicit rules.
+8. Reuse `Facade.from()` for scalar and streaming object modules, with custom
+   facade source reserved for module shapes such as `fino:file` classes.
+9. Separate pure filesystem constants and value types from lazy libc access so
+   memory and facade-backed filesystems do not initialize host bindings.

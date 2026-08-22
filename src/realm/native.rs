@@ -180,7 +180,7 @@ pub(crate) fn resolve_child_package_map(
 /// `Inherit` directives from the child-specific rules are dropped — the parent's
 /// rule already covers those specifiers via the merged list.
 ///
-/// At merge time, child rules are validated for capability narrowing: a child
+/// At merge time, child rules are validated for import narrowing: a child
 /// rule that would grant access to a specifier the parent has blocked is rejected.
 pub(crate) fn parse_and_merge_rules(
     scope: &mut v8::PinScope,

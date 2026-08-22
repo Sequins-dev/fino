@@ -101,7 +101,7 @@ modules instead of one ambient global bag, so what code can do is visible in
 review — and enforceable for children. A parent decides exactly what a child
 realm may import, starting from a deny-all baseline for untrusted code;
 children cannot grant themselves modules the parent has denied. See
-[Import Capabilities](./js/realm/capabilities.md).
+[Import maps](./js/realm/import-maps.md).
 
 ```ts
 import { ImportMap, Realm } from 'fino:realm';

@@ -1,7 +1,7 @@
 ---
 weight: 15
 ---
-# Import Capabilities
+# Import maps
 
 Every import a child realm makes is evaluated against an ordered rule list. Rules come from two sources: the parent's own rules (which the child inherits), and child-specific overrides supplied at construction time. The child's overrides are appended after the parent's, so they can narrow permissions but cannot escalate past what the parent already allows.
 
@@ -36,7 +36,7 @@ const realm = new Realm({
 
 This child inherits everything the parent can import, except `fino:process`.
 
-Use `deny` when you want a tight allowlist — the child gets only what you explicitly permit. Use `inherit` when the child is trusted and you only need to remove a few capabilities.
+Use `deny` when you want a tight allowlist — the child gets only what you explicitly permit. Use `inherit` when the child is trusted and you only need to remove a few imports.
 
 ## Rule evaluation — last match wins
 
@@ -74,7 +74,7 @@ Each rule has an optional `from` field. When present, the rule only applies when
 
 Without `from`, the rule applies regardless of which module is doing the importing. The `from` field accepts the same pattern syntax as `pattern`, including `*` and prefix patterns.
 
-## Capability narrowing
+## Import narrowing
 
 The runtime enforces that children cannot escalate past what the parent allows. If the parent has blocked a specifier, the child's override list cannot grant access to it — construction throws:
 
@@ -90,24 +90,8 @@ new Realm({
 
 This is enforced by the Rust-side loader before the child realm is created. There is no way for a JS-level rule to bypass it.
 
-## Legacy provider configs
+## Import inheritance
 
-`DiskFsConfig`, `SystemNetConfig`, and `SystemDnsConfig` are legacy builder classes retained for backwards compatibility. They translate to import rules internally:
-
-```ts
-import { Realm, DiskFsConfig, SystemNetConfig } from 'fino:realm';
-
-new Realm({
-  entry: './worker.ts',
-  providers: {
-    fs:  new DiskFsConfig({ root: '/srv/app' }),
-    net: new SystemNetConfig(),
-  },
-});
-```
-
-When `overrides` is present in `RealmOptions`, both `providers` and `blocked` are ignored. Prefer `overrides` with explicit import rules for new code; the legacy fields exist only to avoid breaking existing configurations that predate the `overrides` API.
-
-## Provider inheritance
-
-Child realms inherit the parent's provider overrides by default. You do not need to re-declare filesystem or network configuration in every child — the parent's settings flow down automatically unless the child's rule list overrides them.
+Child realms inherit the parent's import rules by default. You do not need to
+re-declare filesystem or network facades in every child: the parent's rules flow
+down unless the child's import map narrows or replaces them.

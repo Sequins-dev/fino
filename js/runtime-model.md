@@ -116,7 +116,7 @@ await realm.run();
 Realms run embedded in the current isolate, in their own thread, in a separate
 process, or on a remote cluster machine, with the same import-rule, messaging,
 and facade model in every mode. See the [Realms section](./realm.md), and
-[Import Capabilities](./realm/capabilities.md) for the rule system.
+[Import maps](./realm/import-maps.md) for the rule system.
 
 Process execution adds an operating-system boundary on top. `fino:process` can
 request sandbox policies (filesystem, network, process, resource limits) for
