@@ -15,6 +15,7 @@ in another CLI, MCP server, agent tool set, or test harness.
 - [`fino repl`](./cli/repl.md) starts an interactive evaluation session.
 - [`fino test`](./cli/test.md) imports test modules and emits TAP-13.
 - [`fino bench`](./cli/bench.md) runs adaptive benchmark measurements.
+- [`fino load`](./cli/load.md) load tests HTTP/1.1, HTTP/2, and HTTP/3 endpoints.
 - [`fino task`](./cli/task.md) loads project-local `Task` modules.
 - [`fino init`](./cli/init.md) creates a package manifest.
 - [`fino install`](./cli/install.md) installs npm packages into `.fino/`.

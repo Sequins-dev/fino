@@ -2,8 +2,8 @@
  * fino:commands/root — reusable root Fino command task.
  *
  * Composes the top-level `fino` command from the built-in subcommand tasks —
- * `run`, `test`, `bench`, `install`, `init`, `doc`, `fmt`, `lint`, `task`,
- * and `repl` — and layers the shorthand behavior on top: `fino <script>`
+ * `run`, `test`, `bench`, `load`, `install`, `init`, `doc`, `fmt`, `lint`,
+ * `task`, and `repl` — and layers the shorthand behavior on top: `fino <script>`
  * executes the script directly (delegating to `fino:commands/run`), and bare
  * `fino` with no arguments starts the interactive REPL.
  *
@@ -28,6 +28,7 @@
 import { Task } from '../task.ts';
 import testCommand from './test.ts';
 import benchCommand from './bench.ts';
+import loadCommand from './load.ts';
 import installCommand from './install.ts';
 import initCommand from './init.ts';
 import docCommand from './doc.ts';
@@ -124,6 +125,7 @@ const command = new Task({
     runCommand,
     testCommand,
     benchCommand,
+    loadCommand,
     installCommand,
     initCommand,
     docCommand,
