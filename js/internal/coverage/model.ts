@@ -2,10 +2,10 @@
  * internal:coverage/model — original-source coverage processing.
  *
  * This module owns the data plane for Fino coverage: V8 UTF-16 offset
- * normalization, source-map projection, Realm shards, deterministic
- * aggregation, metrics, and artifact I/O. The only native operation used by
- * normalization is a batched lookup into the source maps already parsed and
- * retained by the module loader.
+ * normalization, source-map decoding and projection, Realm shards,
+ * deterministic aggregation, metrics, and artifact I/O. The loader exposes
+ * its cached source-map JSON; all coverage-specific interpretation happens in
+ * this module.
  *
  * V8 ranges come from the precise-coverage subset of the
  * [Chrome DevTools Protocol](https://chromedevtools.github.io/devtools-protocol/tot/Profiler/).
@@ -19,7 +19,7 @@ import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from
 import { cwd, pid } from '../../process.ts';
 import { setTimeout } from '../../globals/time.ts';
 import { TextDecoder, TextEncoder } from '../../globals/encoding.ts';
-import { mapCoveragePositions } from 'internal:coverage/bindings';
+import { getSourceMap } from 'internal:loader-hooks';
 
 export interface CoverageMetric {
   covered: number;
@@ -174,6 +174,20 @@ interface PositionMap {
   positions: Array<OriginalPosition | null>;
 }
 
+interface SourceMapData {
+  version: number;
+  sources: Array<string | null>;
+  sourceRoot?: string;
+  mappings: string;
+}
+
+interface DecodedMapping {
+  column: number;
+  source?: string;
+  line?: number;
+  sourceColumn?: number;
+}
+
 interface GeneratedLine {
   number: number;
   start: number;
@@ -211,6 +225,7 @@ const emptyTotals = (): CoverageTotals => ({
 });
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 let runSequence = 0;
+const base64Digits = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 async function ensureDirectory(path: string): Promise<void> {
   if (path === '.' || path === '/') return;
@@ -363,8 +378,118 @@ function collectGeneratedPositions(
   return [...positions.values()];
 }
 
-function nativePositionMap(url: string, positions: GeneratedPosition[]): PositionMap {
-  return JSON.parse(mapCoveragePositions(url, JSON.stringify(positions))) as PositionMap;
+function decodeVlq(segment: string): number[] {
+  const values: number[] = [];
+  let value = 0;
+  let shift = 0;
+  for (const character of segment) {
+    const digit = base64Digits.indexOf(character);
+    if (digit < 0) throw new Error(`invalid source-map base64 digit ${JSON.stringify(character)}`);
+    value += (digit & 31) * 2 ** shift;
+    if ((digit & 32) !== 0) {
+      shift += 5;
+      continue;
+    }
+    if (value >= 2 ** 32) throw new Error('source-map VLQ value exceeds 32 bits');
+    const magnitude = Math.floor(value / 2);
+    if (magnitude >= 2 ** 31) throw new Error('source-map VLQ magnitude exceeds 31 bits');
+    values.push((value & 1) === 0 ? magnitude : magnitude === 0 ? -(2 ** 31) : -magnitude);
+    value = 0;
+    shift = 0;
+  }
+  if (shift !== 0) throw new Error('unterminated source-map VLQ value');
+  return values;
+}
+
+function rootedSource(sourceRoot: string | undefined, source: string): string {
+  if (!sourceRoot) return source;
+  return `${sourceRoot}${sourceRoot.endsWith('/') ? '' : '/'}${source}`;
+}
+
+/** Decode ECMA-426 source-map segments into generated-line lookup tables. @internal */
+export function decodeSourceMapMappings(sourceMapJson: string): DecodedMapping[][] {
+  const map = JSON.parse(sourceMapJson) as SourceMapData;
+  if (map.version !== 3 || !Array.isArray(map.sources) || typeof map.mappings !== 'string') {
+    throw new Error('unsupported source map');
+  }
+  const lines: DecodedMapping[][] = [];
+  let sourceIndex = 0;
+  let originalLine = 0;
+  let originalColumn = 0;
+  let nameIndex = 0;
+  for (const encodedLine of map.mappings.split(';')) {
+    let generatedColumn = 0;
+    const line: DecodedMapping[] = [];
+    for (const encodedSegment of encodedLine.split(',')) {
+      if (encodedSegment.length === 0) continue;
+      const fields = decodeVlq(encodedSegment);
+      if (fields.length !== 1 && fields.length !== 4 && fields.length !== 5) {
+        throw new Error('invalid source-map segment field count');
+      }
+      generatedColumn += fields[0]!;
+      if (generatedColumn < 0) throw new Error('source-map generated column became negative');
+      const mapping: DecodedMapping = { column: generatedColumn };
+      if (fields.length >= 4) {
+        sourceIndex += fields[1]!;
+        originalLine += fields[2]!;
+        originalColumn += fields[3]!;
+        if (sourceIndex < 0 || originalLine < 0 || originalColumn < 0) {
+          throw new Error('source-map original position became negative');
+        }
+        const source = map.sources[sourceIndex];
+        if (source === undefined) throw new Error('source-map segment references a missing source');
+        if (source !== null) {
+          mapping.source = rootedSource(map.sourceRoot, source);
+          mapping.line = originalLine;
+          mapping.sourceColumn = originalColumn;
+        }
+      }
+      if (fields.length === 5) nameIndex += fields[4]!;
+      line.push(mapping);
+    }
+    lines.push(line);
+  }
+  void nameIndex;
+  return lines;
+}
+
+/** Map zero-based generated positions through source-map JSON in TypeScript. @internal */
+export function mapSourceMapPositions(
+  sourceMapJson: string,
+  positions: GeneratedPosition[],
+): PositionMap {
+  const lines = decodeSourceMapMappings(sourceMapJson);
+  const mappingAt = (position: GeneratedPosition): DecodedMapping | undefined => {
+    const mappings = lines[position.line];
+    if (mappings === undefined) return;
+    for (let index = mappings.length - 1; index >= 0; index--) {
+      const candidate = mappings[index]!;
+      if (candidate.column <= position.column) {
+        return mappings.find((mapping) => mapping.column === candidate.column);
+      }
+    }
+  };
+  return {
+    hasMap: true,
+    positions: positions.map((position) => {
+      const mapping = mappingAt(position);
+      if (
+        mapping?.source === undefined ||
+        mapping.line === undefined ||
+        mapping.sourceColumn === undefined
+      ) {
+        return null;
+      }
+      return { source: mapping.source, line: mapping.line, column: mapping.sourceColumn };
+    }),
+  };
+}
+
+function sourcePositionMap(url: string, positions: GeneratedPosition[]): PositionMap {
+  const sourceMap = (getSourceMap as (resource: string) => string | null)(url);
+  return sourceMap === null
+    ? { hasMap: false, positions: [] }
+    : mapSourceMapPositions(sourceMap, positions);
 }
 
 async function normalizeScript(
@@ -378,7 +503,7 @@ async function normalizeScript(
 ): Promise<void> {
   const lines = generatedLines(source);
   const positions = collectGeneratedPositions(source, lines, script.functions);
-  const mapped = nativePositionMap(script.url, positions);
+  const mapped = sourcePositionMap(script.url, positions);
   const extension = extname(generatedPath);
   if (['.ts', '.tsx', '.mts', '.jsx'].includes(extension) && !mapped.hasMap) {
     warnings.push(`excluded ${generatedPath} because its transform has no valid source map`);
@@ -556,7 +681,30 @@ async function atomicWrite(path: string, value: string, suffix: string): Promise
   await fs.rename(temporary, path);
 }
 
-/** Atomically replace a Realm's native crash placeholder with its final shard. @internal */
+/** Publish a missing-Realm marker synchronously before native Realm creation. @internal */
+export function writeCoveragePlaceholderSync(
+  config: CoverageRunConfig,
+  realm: CoverageRealm,
+): void {
+  const bytes = encoder.encode(
+    JSON.stringify({
+      realm,
+      files: [],
+      warnings: ['Realm did not submit a final coverage snapshot'],
+    }),
+  );
+  const file = fs.openSync(shardPath(config, realm.id), 'w');
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      offset += file.pwriteSync(offset, bytes.subarray(offset));
+    }
+  } finally {
+    file.closeSync();
+  }
+}
+
+/** Atomically replace a Realm's crash placeholder with its final shard. @internal */
 export async function writeCoverageShard(
   config: CoverageRunConfig,
   shard: RealmShard,

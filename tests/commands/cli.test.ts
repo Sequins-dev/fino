@@ -1242,6 +1242,58 @@ describe('CLI commands', () => {
       },
     );
   });
+  it('keeps a TypeScript placeholder for an abruptly exited process Realm', async (t) => {
+    await withTempProject(
+      {
+        'crash.ts': ["import { exit } from 'fino:process';", 'exit(7);', ''].join('\n'),
+        'crash.test.ts': [
+          "import { describe, it } from 'fino:test/test';",
+          "import { Realm } from 'fino:realm';",
+          "const entry = new URL('./crash.ts', import.meta.url).pathname;",
+          "describe('crash coverage', () => {",
+          "  it('observes the failed Realm', async (t) => {",
+          '    const realm = new Realm({ entry, process: true });',
+          '    let rejected = false;',
+          '    try { await realm.run(); } catch { rejected = true; }',
+          "    t.ok(rejected, 'process Realm exits nonzero');",
+          '  });',
+          '});',
+          '',
+        ].join('\n'),
+      },
+      async (dir, fs) => {
+        const { stdout, result } = await runCli(
+          ['test', '--coverage=coverage/crash.json', 'crash.test.ts'],
+          { cwd: dir },
+        );
+        t.equal(result.code, 0, 'the caught child failure does not fail the test run');
+        t.ok(stdout.includes('#   realms     1 complete, 1 incomplete'));
+        const artifact = JSON.parse(
+          (await fs.readFile(dir + '/coverage/crash.json')) as unknown as string,
+        ) as {
+          run: { complete: boolean };
+          realms: Array<{ kind: string; status: string }>;
+          warnings: string[];
+        };
+        t.equal(
+          artifact.run.complete,
+          false,
+          'the missing child snapshot marks the run incomplete',
+        );
+        t.equal(
+          artifact.realms.find((realm) => realm.kind === 'process')?.status,
+          'missing',
+          'the parent-written child placeholder survives the abrupt exit',
+        );
+        t.ok(
+          artifact.warnings.some((warning) =>
+            warning.includes('Realm did not submit a final coverage snapshot'),
+          ),
+          'the placeholder explains why the Realm is incomplete',
+        );
+      },
+    );
+  });
   it('reports after hook failures from the test command', async (t) => {
     await withTempProject(
       {

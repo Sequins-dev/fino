@@ -73,7 +73,6 @@ pub struct SpawnConfig {
     pub package_map_json: Option<String>,
     pub realm_data: Option<String>,
     pub realm_bootstrap_data: Option<String>,
-    pub coverage_parent_id: Option<String>,
 }
 
 /// Parent-side ownership and transport for a Linux sandbox Realm.
@@ -189,8 +188,6 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
                     isolate_handle: Some(isolate_handle_for_thread),
                     force_requested: Some(force_requested_for_thread),
                     reload_requested_signal: None,
-                    coverage_kind: "sandbox",
-                    coverage_parent_id: config.coverage_parent_id,
                 })
             }));
             let message = match result {

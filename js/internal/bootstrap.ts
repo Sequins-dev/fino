@@ -85,7 +85,11 @@ import {
   getRealmBootstrapData,
 } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
-import { finishRealmCoverage, startRealmCoverage } from 'internal:coverage';
+import {
+  finishRealmCoverage,
+  startRealmCoverage,
+  type CoverageRealmContext,
+} from 'internal:coverage';
 import {
   setTimeout,
   clearTimeout,
@@ -427,6 +431,24 @@ export function driveLoop(isDone: () => boolean, onDone: () => void): void {
 // If the entry has no default function export, the child stays alive (for
 // multi-event messaging) until the parent calls terminate().
 const _childEntry = getEntryPath() as string | undefined;
+interface RuntimeBootstrapData {
+  cliOtel?: {
+    endpoint?: string;
+    script?: string;
+    debug?: boolean;
+  };
+  sandbox?: unknown;
+  coverage?: CoverageRealmContext;
+}
+const _runtimeBootstrapData = (() => {
+  const raw = (getRealmBootstrapData as () => string | undefined)();
+  if (raw === undefined) return undefined;
+  try {
+    return JSON.parse(raw) as RuntimeBootstrapData;
+  } catch {
+    return undefined;
+  }
+})();
 // A realm reached over a wake pipe (every reactor-pooled and process realm)
 // talks to its parent through a realm port. A root realm has none.
 const _threadWakeReadFd = getWakeReadFd() as number;
@@ -436,7 +458,7 @@ const _childPort: RealmPort | undefined =
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
 if (_childEntry) {
-  startRealmCoverage();
+  startRealmCoverage(_runtimeBootstrapData?.coverage);
   let _childDone = false;
   let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
@@ -469,25 +491,8 @@ if (_childEntry) {
   async function _loadChildEntry(): Promise<{
     default?: unknown;
   }> {
-    let sandboxPolicy: unknown;
-    let cliOtel:
-      | {
-          endpoint?: string;
-          script?: string;
-          debug?: boolean;
-        }
-      | undefined;
-    const bootstrapRaw = (getRealmBootstrapData as () => string | undefined)();
-    if (bootstrapRaw !== undefined) {
-      try {
-        const bootstrap = JSON.parse(bootstrapRaw) as {
-          cliOtel?: typeof cliOtel;
-          sandbox?: unknown;
-        };
-        cliOtel = bootstrap.cliOtel;
-        sandboxPolicy = bootstrap.sandbox;
-      } catch {}
-    }
+    let sandboxPolicy = _runtimeBootstrapData?.sandbox;
+    let cliOtel = _runtimeBootstrapData?.cliOtel;
     if (sandboxPolicy !== undefined) {
       const { installSandboxRealmPolicy } = await import('internal:security/sandbox/realm');
       installSandboxRealmPolicy(

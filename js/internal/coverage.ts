@@ -2,9 +2,10 @@
  * internal:coverage — V8 precise-coverage protocol client.
  *
  * Coverage-specific Chrome DevTools Protocol behavior lives here rather than
- * in the Rust inspector binding. The native side provides only generic
- * inspector transport, Realm/run lifecycle coordination, and batched access
- * to the loader's parsed source maps.
+ * in the Rust inspector binding. Coverage run identity, Realm inheritance,
+ * crash placeholders, normalization, and aggregation are all implemented in
+ * TypeScript. Native code provides only generic inspector transport, loader
+ * source-map access, and Realm bootstrap-data transport.
  *
  * The collector implements the precise-coverage subset of:
  *
@@ -13,21 +14,18 @@
  *
  * V8 returns generated JavaScript ranges. TypeScript normalization maps their
  * end-exclusive UTF-16 offsets according to [ECMA-426](https://tc39.es/ecma426/)
- * through a minimal batched lookup into the source maps cached by Fino's
- * loader.
+ * by decoding source-map JSON obtained through Fino's generic loader hook.
  *
  * @internal
  */
 import { dispatch, nextId, onMessage } from 'internal:inspector';
-import {
-  completeCoverageRealm,
-  coverageActive,
-  coverageRealmContext,
-  finishCoverageRun,
-  startCoverageRun,
-} from 'internal:coverage/bindings';
+import { version as runtimeVersion } from 'internal:process';
+import { pid } from '../process.ts';
+import { writeCoveragePlaceholderSync } from 'internal:coverage/model';
 import type {
+  CoverageRealm,
   CoverageRealmContext,
+  CoverageRunConfig,
   CoverageSnapshot,
   CoverageSummary,
   RawScript,
@@ -161,18 +159,48 @@ export function createCoverageProtocol(send: CoverageProtocolRequest): CoverageP
 
 const protocol = createCoverageProtocol(request);
 let collecting = false;
-let toolVersion = '';
+let context: CoverageRealmContext | null = null;
+let ownedRun: CoverageRunConfig | null = null;
+let childSequence = 0;
 
-function currentContext(): CoverageRealmContext | null {
-  const value = coverageRealmContext();
-  return typeof value === 'string' ? (JSON.parse(value) as CoverageRealmContext) : null;
+function missingRealm(
+  id: string,
+  parentId: string | null,
+  kind: string,
+  entry: string | null,
+): CoverageRealm {
+  const metric = { covered: 0, total: 0, percent: 0 };
+  return {
+    id,
+    parentId,
+    kind,
+    entry,
+    status: 'missing',
+    totals: { lines: { ...metric }, functions: { ...metric }, branches: { ...metric } },
+  };
 }
 
-/** Start the current registered Realm's inspector collector when coverage is active. @internal */
-export function startRealmCoverage(): void {
-  if (collecting || !coverageActive()) return;
-  const context = currentContext();
-  if (context !== null) toolVersion = context.toolVersion;
+/** Create and register the bootstrap context for one child Realm. @internal */
+export function createChildCoverageContext(
+  kind: string,
+  entry: string | null,
+): CoverageRealmContext | undefined {
+  if (context === null) return undefined;
+  const child: CoverageRealmContext = {
+    run: context.run,
+    realm: missingRealm(`${context.realm.id}.${childSequence++}`, context.realm.id, kind, entry),
+    toolVersion: context.toolVersion,
+  };
+  writeCoveragePlaceholderSync(child.run, child.realm);
+  return child;
+}
+
+/** Start this Realm's inspector collector, adopting inherited bootstrap state. @internal */
+export function startRealmCoverage(inherited?: CoverageRealmContext): void {
+  if (collecting) return;
+  if (inherited !== undefined) context = inherited;
+  if (context === null) return;
+  writeCoveragePlaceholderSync(context.run, context.realm);
   protocol.start();
   collecting = true;
 }
@@ -181,31 +209,37 @@ export function startRealmCoverage(): void {
 export async function finishRealmCoverage(): Promise<void> {
   if (!collecting) return;
   collecting = false;
-  const context = currentContext();
-  if (context === null) return;
+  const realmContext = context;
+  context = null;
+  if (realmContext === null) return;
   const snapshot = protocol.take();
   const { normalizeCoverageSnapshot, writeCoverageShard } = await import('internal:coverage/model');
   let shard;
   try {
-    shard = await normalizeCoverageSnapshot(context, snapshot);
+    shard = await normalizeCoverageSnapshot(realmContext, snapshot);
   } catch (error) {
     shard = {
-      realm: { ...context.realm, status: 'missing' },
+      realm: { ...realmContext.realm, status: 'missing' },
       files: [],
       warnings: [
         `unable to normalize coverage: ${error instanceof Error ? error.message : String(error)}`,
       ],
     };
   }
-  await writeCoverageShard(context.run, shard);
-  completeCoverageRealm();
+  await writeCoverageShard(realmContext.run, shard);
 }
 
 /** Start a test coverage run and its root-Realm collector. @internal */
 export async function startCoverage(path: string): Promise<void> {
   const { prepareCoverageRun } = await import('internal:coverage/model');
+  if (ownedRun !== null || context !== null) throw new Error('a coverage run is already active');
   const config = await prepareCoverageRun(path);
-  startCoverageRun(JSON.stringify(config));
+  ownedRun = config;
+  context = {
+    run: config,
+    realm: missingRealm(`realm-${pid}-0`, null, 'test', null),
+    toolVersion: runtimeVersion,
+  };
   startRealmCoverage();
 }
 
@@ -217,13 +251,14 @@ export async function finishCoverage(): Promise<CoverageSummary | null> {
   } catch (error) {
     collectionError = error;
   }
-  const run = finishCoverageRun();
+  const run = ownedRun;
+  ownedRun = null;
   let summary: CoverageSummary | null = null;
   let finalizationError: unknown;
-  if (typeof run === 'string') {
+  if (run !== null) {
     try {
       const { finishCoverageArtifact } = await import('internal:coverage/model');
-      summary = await finishCoverageArtifact(JSON.parse(run), toolVersion);
+      summary = await finishCoverageArtifact(run, runtimeVersion);
     } catch (error) {
       finalizationError = error;
     }

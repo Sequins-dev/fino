@@ -26,7 +26,7 @@ quite automatic at the coverage-protocol boundary: V8 reports coverage as
 UTF-16 offsets in generated JavaScript, while `Debugger.scriptParsed` exposes
 the script's `sourceMapURL`. Fino must join those records and map generated
 ranges back to original sources. The existing loader already supplies inline
-source maps to V8 and caches parsed maps, so this is mostly integration rather
+source maps to V8 and caches them, so this is mostly integration rather
 than a second transpilation pipeline.
 
 ## Goals
@@ -223,9 +223,10 @@ outside this release's scope.
 
 The test command enables the run before it imports any test modules. Existing
 CLI bootstrap modules have already executed by then, but they are runtime code
-and excluded from application totals. Any Realm created while the run is active
-inherits the coverage-run configuration and starts its Isolate-local collector
-from the shared TypeScript bootstrap before its user entry module is evaluated.
+and excluded from application totals. Any local Realm created while the run is
+active receives a coverage context in the existing runtime bootstrap-data
+payload and starts its Isolate-local collector from the shared TypeScript
+bootstrap before its user entry module is evaluated.
 
 Finalization cannot live solely at the end of `js/commands/test.ts`. The
 scheduler bootstrap currently runs shutdown hooks after the selected command
@@ -241,28 +242,37 @@ for every Realm registered in the coverage run to submit or reach a known
 terminal state. A force-terminated or crashed Realm is marked incomplete; the
 coordinator does not wait forever for a shard which cannot arrive.
 
-### Process-wide coordinator
+### TypeScript coordinator
 
 Coverage is enabled in a test workload Isolate, but participating Realms can
 run on reactor workers, dedicated threads, or child processes. The TypeScript
-coordinator owns:
+coordinator in each participating Isolate owns:
 
 - the resolved artifact path and run root;
-- expected, received, and incomplete Realm shards;
+- child Realm ids, parent relationships, and incomplete-Realm placeholders;
 - canonicalization, source-map remapping, aggregation, and artifact writing;
 - the final summary returned to the scheduler bootstrap.
 
-The deliberately thin native boundary owns only work that cannot safely move
-out of the host: propagating the serialized run configuration through existing
-Realm/process creation plumbing, allocating per-process Realm ids, writing a
-missing placeholder before TypeScript or user code can run, and performing a
-batched lookup against each loader-owned parsed source-map cache. The
-`internal:coverage/bindings` synthetic module exposes those operations as data;
-all policy remains in TypeScript.
+There is no coverage-specific native coordinator, `FinoState` field, Realm
+launch argument, process-global, or synthetic coverage binding. `fino:realm`
+allocates child ids in TypeScript, writes the missing shard synchronously, and
+adds the complete coverage context to its existing JSON bootstrap metadata.
+Scheduled, sandbox, and process launchers already transport that opaque
+metadata, including across process boundaries. The child TypeScript bootstrap
+adopts it before importing user code. Remote Realms are not part of the initial
+coverage run because their filesystem is not necessarily shared with the
+artifact owner.
 
-Each Realm atomically replaces its native crash placeholder in a run-specific
-temporary shard directory from TypeScript. This works for in-process and
-process Realms without adding coverage messages to the user Realm protocol.
+The only new native interface is generic loader introspection:
+`internal:loader-hooks.getSourceMap(resource)` serializes the parsed source map
+already cached for that resource. The loader does not decode mappings on behalf
+of coverage. Inspector dispatch remains the pre-existing generic transport,
+and the runtime version is ordinary `internal:process` metadata.
+
+Each Realm atomically replaces its TypeScript-written crash placeholder in a
+run-specific temporary shard directory from TypeScript. This works for
+in-process and process Realms without adding coverage messages to the user
+Realm protocol.
 The owning test process is the only final artifact writer, so individual Realms
 never race to overwrite the canonical JSON path.
 
@@ -270,26 +280,25 @@ never race to overwrite the canonical JSON path.
 
 Existing scheduler workload owner ids are not sufficient as coverage Realm
 identity: they describe reactor ownership, do not cover every Realm kind, and
-are not intended as an artifact contract. Add an explicit, run-scoped Realm id
-to `FinoState`, scheduled-workload setup, `ChildConfig`, and process/thread
-launch configuration.
-
-Each participating process assigns ids of the form
-`realm-<process-id>-<counter>`. They are unique within one artifact but are not
-promised to remain the same across runs. Each descriptor contains:
+are not intended as an artifact contract. The root TypeScript collector starts
+with `realm-<process-id>-0`. A parent allocates child ids by appending a local
+counter to its own id, for example `realm-123-0.1.0`. Hierarchical allocation is
+unique even when child Isolates share a process and each has its own module
+state. IDs are not promised to remain the same across runs. Each descriptor
+contains:
 
 ```json
 {
   "id": "realm-1",
   "parentId": "realm-0",
-  "kind": "thread",
+  "kind": "scheduled",
   "entry": "src/workers/parser.ts",
   "status": "complete"
 }
 ```
 
-The initial test workload is a Realm. Spawned scheduled, thread, process, and
-sandbox Realms receive their own descriptors and parent relationship. Internal
+The initial test workload is a Realm. Spawned scheduled, process, and sandbox
+Realms receive their own descriptors and parent relationship. Internal
 orchestration contexts which never execute test/application code need not
 contribute a shard.
 
@@ -311,13 +320,16 @@ runtime. Fino must perform that last mapping step, as tools such as c8 do.
 Fino is well positioned for this because the loader already:
 
 - supplies a data-URL source map when compiling transformed modules;
-- stores parsed `oxc_sourcemap::SourceMap` values by resource name; and
+- stores parsed source maps by resource name; and
 - uses those maps for original-source stack locations.
 
-The coverage collector uses the loader's parsed map as the authoritative
-in-memory source. Every filesystem module supported by the normal loader passes
-through this cache, avoiding a second parse of inline maps. A future release
-can add a `sourceMapURL` fallback for scripts compiled outside the loader.
+The coverage collector asks the generic loader hook for cached map JSON, then
+decodes ECMA-426 base64 VLQ segments and performs greatest-lower-bound generated
+column lookup in TypeScript. Every filesystem module supported by the normal
+loader passes through this cache. Rust continues using its parsed form for
+stack traces, but coverage does not call that lookup implementation. A future
+release can add a `sourceMapURL` fallback for scripts compiled outside the
+loader.
 
 ### Mapping algorithm
 
@@ -329,7 +341,9 @@ For each covered script:
    range, excluding blank and comment-only lines.
 3. Map each line's first executable column and each function/block range's
    endpoints to original source positions according to ECMA-426 source-map
-   semantics.
+   segment semantics. Coverage deliberately requires a mapping on the same
+   generated line; carrying the previous generated line's mapping forward can
+   falsely attribute compiler-generated code to an executable source line.
 4. Drop segments with no original source mapping from application totals, but
    retain a warning/count so gaps are observable.
 5. Normalize and merge adjacent original segments only when source, coverage
@@ -506,7 +520,7 @@ off the ordinary test hot path:
 
 - do not initialize an inspector coverage session without `--coverage`;
 - normalize each Realm in TypeScript while its loader source-map cache is still
-  alive, using one native mapping batch per script, then aggregate compact
+  alive, retrieving cached source-map JSON once per script, then aggregate compact
   original-source shards in the parent;
 - fetch generated source only for scripts which survive basic URL filtering;
 - parse each distinct source map and source text once per content hash; and
@@ -536,10 +550,10 @@ unexpected protocol limitation.
 
 - Add the optional-inline-value option shape to `fino:process/argv` and define
   `fino test --coverage[=<path>]`.
-- Add thin native run propagation, explicit Realm ids, parent ids, and
-  pre-bootstrap crash placeholders.
-- Propagate coverage configuration through scheduled, thread, process, and
-  sandbox Realm creation.
+- Allocate Realm ids, parent ids, and pre-bootstrap crash placeholders in
+  TypeScript.
+- Propagate coverage configuration through the existing opaque Realm bootstrap
+  metadata used by scheduled, process, and sandbox Realm creation.
 - Start collectors before child bootstrap evaluation and submit shards before
   Isolate disposal.
 - Finalize after scheduler shutdown hooks while preserving the original test
@@ -549,7 +563,7 @@ unexpected protocol limitation.
 
 - Implement UTF-16 offset indexing, end-exclusive range splitting, source-map
   segment mapping, overlap unioning, content hashing, and deterministic sorting
-  in TypeScript. Native code exposes only batched cached-map lookups.
+  in TypeScript. Native code exposes only generic cached source-map JSON.
 - Derive line, function, and V8 block-based branch records.
 - Apply and serialize the initial file-selection policy.
 - Write the versioned JSON artifact atomically and print the grouped TAP block.
@@ -585,7 +599,7 @@ coverage. The broader regression matrix remains:
   inline data URLs, malformed maps, UTF-16 columns, and end-exclusive ranges.
 - Aggregation: duplicate modules across Realms, union totals, Realm-specific
   totals, conflicting hashes, deterministic ordering, and incomplete shards.
-- Realm integration: scheduled, thread, process, sandbox, nested parent ids,
+- Realm integration: scheduled, process, sandbox, nested parent ids,
   clean shutdown, forced termination, and crash reporting.
 - CLI: default/custom artifact paths, test failure with artifact, grouped TAP
   comments, JSON writer behavior, each inspection subcommand, missing/newer

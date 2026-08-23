@@ -275,7 +275,6 @@ fn create_sandbox_context(
         let package_map_json = resolve_child_package_map(scope, &process_env.root);
         let realm_data = optional_string_arg(scope, args.get(3));
         let realm_bootstrap_data = optional_string_arg(scope, args.get(4));
-        let coverage_parent_id = get_state(scope).borrow().coverage_realm_id.clone();
         let handle = match thread::spawn_sandbox_realm(thread::SpawnConfig {
             process_env,
             entry_path,
@@ -283,7 +282,6 @@ fn create_sandbox_context(
             package_map_json,
             realm_data,
             realm_bootstrap_data,
-            coverage_parent_id,
         }) {
             Ok(handle) => handle,
             Err(error) => {
@@ -549,8 +547,6 @@ fn create_process_context(
         watch_mode,
         realm_data,
         realm_bootstrap_data,
-        coverage_parent_id: get_state(scope).borrow().coverage_realm_id.clone(),
-        coverage_run: crate::coverage::current_run_config(),
     };
     let handle = match process::spawn_process_realm(spawn_args) {
         Ok(h) => h,

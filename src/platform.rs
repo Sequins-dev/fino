@@ -4,12 +4,13 @@ use crate::state::get_state;
 
 /// Build the `internal:process` synthetic module.
 ///
-/// Exports: `os`, `arch`, `args`, `env`, `execPath`.
+/// Exports: `os`, `arch`, `args`, `env`, `execPath`, `version`.
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> = ["os", "arch", "args", "env", "execPath"]
-        .iter()
-        .map(|n| v8::String::new(scope, n).unwrap())
-        .collect();
+    let export_names: Vec<v8::Local<v8::String>> =
+        ["os", "arch", "args", "env", "execPath", "version"]
+            .iter()
+            .map(|n| v8::String::new(scope, n).unwrap())
+            .collect();
 
     let module_name = v8::String::new(scope, "internal:process").unwrap();
     v8::Module::create_synthetic_module(scope, module_name, &export_names, eval_steps)
@@ -74,6 +75,9 @@ fn eval_steps<'a>(
     // execPath
     let exec_val = v8::String::new(scope, &process_env.exec_path.clone())?;
     set_export(scope, module, "execPath", exec_val.into())?;
+
+    let version = v8::String::new(scope, env!("CARGO_PKG_VERSION"))?;
+    set_export(scope, module, "version", version.into())?;
 
     Some(v8::undefined(scope).into())
 }

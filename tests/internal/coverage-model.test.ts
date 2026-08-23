@@ -2,7 +2,9 @@ import { describe, it } from 'fino:test/test';
 import {
   aggregateCoverageShards,
   coverageMetric,
+  decodeSourceMapMappings,
   generatedLines,
+  mapSourceMapPositions,
   offsetToLineColumn,
   sourceHash,
   type CoverageRunConfig,
@@ -78,6 +80,68 @@ describe('coverage model', () => {
     t.equal(sourceHash(new Uint8Array()), 'fnv64:cbf29ce484222325', 'empty FNV-1a is stable');
     t.deepEqual(coverageMetric(2, 3), { covered: 2, total: 3, percent: 66.67 });
     t.deepEqual(coverageMetric(0, 0), { covered: 0, total: 0, percent: 0 });
+  });
+
+  it('decodes source maps and applies greatest-lower-bound column lookup', (t) => {
+    const json = JSON.stringify({
+      version: 3,
+      sourceRoot: '../source',
+      sources: ['value.ts'],
+      names: [],
+      mappings: 'AAAA,IAAI;AACA',
+    });
+    t.deepEqual(
+      decodeSourceMapMappings(json),
+      [
+        [
+          { column: 0, source: '../source/value.ts', line: 0, sourceColumn: 0 },
+          { column: 4, source: '../source/value.ts', line: 0, sourceColumn: 4 },
+        ],
+        [{ column: 0, source: '../source/value.ts', line: 1, sourceColumn: 4 }],
+      ],
+      'VLQ deltas carry across generated lines while generated columns reset',
+    );
+    t.deepEqual(
+      mapSourceMapPositions(json, [
+        { line: 0, column: 3 },
+        { line: 0, column: 4 },
+        { line: 1, column: 20 },
+        { line: 2, column: 0 },
+      ]).positions,
+      [
+        { source: '../source/value.ts', line: 0, column: 0 },
+        { source: '../source/value.ts', line: 0, column: 4 },
+        { source: '../source/value.ts', line: 1, column: 4 },
+        null,
+      ],
+      'positions use the last mapping on the same generated line at or before the column',
+    );
+  });
+
+  it('keeps explicitly unmapped source-map regions unmapped', (t) => {
+    const mapped = mapSourceMapPositions(
+      JSON.stringify({ version: 3, sources: ['value.ts'], names: [], mappings: 'A,CAAA' }),
+      [
+        { line: 0, column: 0 },
+        { line: 0, column: 1 },
+      ],
+    );
+    t.deepEqual(
+      mapped.positions,
+      [null, { source: 'value.ts', line: 0, column: 0 }],
+      'a one-field segment prevents attribution until the next mapped segment',
+    );
+  });
+
+  it('rejects invalid negative generated source-map columns', (t) => {
+    t.throws(
+      () =>
+        decodeSourceMapMappings(
+          JSON.stringify({ version: 3, sources: ['value.ts'], names: [], mappings: 'B' }),
+        ),
+      /generated column became negative/,
+      'the VLQ negative-zero sentinel does not decode as JavaScript negative zero',
+    );
   });
 
   it('aggregates Realm hits and preserves Realm attribution', async (t) => {

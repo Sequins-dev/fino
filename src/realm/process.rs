@@ -193,10 +193,6 @@ pub struct SpawnConfig {
     pub realm_data: Option<String>,
     #[serde(default)]
     pub realm_bootstrap_data: Option<String>,
-    #[serde(default)]
-    pub coverage_parent_id: Option<String>,
-    #[serde(default)]
-    pub coverage_run: Option<crate::coverage::CoverageRunConfig>,
 }
 
 // ---------------------------------------------------------------------------
@@ -251,8 +247,6 @@ pub struct SpawnArgs {
     pub watch_mode: bool,
     pub realm_data: Option<String>,
     pub realm_bootstrap_data: Option<String>,
-    pub coverage_parent_id: Option<String>,
-    pub coverage_run: Option<crate::coverage::CoverageRunConfig>,
 }
 
 /// Spawn a new process realm and return the parent-side handle.
@@ -308,8 +302,6 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         env_vars: args.process_env.env_vars.clone(),
         exec_path: args.process_env.exec_path.clone(),
         package_map_json: args.package_map_json,
-        coverage_parent_id: args.coverage_parent_id,
-        coverage_run: args.coverage_run,
     };
     let config_msg = ThreadMessage {
         header: Vec::new(),
@@ -471,8 +463,6 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     // Prevent grandchildren from inheriting the socket.
     unsafe { libc::fcntl(socket_fd, libc::F_SETFD, libc::FD_CLOEXEC) };
 
-    crate::coverage::configure_process_child(config.coverage_run.clone());
-
     // Bridge: socket ↔ mpsc + wake pipe (so native_recv / native_send work unchanged).
     let (reader_tx, channel_rx) = mpsc::channel::<ThreadMessage>();
     let (channel_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
@@ -528,8 +518,6 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         isolate_handle: None,
         force_requested: None,
         reload_requested_signal: None, // process realm uses exit code 75
-        coverage_kind: "process",
-        coverage_parent_id: config.coverage_parent_id,
     });
 
     // channel_tx dropped (inside FinoState) when run_child_isolate returned.
