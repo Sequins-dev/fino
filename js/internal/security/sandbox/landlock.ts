@@ -46,7 +46,9 @@
  * }
  * ```
  *
- * Landlock reference: https://docs.kernel.org/userspace-api/landlock.html
+ * Useful references:
+ * - Landlock: https://docs.kernel.org/userspace-api/landlock.html
+ * - ELF program headers: https://refspecs.linuxfoundation.org/elf/gabi4+/ch5.pheader.html
  *
  * @internal
  */
@@ -56,6 +58,7 @@ import {
   errno,
   cstr,
   readFileBytesSync,
+  O_RDONLY,
   O_PATH,
   O_CLOEXEC,
   PR_SET_NO_NEW_PRIVS,
@@ -201,8 +204,19 @@ const NOT_INSTALLED: LandlockResult = { installed: false, fsConfined: false, exe
  * exec-scoped dynamic binary is only runnable if its loader is also granted
  * execute. Parses the PT_INTERP program header from the ELF file.
  */
+function readFileRangeSync(path: string, offset: number, length: number): Uint8Array | null {
+  const fd = libc.symbols.open(cstr(path), O_RDONLY, 0);
+  if (fd < 0) return null;
+  try {
+    const out = new Uint8Array(length);
+    const n = Number(libc.symbols.pread(fd, out, length, BigInt(offset)));
+    return n === length ? out : null;
+  } finally {
+    libc.symbols.close(fd);
+  }
+}
 function elfInterpreter(path: string): string | null {
-  const head = readFileBytesSync(path, 4096);
+  const head = readFileBytesSync(path, 64);
   if (head === null || head.length < 64) return null;
   const dv = new DataView(head.buffer, head.byteOffset, head.length);
   if (dv.getUint32(0, false) !== 0x7f454c46) return null; // \x7fELF
@@ -212,17 +226,25 @@ function elfInterpreter(path: string): string | null {
   const phoff = Number(dv.getBigUint64(0x20, le));
   const phentsize = dv.getUint16(0x36, le);
   const phnum = dv.getUint16(0x38, le);
+  if (!Number.isSafeInteger(phoff) || phentsize < 56 || phnum > 1024) return null;
+  const tableLength = phentsize * phnum;
+  const table = readFileRangeSync(path, phoff, tableLength);
+  if (table === null) return null;
+  const tableView = new DataView(table.buffer, table.byteOffset, table.byteLength);
   for (let i = 0; i < phnum; i++) {
-    const off = phoff + i * phentsize;
-    if (off + 56 > head.length) break;
-    if (dv.getUint32(off, le) === 3) {
+    const off = i * phentsize;
+    if (tableView.getUint32(off, le) === 3) {
       // PT_INTERP
-      const pOffset = Number(dv.getBigUint64(off + 8, le));
-      const pFilesz = Number(dv.getBigUint64(off + 32, le));
-      if (pOffset + pFilesz > head.length) return null;
-      let end = pOffset + pFilesz;
-      while (end > pOffset && head[end - 1] === 0) end--;
-      return new TextDecoder().decode(head.subarray(pOffset, end));
+      const pOffset = Number(tableView.getBigUint64(off + 8, le));
+      const pFilesz = Number(tableView.getBigUint64(off + 32, le));
+      if (!Number.isSafeInteger(pOffset) || !Number.isSafeInteger(pFilesz) || pFilesz > 4096) {
+        return null;
+      }
+      const interp = readFileRangeSync(path, pOffset, pFilesz);
+      if (interp === null) return null;
+      let end = interp.length;
+      while (end > 0 && interp[end - 1] === 0) end--;
+      return new TextDecoder().decode(interp.subarray(0, end));
     }
   }
   return null;
