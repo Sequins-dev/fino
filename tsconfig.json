@@ -40,6 +40,7 @@
       "fino:tty/*": ["./js/tty/*.ts"],
       "internal:commands/*": ["./js/commands/*.ts"],
       "internal:load": ["./js/internal/load.ts"],
+      "internal:statistics": ["./js/internal/statistics.ts"],
       "internal:net/http/h3": ["./js/net/http/h3.ts"],
       "internal:tty/*": ["./js/internal/tty/*.ts"],
       "internal:file/*": ["./js/file/*.ts"],

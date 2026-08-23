@@ -5,7 +5,8 @@ import { describe, it } from 'fino:test/test';
 import { formatLoadResult, runLoad } from 'fino:load';
 import type { LoadResult } from 'fino:load';
 import loadCommand from 'internal:commands/load';
-import { LoadLogHistogram, runClosedLoopPhase } from 'internal:load';
+import { runClosedLoopPhase } from 'internal:load';
+import { LogHistogram } from 'internal:statistics';
 import { serveHttp } from 'fino:net/http/server';
 import { h2Available } from '../js/net/http/h2.ts';
 import { h3Available, serve as h3Serve } from 'internal:net/http/h3';
@@ -65,16 +66,15 @@ describe('load scheduler and metrics', () => {
   });
 
   it('summarizes latency without retaining observations', (t) => {
-    const histogram = new LoadLogHistogram();
+    const histogram = new LogHistogram();
     for (let value = 1; value <= 100; value++) histogram.record(value);
-    const snapshot = histogram.snapshot();
-    t.equal(snapshot.count, 100);
-    t.equal(snapshot.min, 1);
-    t.equal(snapshot.mean, 50.5);
-    t.ok(snapshot.p50! >= 49 && snapshot.p50! <= 52);
-    t.ok(snapshot.p99! >= 97 && snapshot.p99! <= 101);
-    t.equal(snapshot.max, 100);
-    t.equal(new LoadLogHistogram().snapshot().p50, null);
+    t.equal(histogram.count, 100);
+    t.equal(histogram.min, 1);
+    t.equal(histogram.mean, 50.5);
+    t.ok(histogram.quantile(0.5)! >= 49 && histogram.quantile(0.5)! <= 52);
+    t.ok(histogram.quantile(0.99)! >= 97 && histogram.quantile(0.99)! <= 101);
+    t.equal(histogram.max, 100);
+    t.equal(new LogHistogram().quantile(0.5), null);
   });
 });
 

@@ -16,6 +16,7 @@
 import { HttpClient } from '../net/http/client.ts';
 import type { HttpResponse } from '../net/http/client.ts';
 import { Headers } from '../net/http/index.ts';
+import { LogHistogram } from './statistics.ts';
 import type {
   LoadCounters,
   LoadHistogramSnapshot,
@@ -35,9 +36,6 @@ const DEFAULT_BUFFER_BYTES = 1024 * 1024;
 const MAX_CONNECTIONS = 10_000;
 const MAX_STREAMS = 10_000;
 const MAX_CONCURRENCY = 100_000;
-const HISTOGRAM_BUCKETS = 4096;
-const HISTOGRAM_SUB_BUCKETS = 64;
-const HISTOGRAM_OFFSET = 1024;
 const MAX_ERROR_CLASSES = 32;
 
 interface NormalizedLoadOptions {
@@ -243,85 +241,20 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
   };
 }
 
-/** Fixed-memory logarithmic latency histogram used by the load recorder. @internal */
-export class LoadLogHistogram {
-  readonly #buckets = new Float64Array(HISTOGRAM_BUCKETS);
-  #zeroCount = 0;
-  #count = 0;
-  #min = Infinity;
-  #max = -Infinity;
-  #sum = 0;
-  #sumSquares = 0;
-
-  /** Record one non-negative millisecond observation. @internal */
-  record(value: number): void {
-    if (!Number.isFinite(value)) return;
-    const safe = Math.max(0, value);
-    this.#count++;
-    this.#min = Math.min(this.#min, safe);
-    this.#max = Math.max(this.#max, safe);
-    this.#sum += safe;
-    this.#sumSquares += safe * safe;
-    if (safe === 0) {
-      this.#zeroCount++;
-      return;
-    }
-    const micros = safe * 1000;
-    const raw = Math.floor(Math.log2(micros) * HISTOGRAM_SUB_BUCKETS) + HISTOGRAM_OFFSET;
-    const index = Math.max(0, Math.min(HISTOGRAM_BUCKETS - 1, raw));
-    this.#buckets[index]!++;
-  }
-
-  #quantile(q: number): number | null {
-    if (this.#count === 0) return null;
-    if (q <= 0) return this.#min;
-    if (q >= 1) return this.#max;
-    const rank = Math.max(1, Math.ceil(this.#count * q));
-    if (rank <= this.#zeroCount) return 0;
-    let seen = this.#zeroCount;
-    for (let index = 0; index < this.#buckets.length; index++) {
-      seen += this.#buckets[index]!;
-      if (seen >= rank) {
-        const estimate = 2 ** ((index - HISTOGRAM_OFFSET + 0.5) / HISTOGRAM_SUB_BUCKETS) / 1000;
-        return Math.max(this.#min, Math.min(this.#max, estimate));
-      }
-    }
-    return this.#max;
-  }
-
-  /** Return the JSON-safe summary without exposing bucket storage. @internal */
-  snapshot(): LoadHistogramSnapshot {
-    if (this.#count === 0) {
-      return {
-        count: 0,
-        min: null,
-        mean: null,
-        stddev: null,
-        p50: null,
-        p75: null,
-        p90: null,
-        p95: null,
-        p99: null,
-        p999: null,
-        max: null,
-      };
-    }
-    const mean = this.#sum / this.#count;
-    const variance = Math.max(0, this.#sumSquares / this.#count - mean * mean);
-    return {
-      count: this.#count,
-      min: this.#min,
-      mean,
-      stddev: Math.sqrt(variance),
-      p50: this.#quantile(0.5),
-      p75: this.#quantile(0.75),
-      p90: this.#quantile(0.9),
-      p95: this.#quantile(0.95),
-      p99: this.#quantile(0.99),
-      p999: this.#quantile(0.999),
-      max: this.#max,
-    };
-  }
+function loadHistogramSnapshot(histogram: LogHistogram): LoadHistogramSnapshot {
+  return {
+    count: histogram.count,
+    min: histogram.min,
+    mean: histogram.mean,
+    stddev: histogram.stddev,
+    p50: histogram.quantile(0.5),
+    p75: histogram.quantile(0.75),
+    p90: histogram.quantile(0.9),
+    p95: histogram.quantile(0.95),
+    p99: histogram.quantile(0.99),
+    p999: histogram.quantile(0.999),
+    max: histogram.max,
+  };
 }
 
 class LoadRecorder {
@@ -347,12 +280,12 @@ class LoadRecorder {
   reusedResponses = 0;
   active = 0;
   maxActive = 0;
-  readonly queue = new LoadLogHistogram();
-  readonly ttfb = new LoadLogHistogram();
-  readonly download = new LoadLogHistogram();
-  readonly total = new LoadLogHistogram();
-  readonly connect = new LoadLogHistogram();
-  readonly tls = new LoadLogHistogram();
+  readonly queue = new LogHistogram();
+  readonly ttfb = new LogHistogram();
+  readonly download = new LogHistogram();
+  readonly total = new LogHistogram();
+  readonly connect = new LogHistogram();
+  readonly tls = new LogHistogram();
 
   constructor(connections: number) {
     this.#knownConnectionLimit = Math.max(1, connections * 2);
@@ -427,12 +360,12 @@ class LoadRecorder {
 
   latency(): LoadLatencySummary {
     return {
-      queue: this.queue.snapshot(),
-      ttfb: this.ttfb.snapshot(),
-      download: this.download.snapshot(),
-      total: this.total.snapshot(),
-      connect: this.connect.snapshot(),
-      tls: this.tls.snapshot(),
+      queue: loadHistogramSnapshot(this.queue),
+      ttfb: loadHistogramSnapshot(this.ttfb),
+      download: loadHistogramSnapshot(this.download),
+      total: loadHistogramSnapshot(this.total),
+      connect: loadHistogramSnapshot(this.connect),
+      tls: loadHistogramSnapshot(this.tls),
     };
   }
 }

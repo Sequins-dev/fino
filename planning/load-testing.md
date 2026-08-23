@@ -132,8 +132,10 @@ text reporter / versioned JSON
 3. **Protocol adapters** — expose connect, start operation, stream events,
    cancellation, and close. Adapters report protocol metadata without changing
    common success and latency definitions.
-4. **Metrics recorder** — keeps bounded histograms and counters. Workers merge
-   interval snapshots rather than sending one event per request to a coordinator.
+4. **Metrics recorder** — uses the shared internal running-statistics and
+   logarithmic-histogram primitives alongside workload counters. Workers merge
+   bounded interval summaries rather than sending one event per request to a
+   coordinator.
 5. **Reporters** — render a live terminal view, final summary, and a stable JSON
    document from the same result object.
 

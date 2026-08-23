@@ -9,6 +9,7 @@
  */
 import { ConfusionMatrix } from './confusion.ts';
 import { CompensatedSum, MetricError, ratio, requireSameLength, type Label } from './shared.ts';
+import { RunningStatistics } from 'internal:statistics';
 
 /**
  * A metric that can be fed incrementally and combined across shards.
@@ -107,22 +108,17 @@ export class StreamingMean implements StreamingMetric<number> {
  * ```
  */
 export class StreamingVariance implements StreamingMetric<number> {
-  #count = 0;
-  #mean = 0;
-  #m2 = 0;
+  readonly #statistics = new RunningStatistics();
 
   get count(): number {
-    return this.#count;
+    return this.#statistics.count;
   }
 
   /**
    * Accumulate one value.
    */
   update(value: number): void {
-    this.#count++;
-    const delta = value - this.#mean;
-    this.#mean += delta / this.#count;
-    this.#m2 += delta * (value - this.#mean);
+    this.#statistics.record(value);
   }
 
   /**
@@ -136,21 +132,21 @@ export class StreamingVariance implements StreamingMetric<number> {
    * Mean of everything accumulated.
    */
   mean(): number {
-    return this.#count === 0 ? 0 : this.#mean;
+    return this.#statistics.mean ?? 0;
   }
 
   /**
    * Population variance.
    */
   variance(): number {
-    return ratio(this.#m2, this.#count);
+    return this.#statistics.variance ?? 0;
   }
 
   /**
    * Sample variance, with Bessel's correction.
    */
   sampleVariance(): number {
-    return ratio(this.#m2, this.#count - 1);
+    return this.#statistics.sampleVariance ?? 0;
   }
 
   /**
@@ -172,19 +168,13 @@ export class StreamingVariance implements StreamingMetric<number> {
    */
   merge(other: StreamingVariance): StreamingVariance {
     const merged = new StreamingVariance();
-    const total = this.#count + other.#count;
-    if (total === 0) return merged;
-    const delta = other.#mean - this.#mean;
-    merged.#count = total;
-    merged.#mean = this.#mean + (delta * other.#count) / total;
-    merged.#m2 = this.#m2 + other.#m2 + (delta * delta * this.#count * other.#count) / total;
+    merged.#statistics.merge(this.#statistics);
+    merged.#statistics.merge(other.#statistics);
     return merged;
   }
 
   reset(): void {
-    this.#count = 0;
-    this.#mean = 0;
-    this.#m2 = 0;
+    this.#statistics.reset();
   }
 }
 
