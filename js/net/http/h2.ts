@@ -22,9 +22,9 @@
  * Current limits worth knowing: HTTP/2 server push is not exposed and
  * PUSH_PROMISE h2spec cases are outside this baseline; h2spec section 6.9 is
  * covered by deterministic local flow-control tests because h2spec v2.6 does
- * not emit reliable JUnit for that section; and while one-shot H2 server/client
- * paths stream bodies through the shared internal HTTP stream queue, the H2
- * pool still buffers responses for compatibility.
+ * not emit reliable JUnit for that section. H2 server, one-shot client, and
+ * pooled client responses all stream bodies through the shared bounded HTTP
+ * stream queue; pooled request uploads are still materialized before sending.
  *
  * ```ts no_run
  * import { h2Available, h2Version } from 'internal:net/http/h2';

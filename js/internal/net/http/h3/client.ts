@@ -53,7 +53,8 @@
 import { Nghttp3Session } from './session.ts';
 import type { H3BodySource, H3SessionCallbacks } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
-import { h3Available, NGHTTP3_ERR_CONN_CLOSING } from './bindings.ts';
+import { h3Available, NGHTTP3_ERR_CONN_CLOSING, NGHTTP3_H3_REQUEST_CANCELLED } from './bindings.ts';
+import { HttpStreamError } from '../stream.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import {
@@ -88,6 +89,16 @@ import { inspectWebTransportStreamPrefix } from './webtransport.ts';
  */
 export interface H3RequestInit extends RequestInit {
   /**
+   * Maximum response-body bytes that may wait unread in memory.
+   *
+   * Exceeding the limit cancels only this HTTP/3 request stream and leaves the
+   * shared QUIC connection available. Defaults to the shared body queue's
+   * 16 MiB limit.
+   *
+   * @internal
+   */
+  maxBufferedBodyBytes?: number;
+  /**
    * Trailing header fields to send after the request body completes.
    *
    * Each entry is a `[name, value]` pair emitted as an HTTP/3 trailer section
@@ -117,6 +128,9 @@ export interface H3RequestInit extends RequestInit {
  * @internal
  */
 interface PendingRequest {
+  method: string;
+  stream: QuicStream | null;
+  abortCleanup: (() => void) | null;
   status: string;
   responseHeaders: Array<[string, string]>;
   body: H3BodyQueue;
@@ -148,6 +162,13 @@ function bodySourceFromInit(url: string | URL, init?: H3RequestInit): H3BodySour
   }
   const stream = new Request(url, init).body;
   return stream === null ? undefined : (stream as any);
+}
+/** Convert an AbortSignal reason into the error surfaced by a request. @internal */
+function abortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason === undefined ? 'The operation was aborted' : String(reason));
+  error.name = 'AbortError';
+  return error;
 }
 /**
  * Looks up a single header value from a request `init` by lowercase name.
@@ -265,6 +286,9 @@ export class H3ClientSession {
           existing.inTrailers = false;
         } else {
           instance.#pending.set(streamId, {
+            method: 'GET',
+            stream: null,
+            abortCleanup: null,
             status: '',
             responseHeaders: [],
             body: new H3BodyQueue(),
@@ -307,7 +331,21 @@ export class H3ClientSession {
       },
       onRecvData(streamId, data) {
         const req = instance.#pending.get(streamId);
-        if (req) req.body.push(data);
+        if (req && !req.body.push(data)) {
+          queueMicrotask(() => {
+            instance.#cancelRequest(
+              streamId,
+              new HttpStreamError(
+                'flow-control',
+                'HTTP/3 response body buffer exceeded its limit',
+                {
+                  streamId,
+                  protocolCode: NGHTTP3_H3_REQUEST_CANCELLED,
+                },
+              ),
+            );
+          });
+        }
       },
       onEndStream(streamId) {
         instance.#markDone(streamId);
@@ -319,6 +357,7 @@ export class H3ClientSession {
           req.body.error(error);
           req.trailerReject?.(error);
           req.reject?.(error);
+          req.abortCleanup?.();
           instance.#pending.delete(streamId);
         }
       },
@@ -329,6 +368,7 @@ export class H3ClientSession {
           req.body.error(error);
           req.trailerReject?.(error);
           req.reject?.(error);
+          req.abortCleanup?.();
           instance.#pending.delete(streamId);
         }
       },
@@ -349,6 +389,7 @@ export class H3ClientSession {
               req.body.error(error);
               req.trailerReject?.(error);
               req.reject?.(error);
+              req.abortCleanup?.();
             }
             instance.#pending.delete(sid);
           }
@@ -370,6 +411,7 @@ export class H3ClientSession {
             req.body.error(error);
             req.trailerReject?.(error);
             req.reject?.(error);
+            req.abortCleanup?.();
           }
         }
         instance.#pending.clear();
@@ -466,6 +508,7 @@ export class H3ClientSession {
    */
   async request(url: string | URL, init?: H3RequestInit): Promise<Response> {
     if (this.#closed) throw new Error('H3 session is closed');
+    if (init?.signal?.aborted) throw abortError(init.signal.reason);
     if (this.#goawayLastStreamId !== null) {
       throw new Error(
         `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`,
@@ -498,6 +541,11 @@ export class H3ClientSession {
     }
     const quicStream = await this.#conn.openBidirectionalStream();
     const sid = BigInt(quicStream.id);
+    if (init?.signal?.aborted) {
+      quicStream.stopSending(Number(NGHTTP3_H3_REQUEST_CANCELLED));
+      quicStream.reset(Number(NGHTTP3_H3_REQUEST_CANCELLED));
+      throw abortError(init.signal.reason);
+    }
     // If a GOAWAY arrived while we were waiting to open the stream, reject it
     // immediately rather than letting it linger until connection close.
     if (this.#goawayLastStreamId !== null && sid > this.#goawayLastStreamId) {
@@ -512,6 +560,11 @@ export class H3ClientSession {
       try {
         while (true) {
           const bytes = (await quicStream.reader.read()) as Uint8Array | null;
+          // A local body cancellation removes the pending request before QUIC's
+          // STOP_SENDING completion wakes this read. Do not feed that terminal
+          // event back into nghttp3 after its stream state was deliberately
+          // closed; nghttp3 would report STREAM_NOT_FOUND as a connection error.
+          if (!this.#pending.has(sid)) break;
           const fin = bytes === null;
           this.#session.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
@@ -525,6 +578,7 @@ export class H3ClientSession {
           pending.body.error(error);
           pending.trailerReject?.(error);
           pending.reject?.(error);
+          pending.abortCleanup?.();
           this.#pending.delete(sid);
         }
       }
@@ -537,10 +591,17 @@ export class H3ClientSession {
         trailerResolve = trResolve;
         trailerReject = trReject;
       });
+      void trailers.catch(() => {});
       const pending: PendingRequest = {
+        method: method.toUpperCase(),
+        stream: quicStream,
+        abortCleanup: null,
         status: '',
         responseHeaders: [],
-        body: new H3BodyQueue(),
+        body: new H3BodyQueue({
+          maxBufferedBytes: init?.maxBufferedBodyBytes,
+          onCancel: (reason) => this.#cancelRequest(sid, reason),
+        }),
         trailerHeaders: [],
         inTrailers: false,
         done: false,
@@ -553,6 +614,11 @@ export class H3ClientSession {
       };
       pending.resolve = (response) => resolve(response);
       pending.reject = reject;
+      if (init?.signal !== undefined && init.signal !== null) {
+        const onAbort = () => this.#cancelRequest(sid, abortError(init.signal!.reason));
+        init.signal.addEventListener('abort', onAbort, { once: true });
+        pending.abortCleanup = () => init.signal!.removeEventListener('abort', onAbort);
+      }
       this.#pending.set(sid, pending);
     });
     try {
@@ -580,8 +646,13 @@ export class H3ClientSession {
         pending?.body.error(error);
         pending?.trailerReject?.(error);
         pending?.reject?.(error);
+        pending?.abortCleanup?.();
         throw error;
       }
+      pending?.abortCleanup?.();
+      pending?.body.error(e);
+      pending?.trailerReject?.(e);
+      pending?.reject?.(e);
       throw e;
     }
     return responsePromise;
@@ -686,7 +757,9 @@ export class H3ClientSession {
     }
     const headers = new Headers(pending.responseHeaders as HeadersInit);
     const body =
-      statusNum === 204 || statusNum === 205 || statusNum === 304 ? null : (pending.body as any);
+      pending.method === 'HEAD' || statusNum === 204 || statusNum === 205 || statusNum === 304
+        ? null
+        : (pending.body as any);
     const response = new Response(body, {
       status: statusNum,
       headers,
@@ -702,7 +775,32 @@ export class H3ClientSession {
     this.#resolveResponse(streamId);
     req.body.close();
     req.trailerResolve?.(new Headers(req.trailerHeaders as HeadersInit));
+    req.abortCleanup?.();
     this.#pending.delete(streamId);
+  }
+  #cancelRequest(streamId: bigint, reason: unknown): void {
+    const req = this.#pending.get(streamId);
+    if (req === undefined || req.done) return;
+    req.done = true;
+    const error =
+      reason instanceof Error
+        ? reason
+        : new HttpStreamError('cancelled', 'HTTP/3 request was cancelled', {
+            streamId,
+            protocolCode: NGHTTP3_H3_REQUEST_CANCELLED,
+          });
+    req.body.error(error);
+    req.trailerReject?.(error);
+    if (!req.responseResolved) req.reject?.(error);
+    req.abortCleanup?.();
+    this.#pending.delete(streamId);
+    this.#session.cancelStream(streamId);
+    try {
+      req.stream?.stopSending(Number(NGHTTP3_H3_REQUEST_CANCELLED));
+    } catch {}
+    try {
+      req.stream?.reset(Number(NGHTTP3_H3_REQUEST_CANCELLED));
+    } catch {}
   }
   /**
    * Marks the session closed and shuts down nghttp3 once streams drain.
