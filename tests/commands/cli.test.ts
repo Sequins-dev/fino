@@ -1147,7 +1147,11 @@ describe('CLI commands', () => {
         const exported = await runCli(['coverage', 'export', 'lcov'], { cwd: dir });
         t.equal(exported.result.code, 0, 'LCOV export exits successfully');
         const lcov = (await fs.readFile(dir + '/coverage/lcov.info')) as unknown as string;
-        t.ok(lcov.includes('SF:' + dir + '/src/classify.ts'), 'LCOV names original source');
+        const canonicalDir = await fs.realpath(dir);
+        t.ok(
+          lcov.includes('SF:' + canonicalDir + '/src/classify.ts'),
+          'LCOV names the canonical original source',
+        );
         t.ok(lcov.includes('DA:3,0'), 'LCOV contains the uncovered line');
 
         const custom = await runCli(

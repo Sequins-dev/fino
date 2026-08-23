@@ -233,7 +233,7 @@ async function ensureDirectory(path: string): Promise<void> {
 /** Prepare the filesystem paths and identity for a native run registration. @internal */
 export async function prepareCoverageRun(path: string): Promise<CoverageRunConfig> {
   if (path.length === 0) throw new Error('--coverage path must not be empty');
-  const root = await fs.realpath(cwd());
+  const root = String(resolve(cwd()));
   const outputPath = String(resolve(root, path));
   const outputDirectory = String(dirname(outputPath));
   await ensureDirectory(outputDirectory);
@@ -369,6 +369,7 @@ function nativePositionMap(url: string, positions: GeneratedPosition[]): Positio
 
 async function normalizeScript(
   context: CoverageRealmContext,
+  projectRoot: string,
   script: RawScript,
   generatedPath: string,
   source: string,
@@ -399,7 +400,7 @@ async function normalizeScript(
   const mapPosition = async (position: GeneratedPosition): Promise<MappedPosition | null> => {
     if (!mapped.hasMap) {
       const path = await canonicalize(generatedPath);
-      return excludedProjectPath(context.run.root, path)
+      return excludedProjectPath(projectRoot, path)
         ? null
         : { path, line: position.line + 1, column: position.column };
     }
@@ -408,12 +409,12 @@ async function normalizeScript(
     const unresolved = resolveSourcePath(generatedPath, original.source);
     if (unresolved === null) return null;
     const path = await canonicalize(unresolved);
-    return excludedProjectPath(context.run.root, path)
+    return excludedProjectPath(projectRoot, path)
       ? null
       : { path, line: original.line + 1, column: original.column };
   };
   const localFile = async (path: string): Promise<LocalFile> => {
-    const display = displayPath(context.run.root, path);
+    const display = displayPath(projectRoot, path);
     let file = files.get(display);
     if (file === undefined) {
       let bytes = new Uint8Array();
@@ -517,11 +518,12 @@ export async function normalizeCoverageSnapshot(
   }
   const files = new Map<string, LocalFile>();
   const warnings: string[] = [];
+  const projectRoot = await canonicalPath(context.run.root);
   for (const script of snapshot.result ?? []) {
     const rawPath = fileUrlToPath(script.url);
     if (rawPath === null) continue;
     const generatedPath = await canonicalPath(rawPath);
-    if (excludedProjectPath(context.run.root, generatedPath)) continue;
+    if (excludedProjectPath(projectRoot, generatedPath)) continue;
     const extension = extname(generatedPath);
     if (extension === '.mdx' || extension === '.sql') {
       warnings.push(
@@ -534,7 +536,7 @@ export async function normalizeCoverageSnapshot(
       warnings.push(`missing generated source for ${script.url}`);
       continue;
     }
-    await normalizeScript(context, script, generatedPath, source, files, warnings);
+    await normalizeScript(context, projectRoot, script, generatedPath, source, files, warnings);
   }
   for (const file of files.values()) file.lines.sort((a, b) => a.line - b.line);
   return {
@@ -599,9 +601,10 @@ function totalsFor(files: CoverageFile[], realmId?: string): CoverageTotals {
 
 async function normalizeRealmEntry(root: string, entry: string | null): Promise<string | null> {
   if (entry === null || entry.startsWith('internal:') || entry.startsWith('fino:')) return entry;
+  const projectRoot = await canonicalPath(root);
   const path = entry.startsWith('file://') ? fileUrlToPath(entry) : String(resolve(root, entry));
   if (path === null) return entry;
-  return displayPath(root, await canonicalPath(path));
+  return displayPath(projectRoot, await canonicalPath(path));
 }
 
 /** Aggregate all Realm shards into the stable, versioned coverage artifact. @internal */
