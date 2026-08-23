@@ -11,6 +11,22 @@ This is a plan, not an implementation specification. The exact option names
 can change after a CLI prototype, but the workload and measurement semantics
 should remain stable.
 
+## Implementation status
+
+Phase 1 is implemented by `fino:load` and `fino load`. The shipped command has
+closed-loop duration or exact-request runs, warmup, explicit H1/H2/H3
+selection, connection and multiplexed-stream limits, bounded streaming
+response consumption, headers-only cancellation, status expectations,
+timeouts, replay-safe retries, text output, and a versioned JSON result.
+
+The first implementation deliberately requires `h1`, `h2`, or `h3` instead of
+offering `auto`: explicit selection preserves the requested workload and fails
+when a peer cannot speak it. Safe automatic negotiation needs `HttpClient` to
+adapt per-slot capacity after ALPN so an H1 fallback is never scheduled like a
+multiplexed connection. Open-loop rates, worker sharding, weighted requests,
+TypeScript scenarios, SSE, WebSocket, WebTransport, and raw QUIC remain Phase 2
+and Phase 3 work.
+
 ## Design principles
 
 - Stream request and response bodies end to end. Never materialize a complete
@@ -116,8 +132,10 @@ text reporter / versioned JSON
 3. **Protocol adapters** — expose connect, start operation, stream events,
    cancellation, and close. Adapters report protocol metadata without changing
    common success and latency definitions.
-4. **Metrics recorder** — keeps bounded histograms and counters. Workers merge
-   interval snapshots rather than sending one event per request to a coordinator.
+4. **Metrics recorder** — uses the shared internal running-statistics and
+   logarithmic-histogram primitives alongside workload counters. Workers merge
+   bounded interval summaries rather than sending one event per request to a
+   coordinator.
 5. **Reporters** — render a live terminal view, final summary, and a stable JSON
    document from the same result object.
 
@@ -232,7 +250,7 @@ errors, and close-code distribution. Never combine 0-RTT and 1-RTT results.
 
 ## Delivery phases
 
-### Phase 1: HTTP command MVP
+### Phase 1: HTTP command MVP — complete
 
 - Add `fino:load` for engine types/results and `fino:commands/load` for CLI
   wiring, then register the command and add benchmark coverage-table entries.
@@ -274,15 +292,16 @@ errors, and close-code distribution. Never combine 0-RTT and 1-RTT results.
 - Comparative smoke runs against h2load and autocannon in CI or a documented
   manual benchmark lane; avoid brittle assertions on absolute throughput.
 
-## Open decisions
+## Decisions after Phase 1
 
-- Whether the stable engine API belongs in `fino:load` or starts internal until
-  the TypeScript scenario contract has real users.
-- Which histogram implementation offers mergeability and sufficient range
-  without adding avoidable allocation to the hot path.
-- Whether initial parallelism should use realms, processes, or remain a single
-  reactor until profiling identifies the actual generator bottleneck.
-- Whether `consume` counts decoded application bytes, encoded wire bytes, or
-  both. Both is preferable when the client stack can expose them accurately.
-- How much protocol-specific tuning belongs in the common CLI versus scenario
-  configuration; flow-control windows are the first likely advanced options.
+- The stable engine API is public as `fino:load`; scheduling and recording
+  helpers remain internal.
+- Latencies use a fixed-size logarithmic histogram with exact count, minimum,
+  mean, population standard deviation, and maximum.
+- Phase 1 stays in one reactor. Realms or processes should follow profiling and
+  worker-sharding requirements rather than being assumed upfront.
+- `consume` counts decoded application bytes by default and encoded bytes with
+  decompression disabled. The client does not yet expose both simultaneously.
+- Protocol-specific flow-control tuning remains an advanced-workload decision
+  for Phase 2; the common CLI currently exposes only connection, stream,
+  pending-request, and unread-response bounds.

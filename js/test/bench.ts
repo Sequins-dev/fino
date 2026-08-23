@@ -54,11 +54,12 @@
  *   handle the full 64-bit range), and convert to nanoseconds.
  *
  *
- * ## Welford's online algorithm (Stats class)
+ * ## Welford's online algorithm
  *
  * Rather than collecting all sample values and computing stats at the end,
- * the `Stats` class uses Welford's online algorithm to compute mean and
- * variance in a single pass with O(1) memory. Each call to `stats.push(x)`:
+ * the shared `RunningStatistics` accumulator uses Welford's online algorithm
+ * to compute mean and variance in a single pass with O(1) memory. Each call to
+ * `stats.record(x)`:
  *
  *   1. Increments the count.
  *   2. Computes a new mean: `mean' = mean + (x - mean) / count`
@@ -128,6 +129,7 @@
  */
 import console from '../globals/console.ts';
 import { formatDurationNs } from 'internal:duration';
+import { RunningStatistics } from 'internal:statistics';
 import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
 // ---------------------------------------------------------------------------
@@ -185,40 +187,6 @@ const now = (() => {
   }
 })();
 // ---------------------------------------------------------------------------
-// Streaming stats — Welford's online algorithm (mirrors bench_stats_*)
-// ---------------------------------------------------------------------------
-class Stats {
-  #count: number = 0;
-  #total: number = 0;
-  #mean: number = 0;
-  #dSquared: number = 0;
-  push(value: number): void {
-    this.#count++;
-    this.#total += value;
-    const newMean = this.#mean + (value - this.#mean) / this.#count;
-    this.#dSquared += (value - newMean) * (value - this.#mean);
-    this.#mean = newMean;
-  }
-  get count() {
-    return this.#count;
-  }
-  get total() {
-    return this.#total;
-  }
-  get mean() {
-    return this.#mean;
-  }
-  variance() {
-    return this.#dSquared / this.#count;
-  }
-  stddev() {
-    return Math.sqrt(this.variance());
-  }
-  opsPerSec() {
-    return (this.#count / this.#total) * SECONDS;
-  }
-}
-// ---------------------------------------------------------------------------
 // Human-readable number formatting — mirrors bench_human_number()
 // ---------------------------------------------------------------------------
 function humanNumber(number: number): string {
@@ -232,10 +200,13 @@ function humanNumber(number: number): string {
   const suffix = ['', 'k', 'm', 'b', 't'];
   return fmt + (suffix[level] ?? 't');
 }
-function formatStats(stats: Stats): string {
-  const ops = humanNumber(stats.opsPerSec());
-  const pct = stats.stddev().toFixed(2);
-  const mean = formatDurationNs(stats.mean);
+function opsPerSec(stats: RunningStatistics): number {
+  return (stats.count / stats.total) * SECONDS;
+}
+function formatStats(stats: RunningStatistics): string {
+  const ops = humanNumber(opsPerSec(stats));
+  const pct = stats.stddev!.toFixed(2);
+  const mean = formatDurationNs(stats.mean!);
   return `${ops} i/s (±${pct}%) (${mean}/i)`;
 }
 // ---------------------------------------------------------------------------
@@ -423,7 +394,7 @@ export class Group {
    */
   #measurements: Array<{
     name: string;
-    stats: Stats;
+    stats: RunningStatistics;
   }> = [];
   /**
    * Private property `#pending` used by `Group`.
@@ -622,7 +593,7 @@ export class Group {
    */
   async #executeMeasurement({ name, fn, setup, teardown }: PendingMeasurement) {
     const pad = this.#pad();
-    const stats = new Stats();
+    const stats = new RunningStatistics();
     const ctx = setup ? setup() : undefined;
     try {
       do {
@@ -636,7 +607,7 @@ export class Group {
           await (result as Promise<unknown>);
         }
         const end = now();
-        stats.push(end - start);
+        stats.record(end - start);
       } while (stats.total < minDurationNs());
     } finally {
       if (teardown) teardown(ctx);
@@ -667,12 +638,12 @@ export class Group {
   #compare() {
     const m = this.#measurements;
     if (m.length < 2) return;
-    const sorted = m.slice().sort((a, b) => b.stats.opsPerSec() - a.stats.opsPerSec());
+    const sorted = m.slice().sort((a, b) => opsPerSec(b.stats) - opsPerSec(a.stats));
     const pad = this.#pad();
     console.log(`${pad}Comparing...`);
     const fastest = sorted[0];
     if (fastest === undefined) return;
-    const fastestMean = fastest.stats.mean;
+    const fastestMean = fastest.stats.mean!;
     for (let i = 0; i < sorted.length; i++) {
       const item = sorted[i];
       if (item === undefined) continue;
@@ -680,7 +651,7 @@ export class Group {
       if (i === 0) {
         console.log(`${pad}  - ${name} (fastest)`);
       } else {
-        const pct = ((stats.mean / fastestMean) * 100 - 100).toFixed(2);
+        const pct = ((stats.mean! / fastestMean) * 100 - 100).toFixed(2);
         console.log(`${pad}  - ${name} (${pct}% slower)`);
       }
     }

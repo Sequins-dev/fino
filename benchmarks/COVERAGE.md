@@ -12,6 +12,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/repl` | not yet benchmarked |
 | `fino:commands/test` | not yet benchmarked |
 | `fino:commands/bench` | not yet benchmarked |
+| `fino:commands/load` | not yet benchmarked |
 | `fino:commands/task` | not yet benchmarked |
 | `fino:commands/init` | not yet benchmarked |
 | `fino:commands/install` | not yet benchmarked |
@@ -151,6 +152,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:workflow` | not yet benchmarked |
 | `fino:task` | not yet benchmarked |
 | `fino:task/durable` | not yet benchmarked |
+| `fino:load` | not yet benchmarked |
 | `fino:jobs` | not yet benchmarked |
 
 ## Release Stress And Failure Coverage

@@ -186,6 +186,7 @@ describe('CLI commands', () => {
     t.ok(stdout.includes('repl'), 'help includes repl command');
     t.ok(stdout.includes('test'), 'help includes test command');
     t.ok(stdout.includes('bench'), 'help includes bench command');
+    t.ok(stdout.includes('load'), 'help includes load command');
     t.ok(stdout.includes('install'), 'help includes install command');
     t.ok(stdout.includes('init'), 'help includes init command');
     t.ok(stdout.includes('doc'), 'help includes doc command');
@@ -366,7 +367,18 @@ describe('CLI commands', () => {
     );
   });
   it('prints focused help for each subcommand', async (t) => {
-    const commands = ['run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'repl'];
+    const commands = [
+      'run',
+      'test',
+      'bench',
+      'load',
+      'install',
+      'init',
+      'doc',
+      'fmt',
+      'lint',
+      'repl',
+    ];
     for (const command of commands) {
       const stdout = await parseRoot([command, '--help']);
       t.ok(stdout.includes(`Usage: fino ${command}`), `${command} --help includes command usage`);

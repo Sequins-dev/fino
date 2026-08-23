@@ -6,6 +6,7 @@ import fmtCommand from 'internal:commands/fmt';
 import initCommand from 'internal:commands/init';
 import installCommand from 'internal:commands/install';
 import lintCommand from 'internal:commands/lint';
+import loadCommand from 'internal:commands/load';
 import replCommand from 'internal:commands/repl';
 import rootCommand from 'internal:commands/root';
 import runCommand from 'internal:commands/run';
@@ -18,6 +19,7 @@ describe('builtin command tasks', () => {
       await import('fino:commands/run'),
       await import('fino:commands/test'),
       await import('fino:commands/bench'),
+      await import('fino:commands/load'),
       await import('fino:commands/install'),
       await import('fino:commands/init'),
       await import('fino:commands/doc'),
@@ -30,7 +32,20 @@ describe('builtin command tasks', () => {
     const commands = modules.map((mod) => mod.default);
     t.deepEqual(
       commands.map((command) => command.name),
-      ['fino', 'run', 'test', 'bench', 'install', 'init', 'doc', 'fmt', 'lint', 'task', 'repl'],
+      [
+        'fino',
+        'run',
+        'test',
+        'bench',
+        'load',
+        'install',
+        'init',
+        'doc',
+        'fmt',
+        'lint',
+        'task',
+        'repl',
+      ],
     );
     for (const command of commands) t.ok(command instanceof Task, `${command.name} is a Task`);
   });
@@ -40,6 +55,7 @@ describe('builtin command tasks', () => {
       runCommand,
       testCommand,
       benchCommand,
+      loadCommand,
       installCommand,
       initCommand,
       docCommand,

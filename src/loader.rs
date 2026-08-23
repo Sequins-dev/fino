@@ -140,6 +140,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/root", "commands/root"),
     source_builtin!("fino:commands/test", "commands/test"),
     source_builtin!("fino:commands/bench", "commands/bench"),
+    source_builtin!("fino:commands/load", "commands/load"),
     source_builtin!("fino:commands/run", "commands/run"),
     source_builtin!("fino:commands/install", "commands/install"),
     source_builtin!("fino:commands/init", "commands/init"),
@@ -152,6 +153,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/bench", "commands/bench"),
+    source_builtin!("internal:commands/load", "commands/load"),
     source_builtin!("internal:commands/run", "commands/run"),
     source_builtin!("internal:commands/install", "commands/install"),
     source_builtin!("internal:commands/init", "commands/init"),
@@ -164,6 +166,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
     source_builtin!("internal:duration", "internal/duration"),
+    source_builtin!("internal:statistics", "internal/statistics"),
+    source_builtin!("internal:load", "internal/load"),
     source_builtin!("internal:shutdown", "internal/shutdown"),
     source_builtin!("internal:encoding", "internal/encoding"),
     source_builtin!("internal:package_manager", "internal/package_manager"),
@@ -663,6 +667,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:workflow", "workflow"),
     source_builtin!("fino:task", "task"),
     source_builtin!("fino:task/durable", "task/durable"),
+    source_builtin!("fino:load", "load"),
     // orchestrator + jobs
     source_builtin!("internal:orchestrator", "internal/orchestrator/index"),
     source_builtin!(
