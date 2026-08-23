@@ -252,6 +252,61 @@ describe('Command execution', () => {
       'negated option is marked provided',
     );
   });
+  it('supports an optional inline value without consuming a positional', (t) => {
+    const root = new RecordingCommand({
+      options: [
+        {
+          flags: '--coverage',
+          type: 'string',
+          implicitValue: 'coverage/coverage.json',
+        },
+      ],
+      positionals: [{ name: 'file', type: 'string', required: true }],
+    });
+    const implicit = root.parse(['--coverage', 'tests/example.test.ts']) as ParsedExecution;
+    const explicit = root.parse([
+      '--coverage=artifacts/unit.json',
+      'tests/example.test.ts',
+    ]) as ParsedExecution;
+    t.equal(
+      implicit.options.coverage,
+      'coverage/coverage.json',
+      'bare long option uses its implicit value',
+    );
+    t.equal(
+      implicit.args.file,
+      'tests/example.test.ts',
+      'bare long option leaves the following positional untouched',
+    );
+    t.equal(
+      explicit.options.coverage,
+      'artifacts/unit.json',
+      'inline equals value overrides the implicit value',
+    );
+    t.equal(
+      explicit.args.file,
+      'tests/example.test.ts',
+      'inline value leaves the positional untouched',
+    );
+  });
+  it('rejects implicit values on boolean and short options', (t) => {
+    t.throws(
+      () =>
+        new Command({
+          options: [{ flags: '--enabled', type: 'boolean', implicitValue: 'yes' }],
+        }),
+      /Boolean options cannot define an implicit value/,
+      'boolean implicit values are rejected',
+    );
+    t.throws(
+      () =>
+        new Command({
+          options: [{ flags: '--coverage, -c', type: 'string', implicitValue: 'coverage.json' }],
+        }),
+      /cannot define a short flag/,
+      'short optional values are rejected as ambiguous',
+    );
+  });
   it('supports multiple long and short aliases for one option key', (t) => {
     const root = new RecordingCommand({
       options: [

@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { Task } from 'fino:task';
 import benchCommand from 'internal:commands/bench';
+import coverageCommand from 'internal:commands/coverage';
 import docCommand from 'internal:commands/doc';
 import fmtCommand from 'internal:commands/fmt';
 import initCommand from 'internal:commands/init';
@@ -18,6 +19,7 @@ describe('builtin command tasks', () => {
       await import('fino:commands/root'),
       await import('fino:commands/run'),
       await import('fino:commands/test'),
+      await import('fino:commands/coverage'),
       await import('fino:commands/bench'),
       await import('fino:commands/load'),
       await import('fino:commands/install'),
@@ -36,6 +38,7 @@ describe('builtin command tasks', () => {
         'fino',
         'run',
         'test',
+        'coverage',
         'bench',
         'load',
         'install',
@@ -54,6 +57,7 @@ describe('builtin command tasks', () => {
       rootCommand,
       runCommand,
       testCommand,
+      coverageCommand,
       benchCommand,
       loadCommand,
       installCommand,
@@ -65,6 +69,14 @@ describe('builtin command tasks', () => {
       replCommand,
     ];
     for (const command of commands) t.ok(command instanceof Task, `${command.name} is a Task`);
+  });
+  it('exposes focused coverage subcommands as nested Tasks', (t) => {
+    t.deepEqual(
+      coverageCommand.list().map((task) => task.name),
+      ['summary', 'files', 'lines', 'functions', 'branches', 'realms', 'realm', 'check', 'export'],
+    );
+    for (const child of coverageCommand.list())
+      t.ok(child instanceof Task, `${child.name} is a Task`);
   });
   it('exposes doc subcommands as nested Tasks', (t) => {
     t.deepEqual(

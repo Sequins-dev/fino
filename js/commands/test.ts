@@ -28,6 +28,7 @@ import { cwd } from '../process.ts';
 import { Task } from '../task.ts';
 import { DiskFileSystem } from 'fino:file';
 import { allowInternalForTests } from 'internal:loader-hooks';
+import { startCoverage } from 'internal:coverage';
 /**
  * Convert an expanded test file path into an importable module specifier.
  *
@@ -98,7 +99,9 @@ async function expandArg(arg: string): Promise<string[]> {
  * groups whose full path contains the given substring, `--show-output`
  * controls when captured console output is printed (`failures` — the
  * default — `always`, or `never`), and `--durations` appends
- * `duration=<time>` metadata to every TAP result line.
+ * `duration=<time>` metadata to every TAP result line. `--coverage` enables
+ * native V8 precise coverage and writes `coverage/coverage.json`; use the
+ * unambiguous inline form `--coverage=<path>` for another artifact location.
  *
  * Output is TAP text by default. When invoked with a `json` writer (for
  * example `fino test --json ...`) the command instead emits a single JSON
@@ -117,6 +120,9 @@ async function expandArg(arg: string): Promise<string[]> {
  *
  * // Just the socket suites, showing console output even on success.
  * await test.parse(['--filter', 'socket', '--show-output', 'always', 'tests/net']);
+ *
+ * // Collect original-source coverage while running the same tests.
+ * await test.parse(['--coverage=artifacts/socket.json', 'tests/net']);
  * ```
  */
 const command = new Task({
@@ -129,6 +135,7 @@ const command = new Task({
       filter?: unknown;
       'show-output'?: unknown;
       durations?: unknown;
+      coverage?: unknown;
     },
     ctx,
   ) {
@@ -136,6 +143,7 @@ const command = new Task({
     const filter = typeof input.filter === 'string' ? input.filter : undefined;
     const showOutput = typeof input['show-output'] === 'string' ? input['show-output'] : 'failures';
     const durations = input.durations === true;
+    const coveragePath = typeof input.coverage === 'string' ? input.coverage : undefined;
     if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
       throw new Error(
         `Invalid --show-output value "${showOutput}" (expected failures, always, or never)`,
@@ -144,6 +152,7 @@ const command = new Task({
     if (testFiles.length === 0) {
       throw new Error('fino test: no test files specified');
     }
+    if (coveragePath !== undefined) startCoverage(coveragePath);
     allowInternalForTests();
     const expandedFiles: string[] = [];
     for (const raw of testFiles) {
@@ -179,6 +188,7 @@ const command = new Task({
         filter,
         showOutput,
         durations,
+        coverage: coveragePath,
         output,
       };
       await ctx.writer.writeJson(result);
@@ -202,6 +212,12 @@ const command = new Task({
         flags: '--durations',
         type: 'boolean',
         description: 'Annotate TAP result lines with duration metadata',
+      },
+      {
+        flags: '--coverage',
+        type: 'string',
+        implicitValue: 'coverage/coverage.json',
+        description: 'Collect native V8 coverage; use --coverage=<path> for a custom JSON artifact',
       },
     ],
     positionals: [

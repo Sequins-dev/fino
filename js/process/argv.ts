@@ -279,6 +279,26 @@ export interface OptionConfig {
    */
   type?: 'boolean' | 'string' | 'number';
   /**
+   * Value used when a non-boolean long option is present without `=<value>`.
+   *
+   * This creates an optional inline value. The implicit form never consumes
+   * the following argument, so positional input remains unambiguous. For
+   * example, `--coverage` can select a default path while
+   * `--coverage=reports/unit.json` selects a custom path. This is not supported
+   * for boolean or short options.
+   *
+   * ```ts no_run
+   * import type { OptionConfig } from 'fino:process/argv';
+   *
+   * const option: OptionConfig = {
+   *   flags: '--coverage',
+   *   type: 'string',
+   *   implicitValue: 'coverage/coverage.json',
+   * };
+   * ```
+   */
+  implicitValue?: string | number;
+  /**
    * Allowed values after scalar type coercion.
    *
    * String choices compare with string values and number choices compare with
@@ -618,6 +638,7 @@ interface OptionDefinition {
   description: string | undefined;
   default: OptionDefault | undefined;
   choices: Array<string | number> | undefined;
+  implicitValue: string | number | undefined;
 }
 interface PositionalDefinition {
   name: string;
@@ -1345,7 +1366,17 @@ export class Command {
       description: config.description,
       default: config.default,
       choices: config.choices,
+      implicitValue: config.implicitValue,
     };
+    if (def.implicitValue !== undefined) {
+      if (def.type === 'boolean') {
+        throw new Error('Boolean options cannot define an implicit value');
+      }
+      if (def.shortNames.length > 0) {
+        throw new Error('Options with an implicit value cannot define a short flag');
+      }
+      coerceOptionValue(def, String(def.implicitValue), this.#formatPath([]), formatOption(def));
+    }
     this.#options.push(def);
     for (const longName of def.longNames) {
       if (this.#longOptions.has(longName)) throw new Error(`Duplicate option "--${longName}"`);
@@ -1566,7 +1597,12 @@ export class Command {
       );
       return true;
     }
-    const raw = value === null ? takeNextValue(state, def, this.#formatPath(path)) : value;
+    const raw =
+      value === null
+        ? def.implicitValue === undefined
+          ? takeNextValue(state, def, this.#formatPath(path))
+          : String(def.implicitValue)
+        : value;
     assignOptionValue(
       parsed.options,
       parsed.providedOptions,

@@ -11,6 +11,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/run` | not yet benchmarked |
 | `fino:commands/repl` | not yet benchmarked |
 | `fino:commands/test` | not yet benchmarked |
+| `fino:commands/coverage` | not yet benchmarked |
 | `fino:commands/bench` | not yet benchmarked |
 | `fino:commands/load` | not yet benchmarked |
 | `fino:commands/task` | not yet benchmarked |

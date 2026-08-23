@@ -159,6 +159,8 @@ export interface TaskCliOption {
   description?: string;
   /** Primitive parser used for the option value. */
   type?: 'string' | 'number' | 'boolean';
+  /** Inline value used by a bare non-boolean long option without consuming the next token. */
+  implicitValue?: string | number;
   /** Whether the option may appear more than once. */
   multiple?: boolean;
   /** Whether parsing should fail when the option is missing. */
@@ -379,6 +381,7 @@ function cloneCliOptions(options: TaskCliOption[] | undefined): OptionConfig[] {
     flags: option.flags,
     ...(option.description !== undefined ? { description: option.description } : {}),
     ...(option.type !== undefined ? { type: option.type } : {}),
+    ...(option.implicitValue !== undefined ? { implicitValue: option.implicitValue } : {}),
     ...(option.multiple !== undefined ? { multiple: option.multiple } : {}),
     ...(option.required !== undefined ? { required: option.required } : {}),
     ...(option.default !== undefined ? { default: option.default } : {}),

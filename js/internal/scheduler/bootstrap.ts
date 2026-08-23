@@ -12,6 +12,37 @@ import root from '../../commands/root.ts';
 import { argv, exit } from '../../process.ts';
 import { runShutdownHooks } from '../shutdown.ts';
 import { runLauncher } from '../security/sandbox/launcher.ts';
+import { finishCoverage } from 'internal:coverage';
+
+interface CoverageMetric {
+  covered: number;
+  total: number;
+  percent: number;
+}
+interface CoverageSummary {
+  path: string;
+  complete: boolean;
+  totals: {
+    lines: CoverageMetric;
+    functions: CoverageMetric;
+    branches: CoverageMetric;
+  };
+  realmCount: number;
+  incompleteRealmCount: number;
+  warnings: string[];
+}
+function coverageComments(summary: CoverageSummary): string {
+  const metric = (name: string, value: CoverageMetric) =>
+    `#   ${name.padEnd(10)} ${value.percent.toFixed(2)}% (${value.covered}/${value.total})`;
+  return [
+    '# coverage',
+    metric('lines', summary.totals.lines),
+    metric('branches', summary.totals.branches),
+    metric('functions', summary.totals.functions),
+    `#   realms     ${summary.realmCount - summary.incompleteRealmCount} complete, ${summary.incompleteRealmCount} incomplete`,
+    `#   report     ${summary.path}`,
+  ].join('\n');
+}
 
 function normalizeCliArgv(args: string[]): string[] {
   if (args[0] === '--bench') return ['bench', ...args.slice(1)];
@@ -52,5 +83,14 @@ try {
   await runShutdownHooks();
 } catch (error) {
   commandError ??= error;
+}
+try {
+  const rawSummary = finishCoverage();
+  if (typeof rawSummary === 'string' && !wantsJson) {
+    console.log(coverageComments(JSON.parse(rawSummary) as CoverageSummary));
+  }
+} catch (error) {
+  if (commandError === undefined) commandError = error;
+  else console.error(`[coverage] ${error instanceof Error ? error.message : String(error)}`);
 }
 if (commandError !== undefined) throw commandError;

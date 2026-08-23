@@ -4,6 +4,7 @@ extern crate libc;
 mod async_context;
 mod async_rt;
 mod async_runtime_module;
+mod coverage;
 mod ffi;
 mod inspector_module;
 mod loader;

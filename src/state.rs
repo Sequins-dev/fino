@@ -304,6 +304,12 @@ pub struct FinoState {
     pub on_done_fn: Option<v8::Global<v8::Function>>,
     /// Process-reactor owner id for this isolate, or zero outside the pool.
     pub scheduler_workload_owner: u32,
+    /// Run-scoped code-coverage Realm id, when precise coverage is active.
+    pub coverage_realm_id: Option<String>,
+    /// Parent coverage Realm id used to preserve Realm relationships.
+    pub coverage_parent_id: Option<String>,
+    /// User-facing Realm kind recorded in the coverage artifact.
+    pub coverage_realm_kind: Option<String>,
     /// Whether readiness registrations are routed through the process loop.
     pub uses_process_readiness: bool,
     /// Reports whether a quiescent scheduled workload still needs polling.
@@ -462,6 +468,9 @@ impl FinoState {
             loop_step_fn: None,
             on_done_fn: None,
             scheduler_workload_owner: 0,
+            coverage_realm_id: None,
+            coverage_parent_id: None,
+            coverage_realm_kind: None,
             uses_process_readiness: false,
             scheduler_polling_fn: None,
             sync_call_fn: None,
@@ -528,6 +537,9 @@ impl FinoState {
             loop_step_fn: None,
             on_done_fn: None,
             scheduler_workload_owner: 0,
+            coverage_realm_id: None,
+            coverage_parent_id: None,
+            coverage_realm_kind: None,
             uses_process_readiness: false,
             scheduler_polling_fn: None,
             sync_call_fn: None,

@@ -60,6 +60,10 @@ pub struct ChildConfig {
     /// Optional shared atomic that `requestReload()` writes so the parent can
     /// observe the reload intent without a V8 context scope.
     pub reload_requested_signal: Option<Arc<AtomicBool>>,
+    /// Coverage Realm kind used when a test coverage run is active.
+    pub coverage_kind: &'static str,
+    /// Parent coverage Realm id assigned by the creating Realm.
+    pub coverage_parent_id: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +153,11 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         state.sandboxed_thread = config.sandboxed_thread;
         state.sandbox_cgroup_path = config.sandbox_cgroup_path;
         context.set_slot(Rc::new(RefCell::new(state)));
+        crate::coverage::start_realm_if_active(
+            scope,
+            config.coverage_kind,
+            config.coverage_parent_id,
+        );
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
@@ -321,6 +330,10 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
             unsafe { crate::profiler::dispose_profiler(ptr) };
+        }
+
+        if let Err(error) = crate::coverage::finish_realm(scope, "complete") {
+            eprintln!("[coverage] unable to finish child Realm coverage: {error}");
         }
 
         if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {

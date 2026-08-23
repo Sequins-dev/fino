@@ -403,6 +403,8 @@ fn setup_workload(
     reload_requested_signal: Option<Arc<AtomicBool>>,
     scheduled: Option<Arc<ScheduledRealmState>>,
     port_fds: Option<(RawFd, RawFd)>,
+    coverage_kind: &'static str,
+    coverage_parent_id: Option<String>,
 ) -> Result<Workload, String> {
     crate::runtime::init_v8();
     let params = v8::CreateParams::default()
@@ -440,6 +442,7 @@ fn setup_workload(
         state.scheduler_workload_owner = owner;
         state.uses_process_readiness = true;
         context.set_slot(Rc::new(RefCell::new(state)));
+        crate::coverage::start_realm_if_active(scope, coverage_kind, coverage_parent_id);
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
@@ -684,6 +687,19 @@ fn drop_workload(mut workload: Workload) {
         }
     }
     drop(workload);
+}
+
+fn finish_workload_coverage(workload: &mut Workload, status: &str) {
+    if workload.state.borrow().coverage_realm_id.is_none() {
+        return;
+    }
+    let context_global = workload.context.clone();
+    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
+    let context = v8::Local::new(isolate_scope, &context_global);
+    let scope = &mut v8::ContextScope::new(isolate_scope, context);
+    if let Err(error) = crate::coverage::finish_realm(scope, status) {
+        eprintln!("[coverage] unable to finish Realm coverage: {error}");
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1165,6 +1181,11 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
             ScheduledRealmResult::Error(error) => Some(error.clone()),
             _ => None,
         };
+        let coverage_status = match &result {
+            ScheduledRealmResult::Done | ScheduledRealmResult::Reload => "complete",
+            ScheduledRealmResult::Error(_) => "crashed",
+        };
+        finish_workload_coverage(&mut resident.item.workload.0, coverage_status);
         if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
             scheduled.complete(result);
         }
@@ -1228,6 +1249,8 @@ fn create_workload(
         None,
         None,
         None,
+        None,
+        "workload",
         None,
     ) {
         Ok(workload) => workload,
@@ -1300,6 +1323,7 @@ fn create_scheduled_realm(
     let watch_mode = args.get(3).boolean_value(scope);
     let realm_data = optional_string(scope, args.get(4));
     let realm_bootstrap_data = optional_string(scope, args.get(5));
+    let coverage_parent_id = get_state(scope).borrow().coverage_realm_id.clone();
     let (parent_tx, child_rx) = mpsc::channel();
     let (child_tx, parent_rx) = mpsc::channel();
     let (child_wake_read, child_wake_write) = match create_pipe() {
@@ -1358,6 +1382,8 @@ fn create_scheduled_realm(
         Some(reload_requested),
         Some(Arc::clone(&scheduled)),
         Some((child_wake_read, parent_wake_write)),
+        "scheduled",
+        coverage_parent_id,
     ) {
         Ok(workload) => workload,
         Err(error) => {

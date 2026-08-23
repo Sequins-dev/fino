@@ -7,8 +7,8 @@ use oxc_sourcemap::SourceMap;
 use v8;
 
 use crate::{
-    async_context, async_runtime_module, ffi, inspector_module, platform, profiler, realm,
-    state::ImportDirective, state::ImportPattern, state::ImportRule, state::get_state,
+    async_context, async_runtime_module, coverage, ffi, inspector_module, platform, profiler,
+    realm, state::ImportDirective, state::ImportPattern, state::ImportRule, state::get_state,
     typescript_format,
 };
 
@@ -113,6 +113,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(inspector_module::create_module),
     ),
     (
+        "internal:coverage",
+        BuiltinKind::Synthetic(coverage::create_module),
+    ),
+    (
         "internal:format/typescript",
         BuiltinKind::Synthetic(typescript_format::create_module),
     ),
@@ -139,6 +143,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),
     source_builtin!("fino:commands/test", "commands/test"),
+    source_builtin!("fino:commands/coverage", "commands/coverage"),
     source_builtin!("fino:commands/bench", "commands/bench"),
     source_builtin!("fino:commands/load", "commands/load"),
     source_builtin!("fino:commands/run", "commands/run"),
@@ -152,6 +157,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/repl", "commands/repl"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
+    source_builtin!("internal:commands/coverage", "commands/coverage"),
     source_builtin!("internal:commands/bench", "commands/bench"),
     source_builtin!("internal:commands/load", "commands/load"),
     source_builtin!("internal:commands/run", "commands/run"),
