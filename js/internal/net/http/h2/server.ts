@@ -189,14 +189,48 @@ export function _parseH2ContentLength(value: string): number {
   if (expected === null) throw new Error('invalid content-length header');
   return expected;
 }
-// Returns true if the string contains any ASCII uppercase letter (A-Z).
-function _hasUppercase(s: string): boolean {
-  const scanner = new Scanner(s, {
-    encoding: 'ascii',
-    format: 'http2',
-  });
-  scanner.eatUntil((code) => code >= 65 && code <= 90);
-  return !scanner.done;
+function _isValidRegularHeaderName(name: string): boolean {
+  if (name.length === 0) return false;
+  for (let i = 0; i < name.length; i++) {
+    const code = name.charCodeAt(i);
+    if (
+      (code < 97 || code > 122) &&
+      (code < 48 || code > 57) &&
+      code !== 33 &&
+      code !== 35 &&
+      code !== 36 &&
+      code !== 37 &&
+      code !== 38 &&
+      code !== 39 &&
+      code !== 42 &&
+      code !== 43 &&
+      code !== 45 &&
+      code !== 46 &&
+      code !== 94 &&
+      code !== 95 &&
+      code !== 96 &&
+      code !== 124 &&
+      code !== 126
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+function _isValidHeaderValue(value: string): boolean {
+  if (
+    value.startsWith(' ') ||
+    value.startsWith('\t') ||
+    value.endsWith(' ') ||
+    value.endsWith('\t')
+  ) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code === 0 || code === 10 || code === 13) return false;
+  }
+  return true;
 }
 // Connection-specific header fields forbidden in HTTP/2 (RFC 7540 Section 8.1.2.2).
 const _FORBIDDEN_HEADERS = new Set([
@@ -1010,8 +1044,9 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
         }
       } else {
         s.seenRegularHeader = true;
-        // Uppercase header field names are invalid in HTTP/2 (RFC 7540 Section 8.1.2).
-        if (_hasUppercase(name)) {
+        // RFC 9113 Section 8.2.1 requires lowercase token names and forbids
+        // NUL/CR/LF or surrounding whitespace in values.
+        if (!_isValidRegularHeaderName(name) || !_isValidHeaderValue(value)) {
           s.headerError = NGHTTP2_PROTOCOL_ERROR;
           return;
         }

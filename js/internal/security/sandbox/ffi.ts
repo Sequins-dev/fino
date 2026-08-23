@@ -37,6 +37,7 @@ const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 // eager dlopen does not fail on macOS.
 const COMMON_SYMBOLS = {
   read: { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
+  pread: { parameters: ['i32', 'buffer', 'usize', 'i64'], result: 'isize' },
   write: { parameters: ['i32', 'buffer', 'usize'], result: 'isize' },
   close: { parameters: ['i32'], result: 'i32' },
   // fcntl and open are variadic in libc; on Darwin ARM64 the extra arg must be

@@ -3967,7 +3967,7 @@ describe('QUIC loopback object model', () => {
           preferredAddress: {
             family: 'ipv4',
             ip: '127.0.0.1',
-            port: 4433,
+            port: 0,
           },
         },
       }),

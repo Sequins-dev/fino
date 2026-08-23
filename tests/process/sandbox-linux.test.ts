@@ -9,8 +9,10 @@
  * controllers), so the tests adapt to the host they run on.
  */
 import { describe, it } from 'fino:test/test';
-import { os, Process, processSandboxCapabilities, kill } from 'fino:process';
+import { os, pid, Process, processSandboxCapabilities, kill } from 'fino:process';
+import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
+const fs = new DiskFileSystem();
 function joinChunks(chunks: Uint8Array[]): string {
   const total = chunks.reduce((n, c) => n + c.byteLength, 0);
   const merged = new Uint8Array(total);
@@ -57,6 +59,35 @@ function landlockOn(): boolean {
     (b) => b.name === 'linuxNative' && b.supported.includes('filesystem'),
   );
 }
+async function writeWideInterpFixture(path: string): Promise<void> {
+  const source = await fs.readFile('/bin/echo');
+  const sourceView = new DataView(source.buffer, source.byteOffset, source.byteLength);
+  if (sourceView.getUint32(0, false) !== 0x7f454c46 || source[4] !== 2) {
+    throw new Error('/bin/echo is not a 64-bit ELF binary');
+  }
+  const le = source[5] === 1;
+  const phoff = Number(sourceView.getBigUint64(0x20, le));
+  const phentsize = sourceView.getUint16(0x36, le);
+  const phnum = sourceView.getUint16(0x38, le);
+  let interpHeader = -1;
+  for (let i = 0; i < phnum; i++) {
+    const off = phoff + i * phentsize;
+    if (sourceView.getUint32(off, le) === 3) {
+      interpHeader = off;
+      break;
+    }
+  }
+  if (interpHeader < 0) throw new Error('/bin/echo has no PT_INTERP program header');
+  const oldOffset = Number(sourceView.getBigUint64(interpHeader + 8, le));
+  const interpSize = Number(sourceView.getBigUint64(interpHeader + 32, le));
+  const newOffset = source.byteLength + 8192;
+  const fixture = new Uint8Array(newOffset + interpSize);
+  fixture.set(source);
+  fixture.set(source.subarray(oldOffset, oldOffset + interpSize), newOffset);
+  new DataView(fixture.buffer).setBigUint64(interpHeader + 8, BigInt(newOffset), le);
+  await fs.writeFile(path, fixture);
+  await fs.chmod(path, 0o755);
+}
 describe('Landlock execute scoping', () => {
   it('denies exec of a non-initial binary under allowExec: false, or fails closed', async (t) => {
     if (os !== 'linux') return;
@@ -95,6 +126,27 @@ describe('Landlock execute scoping', () => {
     });
     const blockedResult = await runToExit(blocked);
     t.notEqual(blockedResult.code, 0, 'exec of a non-allowlisted /bin/echo is denied');
+  });
+  it('permits ELF binaries whose interpreter data is beyond the first page', async (t) => {
+    if (os !== 'linux') return;
+    if (!landlockOn()) {
+      t.ok(true, 'Landlock unavailable; fail-closed behavior is covered above');
+      return;
+    }
+    const fixture = `/tmp/fino-landlock-wide-interp-${pid}-${Date.now()}`;
+    try {
+      await writeWideInterpFixture(fixture);
+      const proc = new Process(fixture, ['wide-interp'], {
+        sandbox: { mode: 'strict', process: { allowedBinaries: [fixture] } },
+      });
+      const result = await runToExit(proc);
+      t.equal(result.code, 0, 'binary with distant PT_INTERP data executes');
+      t.equal(result.stdout.trim(), 'wide-interp', 'fixture produces output');
+    } finally {
+      try {
+        await fs.unlink(fixture);
+      } catch {}
+    }
   });
 });
 describe('cgroup v2 resource limits and cleanup', () => {

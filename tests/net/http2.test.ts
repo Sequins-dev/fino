@@ -2202,6 +2202,27 @@ describe('H2 server — robustness', () => {
     t.ok(rst !== null, 'uppercase header field name gets RST_STREAM');
     t.equal(frameErrorCode(rst!), 1, 'reset uses PROTOCOL_ERROR');
   });
+  it('RST_STREAMs invalid regular header names and values', async (t) => {
+    if (!h2Available) return;
+    const server = serveHttp({ port: 0 }, async () => new Response('ok'));
+    const requestPrefix = hexBytes(130, 132, 134, 65, 9, 108, 111, 99, 97, 108, 104, 111, 115, 116);
+    const invalidFields = [
+      hexBytes(64, 8, 98, 97, 100, 58, 110, 97, 109, 101, 1, 120),
+      hexBytes(64, 8, 98, 97, 100, 47, 110, 97, 109, 101, 1, 120),
+      hexBytes(64, 1, 120, 1, 0),
+      hexBytes(64, 1, 120, 2, 32, 120),
+    ];
+    for (const field of invalidFields) {
+      const block = new Uint8Array(requestPrefix.byteLength + field.byteLength);
+      block.set(requestPrefix);
+      block.set(field, requestPrefix.byteLength);
+      const frames = await rawH2Exchange(server.port, frame(1, 5, 1, block));
+      const rst = findFrame(frames, 3, 1);
+      t.ok(rst !== null, 'invalid regular header gets RST_STREAM');
+      t.equal(frameErrorCode(rst!), 1, 'reset uses PROTOCOL_ERROR');
+    }
+    await server.close();
+  });
   it('RST_STREAMs request HEADERS with pseudo-header after a regular header', async (t) => {
     if (!h2Available) return;
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));

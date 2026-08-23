@@ -480,6 +480,10 @@ export class Nghttp2Session {
       throw new Error(`nghttp2_option_new failed: ${optionRc}`);
     }
     sym!.nghttp2_option_set_no_auto_window_update(optionHandle, 1);
+    // The server driver performs RFC 9113 message validation itself. Disable
+    // nghttp2's overlapping validator so malformed fields reach our callbacks
+    // consistently across nghttp2 versions and receive the required RST_STREAM.
+    if (isServer) sym!.nghttp2_option_set_no_http_messaging(optionHandle, 1);
     let rc: number;
     try {
       if (isServer) {
