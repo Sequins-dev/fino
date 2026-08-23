@@ -7,7 +7,7 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { Fragment, h } from 'fino:ui';
 import { Presentation } from 'fino:ui/slides';
 import { DiskFileSystem } from 'fino:file';
-import { Process, execPath } from 'fino:process';
+import { Process, SIGKILL, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
 const encoder = new TextEncoder();
@@ -541,7 +541,7 @@ describe('fino:ui/slides', () => {
       );
     } finally {
       controller.abort();
-      proc.kill();
+      proc.kill(SIGKILL);
       await waiting;
       await readingStderr;
     }
