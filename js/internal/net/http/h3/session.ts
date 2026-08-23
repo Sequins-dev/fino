@@ -553,7 +553,7 @@ export class Nghttp3Session {
         result: 'i32',
       },
       (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
-        this.#bodySlots.delete(streamId);
+        this.#dropBodySlot(streamId);
         this.#pendingTrailers.delete(streamId);
         this.#yieldedBytes.delete(streamId);
         this.#webTransportSettingsPrefixes.delete(streamId);
@@ -721,7 +721,7 @@ export class Nghttp3Session {
         result: 'i32',
       },
       (_conn: ArrayBuffer, streamId: bigint, appErrorCode: bigint) => {
-        this.#bodySlots.delete(streamId);
+        this.#dropBodySlot(streamId);
         this.#pendingTrailers.delete(streamId);
         this.#yieldedBytes.delete(streamId);
         this.#webTransportSettingsPrefixes.delete(streamId);
@@ -1002,6 +1002,39 @@ export class Nghttp3Session {
       nv,
     ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_trailers failed: ${rc}`);
+  }
+  /**
+   * Cancel one request stream without closing the HTTP/3 connection.
+   *
+   * Drops any pending request-body producer (calling its async iterator's
+   * `return()` hook when available), clears per-stream write state, and tells
+   * nghttp3 that the stream ended with `H3_REQUEST_CANCELLED`. The QUIC driver
+   * remains responsible for sending `STOP_SENDING` and `RESET_STREAM` on the
+   * transport stream itself.
+   *
+   * This method is idempotent from the caller's perspective: cancellation of a
+   * stream nghttp3 has already removed is ignored.
+   *
+   * @internal
+   */
+  cancelStream(streamId: bigint, errorCode: bigint = NGHTTP3_H3_REQUEST_CANCELLED): void {
+    if (this.#closed) return;
+    this.#dropBodySlot(streamId);
+    this.#pendingTrailers.delete(streamId);
+    this.#yieldedBytes.delete(streamId);
+    this.#webTransportSettingsPrefixes.delete(streamId);
+    this.#quicStreams.delete(streamId);
+    // nghttp3 reports an error if the stream has already reached its terminal
+    // callback. There is no further state to release in that case.
+    sym!.nghttp3_conn_close_stream(this.#conn, streamId, errorCode);
+  }
+  #dropBodySlot(streamId: bigint): void {
+    const slot = this.#bodySlots.get(streamId);
+    if (slot === undefined) return;
+    this.#bodySlots.delete(streamId);
+    if (slot.iterator?.return !== undefined) {
+      void Promise.resolve(slot.iterator.return()).catch(() => {});
+    }
   }
   #makeBodySlot(body: H3BodySource, trailers?: Array<[string, string]>): BodySlot {
     if (body instanceof Uint8Array) {
@@ -1414,7 +1447,7 @@ export class Nghttp3Session {
     sym!.nghttp3_conn_del(this.#conn);
     for (const cb of this.#callbacks) cb.close();
     this.#callbacks.length = 0;
-    this.#bodySlots.clear();
+    for (const streamId of this.#bodySlots.keys()) this.#dropBodySlot(streamId);
     this.#pendingTrailers.clear();
     this.#yieldedBytes.clear();
     this.#quicStreams.clear();

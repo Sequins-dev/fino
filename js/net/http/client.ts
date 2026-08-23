@@ -12,11 +12,11 @@
  * The first implementation intentionally layers on Fino's existing fetch,
  * EventSource, and WebSocket transports. That preserves current redirect,
  * abort, decompression, integrity, referrer, TLS, and HTTP/2 pool behavior
- * while establishing the public client/session surface. HTTP/1.1 sessions are
- * logical policy containers and still use one connection per request. Explicit
- * HTTP/3 sessions keep one QUIC/H3 transport active until `reconnect()` or
- * `close()`. HTTP/2 and HTTP/3 WebSocket attempts reject with a clear Extended
- * CONNECT error until those transports support it.
+ * while establishing the public client/session surface. Sessions own bounded
+ * physical transport slots: HTTP/1.1 leases one request at a time and reuses a
+ * slot after response EOF, while HTTP/2 and HTTP/3 multiplex bounded streams.
+ * HTTP/2 and HTTP/3 WebSocket attempts reject with a clear Extended CONNECT
+ * error until those transports support it.
  *
  * ```ts no_run
  * import { HttpClient } from 'fino:net/http/client';
@@ -41,7 +41,11 @@
  * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
  */
 import { Headers, Request, Response, buildWireResponse } from './index.ts';
-import { fetch as runtimeFetch, _closeFetchH2PoolEntry } from '../../globals/fetch.ts';
+import {
+  fetch as runtimeFetch,
+  _closeFetchPoolSlot,
+  _getFetchResponseMetadata,
+} from '../../globals/fetch.ts';
 import { EventSource } from '../../globals/eventsource.ts';
 import type { EventSourceInit } from '../../globals/eventsource.ts';
 import { WebSocketConnection } from './websocket.ts';
@@ -56,9 +60,9 @@ import { resolveH3ConnectAddress } from '../../internal/net/http/h3/resolve.ts';
 /**
  * Application-level protocol a client or session may speak.
  *
- * `'http/1.1'` uses one connection per request and is the default. `'h2'`
- * multiplexes over a shared HTTP/2 pool entry keyed by origin. `'h3'` runs over
- * a persistent QUIC transport that survives until `reconnect()` or `close()`.
+ * `'http/1.1'` uses persistent, non-pipelined connections and is the default.
+ * `'h2'` multiplexes over persistent HTTP/2 slots. `'h3'` multiplexes over
+ * persistent QUIC transports until `reconnect()` or `close()`.
  * The value pins how a session behaves; the actual protocol a given response was
  * served on is reported separately by `HttpResponse.protocol`, which may differ
  * if the peer negotiated down.
@@ -95,6 +99,22 @@ export type HttpClientTransport = 'tcp' | 'tls' | 'quic';
  * ```
  */
 export type HttpHeadersInit = Headers | string[][] | Record<string, string> | null | undefined;
+/** Per-phase request deadlines in milliseconds. */
+export interface HttpClientTimeouts {
+  /** Maximum DNS plus new-connection setup time; ignored for reused connections. */
+  connect?: number;
+  /** Maximum time spent waiting for scheduler capacity and final headers. */
+  headers?: number;
+  /** Maximum idle gap between response-body chunks. */
+  bodyIdle?: number;
+  /** Maximum time from scheduling until the response body is released. */
+  total?: number;
+}
+/** Safe automatic retry policy applied above the selected HTTP transport. */
+export interface HttpClientRetryOptions {
+  /** Total attempts, including the initial send. Defaults to `1`. */
+  attempts?: number;
+}
 interface MinimalAbortSignal {
   aborted: boolean;
   reason: unknown;
@@ -117,9 +137,10 @@ function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
  * base URL and no default headers, so requests must pass absolute URLs. The
  * base URL resolves relative paths for `request()`, `sse()`, `websocket()`, and
  * `webtransport()`. Default headers are merged into every request and can be
- * overridden per call. `protocols` lists preferences in priority order — the
- * first entry drives explicit sessions and the default for `request()`. `tls`
- * is forwarded to the underlying fetch, EventSource, and QUIC transports.
+ * overridden per call. `protocols` lists preferences in priority order.
+ * Connection/stream/queue limits bound local capacity, while response
+ * buffering, deadlines, retries, and decoding are reusable client policies.
+ * `tls` is forwarded to the underlying transports.
  *
  * ```ts no_run
  * import { HttpClient } from 'fino:net/http/client';
@@ -133,6 +154,20 @@ function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
  * ```
  */
 export interface HttpClientOptions {
+  /** Maximum physical connections maintained per origin. Defaults to `1`. */
+  connections?: number;
+  /** Maximum active H2/H3 streams per physical connection. Defaults to `100`. */
+  maxConcurrentStreams?: number;
+  /** Maximum requests waiting for local capacity. Defaults to `1024`. */
+  maxPendingRequests?: number;
+  /** Maximum unread response bytes buffered per H2/H3 stream. Defaults to 16 MiB. */
+  maxBufferedResponseBytes?: number;
+  /** Default request deadlines. */
+  timeouts?: HttpClientTimeouts;
+  /** Safe transport retry policy. */
+  retry?: HttpClientRetryOptions;
+  /** Whether response content is transparently decoded. Defaults to `true`. */
+  decompress?: boolean;
   /**
    * Base URL used to resolve relative request, SSE, WebSocket, and
    * WebTransport paths.
@@ -182,10 +217,8 @@ export interface HttpClientOptions {
  *
  * These mirror the familiar Fetch options — `method`, `headers`, `body`,
  * `signal`, `redirect`, `integrity`, and the referrer controls — and add
- * `trailers` (a `Headers` value or a function producing one, applied after the
- * body) plus transport-specific `tls` and `quic` overrides. Headers here are
- * merged on top of the client's defaults. `tls`/`quic` fall back to the
- * client's TLS options when omitted.
+ * trailers, deadline/retry/decoding policy, plus transport-specific `tls` and
+ * `quic` overrides. Headers merge on top of the client's defaults.
  *
  * ```ts no_run
  * import { HttpClient } from 'fino:net/http/client';
@@ -202,6 +235,12 @@ export interface HttpClientOptions {
  * ```
  */
 export interface HttpRequestInit {
+  /** Per-request deadline overrides. */
+  timeouts?: HttpClientTimeouts;
+  /** Per-request safe retry override. */
+  retry?: HttpClientRetryOptions;
+  /** Override transparent content decoding for this request. */
+  decompress?: boolean;
   /**
    * HTTP method to send. Defaults to `GET`.
    */
@@ -391,12 +430,10 @@ export interface HttpRequestInfo {
 /**
  * Metadata about the transport connection a response was served on.
  *
- * `id` is a per-process synthetic connection identifier, distinct from the
- * logical `HttpSession.id`. `protocol` and `transport` describe what was
- * actually negotiated. `localAddress`/`remoteAddress` and `alpnProtocol` are
- * populated for HTTP/3 (QUIC) connections and left `null` for the HTTP/1.1 and
- * HTTP/2 paths, which layer on the shared fetch pool. `connectedAt` is a
- * `Date.now()` millisecond timestamp.
+ * `id` is assigned when a physical connection is created and remains stable
+ * across reuse, distinct from the logical `HttpSession.id`. `protocol` and
+ * `transport` describe what was negotiated. `connectedAt` and response timing
+ * values use the monotonic high-resolution clock.
  *
  * ```ts no_run
  * const res = await client.request('/users');
@@ -435,33 +472,56 @@ export interface HttpConnectionInfo {
    * Millisecond timestamp recorded when the connection metadata was created.
    */
   readonly connectedAt: number;
+  /** Whether this request reused a connection that had carried an earlier request. */
+  readonly reused: boolean;
+  /** Multiplexed protocol stream id, or `null` for HTTP/1.1. */
+  readonly streamId: number | bigint | null;
 }
 /**
- * Coarse timing marks captured while sending a request and reading its body.
+ * Monotonic timing marks captured while scheduling and reading a request.
  *
- * All values are `Date.now()` millisecond timestamps. `startTime` is recorded
- * just before the request is sent. `responseHeadersEnd` is set once the status
- * line and headers arrive. `bodyEnd` is set when the response body is fully
- * consumed or the response is closed — so it stays `undefined` until you read
- * the body via `text()`, `json()`, `bytes()`, `arrayBuffer()`, iterate `body`,
- * or call `close()`.
+ * Values are `performance.now()` milliseconds. Queue entry/acquisition, final
+ * headers, first delivered body byte, and body release are recorded without
+ * retaining per-chunk measurements.
  *
  * ```ts no_run
  * const res = await client.request('/users');
  * const body = await res.text();
- * const total = (res.timing.bodyEnd ?? Date.now()) - res.timing.startTime;
+ * const total = (res.timing.bodyEnd ?? performance.now()) - res.timing.scheduledTime;
  * console.log(`request took ${total}ms`);
  * ```
  */
 export interface HttpResponseTiming {
+  /** Monotonic timestamp at which the request entered the local scheduler. */
+  readonly scheduledTime: number;
   /**
    * Millisecond timestamp taken immediately before the request is sent.
    */
   readonly startTime: number;
+  /** Time local capacity was acquired; queue delay is this minus `scheduledTime`. */
+  readonly queueEnd: number;
+  /** DNS lookup start, or `null` for reused/opaque transports. */
+  readonly dnsStart: number | null;
+  /** DNS lookup completion, or `null` for reused/opaque transports. */
+  readonly dnsEnd: number | null;
+  /** TCP or QUIC connection attempt start, or `null` when unavailable. */
+  readonly connectStart: number | null;
+  /** TCP or QUIC connection ready, or `null` when unavailable or reused. */
+  readonly connectEnd: number | null;
+  /** TLS or QUIC secure-handshake start, or `null` when unavailable. */
+  readonly secureConnectStart: number | null;
+  /** TLS or QUIC secure-handshake completion, or `null` when unavailable. */
+  readonly secureConnectEnd: number | null;
+  /** Request header flush completion, or `null` when the transport cannot expose it. */
+  readonly requestHeadersEnd: number | null;
+  /** Request body flush completion, or `null` for streaming/opaque uploads. */
+  readonly requestBodyEnd: number | null;
   /**
    * Millisecond timestamp taken after response status and headers arrive.
    */
   readonly responseHeadersEnd?: number;
+  /** Timestamp at which the first response body chunk was delivered. */
+  readonly firstResponseByte?: number;
   /**
    * Millisecond timestamp set when the body is consumed or closed.
    */
@@ -473,9 +533,9 @@ export interface HttpResponseTiming {
  * A session records these as it moves through its life: `connecting` and
  * `connected` (carrying the new `HttpConnectionInfo`) around establishing a
  * transport, `reconnecting` and `reconnected` around a transport replacement,
- * and `closed` on teardown. The HTTP/1.1 and HTTP/2 paths emit `connected` per
- * request since they do not hold a dedicated transport; HTTP/3 sessions emit
- * `connected` once when the QUIC transport comes up. Consume the stream via
+ * and `closed` on teardown. Fetch-backed HTTP/1.1 and HTTP/2 paths report the
+ * physical transport selected for each response; HTTP/3 emits `connected` when
+ * a QUIC slot comes up. Consume the stream via
  * `HttpSession.events` and switch on `type`.
  *
  * ```ts no_run
@@ -635,6 +695,7 @@ interface H3Transport {
   endpoint: QuicEndpoint;
   session: H3ClientSession;
   connection: HttpConnectionInfo;
+  requests: number;
 }
 let sessionSeq = 0;
 let connectionSeq = 0;
@@ -643,6 +704,32 @@ function nextSessionId(): string {
 }
 function nextConnectionId(): string {
   return `http-client-connection-${++connectionSeq}`;
+}
+function positiveInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new RangeError(`HttpClient ${name} must be a positive integer`);
+  }
+  return value;
+}
+function nonNegativeInteger(value: number, name: string): number {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new RangeError(`HttpClient ${name} must be a non-negative integer`);
+  }
+  return value;
+}
+async function withDeadline<T>(
+  promise: Promise<T>,
+  timeoutMs: number | undefined,
+  message: string,
+): Promise<T> {
+  if (timeoutMs === undefined) return promise;
+  let timer!: ReturnType<typeof setTimeout>;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), Math.max(0, timeoutMs));
+    }),
+  ]).finally(() => clearTimeout(timer));
 }
 function normalizeProtocol(protocol: HttpClientProtocol | undefined, url: URL): HttpClientProtocol {
   if (protocol !== undefined) return protocol;
@@ -759,28 +846,56 @@ async function waitForWebSocketOpen(socket: WebSocketConnection): Promise<WebSoc
 async function* responseBody(
   response: Response,
   markConsumed: () => void,
+  timing: { firstResponseByte?: number },
+  bodyIdleMs?: number,
 ): AsyncIterable<Uint8Array> {
   const body = response.body;
   if (body === null) return;
+  const iterator = (body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
   try {
-    for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-      yield chunk;
+    while (true) {
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const next = iterator.next();
+      const result =
+        bodyIdleMs === undefined
+          ? await next
+          : await Promise.race([
+              next,
+              new Promise<never>((_, reject) => {
+                timer = setTimeout(
+                  () => reject(new Error(`HTTP response body idle timeout after ${bodyIdleMs}ms`)),
+                  bodyIdleMs,
+                );
+              }),
+            ]).finally(() => {
+              if (timer !== null) clearTimeout(timer);
+            });
+      if (result.done) break;
+      if (timing.firstResponseByte === undefined) timing.firstResponseByte = performance.now();
+      yield result.value;
     }
   } finally {
+    if (typeof iterator.return === 'function') {
+      try {
+        await iterator.return();
+      } catch (_) {}
+    }
     markConsumed();
   }
 }
+/** Policy used by `HttpResponse.discard()`. */
+export type HttpResponseDiscardPolicy = 'consume' | 'cancel';
 /**
  * Response returned by `HttpClient.request()` and `HttpSession.request()`.
  *
  * Wraps a Fetch-compatible `Response` and augments it with the request that
  * produced it, the logical `session`, the transport `connection`, the actual
- * `protocol` served, incoming `trailers`, and coarse `timing` marks. The body
+ * `protocol` served, incoming `trailers`, and monotonic `timing` marks. The body
  * helpers (`text()`, `json()`, `bytes()`, `arrayBuffer()`) and the streaming
  * `body` iterable are single-consumption: the first that runs marks the body
  * consumed, and any later read — including `toFetchResponse()` — throws
- * `TypeError('Body already consumed')`. `close()` drains or cancels an unread
- * body without throwing so responses can be discarded safely.
+ * `TypeError('Body already consumed')`. `close()` cancels an unread body
+ * without throwing; use `discard('consume')` to black-hole it through EOF.
  *
  * Applications rarely construct this directly; obtain one from a request.
  *
@@ -869,9 +984,22 @@ export class HttpResponse {
     protocol: HttpClientProtocol;
     timing: HttpResponseTiming;
     markBodyEnd: () => void;
+    bodyIdleMs?: number;
+    lifecycleSignal?: MinimalAbortSignal | null;
   }) {
     this.#response = init.response;
-    this.#markBodyEnd = init.markBodyEnd;
+    let ended = false;
+    const onAbort = () => {
+      void this.close();
+    };
+    this.#markBodyEnd = () => {
+      if (ended) return;
+      ended = true;
+      init.lifecycleSignal?.removeEventListener('abort', onAbort);
+      init.markBodyEnd();
+    };
+    init.lifecycleSignal?.addEventListener('abort', onAbort, { once: true });
+    if (init.lifecycleSignal?.aborted) queueMicrotask(onAbort);
     this.status = init.response.status;
     this.statusText = init.response.statusText;
     this.headers = init.response.headers;
@@ -884,7 +1012,10 @@ export class HttpResponse {
     this.trailers = init.response.trailers;
     this.timing = init.timing;
     this.body =
-      init.response.body === null ? null : responseBody(init.response, this.#consume.bind(this));
+      init.response.body === null
+        ? null
+        : responseBody(init.response, this.#consume.bind(this), init.timing, init.bodyIdleMs);
+    if (this.body === null) this.#markBodyEnd();
   }
   #consume(): void {
     this.#consumed = true;
@@ -893,38 +1024,44 @@ export class HttpResponse {
   #assertUnused(): void {
     if (this.#consumed || this.#response.bodyUsed) throw new TypeError('Body already consumed');
   }
+  async #collectBody(): Promise<Uint8Array> {
+    this.#assertUnused();
+    this.#consumed = true;
+    if (this.body === null) return new Uint8Array(0);
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for await (const chunk of this.body) {
+      chunks.push(chunk);
+      total += chunk.byteLength;
+    }
+    if (chunks.length === 0) return new Uint8Array(0);
+    if (chunks.length === 1) return chunks[0]!;
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  }
   /**
    * Consume the body and return an `ArrayBuffer`.
    */
   async arrayBuffer(): Promise<ArrayBuffer> {
-    this.#assertUnused();
-    try {
-      return await this.#response.arrayBuffer();
-    } finally {
-      this.#consume();
-    }
+    const bytes = await this.#collectBody();
+    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
   }
   /**
    * Consume the body and return bytes.
    */
   async bytes(): Promise<Uint8Array> {
-    this.#assertUnused();
-    try {
-      return await this.#response.bytes();
-    } finally {
-      this.#consume();
-    }
+    return this.#collectBody();
   }
   /**
    * Consume the body and decode it as UTF-8 text.
    */
   async text(): Promise<string> {
-    this.#assertUnused();
-    try {
-      return await this.#response.text();
-    } finally {
-      this.#consume();
-    }
+    return new TextDecoder().decode(await this.#collectBody());
   }
   /**
    * Consume the body and parse it as JSON.
@@ -934,12 +1071,7 @@ export class HttpResponse {
    * payload is not valid JSON.
    */
   async json(): Promise<unknown> {
-    this.#assertUnused();
-    try {
-      return await this.#response.json();
-    } finally {
-      this.#consume();
-    }
+    return JSON.parse(await this.text());
   }
   /**
    * Hand back the underlying Fetch-compatible `Response`.
@@ -950,8 +1082,17 @@ export class HttpResponse {
    */
   toFetchResponse(): Response {
     this.#assertUnused();
-    this.#consume();
-    return this.#response;
+    this.#consumed = true;
+    return buildWireResponse({
+      version: this.#response.version,
+      status: this.status,
+      statusText: this.statusText,
+      headers: this.headers,
+      body: this.body as any,
+      url: this.url,
+      redirected: this.redirected,
+      inTrailers: this.trailers,
+    });
   }
   /**
    * Release the response without reading it.
@@ -973,15 +1114,54 @@ export class HttpResponse {
       } catch (_) {}
     }
   }
+  /**
+   * Drop a response with explicit wire semantics.
+   *
+   * `consume` (the default) reads each chunk, counts its bytes, and immediately
+   * releases it so the connection remains reusable. `cancel` stops after
+   * headers: HTTP/1 closes its connection while HTTP/2 and HTTP/3 reset only
+   * the stream. The returned number is the body bytes consumed in `consume`
+   * mode and zero in `cancel` mode.
+   */
+  async discard(policy: HttpResponseDiscardPolicy = 'consume'): Promise<number> {
+    if (policy === 'cancel') {
+      await this.close();
+      return 0;
+    }
+    this.#assertUnused();
+    this.#consumed = true;
+    let bytes = 0;
+    if (this.body !== null) {
+      for await (const chunk of this.body) bytes += chunk.byteLength;
+    }
+    return bytes;
+  }
+}
+/** Point-in-time local scheduler state for an HTTP session. */
+export interface HttpSessionCapacity {
+  /** Number of configured physical connection slots. */
+  readonly connections: number;
+  /** Requests or streams currently holding a slot. */
+  readonly active: number;
+  /** Requests waiting for a slot. */
+  readonly pending: number;
+  /** Maximum simultaneous operations across all slots. */
+  readonly limit: number;
+}
+interface CapacityWaiter {
+  resolve(slot: number): void;
+  reject(reason: unknown): void;
+  signal: MinimalAbortSignal | null;
+  onAbort: (() => void) | null;
 }
 /**
  * Logical, origin-scoped relationship with a server.
  *
  * A session pins one origin and one protocol and carries the client's default
  * headers, giving a stable identity (`id`) that outlives any single transport
- * connection. For HTTP/1.1 and HTTP/2 it is a policy container — each request
- * still flows through the shared fetch pool — while an `h3` session keeps one
- * QUIC/H3 transport alive across requests until `reconnect()` or `close()`.
+ * connection. Each session owns a configured number of transport slots and a
+ * bounded FIFO acquisition queue. HTTP/1.1 slots are leased exclusively;
+ * HTTP/2 and HTTP/3 slots multiplex configured stream concurrency.
  * Sessions expose their lifecycle through the `events` async iterable and can
  * additionally open SSE streams, WebSockets, and WebTransport bound to the same
  * origin and headers.
@@ -1009,7 +1189,10 @@ export class HttpSession {
   #state: 'connecting' | 'ready' | 'draining' | 'closed' = 'ready';
   #currentConnection: HttpConnectionInfo | null = null;
   #events: HttpSessionEvent[] = [];
-  #h3Transport: H3Transport | null = null;
+  #h3Transports = new Map<number, H3Transport>();
+  #activeBySlot: number[];
+  #slotEstablished: boolean[];
+  #capacityWaiters: CapacityWaiter[] = [];
   /**
    * Stable logical session identity.
    *
@@ -1038,6 +1221,18 @@ export class HttpSession {
     this.id = nextSessionId();
     this.origin = origin.origin;
     this.protocol = protocol;
+    this.#activeBySlot = Array.from({ length: client.connections }, () => 0);
+    this.#slotEstablished = Array.from({ length: client.connections }, () => false);
+  }
+  /** Snapshot current local connection/stream capacity and queue depth. */
+  get capacity(): HttpSessionCapacity {
+    const perConnection = this.protocol === 'http/1.1' ? 1 : this.#client.maxConcurrentStreams;
+    return {
+      connections: this.#activeBySlot.length,
+      active: this.#activeBySlot.reduce((sum, count) => sum + count, 0),
+      pending: this.#capacityWaiters.length,
+      limit: this.#activeBySlot.length * perConnection,
+    };
   }
   /**
    * Current lifecycle state.
@@ -1073,19 +1268,81 @@ export class HttpSession {
       },
     };
   }
-  async #closeH3Transport(): Promise<void> {
-    const transport = this.#h3Transport;
-    if (transport === null) return;
-    this.#h3Transport = null;
-    transport.session.close();
-    await transport.endpoint.close();
+  #availableSlot(): number {
+    let selected = -1;
+    for (let slot = 0; slot < this.#activeBySlot.length; slot++) {
+      const limit =
+        this.protocol === 'http/1.1' || !this.#slotEstablished[slot]
+          ? 1
+          : this.#client.maxConcurrentStreams;
+      if (this.#activeBySlot[slot]! >= limit) continue;
+      if (selected === -1 || this.#activeBySlot[slot]! < this.#activeBySlot[selected]!) {
+        selected = slot;
+      }
+    }
+    return selected;
+  }
+  #acquire(signal: MinimalAbortSignal | null): Promise<number> {
+    const slot = this.#availableSlot();
+    if (slot !== -1) {
+      this.#activeBySlot[slot]!++;
+      return Promise.resolve(slot);
+    }
+    if (this.#capacityWaiters.length >= this.#client.maxPendingRequests) {
+      return Promise.reject(new Error('HTTP session pending request queue is full'));
+    }
+    return new Promise<number>((resolve, reject) => {
+      const waiter: CapacityWaiter = { resolve, reject, signal, onAbort: null };
+      if (signal !== null) {
+        const onAbort = () => {
+          const index = this.#capacityWaiters.indexOf(waiter);
+          if (index !== -1) this.#capacityWaiters.splice(index, 1);
+          reject(signal.reason);
+        };
+        waiter.onAbort = onAbort;
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      this.#capacityWaiters.push(waiter);
+    });
+  }
+  #release(slot: number): void {
+    if (this.#activeBySlot[slot]! > 0) this.#activeBySlot[slot]!--;
+    this.#wakeCapacityWaiter();
+  }
+  #wakeCapacityWaiter(): boolean {
+    while (this.#capacityWaiters.length > 0) {
+      const waiter = this.#capacityWaiters.shift()!;
+      if (waiter.signal?.aborted) continue;
+      const available = this.#availableSlot();
+      if (available === -1) {
+        this.#capacityWaiters.unshift(waiter);
+        return false;
+      }
+      waiter.signal?.removeEventListener('abort', waiter.onAbort!);
+      this.#activeBySlot[available]!++;
+      waiter.resolve(available);
+      return true;
+    }
+    return false;
+  }
+  async #closeH3Transports(): Promise<void> {
+    const transports = [...this.#h3Transports.values()];
+    this.#h3Transports.clear();
+    await Promise.allSettled(
+      transports.map(async (transport) => {
+        transport.session.close();
+        await transport.endpoint.close();
+      }),
+    );
   }
   async #ensureH3Transport(
     url: URL,
+    slot: number,
     init: Pick<HttpRequestInit, 'tls' | 'quic'> = {},
+    connectTimeout?: number,
   ): Promise<H3Transport> {
-    let transport = this.#h3Transport;
-    if (transport !== null) return transport;
+    let transport = this.#h3Transports.get(slot);
+    if (transport !== undefined) return transport;
     const target = await resolveH3ConnectAddress(url);
     const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
     const tls = init.tls ?? this.#client.tls;
@@ -1096,19 +1353,27 @@ export class HttpSession {
       ...(tls?.key !== undefined ? { privateKeyFile: tls.key } : {}),
     };
     try {
-      const conn = await endpoint.connect({
-        ...quic,
-        address: target.address,
-        alpnProtocols: ['h3'],
-        serverName: quic?.serverName ?? target.serverName,
-      });
-      return await this.#attachH3Connection(conn, endpoint);
+      const conn = await withDeadline(
+        endpoint.connect({
+          ...quic,
+          address: target.address,
+          alpnProtocols: ['h3'],
+          serverName: quic?.serverName ?? target.serverName,
+        }),
+        connectTimeout,
+        'HTTP/3 connection timeout',
+      );
+      return await this.#attachH3Connection(conn, endpoint, slot);
     } catch (error) {
       await endpoint.close();
       throw error;
     }
   }
-  async #attachH3Connection(conn: QuicConnection, endpoint: QuicEndpoint): Promise<H3Transport> {
+  async #attachH3Connection(
+    conn: QuicConnection,
+    endpoint: QuicEndpoint,
+    slot: number,
+  ): Promise<H3Transport> {
     const h3 = await H3ClientSession.create(conn);
     const connection: HttpConnectionInfo = {
       id: nextConnectionId(),
@@ -1117,14 +1382,17 @@ export class HttpSession {
       localAddress: conn.localAddress,
       remoteAddress: conn.remoteAddress,
       alpnProtocol: 'h3',
-      connectedAt: Date.now(),
+      connectedAt: performance.now(),
+      reused: false,
+      streamId: null,
     };
     const transport = {
       endpoint,
       session: h3,
       connection,
+      requests: 0,
     };
-    this.#h3Transport = transport;
+    this.#h3Transports.set(slot, transport);
     this.#currentConnection = connection;
     this.#events.push({
       type: 'connected',
@@ -1134,24 +1402,30 @@ export class HttpSession {
     return transport;
   }
   async _attachH3TransportForTest(conn: QuicConnection): Promise<void> {
-    await this.#closeH3Transport();
+    await this.#closeH3Transports();
     const endpoint = { close: async () => {} } as QuicEndpoint;
-    await this.#attachH3Connection(conn, endpoint);
+    await this.#attachH3Connection(conn, endpoint, 0);
   }
   async #h3Request(
     url: URL,
     method: string,
     headers: Headers,
     init: HttpRequestInit,
-  ): Promise<Response> {
-    const transport = await this.#ensureH3Transport(url, init);
+    slot: number,
+    signal: MinimalAbortSignal | null,
+    connectTimeout?: number,
+  ): Promise<{ response: Response; connection: HttpConnectionInfo }> {
+    const transport = await this.#ensureH3Transport(url, slot, init, connectTimeout);
     const response = await transport.session.request(url.href, {
       method,
       headers,
       body: init.body,
       trailers: init.trailers as any,
+      signal,
+      maxBufferedBodyBytes: this.#client.maxBufferedResponseBytes,
     } as H3FetchInit);
-    return buildWireResponse({
+    const streamId = (response as any).__h3StreamId as bigint | undefined;
+    const built = buildWireResponse({
       version: 'HTTP/3',
       status: response.status,
       statusText: response.statusText,
@@ -1161,25 +1435,103 @@ export class HttpSession {
       redirected: false,
       inTrailers: response.trailers,
     });
+    const connection = {
+      ...transport.connection,
+      reused: transport.requests++ > 0,
+      streamId: streamId ?? null,
+    };
+    return { response: built, connection };
   }
   async _request(input: string | URL, init: HttpRequestInit = {}): Promise<HttpResponse> {
     if (this.#state === 'closed') throw new Error('HTTP session closed');
     const url = resolveHttpUrl(this.#baseUrl, input);
     const method = init.method !== undefined ? String(init.method).toUpperCase() : 'GET';
     const headers = mergeHeaders(this.#headers, init.headers);
+    const scheduledTime = performance.now();
+    const timeouts = { ...this.#client.timeouts, ...init.timeouts };
+    const retry = { ...this.#client.retry, ...init.retry };
+    const attempts = positiveInteger(retry.attempts ?? 1, 'retry.attempts');
+    const replayable = isReplayable(init.body);
+    const controller = new AbortController();
+    const userSignal = init.signal ?? null;
+    if (userSignal?.aborted) throw userSignal.reason;
+    const onUserAbort = () => controller.abort(userSignal!.reason);
+    userSignal?.addEventListener('abort', onUserAbort, { once: true });
+    let headersTimer: ReturnType<typeof setTimeout> | null = null;
+    let totalTimer: ReturnType<typeof setTimeout> | null = null;
+    if (timeouts.headers !== undefined) {
+      headersTimer = setTimeout(
+        () =>
+          controller.abort(new Error(`HTTP response headers timeout after ${timeouts.headers}ms`)),
+        timeouts.headers,
+      );
+    }
+    if (timeouts.total !== undefined) {
+      totalTimer = setTimeout(
+        () => controller.abort(new Error(`HTTP request total timeout after ${timeouts.total}ms`)),
+        timeouts.total,
+      );
+    }
+    const cleanupDeadline = () => {
+      if (headersTimer !== null) clearTimeout(headersTimer);
+      if (totalTimer !== null) clearTimeout(totalTimer);
+      userSignal?.removeEventListener('abort', onUserAbort);
+    };
     const timing: {
+      scheduledTime: number;
       startTime: number;
+      queueEnd: number;
       responseHeadersEnd?: number;
+      firstResponseByte?: number;
       bodyEnd?: number;
-    } = { startTime: Date.now() };
-    const response =
-      this.protocol === 'h3'
-        ? await this.#h3Request(url, method, headers, init)
-        : await runtimeFetch(url.href, {
+      dnsStart: number | null;
+      dnsEnd: number | null;
+      connectStart: number | null;
+      connectEnd: number | null;
+      secureConnectStart: number | null;
+      secureConnectEnd: number | null;
+      requestHeadersEnd: number | null;
+      requestBodyEnd: number | null;
+    } = {
+      scheduledTime,
+      startTime: scheduledTime,
+      queueEnd: scheduledTime,
+      dnsStart: null,
+      dnsEnd: null,
+      connectStart: null,
+      connectEnd: null,
+      secureConnectStart: null,
+      secureConnectEnd: null,
+      requestHeadersEnd: null,
+      requestBodyEnd: null,
+    };
+    let response!: Response;
+    let connection: HttpConnectionInfo | null = null;
+    let slot = -1;
+    let attempt = 0;
+    for (; attempt < attempts; attempt++) {
+      try {
+        slot = await this.#acquire(controller.signal);
+        timing.queueEnd = performance.now();
+        timing.startTime = timing.queueEnd;
+        if (this.protocol === 'h3') {
+          const h3 = await this.#h3Request(
+            url,
+            method,
+            headers,
+            init,
+            slot,
+            controller.signal,
+            timeouts.connect,
+          );
+          response = h3.response;
+          connection = h3.connection;
+        } else {
+          response = await runtimeFetch(url.href, {
             method,
             headers,
             body: init.body,
-            signal: init.signal ?? null,
+            signal: controller.signal,
             redirect: init.redirect,
             integrity: init.integrity,
             referrer: init.referrer,
@@ -1187,21 +1539,64 @@ export class HttpSession {
             trailers: init.trailers,
             tls: init.tls ?? this.#client.tls,
             protocol: this.protocol,
+            poolSlot: `${this.id}:${slot}`,
+            decompress: init.decompress ?? this.#client.decompress,
+            maxBufferedBodyBytes: this.#client.maxBufferedResponseBytes,
+            connectTimeout: timeouts.connect,
           } as any);
-    timing.responseHeadersEnd = Date.now();
-    const protocol = protocolFromResponse(response, this.protocol);
-    const connection: HttpConnectionInfo =
-      this.protocol === 'h3' && this.#h3Transport !== null
-        ? this.#h3Transport.connection
-        : {
-            id: nextConnectionId(),
-            protocol,
-            transport: transportFor(url, protocol),
-            localAddress: null,
-            remoteAddress: null,
-            alpnProtocol: protocol === 'http/1.1' ? null : protocol,
-            connectedAt: timing.startTime,
+          const metadata = _getFetchResponseMetadata(response);
+          const servedProtocol = protocolFromResponse(response, this.protocol);
+          connection = {
+            id: metadata?.connectionId ?? nextConnectionId(),
+            protocol: servedProtocol,
+            transport: transportFor(url, servedProtocol),
+            localAddress: metadata?.localAddress ?? null,
+            remoteAddress: metadata?.remoteAddress ?? null,
+            alpnProtocol:
+              metadata?.alpnProtocol ?? (servedProtocol === 'http/1.1' ? null : servedProtocol),
+            connectedAt: metadata?.connectedAt ?? timing.startTime,
+            reused: metadata?.reused ?? false,
+            streamId: metadata?.streamId ?? null,
           };
+        }
+        if (!this.#slotEstablished[slot]) {
+          this.#slotEstablished[slot] = true;
+          while (this.#wakeCapacityWaiter()) {}
+        }
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const connectionFailed =
+          /connection|session closed|GOAWAY|going away|transport/i.test(message) &&
+          !/body idle|response headers|total timeout/i.test(message);
+        if (this.protocol === 'h3' && slot !== -1 && connectionFailed) {
+          const transport = this.#h3Transports.get(slot);
+          if (transport !== undefined) {
+            this.#h3Transports.delete(slot);
+            transport.session.close();
+            await transport.endpoint.close().catch(() => {});
+          }
+        }
+        if (slot !== -1 && connectionFailed) this.#slotEstablished[slot] = false;
+        if (slot !== -1) this.#release(slot);
+        slot = -1;
+        if (
+          controller.signal.aborted ||
+          !isIdempotent(method) ||
+          !replayable ||
+          attempt + 1 >= attempts
+        ) {
+          cleanupDeadline();
+          throw error;
+        }
+      }
+    }
+    if (headersTimer !== null) {
+      clearTimeout(headersTimer);
+      headersTimer = null;
+    }
+    timing.responseHeadersEnd = performance.now();
+    const protocol = protocolFromResponse(response, this.protocol);
     this.#currentConnection = connection;
     if (this.protocol !== 'h3') {
       const event: HttpSessionEvent = {
@@ -1218,16 +1613,21 @@ export class HttpSession {
         url: url.href,
         headers,
         idempotent: isIdempotent(method),
-        replayable: isReplayable(init.body),
-        attempt: 1,
+        replayable,
+        attempt: attempt + 1,
       },
       session: this,
       connection,
       protocol,
       timing,
       markBodyEnd: () => {
-        timing.bodyEnd = Date.now();
+        if (timing.bodyEnd !== undefined) return;
+        timing.bodyEnd = performance.now();
+        cleanupDeadline();
+        this.#release(slot);
       },
+      bodyIdleMs: timeouts.bodyIdle,
+      lifecycleSignal: controller.signal,
     });
   }
   /**
@@ -1294,7 +1694,7 @@ export class HttpSession {
     if (options.protocols !== undefined && options.protocols.length > 0) {
       headers.set('sec-webtransport-protocol', options.protocols.join(', '));
     }
-    const transport = await this.#ensureH3Transport(url, options);
+    const transport = await this.#ensureH3Transport(url, 0, options);
     const webtransport = await transport.session.webtransport(url.href, {
       headers,
       webTransportOptions: options,
@@ -1317,7 +1717,12 @@ export class HttpSession {
       session: this,
       reason: options.reason,
     });
-    await this.#closeH3Transport();
+    await this.#closeH3Transports();
+    await Promise.all(
+      this.#activeBySlot.map((_, slot) =>
+        _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`, this.#client.tls),
+      ),
+    );
     this.#currentConnection = null;
   }
   /**
@@ -1331,8 +1736,16 @@ export class HttpSession {
   async close(options: CloseOptions = {}): Promise<void> {
     if (this.#state === 'closed') return;
     this.#state = 'closed';
-    await this.#closeH3Transport();
-    if (this.protocol === 'h2') await _closeFetchH2PoolEntry(this.origin);
+    for (const waiter of this.#capacityWaiters.splice(0)) {
+      waiter.signal?.removeEventListener('abort', waiter.onAbort!);
+      waiter.reject(new Error('HTTP session closed'));
+    }
+    await this.#closeH3Transports();
+    await Promise.all(
+      this.#activeBySlot.map((_, slot) =>
+        _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`, this.#client.tls),
+      ),
+    );
     this.#events.push({
       type: 'closed',
       session: this,
@@ -1380,6 +1793,20 @@ export class HttpClient {
    * TLS options inherited by requests, SSE helpers, and HTTP/3 sessions.
    */
   readonly tls?: HttpClientOptions['tls'];
+  /** Configured physical connections per origin. */
+  readonly connections: number;
+  /** Configured active stream ceiling for each H2/H3 connection. */
+  readonly maxConcurrentStreams: number;
+  /** Configured local acquisition queue bound. */
+  readonly maxPendingRequests: number;
+  /** Configured unread response bound for multiplexed streams. */
+  readonly maxBufferedResponseBytes: number;
+  /** Default request deadlines. */
+  readonly timeouts: HttpClientTimeouts;
+  /** Default safe retry policy. */
+  readonly retry: HttpClientRetryOptions;
+  /** Default transparent content decoding policy. */
+  readonly decompress: boolean;
   /**
    * Create a client with the given default policy.
    *
@@ -1393,6 +1820,22 @@ export class HttpClient {
     this.#headers = new Headers(options.headers);
     this.#protocols = options.protocols ?? ['http/1.1'];
     this.tls = options.tls;
+    this.connections = positiveInteger(options.connections ?? 1, 'connections');
+    this.maxConcurrentStreams = positiveInteger(
+      options.maxConcurrentStreams ?? 100,
+      'maxConcurrentStreams',
+    );
+    this.maxPendingRequests = nonNegativeInteger(
+      options.maxPendingRequests ?? 1024,
+      'maxPendingRequests',
+    );
+    this.maxBufferedResponseBytes = positiveInteger(
+      options.maxBufferedResponseBytes ?? 16 * 1024 * 1024,
+      'maxBufferedResponseBytes',
+    );
+    this.timeouts = options.timeouts ?? {};
+    this.retry = options.retry ?? { attempts: 1 };
+    this.decompress = options.decompress !== false;
   }
   #assertOpen(): void {
     if (this.#closed) throw new Error('HTTP client closed');

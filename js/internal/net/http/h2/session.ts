@@ -48,7 +48,9 @@ import {
   DP2_SOURCE,
   DP2_READ_CALLBACK,
   FRAME_HD_STREAM_ID,
+  NGHTTP2_HCAT_HEADERS,
   readFrameHd,
+  readHeadersCat,
   buildNvArray,
   buildSettingsArray,
 } from './bindings.ts';
@@ -98,7 +100,8 @@ export interface H2StreamCallbacks {
   /**
    * Called when nghttp2 starts a HEADERS frame for a stream.
    *
-   * `isTrailers` is inferred by whether the stream has already received DATA.
+   * `isTrailers` comes from nghttp2's `NGHTTP2_HCAT_HEADERS` category, so a
+   * trailing header block is recognized even when no DATA frame preceded it.
    * Stream `0` and non-HEADERS frames are filtered before this callback.
    *
    * ```ts
@@ -122,8 +125,8 @@ export interface H2StreamCallbacks {
   /**
    * Called after nghttp2 receives a complete frame.
    *
-   * `frameType` and `frameFlags` are raw nghttp2 numeric values. DATA frames mark
-   * the stream as having body data before the callback runs.
+   * `frameType` and `frameFlags` are the raw nghttp2 numeric values for the
+   * completed frame.
    *
    * ```ts
    * const callbacks = { onBeginHeaders() {}, onHeader() {}, onFrameRecv(streamId, frameType, frameFlags) { void streamId; void frameType; void frameFlags; }, onDataChunk() {}, onStreamClose() {} };
@@ -268,28 +271,13 @@ export class Nghttp2Session {
    * @internal
    */
   #streamDataSlots = new Map<number, DataSlot>();
-  /**
-   * Private property `#streamHasData` used by `Nghttp2Session`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #streamHasData = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#streamHasData;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #streamHasData = new Set<number>();
+  #streamDataWaiters = new Map<
+    number,
+    Array<{
+      resolve(): void;
+      reject(reason: unknown): void;
+    }>
+  >();
   /**
    * Queue of `[streamId, byteLength]` pairs recorded by the DATA-chunk callback.
    *
@@ -546,9 +534,9 @@ export class Nghttp2Session {
    */
   #installCallbacks(cbsHandle: ArrayBuffer): void {
     const cb = this.#cb;
-    const streamHasData = this.#streamHasData;
     const pendingConsumedData = this.#pendingConsumedData;
     const streamDataSlots = this.#streamDataSlots;
+    const streamDataWaiters = this.#streamDataWaiters;
     // on_begin_headers: fires at the start of a HEADERS frame.
     const onBeginHeaders = new FfiCallback(
       {
@@ -562,7 +550,7 @@ export class Nghttp2Session {
       ) {
         const { streamId, type } = readFrameHd(frame);
         if (streamId === 0 || type !== NGHTTP2_FRAME_TYPE_HEADERS) return 0;
-        const isTrailers = streamHasData.has(streamId);
+        const isTrailers = readHeadersCat(frame) === NGHTTP2_HCAT_HEADERS;
         cb.onBeginHeaders(streamId, isTrailers);
         return 0;
       },
@@ -609,7 +597,6 @@ export class Nghttp2Session {
         _userData: ArrayBuffer,
       ) {
         const { streamId, type, flags } = readFrameHd(frame);
-        if (type === NGHTTP2_FRAME_TYPE_DATA) streamHasData.add(streamId);
         cb.onFrameRecv(streamId, type, flags);
         return 0;
       },
@@ -650,8 +637,14 @@ export class Nghttp2Session {
         errorCode: number,
         _userData: ArrayBuffer,
       ) {
-        streamHasData.delete(streamId);
         streamDataSlots.delete(streamId);
+        const waiters = streamDataWaiters.get(streamId);
+        if (waiters !== undefined) {
+          streamDataWaiters.delete(streamId);
+          for (const waiter of waiters) {
+            waiter.reject(new Error(`HTTP/2 stream ${streamId} closed during upload`));
+          }
+        }
         cb.onStreamClose(streamId, errorCode);
         return 0;
       },
@@ -704,6 +697,7 @@ export class Nghttp2Session {
     // The shared data-provider callback. Looks up per-stream state from
     // #streamDataSlots and returns bytes / DEFERRED / EOF to nghttp2.
     const streamDataSlots = this.#streamDataSlots;
+    const streamDataWaiters = this.#streamDataWaiters;
     const dataCb = new FfiCallback(
       {
         parameters: ['pointer', 'i32', 'pointer', 'usize', 'pointer', 'pointer', 'pointer'],
@@ -740,6 +734,11 @@ export class Nghttp2Session {
           slot.bytes = chunk.subarray(toWrite);
         } else {
           slot.bytes = undefined;
+          const waiters = streamDataWaiters.get(streamId);
+          if (waiters !== undefined) {
+            streamDataWaiters.delete(streamId);
+            for (const waiter of waiters) waiter.resolve();
+          }
           if (slot.eof) {
             let flags = NGHTTP2_DATA_FLAG_EOF;
             if (slot.noEndStream) flags |= NGHTTP2_DATA_FLAG_NO_END_STREAM;
@@ -1063,6 +1062,24 @@ export class Nghttp2Session {
     slot.noEndStream = slot.eof === true && options?.noEndStream === true;
     this.resumeData(streamId);
   }
+  /**
+   * Wait until nghttp2 consumes the DATA chunk currently held for a stream.
+   *
+   * This couples an async upload producer to HTTP/2 flow control: callers set
+   * one bounded chunk, drain writes, then await this promise before pulling the
+   * next chunk. It resolves immediately when no bytes remain pending.
+   *
+   * @internal
+   */
+  waitForStreamDataConsumed(streamId: number): Promise<void> {
+    if (this.#closed) return Promise.reject(new Error('nghttp2 session closed'));
+    if (this.#streamDataSlots.get(streamId)?.bytes === undefined) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const waiters = this.#streamDataWaiters.get(streamId) ?? [];
+      waiters.push({ resolve, reject });
+      this.#streamDataWaiters.set(streamId, waiters);
+    });
+  }
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
@@ -1084,8 +1101,11 @@ export class Nghttp2Session {
     sym!.nghttp2_session_del(this.#sessionHandle);
     for (const cb of this.#callbacks) cb.close();
     this.#callbacks.length = 0;
+    for (const waiters of this.#streamDataWaiters.values()) {
+      for (const waiter of waiters) waiter.reject(new Error('nghttp2 session closed'));
+    }
+    this.#streamDataWaiters.clear();
     this.#streamDataSlots.clear();
-    this.#streamHasData.clear();
     this.#pendingConsumedData.length = 0;
   }
   [Symbol.dispose](): void {

@@ -22,12 +22,11 @@
  *
  * ## Connection lifecycle
  *
- * HTTP/1 requests open a fresh TCP or TLS connection per hop and request
- * `Connection: close`. The connection is kept alive until the response body is
- * fully consumed (or the iterator is closed early), at which point the socket
- * is closed. 204/304 and other bodyless responses close the socket immediately
- * after parsing headers. HTTPS requests that negotiate HTTP/2 through ALPN can
- * reuse the resulting H2 session through the origin-keyed pool.
+ * Ordinary global HTTP/1 fetches open a fresh TCP or TLS connection per hop.
+ * HttpClient-owned pool slots instead use keep-alive and return a connection to
+ * its slot only after response EOF; early cancellation closes it. HTTPS
+ * requests that negotiate HTTP/2 through ALPN reuse the corresponding
+ * origin-and-slot keyed session.
  *
  *
  * ## HTTP/3 and Alt-Svc
@@ -125,6 +124,7 @@ import { _getBlobBytes } from './blob.ts';
 import { atob, DOMException } from './encoding.ts';
 import type { AbortSignal } from './abort.ts';
 import { encodeUtf8 } from 'internal:encoding';
+import type { BufferedBytesReader, BytesWriter } from '../internal/stream.ts';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -133,6 +133,22 @@ const MAX_REDIRECTS = 20;
  *  HTTP status codes that the fetch spec treats as redirects. */
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 let _fetchRequestSeq = 0;
+const FETCH_RESPONSE_METADATA = Symbol.for('fino.fetch.response-metadata');
+let _fetchConnectionSeq = 0;
+/** Transport metadata attached internally to a fetch response. @internal */
+export interface FetchResponseMetadata {
+  connectionId: string;
+  connectedAt: number;
+  reused: boolean;
+  streamId: number | bigint | null;
+  localAddress: unknown | null;
+  remoteAddress: unknown | null;
+  alpnProtocol: string | null;
+}
+/** Read transport metadata recorded by the fetch implementation. @internal */
+export function _getFetchResponseMetadata(response: Response): FetchResponseMetadata | null {
+  return (response as any)[FETCH_RESPONSE_METADATA] ?? null;
+}
 type HeadersInput = Headers | string[][] | Record<string, string> | null | undefined;
 type FetchBody = unknown;
 interface MinimalAbortSignal {
@@ -276,6 +292,14 @@ export interface FetchInit {
    * and libnghttp3. `'http/1.1'` pins the request to HTTP/1.
    */
   protocol?: 'auto' | 'http/1.1' | 'h2' | 'h3';
+  /** HttpClient-only key selecting a dedicated reusable transport slot. @internal */
+  poolSlot?: string;
+  /** Disable transparent response content decoding. @internal */
+  decompress?: boolean;
+  /** Per-stream unread response body bound for newly-created H2/H3 transports. @internal */
+  maxBufferedBodyBytes?: number;
+  /** HttpClient-only DNS plus transport setup deadline. @internal */
+  connectTimeout?: number;
 }
 interface TraceRuntime {
   requestId?: string;
@@ -284,6 +308,54 @@ interface TraceRuntime {
 interface ClosableSocket {
   closed: boolean;
   close(): void;
+}
+interface H1PoolEntry {
+  key: string;
+  id: string;
+  connectedAt: number;
+  sock: Socket | TlsSocket;
+  reader: BufferedBytesReader;
+  writer: BytesWriter;
+  busy: boolean;
+  requests: number;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+}
+interface H1Lease {
+  entry: H1PoolEntry;
+  release(reusable: boolean): void;
+}
+const _h1Pool = new Map<string, H1PoolEntry>();
+function _acquireH1(key: string): H1Lease | null {
+  const entry = _h1Pool.get(key);
+  if (entry === undefined || entry.busy || entry.sock.closed) return null;
+  if (entry.idleTimer !== null) {
+    clearTimeout(entry.idleTimer);
+    entry.idleTimer = null;
+  }
+  entry.busy = true;
+  return _h1Lease(entry);
+}
+function _h1Lease(entry: H1PoolEntry): H1Lease {
+  return {
+    entry,
+    release(reusable) {
+      if (!reusable || entry.sock.closed) {
+        if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
+        if (_h1Pool.get(entry.key) === entry) _h1Pool.delete(entry.key);
+        _closeSocket(entry.sock);
+        return;
+      }
+      entry.busy = false;
+      entry.idleTimer = setTimeout(() => {
+        if (entry.busy) return;
+        if (_h1Pool.get(entry.key) === entry) _h1Pool.delete(entry.key);
+        _closeSocket(entry.sock);
+      }, 6e4);
+    },
+  };
+}
+function _setFetchResponseMetadata(response: Response, metadata: FetchResponseMetadata): void {
+  Object.defineProperty(response, FETCH_RESPONSE_METADATA, { value: metadata });
 }
 type FetchProtocol = NonNullable<FetchInit['protocol']>;
 const BLOCKED_FETCH_PORTS = new Set([
@@ -414,7 +486,7 @@ function _fetchBlobURL(
       redirected: false,
     });
   }
-  return buildWireResponse({
+  const finalResponse = buildWireResponse({
     version: '',
     status: 200,
     statusText: '',
@@ -424,6 +496,7 @@ function _fetchBlobURL(
     type: 'basic',
     redirected: false,
   });
+  return finalResponse;
 }
 function _percentDecodeDataBytes(input: string): Uint8Array {
   const bytes: number[] = [];
@@ -466,7 +539,7 @@ function _fetchDataURL(url: string, method: string): Response {
       : base64
         ? _base64DataBytes(data)
         : _percentDecodeDataBytes(data);
-  return buildWireResponse({
+  const finalResponse = buildWireResponse({
     version: '',
     status: 200,
     statusText: 'OK',
@@ -476,6 +549,7 @@ function _fetchDataURL(url: string, method: string): Response {
     type: 'basic',
     redirected: false,
   });
+  return finalResponse;
 }
 interface AltSvcEntry {
   host: string;
@@ -840,6 +914,31 @@ function _raceAbort<T>(
     );
   });
 }
+function _raceConnectDeadline<T>(
+  signal: MinimalAbortSignal | null | undefined,
+  promise: Promise<T>,
+  deadline: number | null,
+  onLate?: (value: T) => void,
+): Promise<T> {
+  if (deadline === null) return _raceAbort(signal, promise);
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) return Promise.reject(new Error('HTTP connection timeout'));
+  let timedOut = false;
+  let timer!: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      reject(new Error('HTTP connection timeout'));
+    }, remaining);
+  });
+  promise.then(
+    (value) => {
+      if (timedOut) onLate?.(value);
+    },
+    () => {},
+  );
+  return Promise.race([_raceAbort(signal, promise), timeout]).finally(() => clearTimeout(timer));
+}
 /**
  * Wrap a body async iterable with socket cleanup on completion or error.
  * Also checks the AbortSignal on each `.next()` call, so long-running
@@ -847,31 +946,50 @@ function _raceAbort<T>(
  */
 function _wrapBody(
   rawBody: AsyncIterable<Uint8Array>,
-  sock: ClosableSocket,
+  sock: ClosableSocket | null,
   signal: MinimalAbortSignal | null | undefined,
+  lease: H1Lease | null = null,
+  reusable = true,
 ): AsyncIterable<Uint8Array> {
+  let released = false;
+  const release = (keep: boolean) => {
+    if (released) return;
+    released = true;
+    if (lease !== null) lease.release(keep && reusable);
+    else _closeSocket(sock);
+  };
   return {
     [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
       const iter = rawBody[Symbol.asyncIterator]();
       return {
         async next(): Promise<IteratorResult<Uint8Array>> {
           if (signal?.aborted) {
-            _closeSocket(sock);
+            release(false);
+            if (typeof iter.return === 'function') {
+              try {
+                await iter.return();
+              } catch (_) {}
+            }
             throw signal.reason;
           }
           try {
             // Race iter.next() against the abort signal so that mid-stream
             // cancellation interrupts a blocking network read immediately.
             const result = await _raceAbort(signal, iter.next());
-            if (result.done) _closeSocket(sock);
+            if (result.done) release(true);
             return result;
           } catch (e) {
-            _closeSocket(sock);
+            release(false);
+            if (typeof iter.return === 'function') {
+              try {
+                await iter.return();
+              } catch (_) {}
+            }
             throw e;
           }
         },
         async return(): Promise<IteratorResult<Uint8Array>> {
-          _closeSocket(sock);
+          release(false);
           if (typeof iter.return === 'function') {
             try {
               await iter.return();
@@ -917,9 +1035,13 @@ async function _singleFetch(
   tls?: FetchInit['tls'],
   protocol: FetchProtocol = 'auto',
   trustedHeaders?: Record<string, string>,
+  poolSlot?: string,
+  maxBufferedBodyBytes?: number,
+  connectTimeout?: number,
 ): Promise<{
   response: Response;
   sock: Socket | TlsSocket | null;
+  lease: H1Lease | null;
 }> {
   const parsed = _parseHttpUrl(url);
   const isHttps = parsed.protocol === 'https:';
@@ -929,6 +1051,7 @@ async function _singleFetch(
   const isDefaultPort = (isHttps && port === 443) || (!isHttps && port === 80);
   const origin = _originKey(parsed);
   const poolKey = _tlsPoolKey(origin, tls);
+  const effectivePoolKey = poolSlot === undefined ? poolKey : `${poolKey}#${poolSlot}`;
   if (protocol === 'h3') {
     if (!isHttps) throw new TypeError('fetch: protocol h3 requires an HTTPS URL');
     if (!h3Available) throw new Error('fetch: protocol h3 requires libnghttp3');
@@ -941,6 +1064,7 @@ async function _singleFetch(
     return {
       response,
       sock: null,
+      lease: null,
     };
   }
   if (protocol === 'auto' && isHttps && h3Available && _isReplayableForH3(body)) {
@@ -951,6 +1075,7 @@ async function _singleFetch(
         return {
           response,
           sock: null,
+          lease: null,
         };
       } catch (_) {
         _altSvcCache.delete(origin);
@@ -960,22 +1085,66 @@ async function _singleFetch(
   }
   // ---- H2 pool fast-path (HTTPS only) --------------------------------------
   if (protocol !== 'http/1.1' && isHttps && h2Available) {
-    const poolEntry = _h2Pool.get(poolKey);
+    const poolEntry = _h2Pool.get(effectivePoolKey);
     if (poolEntry) {
       const outReq = new Request(url, {
         method,
         headers: new Headers(headers),
         body: body !== null ? (body as any) : undefined,
         trailers: trailers ?? undefined,
+        signal,
       } as any);
       _appendTrustedHeaders(outReq, trustedHeaders);
       const response = await poolEntry.send(outReq);
       return {
         response,
         sock: null,
+        lease: null,
       };
     }
   }
+  if (poolSlot !== undefined && protocol !== 'h2') {
+    const lease = _acquireH1(effectivePoolKey);
+    if (lease !== null) {
+      const reqHeaders = new Headers(headers);
+      if (!reqHeaders.has('host')) {
+        const hostHeader = isDefaultPort ? hostname : `${hostname}:${portStr}`;
+        reqHeaders.set('host', hostHeader);
+      }
+      if (!reqHeaders.has('accept-encoding')) {
+        reqHeaders.set('accept-encoding', brotliAvailable ? 'gzip, deflate, br' : 'gzip, deflate');
+      }
+      const outReq = new Request(url, {
+        method,
+        headers: reqHeaders,
+        body: body !== null ? (body as any) : undefined,
+        trailers: trailers ?? undefined,
+        signal,
+      } as any);
+      _appendTrustedHeaders(outReq, trustedHeaders);
+      if (!headers.has('connection')) outReq._appendTrustedHeader('connection', 'keep-alive');
+      try {
+        const response = await _h1Driver.send(outReq, lease.entry.reader, lease.entry.writer, {
+          signal,
+        });
+        _setFetchResponseMetadata(response, {
+          connectionId: lease.entry.id,
+          connectedAt: lease.entry.connectedAt,
+          reused: lease.entry.requests++ > 0,
+          streamId: null,
+          localAddress: null,
+          remoteAddress: null,
+          alpnProtocol: isHttps ? 'http/1.1' : null,
+        });
+        return { response, sock: lease.entry.sock, lease };
+      } catch (error) {
+        lease.release(false);
+        throw error;
+      }
+    }
+  }
+  const connectDeadline =
+    connectTimeout === undefined ? null : performance.now() + Math.max(0, connectTimeout);
   // ---- DNS lookup ----------------------------------------------------------
   const lookupId = `dns-${runtime.requestId || 'fetch'}-${runtime.hop || 0}`;
   topic(otelRuntimeTopic('dns', 'lookup', 'start')).publish(
@@ -989,7 +1158,7 @@ async function _singleFetch(
   );
   let lookupResult;
   try {
-    lookupResult = await _raceAbort(signal, lookup(hostname));
+    lookupResult = await _raceConnectDeadline(signal, lookup(hostname), connectDeadline);
   } catch (error) {
     topic(otelRuntimeTopic('dns', 'lookup', 'error')).publish(
       otelRuntimeEvent('dns', 'lookup', 'error', {
@@ -1078,7 +1247,9 @@ async function _singleFetch(
         },
         () => {},
       );
-      sock = await _raceAbort(signal, tlsConnectP);
+      sock = await _raceConnectDeadline(signal, tlsConnectP, connectDeadline, (lateSocket) =>
+        lateSocket.close(),
+      );
       topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(
         otelRuntimeEvent('socket', 'connect', 'end', {
           connectId,
@@ -1136,7 +1307,9 @@ async function _singleFetch(
         },
         () => {},
       );
-      sock = await _raceAbort(signal, tcpConnectP);
+      sock = await _raceConnectDeadline(signal, tcpConnectP, connectDeadline, (lateSocket) =>
+        lateSocket.close(),
+      );
       topic(otelRuntimeTopic('socket', 'connect', 'end')).publish(
         otelRuntimeEvent('socket', 'connect', 'end', {
           connectId,
@@ -1168,19 +1341,21 @@ async function _singleFetch(
     const [reader, writer] = sock.split();
     // ---- H2 via negotiated ALPN ----------------------------------------------
     if (isHttps && h2Available && (sock as TlsSocket).negotiatedProtocol === 'h2') {
-      const entry = createPoolEntry(reader, writer);
-      _h2Pool.add(poolKey, entry);
+      const entry = createPoolEntry(reader, writer, { maxBufferedBodyBytes });
+      _h2Pool.add(effectivePoolKey, entry);
       const outReq = new Request(url, {
         method,
         headers: new Headers(headers),
         body: body !== null ? (body as any) : undefined,
         trailers: trailers ?? undefined,
+        signal,
       } as any);
       _appendTrustedHeaders(outReq, trustedHeaders);
       const response = await entry.send(outReq);
       return {
         response,
         sock: null,
+        lease: null,
       };
     }
     if (protocol === 'h2') {
@@ -1192,8 +1367,7 @@ async function _singleFetch(
       const hostHeader = isDefaultPort ? hostname : `${hostname}:${portStr}`;
       reqHeaders.set('host', hostHeader);
     }
-    // No connection pooling — always request close after response.
-    if (!reqHeaders.has('connection')) {
+    if (poolSlot === undefined && !reqHeaders.has('connection')) {
       reqHeaders.set('connection', 'close');
     }
     // Signal compression support to the server.
@@ -1207,13 +1381,42 @@ async function _singleFetch(
       headers: reqHeaders,
       body: body !== null ? (body as any) : undefined,
       trailers: trailers ?? undefined,
+      signal,
     } as any);
     _appendTrustedHeaders(outReq, trustedHeaders);
+    if (poolSlot !== undefined && !headers.has('connection')) {
+      outReq._appendTrustedHeader('connection', 'keep-alive');
+    }
     // ---- Send + parse via H1 driver -----------------------------------------
     const response = await _h1Driver.send(outReq, reader, writer, { signal });
+    if (poolSlot !== undefined) {
+      const entry: H1PoolEntry = {
+        key: effectivePoolKey,
+        id: `fetch-connection-${++_fetchConnectionSeq}`,
+        connectedAt: performance.now(),
+        sock,
+        reader,
+        writer,
+        busy: true,
+        requests: 1,
+        idleTimer: null,
+      };
+      _h1Pool.set(effectivePoolKey, entry);
+      _setFetchResponseMetadata(response, {
+        connectionId: entry.id,
+        connectedAt: entry.connectedAt,
+        reused: false,
+        streamId: null,
+        localAddress: null,
+        remoteAddress: null,
+        alpnProtocol: isHttps ? 'http/1.1' : null,
+      });
+      return { response, sock, lease: _h1Lease(entry) };
+    }
     return {
       response,
       sock,
+      lease: null,
     };
   } catch (e) {
     _closeSocket(sock);
@@ -1242,15 +1445,21 @@ function _buildFinalResponse(
   redirected: boolean,
   signal: MinimalAbortSignal | null,
   method?: string,
+  lease: H1Lease | null = null,
+  decompress = true,
 ): Response {
   const status = response.status;
   const statusText = response.statusText;
   const headers = response.headers;
   const version = response.version;
+  const reusable = response.headers.get('connection')?.toLowerCase() !== 'close';
+  const release = (keep: boolean) => {
+    if (lease !== null) lease.release(keep && reusable);
+    else _closeSocket(sock);
+  };
   if (!_hasBody(status, method)) {
-    // No body expected — close socket immediately.
-    _closeSocket(sock);
-    return buildWireResponse({
+    release(true);
+    const finalResponse = buildWireResponse({
       version,
       status,
       statusText,
@@ -1259,13 +1468,16 @@ function _buildFinalResponse(
       url,
       redirected,
     });
+    const metadata = _getFetchResponseMetadata(response);
+    if (metadata !== null) _setFetchResponseMetadata(finalResponse, metadata);
+    return finalResponse;
   }
   // Access the raw body (marks bodyUsed = true on the intermediate Response).
   const rawBody = response.body;
   if (rawBody === null) {
     // Server sent a body-eligible status but no body data; close immediately.
-    _closeSocket(sock);
-    return buildWireResponse({
+    release(true);
+    const finalResponse = buildWireResponse({
       version,
       status,
       statusText,
@@ -1274,6 +1486,9 @@ function _buildFinalResponse(
       url,
       redirected,
     });
+    const metadata = _getFetchResponseMetadata(response);
+    if (metadata !== null) _setFetchResponseMetadata(finalResponse, metadata);
+    return finalResponse;
   }
   // Auto-decompress Content-Encoding responses (gzip, deflate, br).
   // Use the async-iterable streaming API directly — rawBody is already an
@@ -1281,7 +1496,7 @@ function _buildFinalResponse(
   const responseHeaders = new Headers(headers);
   const encoding = (responseHeaders.get('content-encoding') || '').trim().toLowerCase();
   let bodyIterable: AsyncIterable<Uint8Array> = rawBody as unknown as AsyncIterable<Uint8Array>;
-  if (encoding && encoding !== 'identity') {
+  if (decompress && encoding && encoding !== 'identity') {
     let decompressor;
     if (encoding === 'gzip' || encoding === 'x-gzip') {
       decompressor = createDecompressor({ format: 'gzip' });
@@ -1299,8 +1514,8 @@ function _buildFinalResponse(
       responseHeaders.delete('content-length');
     }
   }
-  const wrappedBody = _wrapBody(bodyIterable, sock, signal);
-  return buildWireResponse({
+  const wrappedBody = _wrapBody(bodyIterable, sock, signal, lease, reusable);
+  const finalResponse = buildWireResponse({
     version,
     status,
     statusText,
@@ -1310,6 +1525,9 @@ function _buildFinalResponse(
     redirected,
     inTrailers: response.trailers,
   });
+  const metadata = _getFetchResponseMetadata(response);
+  if (metadata !== null) _setFetchResponseMetadata(finalResponse, metadata);
+  return finalResponse;
 }
 /**
  * Collect all chunks of an async iterable body into a single Uint8Array.
@@ -1406,8 +1624,19 @@ async function _buildFinalResponseWithIntegrity(
   signal: MinimalAbortSignal | null,
   method: string | undefined,
   integrity: string | undefined,
+  lease: H1Lease | null = null,
+  decompress = true,
 ): Promise<Response> {
-  const built = _buildFinalResponse(response, sock, url, redirected, signal, method);
+  const built = _buildFinalResponse(
+    response,
+    sock,
+    url,
+    redirected,
+    signal,
+    method,
+    lease,
+    decompress,
+  );
   if (!integrity || !_hasBody(response.status, method)) {
     return built;
   }
@@ -1418,7 +1647,7 @@ async function _buildFinalResponseWithIntegrity(
   _checkIntegrity(bytes, integrity);
   // Re-wrap bytes as a streaming response so the caller gets a normal Response.
   const finalHeaders = new Headers(built.headers);
-  return buildWireResponse({
+  const finalResponse = buildWireResponse({
     version: response.version,
     status: built.status,
     statusText: built.statusText,
@@ -1428,6 +1657,9 @@ async function _buildFinalResponseWithIntegrity(
     redirected,
     inTrailers: built.trailers,
   });
+  const metadata = _getFetchResponseMetadata(built);
+  if (metadata !== null) _setFetchResponseMetadata(finalResponse, metadata);
+  return finalResponse;
 }
 // ---------------------------------------------------------------------------
 // Public API
@@ -1613,8 +1845,9 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     );
     let response: Response;
     let sock: Socket | TlsSocket | null;
+    let lease: H1Lease | null;
     try {
-      ({ response, sock } = await _singleFetch(
+      ({ response, sock, lease } = await _singleFetch(
         currentUrl,
         currentMethod,
         currentHeaders,
@@ -1628,6 +1861,9 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
         init?.tls,
         protocol,
         computedReferer === null ? undefined : { referer: computedReferer },
+        init?.poolSlot,
+        init?.maxBufferedBodyBytes,
+        init?.connectTimeout,
       ));
     } catch (error) {
       topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(
@@ -1648,7 +1884,8 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
     if (REDIRECT_STATUSES.has(status)) {
       if (redirect === 'manual') {
         // Per spec: return an opaque redirect response (status 0, empty headers, null body).
-        _closeSocket(sock);
+        if (lease !== null) lease.release(false);
+        else _closeSocket(sock);
         topic(otelRuntimeTopic('fetch', 'request', 'end')).publish(
           otelRuntimeEvent('fetch', 'request', 'end', {
             requestId,
@@ -1671,7 +1908,8 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
       }
       // redirect === 'error'
       if (redirect === 'error') {
-        _closeSocket(sock);
+        if (lease !== null) lease.release(false);
+        else _closeSocket(sock);
         topic(otelRuntimeTopic('fetch', 'request', 'error')).publish(
           otelRuntimeEvent('fetch', 'request', 'error', {
             requestId,
@@ -1698,10 +1936,13 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
           signal,
           currentMethod,
           init?.integrity,
+          lease,
+          init?.decompress !== false,
         );
       }
       // Have a Location — consume/discard the redirect response body.
-      _closeSocket(sock);
+      if (lease !== null) lease.release(false);
+      else _closeSocket(sock);
       // Resolve Location relative to current URL
       let resolvedUrl: string;
       try {
@@ -1775,6 +2016,8 @@ export async function fetch(input: string | Request, init?: FetchInit): Promise<
       signal,
       currentMethod,
       init?.integrity,
+      lease,
+      init?.decompress !== false,
     );
   }
   // Unreachable (the loop always returns or throws), but satisfies the linter.
@@ -1802,7 +2045,7 @@ Object.defineProperty(fetch, 'length', {
  * @internal
  */
 export function _fetchH2PoolHas(origin: string): boolean {
-  return _h2Pool.has(origin);
+  return _h2Pool.hasPrefix(origin);
 }
 /**
  * Gracefully close one internal global fetch HTTP/2 pool entry for tests.
@@ -1823,8 +2066,12 @@ export function _fetchH2PoolHas(origin: string): boolean {
  */
 export async function _closeFetchH2PoolEntry(origin: string): Promise<boolean> {
   const entry = _h2Pool.get(origin);
-  if (entry === undefined) return false;
-  await entry.close();
+  if (entry !== undefined) {
+    await entry.close();
+    return true;
+  }
+  if (!_h2Pool.hasPrefix(origin)) return false;
+  await _h2Pool.evictPrefix(`${origin}#`);
   return true;
 }
 /**
@@ -1858,6 +2105,30 @@ export function _closeFetchH2PoolEntryForTest(origin: string): Promise<boolean> 
  */
 export function _resetFetchH2Pool(): Promise<void> {
   return _h2Pool.closeAll();
+}
+/** Close one HttpClient-owned H1/H2 transport slot. @internal */
+export async function _closeFetchPoolSlot(
+  origin: string,
+  slot: string,
+  tls?: FetchInit['tls'],
+): Promise<void> {
+  const base = _tlsPoolKey(_originKey(new URL(origin)), tls);
+  const key = `${base}#${slot}`;
+  const h1 = _h1Pool.get(key);
+  if (h1 !== undefined) {
+    _h1Pool.delete(key);
+    if (h1.idleTimer !== null) clearTimeout(h1.idleTimer);
+    _closeSocket(h1.sock);
+  }
+  await _h2Pool.evict(key);
+}
+/** Inspect an HttpClient-owned H1 slot for focused pool tests. @internal */
+export function _fetchH1PoolState(): Array<{ key: string; busy: boolean; closed: boolean }> {
+  return [..._h1Pool.values()].map((entry) => ({
+    key: entry.key,
+    busy: entry.busy,
+    closed: entry.sock.closed,
+  }));
 }
 /**
  * Return whether the internal global fetch HTTP/3 pool has a live entry.

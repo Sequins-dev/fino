@@ -76,7 +76,9 @@ const _CANDIDATES = _IS_DARWIN
     ]
   : [
       null,
+      'libnghttp3.so.9',
       'libnghttp3.so',
+      '/usr/lib64/libnghttp3.so.9',
       '/usr/lib/x86_64-linux-gnu/libnghttp3.so',
       '/usr/lib/aarch64-linux-gnu/libnghttp3.so',
       '/usr/lib/libnghttp3.so',

@@ -39,6 +39,11 @@
  * console.log('received', total, 'bytes');
  * ```
  *
+ * Learn more:
+ * - Fetch body streams: https://fetch.spec.whatwg.org/#concept-body
+ * - HTTP/2 flow control and stream errors: https://www.rfc-editor.org/rfc/rfc9113
+ * - HTTP/3 request cancellation: https://www.rfc-editor.org/rfc/rfc9114
+ *
  * @internal
  */
 /**
@@ -227,9 +232,9 @@ interface QueueWaiter {
 /**
  * Construction options for `HttpBodyQueue`.
  *
- * The single tunable is the buffer bound: how many unread bytes may accumulate
- * before the producer is told to stop. Drivers set this per stream to bound the
- * memory a slow or stalled consumer can pin.
+ * `maxBufferedBytes` bounds how many unread bytes may accumulate before the
+ * producer is told to stop. Drivers can also install `onCancel` to translate
+ * early consumer exit into a protocol-level stream reset.
  *
  * ```ts no_run
  * import { HttpBodyQueue } from 'internal:net/http/stream';
@@ -241,6 +246,14 @@ interface QueueWaiter {
 export interface HttpBodyQueueOptions {
   /** Maximum queued, unread bytes before `push()` fails. Defaults to 16 MiB. */
   maxBufferedBytes?: number;
+  /**
+   * Optional hook invoked when the consumer stops before EOF.
+   *
+   * Protocol drivers use this to translate async-iterator or `ReadableStream`
+   * cancellation into a stream reset without closing unrelated multiplexed
+   * streams. The returned promise, when any, is awaited by iterator `return()`.
+   */
+  onCancel?: (reason: unknown) => void | Promise<void>;
 }
 const DEFAULT_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
 /**
@@ -291,16 +304,19 @@ export class HttpBodyQueue implements AsyncIterable<Uint8Array> {
   #queuedBytes = 0;
   #receivedBytes = 0;
   readonly #maxBufferedBytes: number;
+  readonly #onCancel: ((reason: unknown) => void | Promise<void>) | null;
   readonly #closedPromise: Promise<void>;
   #resolveClosed!: () => void;
   #rejectClosed!: (reason: unknown) => void;
   /**
-   * Create an empty queue, optionally overriding the buffered-byte bound.
+   * Create an empty queue, optionally overriding the buffered-byte bound and
+   * installing a consumer-cancellation hook for the protocol driver.
    *
    * With no options the bound defaults to 16 MiB.
    */
   constructor(options: HttpBodyQueueOptions = {}) {
     this.#maxBufferedBytes = options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES;
+    this.#onCancel = options.onCancel ?? null;
     this.#closedPromise = new Promise<void>((resolve, reject) => {
       this.#resolveClosed = resolve;
       this.#rejectClosed = reject;
@@ -395,6 +411,18 @@ export class HttpBodyQueue implements AsyncIterable<Uint8Array> {
     const waiters = this.#waiters.splice(0);
     for (const waiter of waiters) waiter.reject(reason);
   }
+  async #cancel(reason: unknown): Promise<void> {
+    if (this.#error !== null) return;
+    this.#chunks.length = 0;
+    this.#queuedBytes = 0;
+    if (this.#closed) return;
+    const error =
+      reason instanceof HttpStreamError
+        ? reason
+        : new HttpStreamError('cancelled', 'HTTP body consumption was cancelled');
+    this.error(error);
+    if (this.#onCancel !== null) await this.#onCancel(reason);
+  }
   [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
     return {
       next: () => {
@@ -418,6 +446,13 @@ export class HttpBodyQueue implements AsyncIterable<Uint8Array> {
             reject,
           });
         });
+      },
+      return: async (reason?: unknown) => {
+        await this.#cancel(reason);
+        return {
+          done: true,
+          value: undefined as any,
+        };
       },
     };
   }

@@ -51,6 +51,7 @@ async function connectPoolEntry(
   port: number,
   options?: {
     idleMs?: number;
+    maxBufferedBodyBytes?: number;
   },
 ) {
   const sock = await Socket.connect({
@@ -89,6 +90,15 @@ async function fetchWithTimeout(
     timer.cancel();
   }
 }
+function timeout<T>(promise: Promise<T>, message: string, ms = 1e3): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const guard = new Promise<T>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, guard]).finally(() => {
+    if (timer !== null) clearTimeout(timer);
+  });
+}
 // ---------------------------------------------------------------------------
 // Pool entry — basic request/response
 // ---------------------------------------------------------------------------
@@ -121,6 +131,124 @@ describe('H2PoolEntry — basic request/response', () => {
       const text = await res.text();
       t.equal(res.status, 201, 'status 201');
       t.equal(text, 'echo:pool-body', 'echoed correctly');
+    } finally {
+      await entry.close();
+      await server.close();
+    }
+  });
+  it('resolves after final headers and streams body chunks before EOF', { skip }, async (t) => {
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    const server = serveHttp({ port: 0 }, async () => {
+      async function* body() {
+        yield new TextEncoder().encode('first');
+        await bodyGate;
+        yield new TextEncoder().encode('-second');
+      }
+      return new Response(body(), { headers: { 'content-type': 'text/plain' } });
+    });
+    const entry = await connectPoolEntry(server.port);
+    let reader: ReadableStreamDefaultReader | null = null;
+    try {
+      const response = await timeout(
+        entry.send(makeReq(`http://127.0.0.1:${server.port}/stream`)),
+        'pooled H2 response did not resolve at headers',
+        250,
+      );
+      t.equal(response.status, 200, 'status is available before body EOF');
+      t.equal(response.version, 'HTTP/2', 'wire response reports the negotiated protocol');
+      reader = response.body!.getReader();
+      const first = await timeout(
+        reader.read(),
+        'first body chunk was not readable before EOF',
+        250,
+      );
+      t.equal(
+        new TextDecoder().decode(first.value),
+        'first',
+        'first chunk is delivered immediately',
+      );
+      releaseBody();
+      const second = await reader.read();
+      const end = await reader.read();
+      t.equal(new TextDecoder().decode(second.value), '-second', 'second chunk is delivered');
+      t.equal(end.done, true, 'body closes at END_STREAM');
+    } finally {
+      releaseBody();
+      try {
+        await reader?.cancel();
+      } catch {}
+      await entry.close();
+      await server.close();
+    }
+  });
+  it('cancels one response stream without closing the pooled connection', { skip }, async (t) => {
+    let releaseBody!: () => void;
+    const bodyGate = new Promise<void>((resolve) => {
+      releaseBody = resolve;
+    });
+    const server = serveHttp({ port: 0 }, async (req) => {
+      if (new URL(req.url).pathname === '/cancel') {
+        async function* body() {
+          yield new TextEncoder().encode('started');
+          await bodyGate;
+          yield new TextEncoder().encode('late');
+        }
+        return new Response(body());
+      }
+      return new Response('reused');
+    });
+    const entry = await connectPoolEntry(server.port);
+    try {
+      const response = await timeout(
+        entry.send(makeReq(`http://127.0.0.1:${server.port}/cancel`)),
+        'response did not resolve before cancellation',
+        250,
+      );
+      await response.body!.cancel('not needed');
+      t.equal(entry.activeStreams, 0, 'cancelled stream is released');
+      const reused = await entry.send(makeReq(`http://127.0.0.1:${server.port}/after`));
+      t.equal(await reused.text(), 'reused', 'another request reuses the connection');
+      t.ok(!entry.goingAway, 'stream cancellation leaves the connection healthy');
+    } finally {
+      releaseBody();
+      await entry.close();
+      await server.close();
+    }
+  });
+  it('faults an unread body that exceeds the configured stream buffer', { skip }, async (t) => {
+    const server = serveHttp({ port: 0 }, async () => new Response('body-larger-than-limit'));
+    const entry = await connectPoolEntry(server.port, { maxBufferedBodyBytes: 4 });
+    try {
+      const response = await entry.send(makeReq(`http://127.0.0.1:${server.port}/overflow`));
+      await t.rejects(
+        () => response.text(),
+        /buffer|flow-control/i,
+        'body reader observes bounded-queue overflow',
+      );
+      await loop.timeout(0);
+      t.equal(entry.activeStreams, 0, 'overflowed stream is reset and released');
+    } finally {
+      await entry.close();
+      await server.close();
+    }
+  });
+  it('recognizes response trailers after a zero-byte body', { skip }, async (t) => {
+    const server = serveHttp(
+      { port: 0 },
+      async () => new Response(null, { trailers: new Headers({ 'x-empty-trailer': 'done' }) }),
+    );
+    const entry = await connectPoolEntry(server.port);
+    try {
+      const response = await entry.send(makeReq(`http://127.0.0.1:${server.port}/trailers`));
+      t.equal(await response.text(), '', 'zero-byte response body reaches EOF');
+      t.equal(
+        (await response.trailers).get('x-empty-trailer'),
+        'done',
+        'trailer block is not mistaken for another response header block',
+      );
     } finally {
       await entry.close();
       await server.close();

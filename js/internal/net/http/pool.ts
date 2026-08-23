@@ -6,11 +6,11 @@
  * recv loop drives the session; `send()` submits new streams and awaits their
  * individual response deferreds.
  *
- * The release baseline is eager at the Request/Response boundary: `send()`
- * reads the whole request body before submitting DATA frames and accumulates
- * the whole response body before resolving with a `Response`. This keeps pooled
- * HTTP/2 behavior aligned with the current fetch body model, but it is not a
- * streaming large-body API.
+ * Responses resolve as soon as their final header block is complete. DATA is
+ * delivered through a bounded `HttpBodyQueue`, trailers settle independently
+ * at stream completion, and early body cancellation resets only the affected
+ * stream. Request bodies are pulled one chunk at a time and pause at nghttp2's
+ * flow-control boundary, so uploads remain bounded and observable before EOF.
  *
  * ## drainWrite serialization
  *
@@ -48,11 +48,23 @@
  * pool.get('https://example.test:443')?.activeStreams;
  * ```
  *
+ * Learn more:
+ * - HTTP/2 streams, flow control, resets, and response messages:
+ *   https://www.rfc-editor.org/rfc/rfc9113
+ *
  * @internal
  */
-import { Headers, Request, Response } from 'internal:net/http/wire';
+import { buildWireResponse, Headers, Request, Response } from 'internal:net/http/wire';
 import { Nghttp2Session } from './h2/session.ts';
 import type { H2StreamCallbacks } from './h2/session.ts';
+import { HttpBodyQueue, HttpStreamError } from './stream.ts';
+import {
+  NGHTTP2_FLAG_END_HEADERS,
+  NGHTTP2_FLAG_END_STREAM,
+  NGHTTP2_FRAME_TYPE_DATA,
+  NGHTTP2_FRAME_TYPE_GOAWAY,
+  NGHTTP2_FRAME_TYPE_HEADERS,
+} from './h2/bindings.ts';
 import type { BufferedBytesReader, BytesWriter } from '../../stream.ts';
 /**
  * Default idle timeout in milliseconds (60s) before an idle entry self-evicts.
@@ -60,6 +72,10 @@ import type { BufferedBytesReader, BytesWriter } from '../../stream.ts';
  * @internal
  */
 const IDLE_MS = 6e4;
+/** HTTP/2 `CANCEL` error code used for consumer-initiated stream resets. */
+const H2_CANCEL = 0x08;
+const FETCH_RESPONSE_METADATA = Symbol.for('fino.fetch.response-metadata');
+let h2ConnectionSeq = 0;
 /**
  * Optional tuning for a pool entry.
  *
@@ -70,6 +86,8 @@ const IDLE_MS = 6e4;
  */
 interface H2PoolEntryOptions {
   idleMs?: number;
+  /** Maximum unread response bytes buffered for each stream. Defaults to 16 MiB. */
+  maxBufferedBodyBytes?: number;
 }
 // ---------------------------------------------------------------------------
 // Per-stream state inside a pool entry
@@ -77,10 +95,9 @@ interface H2PoolEntryOptions {
 /**
  * Mutable state accumulated for one in-flight HTTP/2 stream.
  *
- * The receive-loop callbacks build up `status`, `headers`, `trailerHeaders`,
- * and `bodyChunks` as frames arrive; `inTrailers` tracks whether the current
- * header block is a trailer block; `done` guards against double settlement; and
- * `resolve`/`reject` settle the promise returned by `send()`.
+ * The receive-loop callbacks build up response headers and feed DATA directly
+ * into `body`. `responseResolved` separates final-header arrival from stream
+ * completion, while the trailer deferred settles only when END_STREAM arrives.
  *
  * @internal
  */
@@ -90,10 +107,18 @@ interface StreamDeferred {
   headers: Headers;
   trailerHeaders: Headers;
   inTrailers: boolean;
-  bodyChunks: Uint8Array[];
+  method: string;
+  body: HttpBodyQueue;
   done: boolean;
+  responseResolved: boolean;
   resolve: (res: Response) => void;
   reject: (err: Error) => void;
+  trailers: Promise<Headers>;
+  trailerResolve: (headers: Headers) => void;
+  trailerReject: (reason: unknown) => void;
+  uploadIterator: AsyncIterator<Uint8Array> | null;
+  abortCleanup: (() => void) | null;
+  reused: boolean;
 }
 // ---------------------------------------------------------------------------
 // H2PoolEntry - one live H2 connection
@@ -103,9 +128,9 @@ interface StreamDeferred {
  *
  * The entry owns an nghttp2 client session, a background receive loop, and all
  * in-flight stream deferreds. New requests are refused once the connection is
- * going away or closed. Request and response bodies are buffered in memory for
- * this release baseline; use caller-level size limits for untrusted large
- * bodies.
+ * going away or closed. Responses stream through a bounded queue and may be
+ * cancelled independently. Request uploads are pulled incrementally under
+ * nghttp2 flow control.
  *
  * ```ts no_run
  * import { createPoolEntry } from 'internal:net/http/pool';
@@ -116,6 +141,10 @@ interface StreamDeferred {
  * @internal
  */
 export class H2PoolEntry {
+  /** Stable identity assigned when this physical HTTP/2 connection is created. */
+  readonly id = `h2-connection-${++h2ConnectionSeq}`;
+  /** Monotonic timestamp recorded when this physical connection is created. */
+  readonly connectedAt = performance.now();
   /**
    * The live nghttp2 client session multiplexing all streams on this connection.
    *
@@ -137,9 +166,9 @@ export class H2PoolEntry {
   /**
    * In-flight streams keyed by nghttp2 stream identifier.
    *
-   * Each `StreamDeferred` accumulates response status, headers, trailers, and
-   * body chunks until the stream ends, then resolves the caller's `send()`
-   * promise. Entries are removed on stream close, finish, or teardown.
+   * Each `StreamDeferred` owns response headers, trailers, and a bounded live
+   * body queue. Entries are removed on stream close, finish, cancellation, or
+   * teardown.
    *
    * @internal
    */
@@ -159,6 +188,7 @@ export class H2PoolEntry {
    * @internal
    */
   #maxConcurrent = 100;
+  #requestCount = 0;
   /**
    * Whether the nghttp2 session and I/O halves have been closed.
    *
@@ -197,6 +227,8 @@ export class H2PoolEntry {
    * @internal
    */
   readonly #idleMs: number;
+  /** Maximum unread response bytes buffered by any one stream. */
+  readonly #maxBufferedBodyBytes: number;
   /**
    * Create a pool entry around a client nghttp2 session and split streams.
    *
@@ -219,6 +251,7 @@ export class H2PoolEntry {
     this.#reader = reader;
     this.#writer = writer;
     this.#idleMs = options.idleMs ?? IDLE_MS;
+    this.#maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 16 * 1024 * 1024;
     // Start the background recv loop (fire and forget - errors are handled inside).
     this.#recvLoop(reader).catch(() => {});
     this.#resetIdleTimer();
@@ -287,9 +320,10 @@ export class H2PoolEntry {
   /**
    * Submit an HTTP request on a new HTTP/2 stream.
    *
-   * The request body, if present, is buffered before being sent. The returned
-   * promise resolves with a fully buffered `Response`, rejects if the connection
-   * is going away, or rejects when the stream closes with an error.
+   * Request and response bodies both stream. The upload producer is pulled one
+   * chunk at a time and pauses until nghttp2 consumes that chunk under the
+   * peer's flow-control window. The returned promise resolves when final
+   * response headers are complete.
    *
    * ```ts no_run
    * import { Request } from 'internal:net/http/wire';
@@ -323,67 +357,108 @@ export class H2PoolEntry {
         continue;
       requestHeaders.push([k, v]);
     }
-    // Buffer request body.
-    let bodyBytes: Uint8Array | null = null;
-    if (req.body) {
-      try {
-        const buf = await req.arrayBuffer();
-        bodyBytes = buf.byteLength > 0 ? new Uint8Array(buf) : null;
-      } catch {
-        bodyBytes = null;
-      }
-    }
+    const requestBody = req.body;
     const hasTrailers = req._hasOutTrailers();
-    const hasBody = bodyBytes !== null || hasTrailers;
+    const hasBody = requestBody !== null || hasTrailers;
     const streamId = this.#session.submitRequest(requestHeaders, hasBody);
-    // Register deferred for this stream.
+    const reused = this.#requestCount++ > 0;
+    let trailerResolve!: (headers: Headers) => void;
+    let trailerReject!: (reason: unknown) => void;
+    const trailers = new Promise<Headers>((resolve, reject) => {
+      trailerResolve = resolve;
+      trailerReject = reject;
+    });
+    void trailers.catch(() => {});
+    const body = new HttpBodyQueue({
+      maxBufferedBytes: this.#maxBufferedBodyBytes,
+      onCancel: (reason) => this.#cancelStream(streamId, reason),
+    });
+    // Register the stream before flushing because recv callbacks may arrive as
+    // soon as the first write yields to the socket.
     const responsePromise = new Promise<Response>((resolve, reject) => {
       this.#streams.set(streamId, {
         streamId,
-        status: 200,
+        status: 0,
         headers: new Headers(),
         trailerHeaders: new Headers(),
         inTrailers: false,
-        bodyChunks: [],
+        method: req.method,
+        body,
         done: false,
+        responseResolved: false,
         resolve,
         reject,
+        trailers,
+        trailerResolve,
+        trailerReject,
+        uploadIterator: null,
+        abortCleanup: null,
+        reused,
       });
     });
+    const stream = this.#streams.get(streamId)!;
+    const signal = req.signal;
+    if (signal.aborted) {
+      await this.#cancelStream(streamId, signal.reason);
+      throw signal.reason;
+    }
+    const onAbort = () => {
+      void this.#cancelStream(streamId, signal.reason).catch(() => {});
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    stream.abortCleanup = () => signal.removeEventListener('abort', onAbort);
     await this.drainWrite();
-    if (bodyBytes) {
-      this.#session.setStreamData(streamId, bodyBytes, { endStream: !hasTrailers });
-      await this.drainWrite();
-    }
-    if (hasTrailers) {
-      let trailersOut: Headers;
-      const raw = req._getRawOutTrailers();
-      if (raw instanceof Headers) {
-        trailersOut = raw;
-      } else if (typeof raw === 'function') {
-        try {
-          trailersOut = await raw();
-        } catch {
-          trailersOut = new Headers();
-        }
-      } else {
-        trailersOut = new Headers();
-      }
-      const trailerList: Array<[string, string]> = [];
-      for (const [k, v] of trailersOut.entries()) trailerList.push([k, v]);
-      if (trailerList.length > 0) {
-        this.#session.submitTrailer(streamId, trailerList);
-        this.#session.setStreamData(streamId, null);
-        await this.drainWrite();
-      } else {
-        this.#session.setStreamData(streamId, null);
-        await this.drainWrite();
-      }
-    } else if (hasBody && bodyBytes === null) {
-      this.#session.setStreamData(streamId, null);
-      await this.drainWrite();
-    }
+    if (hasBody) void this.#pumpUpload(stream, requestBody, req).catch(() => {});
     return responsePromise;
+  }
+  async #pumpUpload(
+    stream: StreamDeferred,
+    body: ReadableStream | null,
+    req: Request,
+  ): Promise<void> {
+    try {
+      if (body !== null) {
+        const iterator = (body as unknown as AsyncIterable<Uint8Array>)[Symbol.asyncIterator]();
+        stream.uploadIterator = iterator;
+        while (!stream.done) {
+          const result = await iterator.next();
+          if (result.done) break;
+          const bytes =
+            result.value instanceof Uint8Array ? result.value : new Uint8Array(result.value);
+          if (bytes.byteLength === 0) continue;
+          for (let offset = 0; offset < bytes.byteLength && !stream.done; offset += 64 * 1024) {
+            this.#session.setStreamData(
+              stream.streamId,
+              bytes.subarray(offset, Math.min(offset + 64 * 1024, bytes.byteLength)),
+            );
+            await this.drainWrite();
+            await this.#session.waitForStreamDataConsumed(stream.streamId);
+          }
+        }
+        stream.uploadIterator = null;
+      }
+      if (stream.done) return;
+      const rawTrailers = req._getRawOutTrailers();
+      if (rawTrailers !== null) {
+        const trailers =
+          rawTrailers instanceof Headers ? rawTrailers : await Promise.resolve(rawTrailers());
+        const fields: Array<[string, string]> = [];
+        for (const [name, value] of trailers) fields.push([name, value]);
+        this.#session.setStreamData(stream.streamId, null, { noEndStream: true });
+        await this.drainWrite();
+        if (fields.length > 0) this.#session.submitTrailer(stream.streamId, fields);
+      } else {
+        this.#session.setStreamData(stream.streamId, null);
+      }
+      await this.drainWrite();
+    } catch (reason) {
+      if (stream.done) return;
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      this.#failStream(stream, error);
+      this.#streams.delete(stream.streamId);
+      this.#session.submitRstStream(stream.streamId, H2_CANCEL);
+      await this.drainWrite().catch(() => {});
+    }
   }
   // -------------------------------------------------------------------------
   // Background recv loop
@@ -430,7 +505,13 @@ export class H2PoolEntry {
   handleBeginHeaders(streamId: number, isTrailers: boolean): void {
     const s = this.#streams.get(streamId);
     if (!s) return;
-    if (isTrailers) s.inTrailers = true;
+    s.inTrailers = isTrailers;
+    // RFC 9113 permits one or more informational responses before the final
+    // response. Discard their fields when the next response block begins.
+    if (!isTrailers && s.status >= 100 && s.status < 200) {
+      s.status = 0;
+      s.headers = new Headers();
+    }
   }
   /**
    * Handle one decoded HTTP/2 response header.
@@ -463,8 +544,9 @@ export class H2PoolEntry {
   /**
    * Handle a received frame notification from nghttp2.
    *
-   * The method finishes streams on HEADERS or DATA frames with `END_STREAM`.
-   * Frame constants are numeric nghttp2 values; unknown streams are ignored.
+   * Final response HEADERS resolve `send()` as soon as `END_HEADERS` arrives.
+   * HEADERS or DATA carrying `END_STREAM` then close the live body and settle
+   * trailers. Unknown streams are ignored.
    *
    * ```ts no_run
    * import { createPoolEntry } from 'internal:net/http/pool';
@@ -475,27 +557,27 @@ export class H2PoolEntry {
    * @internal
    */
   handleFrameRecv(streamId: number, frameType: number, frameFlags: number): void {
-    const HEADERS = 1,
-      DATA = 0,
-      GOAWAY = 7,
-      END_STREAM = 1,
-      END_HEADERS = 4;
-    if (frameType === GOAWAY) {
+    if (frameType === NGHTTP2_FRAME_TYPE_GOAWAY) {
       this.handleGoaway(0, 0);
       return;
     }
     const s = this.#streams.get(streamId);
     if (!s) return;
-    const endStream = (frameFlags & END_STREAM) !== 0;
-    if (frameType === HEADERS && (frameFlags & END_HEADERS) !== 0 && endStream)
-      this.#finishStream(s);
-    if (frameType === DATA && endStream) this.#finishStream(s);
+    const endStream = (frameFlags & NGHTTP2_FLAG_END_STREAM) !== 0;
+    if (frameType === NGHTTP2_FRAME_TYPE_HEADERS) {
+      if ((frameFlags & NGHTTP2_FLAG_END_HEADERS) === 0) return;
+      if (!s.inTrailers && s.status >= 200) this.#resolveResponse(s);
+      if (endStream) this.#finishStream(s);
+    }
+    if (frameType === NGHTTP2_FRAME_TYPE_DATA && endStream) this.#finishStream(s);
   }
   /**
-   * Append one response DATA chunk to a stream buffer.
+   * Deliver one response DATA chunk to the stream's bounded body queue.
    *
-   * Bodies are buffered until the stream finishes. Unknown streams are ignored,
-   * which can happen after cancellation or teardown.
+   * Unknown or completed streams are ignored. If the application has stopped
+   * consuming and the queue exceeds its byte bound, the body errors and a
+   * stream-local cancellation reset is scheduled after the nghttp2 callback
+   * returns.
    *
    * ```ts no_run
    * import { createPoolEntry } from 'internal:net/http/pool';
@@ -507,14 +589,24 @@ export class H2PoolEntry {
    */
   handleDataChunk(streamId: number, data: Uint8Array): void {
     const s = this.#streams.get(streamId);
-    if (s) s.bodyChunks.push(data);
+    if (!s || s.done) return;
+    if (!s.body.push(data)) {
+      queueMicrotask(() => {
+        void this.#cancelStream(
+          streamId,
+          new HttpStreamError('flow-control', `H2 stream ${streamId} exceeded its body buffer`, {
+            streamId,
+          }),
+        ).catch(() => {});
+      });
+    }
   }
   /**
    * Handle nghttp2 stream close notification.
    *
-   * If the stream has not already produced a `Response`, its promise is
-   * rejected with the numeric nghttp2 error code. The stream is always removed
-   * from the active map.
+   * A clean close finishes the body if END_STREAM was not observed separately.
+   * An error faults the live body and trailers; if final headers have not yet
+   * arrived it also rejects the promise returned by `send()`.
    *
    * ```ts no_run
    * import { createPoolEntry } from 'internal:net/http/pool';
@@ -527,8 +619,17 @@ export class H2PoolEntry {
   handleStreamClose(streamId: number, errorCode: number): void {
     const s = this.#streams.get(streamId);
     if (s && !s.done) {
-      s.done = true;
-      s.reject(new Error(`H2 stream ${streamId} closed with error ${errorCode}`));
+      if (errorCode === 0) {
+        this.#finishStream(s);
+      } else {
+        this.#failStream(
+          s,
+          new HttpStreamError('closed', `H2 stream ${streamId} closed with error ${errorCode}`, {
+            streamId,
+            protocolCode: errorCode,
+          }),
+        );
+      }
     }
     this.#streams.delete(streamId);
     this.#resetIdleTimer();
@@ -547,10 +648,15 @@ export class H2PoolEntry {
     this.#clearIdleTimer();
     for (const [activeStreamId, s] of this.#streams) {
       if (activeStreamId > lastStreamId && !s.done) {
-        s.done = true;
-        s.reject(
-          new Error(
+        this.#failStream(
+          s,
+          new HttpStreamError(
+            'goaway',
             `H2 GOAWAY rejected stream ${activeStreamId} above lastStreamId ${lastStreamId} with error ${errorCode}`,
+            {
+              streamId: activeStreamId,
+              protocolCode: errorCode,
+            },
           ),
         );
         this.#streams.delete(activeStreamId);
@@ -628,39 +734,95 @@ export class H2PoolEntry {
   // -------------------------------------------------------------------------
   // Private helpers
   // -------------------------------------------------------------------------
-  /**
-   * Concatenate a stream's buffered body and resolve its `send()` promise.
-   *
-   * Coalesces the accumulated chunks into a single body, builds a `Response`
-   * from the collected status, headers, and trailers, removes the stream from
-   * the active map, and triggers `close()` if this was the last stream on a
-   * going-away connection. No-op if the stream already finished.
-   *
-   * @internal
-   */
-  #finishStream(s: StreamDeferred): void {
-    if (s.done) return;
-    s.done = true;
-    const total = s.bodyChunks.reduce((n, c) => n + c.byteLength, 0);
-    let bodyInit: BodyInit | null = null;
-    if (total > 0) {
-      const all = new Uint8Array(total);
-      let off = 0;
-      for (const c of s.bodyChunks) {
-        all.set(c, off);
-        off += c.byteLength;
-      }
-      bodyInit = all.buffer;
+  /** Resolve `send()` with a live body once final response headers are complete. */
+  #resolveResponse(s: StreamDeferred): void {
+    if (s.responseResolved || s.done) return;
+    if (!Number.isInteger(s.status) || s.status < 200 || s.status > 599) {
+      this.#failStream(
+        s,
+        new HttpStreamError('protocol', `H2 stream ${s.streamId} has no valid final :status`, {
+          streamId: s.streamId,
+        }),
+      );
+      return;
     }
-    s.resolve(
-      new Response(bodyInit, {
+    const method = s.method.toUpperCase();
+    const hasBody = method !== 'HEAD' && s.status !== 204 && s.status !== 205 && s.status !== 304;
+    try {
+      const response = buildWireResponse({
+        version: 'HTTP/2',
         status: s.status,
         headers: s.headers,
-        trailers: s.trailerHeaders,
-      } as any),
-    );
+        body: hasBody ? s.body : null,
+        inTrailers: s.trailers,
+      });
+      Object.defineProperty(response, FETCH_RESPONSE_METADATA, {
+        value: {
+          connectionId: this.id,
+          connectedAt: this.connectedAt,
+          reused: s.reused,
+          streamId: s.streamId,
+          localAddress: null,
+          remoteAddress: null,
+          alpnProtocol: 'h2',
+        },
+      });
+      s.responseResolved = true;
+      s.resolve(response);
+    } catch (error) {
+      this.#failStream(s, error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  /** Close the live body and trailer deferred after a clean END_STREAM. */
+  #finishStream(s: StreamDeferred): void {
+    if (s.done) return;
+    this.#resolveResponse(s);
+    if (s.done) return;
+    s.done = true;
+    s.abortCleanup?.();
+    if (s.uploadIterator?.return !== undefined) {
+      void Promise.resolve(s.uploadIterator.return()).catch(() => {});
+    }
+    s.uploadIterator = null;
+    s.body.close();
+    s.trailerResolve(s.trailerHeaders);
     this.#streams.delete(s.streamId);
+    this.#resetIdleTimer();
     if (this.#goingAway && this.#streams.size === 0) void this.close();
+  }
+  /** Fault a stream without disturbing other multiplexed requests. */
+  #failStream(s: StreamDeferred, err: Error): void {
+    if (s.done) return;
+    s.done = true;
+    s.abortCleanup?.();
+    if (s.uploadIterator?.return !== undefined) {
+      void Promise.resolve(s.uploadIterator.return()).catch(() => {});
+    }
+    s.uploadIterator = null;
+    s.body.error(err);
+    s.trailerReject(err);
+    if (!s.responseResolved) s.reject(err);
+  }
+  /** Reset a response stream after its consumer cancels before EOF. */
+  async #cancelStream(streamId: number, reason: unknown): Promise<void> {
+    const s = this.#streams.get(streamId);
+    if (!s || s.done) return;
+    const err =
+      reason instanceof HttpStreamError
+        ? reason
+        : new HttpStreamError('cancelled', `H2 stream ${streamId} response was cancelled`, {
+            streamId,
+            protocolCode: H2_CANCEL,
+          });
+    this.#failStream(s, err);
+    this.#streams.delete(streamId);
+    try {
+      this.#session.submitRstStream(streamId, H2_CANCEL);
+      await this.drainWrite();
+    } finally {
+      this.#resetIdleTimer();
+      if (this.#goingAway && this.#streams.size === 0) void this.close();
+    }
   }
   /**
    * Abrupt teardown that rejects every in-flight stream with the given error.
@@ -678,10 +840,7 @@ export class H2PoolEntry {
     this.#goingAway = true;
     this.#clearIdleTimer();
     for (const s of this.#streams.values()) {
-      if (!s.done) {
-        s.done = true;
-        s.reject(err);
-      }
+      if (!s.done) this.#failStream(s, err);
     }
     this.#streams.clear();
     try {
@@ -777,6 +936,13 @@ export class H2ConnectionPool {
     const e = this.#entries.get(origin);
     return e !== undefined && !e.goingAway;
   }
+  /** Return whether a live entry uses `prefix` directly or as a client slot. @internal */
+  hasPrefix(prefix: string): boolean {
+    for (const [key, entry] of this.#entries) {
+      if ((key === prefix || key.startsWith(`${prefix}#`)) && !entry.goingAway) return true;
+    }
+    return false;
+  }
   /**
    * Retrieve an existing live entry for an origin.
    *
@@ -847,6 +1013,16 @@ export class H2ConnectionPool {
     for (const [origin, e] of this.#entries) {
       closes.push(e.close());
       this.#entries.delete(origin);
+    }
+    await Promise.allSettled(closes);
+  }
+  /** Close and remove entries whose internal pool key begins with `prefix`. @internal */
+  async evictPrefix(prefix: string): Promise<void> {
+    const closes: Promise<void>[] = [];
+    for (const [key, entry] of this.#entries) {
+      if (!key.startsWith(prefix)) continue;
+      this.#entries.delete(key);
+      closes.push(entry.close());
     }
     await Promise.allSettled(closes);
   }
