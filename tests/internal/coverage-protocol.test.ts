@@ -54,7 +54,7 @@ describe('coverage inspector protocol', () => {
     t.deepEqual(
       snapshot.sources,
       { '12': 'export const value = 1;' },
-      'snapshot attaches generated source text for native offset normalization',
+      'snapshot attaches generated source text for TypeScript offset normalization',
     );
   });
 

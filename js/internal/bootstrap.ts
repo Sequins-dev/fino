@@ -608,11 +608,10 @@ if (_childEntry) {
   function _startChildShutdown() {
     if (_shutdownStarted) return;
     _shutdownStarted = true;
-    Promise.resolve(runShutdownHooks()).then(
-      function _childShutdownOk() {
-        _shutdownDone = true;
-      },
-      function _childShutdownErr(err: unknown) {
+    void (async function _finishChildRealm() {
+      try {
+        await runShutdownHooks();
+      } catch (err) {
         // Root-CLI parity: a shutdown-hook failure fails the run, but never
         // displaces an earlier entry error.
         if (!_entryFailed) {
@@ -621,9 +620,19 @@ if (_childEntry) {
             (setEntryError as (m: string) => void)(msg);
           } catch {}
         }
-        _shutdownDone = true;
-      },
-    );
+      }
+      try {
+        await finishRealmCoverage();
+      } catch (err) {
+        if (!_entryFailed) {
+          try {
+            const msg = err instanceof Error ? (err.stack ?? err.message) : String(err);
+            (setEntryError as (m: string) => void)(msg);
+          } catch {}
+        }
+      }
+      _shutdownDone = true;
+    })();
   }
   driveLoop(
     function _childIsDone() {
@@ -658,9 +667,7 @@ if (_childEntry) {
       }
       return done;
     },
-    function _childOnDone() {
-      finishRealmCoverage();
-    },
+    function _childOnDone() {},
   );
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop

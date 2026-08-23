@@ -11,20 +11,27 @@
  * - [Chrome DevTools Protocol: Profiler](https://chromedevtools.github.io/devtools-protocol/tot/Profiler/)
  * - [Chrome DevTools Protocol: Debugger](https://chromedevtools.github.io/devtools-protocol/tot/Debugger/)
  *
- * V8 returns generated JavaScript ranges. Native normalization subsequently
- * maps their end-exclusive UTF-16 offsets according to
- * [ECMA-426](https://tc39.es/ecma426/) using the source maps already cached by
- * Fino's loader.
+ * V8 returns generated JavaScript ranges. TypeScript normalization maps their
+ * end-exclusive UTF-16 offsets according to [ECMA-426](https://tc39.es/ecma426/)
+ * through a minimal batched lookup into the source maps cached by Fino's
+ * loader.
  *
  * @internal
  */
 import { dispatch, nextId, onMessage } from 'internal:inspector';
 import {
+  completeCoverageRealm,
   coverageActive,
+  coverageRealmContext,
   finishCoverageRun,
   startCoverageRun,
-  submitRealmCoverage,
 } from 'internal:coverage/bindings';
+import type {
+  CoverageRealmContext,
+  CoverageSnapshot,
+  CoverageSummary,
+  RawScript,
+} from 'internal:coverage/model';
 
 interface ProtocolError {
   code?: number;
@@ -37,19 +44,9 @@ interface ProtocolResponse {
   error?: ProtocolError;
 }
 
-interface ScriptCoverage {
-  scriptId: string;
-  url: string;
-  functions: unknown[];
-}
-
 interface PreciseCoverageResult {
-  result: ScriptCoverage[];
+  result: RawScript[];
   timestamp?: number;
-}
-
-interface CoverageSnapshot extends PreciseCoverageResult {
-  sources: Record<string, string>;
 }
 
 /** A synchronous request function used by the coverage protocol client. @internal */
@@ -164,37 +161,74 @@ export function createCoverageProtocol(send: CoverageProtocolRequest): CoverageP
 
 const protocol = createCoverageProtocol(request);
 let collecting = false;
+let toolVersion = '';
+
+function currentContext(): CoverageRealmContext | null {
+  const value = coverageRealmContext();
+  return typeof value === 'string' ? (JSON.parse(value) as CoverageRealmContext) : null;
+}
 
 /** Start the current registered Realm's inspector collector when coverage is active. @internal */
 export function startRealmCoverage(): void {
   if (collecting || !coverageActive()) return;
+  const context = currentContext();
+  if (context !== null) toolVersion = context.toolVersion;
   protocol.start();
   collecting = true;
 }
 
-/** Take and submit the current Realm's final snapshot once. @internal */
-export function finishRealmCoverage(): void {
+/** Take, normalize, and publish the current Realm's final snapshot once. @internal */
+export async function finishRealmCoverage(): Promise<void> {
   if (!collecting) return;
   collecting = false;
+  const context = currentContext();
+  if (context === null) return;
   const snapshot = protocol.take();
-  submitRealmCoverage(JSON.stringify(snapshot));
+  const { normalizeCoverageSnapshot, writeCoverageShard } = await import('internal:coverage/model');
+  let shard;
+  try {
+    shard = await normalizeCoverageSnapshot(context, snapshot);
+  } catch (error) {
+    shard = {
+      realm: { ...context.realm, status: 'missing' },
+      files: [],
+      warnings: [
+        `unable to normalize coverage: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+  await writeCoverageShard(context.run, shard);
+  completeCoverageRealm();
 }
 
 /** Start a test coverage run and its root-Realm collector. @internal */
-export function startCoverage(path: string): void {
-  startCoverageRun(path);
+export async function startCoverage(path: string): Promise<void> {
+  const { prepareCoverageRun } = await import('internal:coverage/model');
+  const config = await prepareCoverageRun(path);
+  startCoverageRun(JSON.stringify(config));
   startRealmCoverage();
 }
 
-/** Finish the root Realm and return the aggregate run summary as JSON. @internal */
-export function finishCoverage(): string | null {
+/** Finish the root Realm and return the aggregate run summary. @internal */
+export async function finishCoverage(): Promise<CoverageSummary | null> {
   let collectionError: unknown;
   try {
-    finishRealmCoverage();
+    await finishRealmCoverage();
   } catch (error) {
     collectionError = error;
   }
-  const summary = finishCoverageRun();
+  const run = finishCoverageRun();
+  let summary: CoverageSummary | null = null;
+  let finalizationError: unknown;
+  if (typeof run === 'string') {
+    try {
+      const { finishCoverageArtifact } = await import('internal:coverage/model');
+      summary = await finishCoverageArtifact(JSON.parse(run), toolVersion);
+    } catch (error) {
+      finalizationError = error;
+    }
+  }
   if (collectionError !== undefined) throw collectionError;
+  if (finalizationError !== undefined) throw finalizationError;
   return summary;
 }

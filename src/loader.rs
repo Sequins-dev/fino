@@ -180,6 +180,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
     source_builtin!("internal:commands/repl", "commands/repl"),
     source_builtin!("internal:coverage", "internal/coverage"),
+    source_builtin!("internal:coverage/model", "internal/coverage/model"),
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "globals/encoding"),
     source_builtin!("internal:globals/console", "globals/console"),

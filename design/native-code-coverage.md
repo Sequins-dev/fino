@@ -212,11 +212,12 @@ text using `Debugger.getScriptSource` keyed by the coverage result's script id.
 
 All coverage-specific CDP behavior lives in `js/internal/coverage.ts`. It uses
 the generic synthetic `internal:inspector` transport (`dispatch`, `onMessage`,
-and `nextId`) and submits the completed JSON snapshot through the narrow
-`internal:coverage/bindings` synthetic module. Rust contains no Profiler or
-Debugger method names or parameter policy. Fino does not create a second
-inspector for the same Isolate. Coverage is currently a test-only mode, so
-simultaneous interactive REPL coverage is outside this release's scope.
+and `nextId`). `js/internal/coverage/model.ts` then normalizes and publishes the
+snapshot. Rust contains no Profiler or Debugger method names, parameter policy,
+normalization, aggregation, metrics, hashing, waiting, or final artifact I/O.
+Fino does not create a second inspector for the same Isolate. Coverage is
+currently a test-only mode, so simultaneous interactive REPL coverage is
+outside this release's scope.
 
 ### When collection starts and stops
 
@@ -234,30 +235,36 @@ the scheduler bootstrap's final error rethrow. This ordering captures shutdown
 work, lets child Realms submit their final shards, and still preserves the
 original command error.
 
-Each Isolate submits one normalized shard before it is disposed. The
-coordinator waits for every Realm registered in the coverage run to either
-submit or reach a known terminal state. A force-terminated or crashed Realm is
-marked incomplete; the coordinator must not wait forever for a shard which
-cannot arrive.
+Each Isolate publishes one normalized shard from its asynchronous TypeScript
+shutdown phase before it is disposed. The owning TypeScript coordinator waits
+for every Realm registered in the coverage run to submit or reach a known
+terminal state. A force-terminated or crashed Realm is marked incomplete; the
+coordinator does not wait forever for a shard which cannot arrive.
 
 ### Process-wide coordinator
 
 Coverage is enabled in a test workload Isolate, but participating Realms can
-run on reactor workers, dedicated threads, or child processes. A run-scoped
+run on reactor workers, dedicated threads, or child processes. The TypeScript
 coordinator owns:
 
 - the resolved artifact path and run root;
-- per-process Realm id allocation and Realm descriptors;
 - expected, received, and incomplete Realm shards;
 - canonicalization, source-map remapping, aggregation, and artifact writing;
 - the final summary returned to the scheduler bootstrap.
 
-Every Realm receives the run configuration through native creation plumbing.
-It atomically replaces a placeholder in a run-specific temporary shard
-directory when its TypeScript collector submits the final snapshot. This works
-for in-process and process Realms without adding coverage messages to the user
-Realm protocol. The owning test process is the only final artifact writer, so
-individual Realms never race to overwrite the canonical JSON path.
+The deliberately thin native boundary owns only work that cannot safely move
+out of the host: propagating the serialized run configuration through existing
+Realm/process creation plumbing, allocating per-process Realm ids, writing a
+missing placeholder before TypeScript or user code can run, and performing a
+batched lookup against each loader-owned parsed source-map cache. The
+`internal:coverage/bindings` synthetic module exposes those operations as data;
+all policy remains in TypeScript.
+
+Each Realm atomically replaces its native crash placeholder in a run-specific
+temporary shard directory from TypeScript. This works for in-process and
+process Realms without adding coverage messages to the user Realm protocol.
+The owning test process is the only final artifact writer, so individual Realms
+never race to overwrite the canonical JSON path.
 
 ### Realm identity
 
@@ -498,8 +505,9 @@ will make tests slower and should remain opt-in. Collection work should stay
 off the ordinary test hot path:
 
 - do not initialize an inspector coverage session without `--coverage`;
-- normalize each Realm while its loader source-map cache is still alive, then
-  aggregate compact original-source shards in the parent;
+- normalize each Realm in TypeScript while its loader source-map cache is still
+  alive, using one native mapping batch per script, then aggregate compact
+  original-source shards in the parent;
 - fetch generated source only for scripts which survive basic URL filtering;
 - parse each distinct source map and source text once per content hash; and
 - stream or bound child-process shards rather than retaining duplicate protocol
@@ -528,8 +536,8 @@ unexpected protocol limitation.
 
 - Add the optional-inline-value option shape to `fino:process/argv` and define
   `fino test --coverage[=<path>]`.
-- Add a native coverage coordinator, run id, explicit Realm ids, parent ids,
-  and status tracking.
+- Add thin native run propagation, explicit Realm ids, parent ids, and
+  pre-bootstrap crash placeholders.
 - Propagate coverage configuration through scheduled, thread, process, and
   sandbox Realm creation.
 - Start collectors before child bootstrap evaluation and submit shards before
@@ -540,7 +548,8 @@ unexpected protocol limitation.
 ### 3. Normalize source and aggregate
 
 - Implement UTF-16 offset indexing, end-exclusive range splitting, source-map
-  segment mapping, overlap unioning, content hashing, and deterministic sorting.
+  segment mapping, overlap unioning, content hashing, and deterministic sorting
+  in TypeScript. Native code exposes only batched cached-map lookups.
 - Derive line, function, and V8 block-based branch records.
 - Apply and serialize the initial file-selection policy.
 - Write the versioned JSON artifact atomically and print the grouped TAP block.
@@ -613,6 +622,7 @@ modules remain in the denominator; explicit include/exclude policy is deferred.
 - [ECMA-426 source map format](https://tc39.es/ecma426/)
 - [c8](https://github.com/bcoe/c8)
 - [Fino TypeScript coverage protocol client](../js/internal/coverage.ts)
+- [Fino TypeScript coverage model](../js/internal/coverage/model.ts)
 - [Current Fino inspector integration](../src/inspector_module.rs)
 - [Current Fino source-map registration](../src/loader.rs)
 - [Current test command](../js/commands/test.ts)

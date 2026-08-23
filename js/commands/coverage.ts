@@ -27,67 +27,13 @@
 import { DiskFileSystem } from 'fino:file';
 import { dirname } from 'fino:file/path';
 import { Task, type TaskCliOption } from '../task.ts';
-
-interface Metric {
-  covered: number;
-  total: number;
-  percent: number;
-}
-interface Totals {
-  lines: Metric;
-  functions: Metric;
-  branches: Metric;
-}
-interface SourceRange {
-  startLine: number;
-  startColumn: number;
-  endLine: number;
-  endColumn: number;
-}
-interface CoverageLine {
-  line: number;
-  hits: number;
-  coveredIn: string[];
-}
-interface CoverageFunction {
-  id: string;
-  name: string;
-  range: SourceRange;
-  hits: number;
-  coveredIn: string[];
-}
-interface CoverageBranch {
-  id: string;
-  range: SourceRange;
-  hits: number;
-  coveredIn: string[];
-}
-interface CoverageFile {
-  path: string;
-  sourceHash: string;
-  realmIds: string[];
-  totals: Totals;
-  lines: CoverageLine[];
-  functions: CoverageFunction[];
-  branches: CoverageBranch[];
-}
-interface CoverageRealm {
-  id: string;
-  parentId: string | null;
-  kind: string;
-  entry: string | null;
-  status: string;
-  totals: Totals;
-}
-interface CoverageArtifact {
-  schemaVersion: number;
-  tool: { name: string; version: string };
-  run: { root: string; id: string; complete: boolean };
-  totals: Totals;
-  realms: CoverageRealm[];
-  files: CoverageFile[];
-  warnings: string[];
-}
+import type {
+  CoverageArtifact,
+  CoverageFile,
+  CoverageMetric as Metric,
+  CoverageTotals as Totals,
+  SourceRange,
+} from 'internal:coverage/model';
 
 const DEFAULT_INPUT = 'coverage/coverage.json';
 const inputOption: TaskCliOption = {

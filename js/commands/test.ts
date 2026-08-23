@@ -152,7 +152,7 @@ const command = new Task({
     if (testFiles.length === 0) {
       throw new Error('fino test: no test files specified');
     }
-    if (coveragePath !== undefined) startCoverage(coveragePath);
+    if (coveragePath !== undefined) await startCoverage(coveragePath);
     allowInternalForTests();
     const expandedFiles: string[] = [];
     for (const raw of testFiles) {

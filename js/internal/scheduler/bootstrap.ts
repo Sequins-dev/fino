@@ -13,24 +13,8 @@ import { argv, exit } from '../../process.ts';
 import { runShutdownHooks } from '../shutdown.ts';
 import { runLauncher } from '../security/sandbox/launcher.ts';
 import { finishCoverage } from 'internal:coverage';
+import type { CoverageMetric, CoverageSummary } from 'internal:coverage/model';
 
-interface CoverageMetric {
-  covered: number;
-  total: number;
-  percent: number;
-}
-interface CoverageSummary {
-  path: string;
-  complete: boolean;
-  totals: {
-    lines: CoverageMetric;
-    functions: CoverageMetric;
-    branches: CoverageMetric;
-  };
-  realmCount: number;
-  incompleteRealmCount: number;
-  warnings: string[];
-}
 function coverageComments(summary: CoverageSummary): string {
   const metric = (name: string, value: CoverageMetric) =>
     `#   ${name.padEnd(10)} ${value.percent.toFixed(2)}% (${value.covered}/${value.total})`;
@@ -85,10 +69,8 @@ try {
   commandError ??= error;
 }
 try {
-  const rawSummary = finishCoverage();
-  if (typeof rawSummary === 'string' && !wantsJson) {
-    console.log(coverageComments(JSON.parse(rawSummary) as CoverageSummary));
-  }
+  const summary = await finishCoverage();
+  if (summary !== null && !wantsJson) console.log(coverageComments(summary));
 } catch (error) {
   if (commandError === undefined) commandError = error;
   else console.error(`[coverage] ${error instanceof Error ? error.message : String(error)}`);
