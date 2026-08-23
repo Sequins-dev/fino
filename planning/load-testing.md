@@ -4,28 +4,33 @@
 
 Add a first-party `fino load` command for repeatable HTTP/1.1, HTTP/2, and
 HTTP/3 load tests. The command should be useful for a quick local throughput
-check, but its engine and result model should also support scripted,
-stateful protocols such as SSE, WebSocket, WebTransport, and raw QUIC later.
+check, while its engine and result model also support scripted, stateful
+protocols such as SSE, WebSocket, WebTransport, and raw QUIC.
 
-This is a plan, not an implementation specification. The exact option names
-can change after a CLI prototype, but the workload and measurement semantics
-should remain stable.
+This is a living design and status document rather than a compatibility
+specification. Option names can still evolve, but the workload and measurement
+semantics should remain stable.
 
 ## Implementation status
 
-Phase 1 is implemented by `fino:load` and `fino load`. The shipped command has
-closed-loop duration or exact-request runs, warmup, explicit H1/H2/H3
-selection, connection and multiplexed-stream limits, bounded streaming
-response consumption, headers-only cancellation, status expectations,
-timeouts, replay-safe retries, text output, and a versioned JSON result.
+The HTTP command and scripted scenario runtime are implemented by `fino:load`
+and `fino load`. The shipped HTTP path has closed-loop or controlled-arrival
+runs, warmup, explicit H1/H2/H3 selection, connection and multiplexed-stream
+limits, bounded streaming response consumption, headers-only cancellation,
+status/body expectations, timeouts, replay-safe retries, text output, and a
+versioned JSON result.
 
 The first implementation deliberately requires `h1`, `h2`, or `h3` instead of
 offering `auto`: explicit selection preserves the requested workload and fails
 when a peer cannot speak it. Safe automatic negotiation needs `HttpClient` to
 adapt per-slot capacity after ALPN so an H1 fallback is never scheduled like a
-multiplexed connection. Open-loop rates, worker sharding, weighted requests,
-TypeScript scenarios, SSE, WebSocket, WebTransport, and raw QUIC remain Phase 2
-and Phase 3 work.
+multiplexed connection. Phase 2 now adds bounded fixed-rate and linear-ramp
+scheduling, intended-arrival latency, weighted requests, deterministic
+substitution, reconnect cadence, streaming body expectations, bailouts, and the
+TypeScript scenario API. Phase 3 is available through controlled scenario
+clients for SSE, WebSocket, WebTransport, and raw QUIC, with application framing
+and success criteria kept inside the script. Cross-realm worker sharding remains
+deferred until profiling shows the generator reactor is the bottleneck.
 
 ## Design principles
 
@@ -81,15 +86,15 @@ Initial options:
 
 | Concern | Proposed options | Notes |
 | --- | --- | --- |
-| Target | URL positional, `--method`, `--header`, `--body`, `--body-file` | Multiple targets can be round-robin or weighted in a scenario file. |
-| Protocol | `--protocol auto\|h1\|h2\|h3` | `auto` records the negotiated protocol; forced modes fail instead of silently falling back. |
-| Load | `--connections`, `--streams`, `--pipelining` | `--streams` applies to multiplexed protocols; `--pipelining` is an explicit HTTP/1.1 expert option. |
+| Target | URL positional, repeatable `--target`, `--method`, `--header`, `--body`, `--body-file` | `--target` accepts `URL` or `WEIGHT:URL`; TypeScript scenarios cover richer variants. |
+| Protocol | `--protocol h1\|h2\|h3` | Explicit modes fail instead of silently falling back. Safe `auto` remains future work. |
+| Load | `--connections`, `--streams` | `--streams` applies to multiplexed protocols; HTTP/1.1 pipelining is not currently exposed. |
 | Stop condition | `--duration` or `--requests` | Mutually exclusive measured-run boundaries. |
-| Arrival model | `--rate`, `--rate-model constant\|closed` | No rate means closed-loop saturation. A later phase can add ramp and step schedules. |
+| Arrival model | `--rate`, `--rate-to` | No rate means closed-loop saturation; `--rate-to` creates a linear ramp. |
 | Lifecycle | `--warmup`, `--timeout`, `--connect-timeout`, `--reconnect-after` | Warmup data is excluded but warm connections may carry into the measured phase. |
-| Response | `--response consume\|cancel`, `--expect-status`, `--expect-body` | `consume` streams and black-holes chunks. `cancel` stops after final headers and is labeled headers-only. Body matching opts into buffering or a streaming matcher. |
-| TLS | CA, client certificate/key, SNI, insecure-development flag | Output records TLS and negotiated ALPN without leaking key material. |
-| Output | `--json`, `--output`, `--quiet`, `--title`, `--seed` | JSON gets a versioned schema suitable for run-to-run comparison. |
+| Response | `--response consume\|cancel`, `--expect-status`, `--expect-body` | `consume` streams and black-holes chunks. `cancel` stops after final headers and is labeled headers-only. Body matching is incremental. |
+| TLS | `--ca`, `--cert`, `--key`, `--insecure` | Output records non-secret TLS policy without leaking key material. |
+| Output | `--json`, `--quiet`, `--title`, `--seed` | JSON gets a versioned schema suitable for run-to-run comparison. |
 
 `--response consume` should be the default. It measures final response
 completion, maintains HTTP/1.1 connection framing, increments a byte counter
@@ -189,12 +194,15 @@ import type { LoadScenario } from 'fino:load';
 export default {
   protocol: 'websocket',
   async session(client, context) {
-    const socket = await client.connect('/chat');
-    await socket.send(JSON.stringify({ type: 'join', room: context.workerId }));
+    const socket = await client.websocket('wss://localhost:3000/chat');
+    await socket.send(JSON.stringify({ type: 'join', room: context.userId }));
     for (let i = 0; i < 100; i++) {
+      const started = performance.now();
       await socket.send(JSON.stringify({ type: 'ping', sequence: i }));
-      const message = await socket.receive();
-      context.metric('round_trip').observe(message.latency);
+      await new Promise((resolve) => {
+        socket.addEventListener('message', resolve, { once: true });
+      });
+      context.metric('round_trip_ms', performance.now() - started);
     }
     await socket.close();
   },
@@ -261,21 +269,26 @@ errors, and close-code distribution. Never combine 0-RTT and 1-RTT results.
 - Cross-check representative H1/H2 results against autocannon and h2load. Exact
   rates need not match, but workload shape and measurement boundaries must.
 
-### Phase 2: controlled arrival and richer workloads
+### Phase 2: controlled arrival and richer workloads — complete except sharding
 
-- Add fixed-rate scheduling with coordinated-omission-safe timing, rate ramps,
-  multiple weighted requests, deterministic data substitution, reconnect
-  cadence, expectations, bailouts, and worker sharding.
-- Add the TypeScript scenario API without exposing protocol-specific internals
-  through the common HTTP path.
+- Fixed-rate scheduling, coordinated-omission-safe timestamps, linear ramps,
+  weighted requests, deterministic data substitution, reconnect cadence,
+  streaming body expectations, bailouts, and the TypeScript scenario API are
+  implemented.
+- Worker sharding is explicitly deferred pending self-profiling. When added, it
+  must preserve total connection/rate semantics and merge raw histogram buckets
+  rather than average worker percentiles.
 
-### Phase 3: long-lived protocols
+### Phase 3: long-lived protocols — complete as scripted adapters
 
-- Implement SSE first because it reuses streaming HTTP and validates the
-  session-oriented metric model.
-- Add WebSocket, then WebTransport, reusing public Fino clients.
-- Add raw QUIC last; its application framing and success criteria are entirely
-  scenario-defined and need the strongest safety limits.
+- Scenario clients own SSE, WebSocket, WebTransport, and raw QUIC resources and
+  close them when a session returns or throws.
+- Scripts define event/message predicates, framing, correlation, datagram
+  expectations, and success. They report application bytes/messages and custom
+  bounded histograms through the scenario context.
+- Scheduler queues, metric-name cardinality, error classes, and log calls are
+  bounded. Raw QUIC still requires an explicit ALPN and 0-RTT remains an
+  application policy that must be labeled separately by the scenario.
 
 ## Validation strategy
 
@@ -302,6 +315,6 @@ errors, and close-code distribution. Never combine 0-RTT and 1-RTT results.
   worker-sharding requirements rather than being assumed upfront.
 - `consume` counts decoded application bytes by default and encoded bytes with
   decompression disabled. The client does not yet expose both simultaneously.
-- Protocol-specific flow-control tuning remains an advanced-workload decision
-  for Phase 2; the common CLI currently exposes only connection, stream,
+- Protocol-specific flow-control tuning remains advanced future work; the
+  common CLI currently exposes only connection, stream,
   pending-request, and unread-response bounds.

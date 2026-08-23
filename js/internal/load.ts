@@ -16,16 +16,26 @@
 import { HttpClient } from '../net/http/client.ts';
 import type { HttpResponse } from '../net/http/client.ts';
 import { Headers } from '../net/http/index.ts';
+import { QuicEndpoint } from '../net/quic/index.ts';
 import { LogHistogram } from './statistics.ts';
 import type {
+  LoadBailoutOptions,
   LoadCounters,
   LoadHistogramSnapshot,
   LoadLatencySummary,
   LoadOptions,
   LoadProtocol,
+  LoadRate,
   LoadResponsePolicy,
   LoadResult,
   LoadResultConfig,
+  LoadScenario,
+  LoadScenarioClient,
+  LoadScenarioContext,
+  LoadScenarioMetricResult,
+  LoadScenarioOptions,
+  LoadScenarioResult,
+  LoadTarget,
 } from '../load.ts';
 
 const DEFAULT_DURATION_MS = 10_000;
@@ -37,9 +47,27 @@ const MAX_CONNECTIONS = 10_000;
 const MAX_STREAMS = 10_000;
 const MAX_CONCURRENCY = 100_000;
 const MAX_ERROR_CLASSES = 32;
+const DEFAULT_SEED = 1;
+const MAX_EXPECTED_BODY_BYTES = 1024 * 1024;
+const DEFAULT_MAX_SCENARIO_METRICS = 64;
+const MAX_SCENARIO_METRICS = 1024;
+const DEFAULT_MAX_SCENARIO_LOGS = 1000;
+
+interface NormalizedTarget {
+  url: string;
+  method: string;
+  headers: LoadOptions['headers'];
+  body: LoadOptions['body'];
+  weight: number;
+  expectedStatus: readonly number[] | null;
+  expectedStatusSet: ReadonlySet<number> | null;
+  expectedBody: Uint8Array | null;
+}
 
 interface NormalizedLoadOptions {
-  url: URL;
+  url: string;
+  targets: readonly NormalizedTarget[];
+  totalTargetWeight: number;
   method: string;
   headers: LoadOptions['headers'];
   body: LoadOptions['body'];
@@ -50,6 +78,10 @@ interface NormalizedLoadOptions {
   durationMs: number | null;
   requests: number | null;
   warmupMs: number;
+  rate: LoadRate | null;
+  maxQueuedOperations: number;
+  seed: number;
+  reconnectAfter: number | null;
   responsePolicy: LoadResponsePolicy;
   expectedStatus: readonly number[] | null;
   expectedStatusSet: ReadonlySet<number> | null;
@@ -62,6 +94,7 @@ interface NormalizedLoadOptions {
   tls: LoadOptions['tls'];
   title: string | null;
   signal: AbortSignal | null;
+  bailout: LoadBailoutOptions | null;
 }
 
 interface MutableCounters {
@@ -74,6 +107,7 @@ interface MutableCounters {
   cancelled: number;
   transportFailed: number;
   schedulerDropped: number;
+  bodyFailed: number;
   headersOnly: number;
   responseBytes: number;
 }
@@ -87,9 +121,19 @@ interface PhaseOptions {
   now(): number;
 }
 
+interface ArrivalPhaseOptions extends PhaseOptions {
+  maxQueued: number;
+  rateAt(scheduledAt: number, sequence: number): number;
+  sleep(delayMs: number, signal: AbortSignal): Promise<void>;
+  offer(): void;
+  drop(): void;
+  finish?(): void;
+}
+
 interface PhaseSignal {
   signal: AbortSignal;
   deadline: number | null;
+  abort(reason?: unknown): void;
   close(): void;
 }
 
@@ -130,6 +174,92 @@ function normalizeExpectedStatus(input: LoadOptions['expectedStatus']): {
   return { values: unique, set: new Set(unique) };
 }
 
+function normalizeExpectedBody(input: string | Uint8Array | undefined): Uint8Array | null {
+  if (input === undefined) return null;
+  const bytes =
+    typeof input === 'string'
+      ? new TextEncoder().encode(input)
+      : new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  if (bytes.byteLength > MAX_EXPECTED_BODY_BYTES) {
+    throw new RangeError(
+      `fino load: expectedBody cannot exceed ${MAX_EXPECTED_BODY_BYTES} encoded bytes`,
+    );
+  }
+  return new Uint8Array(bytes);
+}
+
+function normalizeRate(input: LoadRate | undefined): LoadRate | null {
+  if (input === undefined) return null;
+  if (typeof input === 'number') {
+    const rate = finiteNonNegative(input, 'rate');
+    if (rate === 0) throw new RangeError('fino load: rate must be greater than zero');
+    return rate;
+  }
+  const start = finiteNonNegative(input.start, 'rate.start');
+  const end = finiteNonNegative(input.end, 'rate.end');
+  if (start === 0 || end === 0)
+    throw new RangeError('fino load: ramp rates must be greater than zero');
+  return { start, end };
+}
+
+function normalizedSeed(input: number | undefined): number {
+  const seed = input ?? DEFAULT_SEED;
+  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
+    throw new RangeError('fino load: seed must be an integer from 0 to 4294967295');
+  }
+  return seed >>> 0;
+}
+
+function normalizeTarget(
+  target: LoadTarget,
+  defaults: {
+    method: string;
+    headers: LoadOptions['headers'];
+    body: LoadOptions['body'];
+    expectedStatus: LoadOptions['expectedStatus'];
+    expectedBody: LoadOptions['expectedBody'];
+  },
+): NormalizedTarget {
+  const template = target.url instanceof URL ? target.url.href : String(target.url);
+  const url = new URL(substitute(template, 0, 0));
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new TypeError('fino load: every target URL must use http: or https:');
+  }
+  if (url.username !== '' || url.password !== '') {
+    throw new TypeError('fino load: target URLs must not contain credentials');
+  }
+  const method = String(target.method ?? defaults.method).toUpperCase();
+  const body = target.body ?? defaults.body;
+  if (
+    body !== undefined &&
+    typeof body !== 'string' &&
+    !(body instanceof Uint8Array) &&
+    !(body instanceof ArrayBuffer)
+  ) {
+    throw new TypeError(
+      'fino load: target body must be a replayable string, Uint8Array, or ArrayBuffer',
+    );
+  }
+  if (body !== undefined && (method === 'GET' || method === 'HEAD')) {
+    throw new TypeError(`fino load: ${method} requests cannot have a body`);
+  }
+  const expected = normalizeExpectedStatus(target.expectedStatus ?? defaults.expectedStatus);
+  const weight = target.weight ?? 1;
+  if (!Number.isFinite(weight) || weight <= 0) {
+    throw new RangeError('fino load: target weight must be a finite positive number');
+  }
+  return {
+    url: template,
+    method,
+    headers: target.headers ?? defaults.headers,
+    body,
+    weight,
+    expectedStatus: expected.values,
+    expectedStatusSet: expected.set,
+    expectedBody: normalizeExpectedBody(target.expectedBody ?? defaults.expectedBody),
+  };
+}
+
 function normalizeTimeouts(input: LoadOptions['timeouts']): NonNullable<LoadOptions['timeouts']> {
   const timeouts: NonNullable<LoadOptions['timeouts']> = {
     total: input?.total ?? DEFAULT_TIMEOUT_MS,
@@ -144,19 +274,18 @@ function normalizeTimeouts(input: LoadOptions['timeouts']): NonNullable<LoadOpti
 }
 
 function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
-  const url = options.url instanceof URL ? new URL(options.url.href) : new URL(String(options.url));
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new TypeError('fino load: url must use http: or https:');
+  if (options.url !== undefined && options.targets !== undefined) {
+    throw new RangeError('fino load: url and targets are mutually exclusive');
   }
-  if (url.username !== '' || url.password !== '') {
-    throw new TypeError('fino load: url must not contain credentials');
+  if (
+    options.url === undefined &&
+    (options.targets === undefined || options.targets.length === 0)
+  ) {
+    throw new TypeError('fino load: url or at least one target is required');
   }
   const protocol = options.protocol ?? 'http/1.1';
   if (protocol !== 'http/1.1' && protocol !== 'h2' && protocol !== 'h3') {
     throw new TypeError('fino load: protocol must be http/1.1, h2, or h3');
-  }
-  if ((protocol === 'h2' || protocol === 'h3') && url.protocol !== 'https:') {
-    throw new TypeError(`fino load: ${protocol.toUpperCase()} requires an https: URL`);
   }
   const method = String(options.method ?? 'GET').toUpperCase();
   if (
@@ -167,8 +296,26 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
   ) {
     throw new TypeError('fino load: body must be a replayable string, Uint8Array, or ArrayBuffer');
   }
-  if (options.body !== undefined && (method === 'GET' || method === 'HEAD')) {
-    throw new TypeError(`fino load: ${method} requests cannot have a body`);
+  const sourceTargets: readonly LoadTarget[] = options.targets ?? [
+    { url: options.url!, weight: 1 },
+  ];
+  const targets = sourceTargets.map((target) =>
+    normalizeTarget(target, {
+      method,
+      headers: options.headers,
+      body: options.body,
+      expectedStatus: options.expectedStatus,
+      expectedBody: options.expectedBody,
+    }),
+  );
+  const firstUrl = targets[0]!.url;
+  for (const target of targets) {
+    const targetUrl = new URL(substitute(target.url, 0, 0));
+    if ((protocol === 'h2' || protocol === 'h3') && targetUrl.protocol !== 'https:') {
+      throw new TypeError(
+        `fino load: ${protocol.toUpperCase()} requires an https: URL for every target`,
+      );
+    }
   }
   const connections = positiveInteger(
     options.connections ?? DEFAULT_CONNECTIONS,
@@ -197,6 +344,15 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
       : positiveInteger(options.requests, 'requests', Number.MAX_SAFE_INTEGER);
   const warmupMs = finiteNonNegative(options.warmupMs ?? 0, 'warmupMs');
   const expected = normalizeExpectedStatus(options.expectedStatus);
+  const rate = normalizeRate(options.rate);
+  const maxQueuedOperations =
+    options.maxQueuedOperations === undefined
+      ? concurrency
+      : nonNegativeInteger(options.maxQueuedOperations, 'maxQueuedOperations');
+  const reconnectAfter =
+    options.reconnectAfter === undefined
+      ? null
+      : positiveInteger(options.reconnectAfter, 'reconnectAfter');
   const maxPendingRequests =
     options.maxPendingRequests === undefined
       ? concurrency
@@ -210,12 +366,23 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
   if (responsePolicy !== 'consume' && responsePolicy !== 'cancel') {
     throw new TypeError('fino load: responsePolicy must be consume or cancel');
   }
+  if (responsePolicy === 'cancel' && targets.some((target) => target.expectedBody !== null)) {
+    throw new RangeError('fino load: expectedBody requires responsePolicy consume');
+  }
+  const bailout = options.bailout ?? null;
+  if (bailout?.failures !== undefined) positiveInteger(bailout.failures, 'bailout.failures');
+  if (bailout?.errors !== undefined) positiveInteger(bailout.errors, 'bailout.errors');
+  if (bailout !== null && bailout.failures === undefined && bailout.errors === undefined) {
+    throw new RangeError('fino load: bailout requires a failures or errors threshold');
+  }
   const redirect = options.redirect ?? 'follow';
   if (redirect !== 'follow' && redirect !== 'error' && redirect !== 'manual') {
     throw new TypeError('fino load: redirect must be follow, error, or manual');
   }
   return {
-    url,
+    url: firstUrl,
+    targets,
+    totalTargetWeight: targets.reduce((sum, target) => sum + target.weight, 0),
     method,
     headers: options.headers,
     body: options.body,
@@ -226,6 +393,10 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
     durationMs,
     requests,
     warmupMs,
+    rate,
+    maxQueuedOperations,
+    seed: normalizedSeed(options.seed),
+    reconnectAfter,
     responsePolicy,
     expectedStatus: expected.values,
     expectedStatusSet: expected.set,
@@ -238,6 +409,7 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
     tls: options.tls,
     title: options.title === undefined ? null : String(options.title),
     signal: options.signal ?? null,
+    bailout,
   };
 }
 
@@ -270,6 +442,7 @@ class LoadRecorder {
     cancelled: 0,
     transportFailed: 0,
     schedulerDropped: 0,
+    bodyFailed: 0,
     headersOnly: 0,
     responseBytes: 0,
   };
@@ -280,6 +453,8 @@ class LoadRecorder {
   reusedResponses = 0;
   active = 0;
   maxActive = 0;
+  bailoutReason: string | null = null;
+  expectationFailures = 0;
   readonly queue = new LogHistogram();
   readonly ttfb = new LogHistogram();
   readonly download = new LogHistogram();
@@ -287,8 +462,17 @@ class LoadRecorder {
   readonly connect = new LogHistogram();
   readonly tls = new LogHistogram();
 
-  constructor(connections: number) {
+  readonly #bailout: LoadBailoutOptions | null;
+  readonly #abort: (reason: Error) => void;
+
+  constructor(
+    connections: number,
+    bailout: LoadBailoutOptions | null = null,
+    abort: (reason: Error) => void = () => {},
+  ) {
     this.#knownConnectionLimit = Math.max(1, connections * 2);
+    this.#bailout = bailout;
+    this.#abort = abort;
   }
 
   #observeConnection(id: string): boolean {
@@ -305,8 +489,15 @@ class LoadRecorder {
     return true;
   }
 
-  begin(): void {
+  offer(): void {
     this.counters.offered++;
+  }
+
+  drop(): void {
+    this.counters.schedulerDropped++;
+  }
+
+  begin(): void {
     this.counters.started++;
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
@@ -320,7 +511,7 @@ class LoadRecorder {
     map.set(key, (map.get(key) ?? 0) + 1);
   }
 
-  recordHeaders(response: HttpResponse): void {
+  recordHeaders(response: HttpResponse, scheduledAt: number): void {
     this.increment(this.statusCodes, String(response.status));
     this.increment(this.protocols, response.protocol);
     if (response.connection !== null) {
@@ -328,9 +519,9 @@ class LoadRecorder {
       if (response.connection.reused) this.reusedResponses++;
     }
     const timing = response.timing;
-    this.queue.record(timing.queueEnd - timing.scheduledTime);
+    this.queue.record(timing.queueEnd - scheduledAt);
     if (timing.responseHeadersEnd !== undefined) {
-      this.ttfb.record(timing.responseHeadersEnd - timing.scheduledTime);
+      this.ttfb.record(timing.responseHeadersEnd - scheduledAt);
     }
     const connectStart = timing.dnsStart ?? timing.connectStart;
     if (connectStart !== null && timing.connectEnd !== null) {
@@ -341,10 +532,26 @@ class LoadRecorder {
     }
   }
 
-  recordFinished(response: HttpResponse, finishedAt: number): void {
+  recordFinished(response: HttpResponse, finishedAt: number, scheduledAt: number): void {
     const headersAt = response.timing.responseHeadersEnd;
     if (headersAt !== undefined) this.download.record(finishedAt - headersAt);
-    this.total.record(finishedAt - response.timing.scheduledTime);
+    this.total.record(finishedAt - scheduledAt);
+  }
+
+  checkBailout(): void {
+    if (this.bailoutReason !== null || this.#bailout === null) return;
+    const failures = this.expectationFailures;
+    const errors = this.counters.timedOut + this.counters.transportFailed;
+    let reason: string | null = null;
+    if (this.#bailout.failures !== undefined && failures >= this.#bailout.failures) {
+      reason = `failure threshold ${this.#bailout.failures} reached`;
+    } else if (this.#bailout.errors !== undefined && errors >= this.#bailout.errors) {
+      reason = `error threshold ${this.#bailout.errors} reached`;
+    }
+    if (reason !== null) {
+      this.bailoutReason = reason;
+      this.#abort(new Error(`fino load: ${reason}`));
+    }
   }
 
   recordError(error: unknown, phaseSignal: AbortSignal): void {
@@ -356,6 +563,7 @@ class LoadRecorder {
     const name =
       this.errors.has(rawName) || this.errors.size < MAX_ERROR_CLASSES ? rawName : 'Other';
     this.increment(this.errors, name);
+    this.checkBailout();
   }
 
   latency(): LoadLatencySummary {
@@ -386,6 +594,9 @@ function phaseSignal(parent: AbortSignal | null, durationMs: number | null): Pha
   return {
     signal: controller.signal,
     deadline,
+    abort(reason?: unknown) {
+      controller.abort(reason);
+    },
     close() {
       if (timer !== null) clearTimeout(timer);
       parent?.removeEventListener('abort', abortFromParent);
@@ -402,58 +613,328 @@ function phaseSignal(parent: AbortSignal | null, durationMs: number | null): Pha
  */
 export async function runClosedLoopPhase(
   options: PhaseOptions,
-  operation: (signal: AbortSignal) => Promise<void>,
+  operation: (
+    signal: AbortSignal,
+    scheduledAt: number,
+    sequence: number,
+    workerId: number,
+  ) => Promise<void>,
 ): Promise<number> {
   let claimed = 0;
-  const worker = async () => {
+  const worker = async (workerId: number) => {
     while (!options.signal.aborted) {
       if (options.deadline !== null && options.now() >= options.deadline) return;
       if (options.requestLimit !== null && claimed >= options.requestLimit) return;
-      claimed++;
-      await operation(options.operationSignal ?? options.signal);
+      const sequence = claimed++;
+      await operation(options.operationSignal ?? options.signal, options.now(), sequence, workerId);
     }
   };
-  await Promise.all(Array.from({ length: options.concurrency }, worker));
+  const workers: Promise<void>[] = [];
+  for (let workerId = 0; workerId < options.concurrency; workerId++) {
+    workers.push(worker(workerId));
+  }
+  await Promise.all(workers);
   return claimed;
+}
+
+interface ArrivalSleeper {
+  sleep(delayMs: number, signal: AbortSignal): Promise<void>;
+  close(): void;
+}
+
+function createArrivalSleeper(): ArrivalSleeper {
+  interface Waiter {
+    deadline: number;
+    signal: AbortSignal;
+    resolve(): void;
+    abort(): void;
+  }
+  const waiters = new Set<Waiter>();
+  const settle = (waiter: Waiter) => {
+    if (!waiters.delete(waiter)) return;
+    waiter.signal.removeEventListener('abort', waiter.abort);
+    waiter.resolve();
+  };
+  const interval = setInterval(() => {
+    const now = performance.now();
+    for (const waiter of waiters) {
+      if (waiter.signal.aborted || now >= waiter.deadline) settle(waiter);
+    }
+  }, 1);
+  return {
+    sleep(delayMs, signal) {
+      if (delayMs <= 0 || signal.aborted) return Promise.resolve();
+      return new Promise((resolve) => {
+        const waiter: Waiter = {
+          deadline: performance.now() + delayMs,
+          signal,
+          resolve,
+          abort() {
+            settle(waiter);
+          },
+        };
+        waiters.add(waiter);
+        signal.addEventListener('abort', waiter.abort, { once: true });
+      });
+    },
+    close() {
+      clearInterval(interval);
+      for (const waiter of [...waiters]) settle(waiter);
+    },
+  };
+}
+
+/**
+ * Schedule bounded open-loop arrivals at intended monotonic timestamps.
+ *
+ * Workers consume a bounded FIFO. `operation` receives the original arrival
+ * time even after queueing so callers include scheduler delay in latency.
+ * Exported only for deterministic scheduler tests.
+ * @internal
+ */
+export async function runArrivalPhase(
+  options: ArrivalPhaseOptions,
+  operation: (
+    signal: AbortSignal,
+    scheduledAt: number,
+    sequence: number,
+    workerId: number,
+  ) => Promise<void>,
+): Promise<number> {
+  interface Arrival {
+    scheduledAt: number;
+    sequence: number;
+  }
+  const queue: Array<Arrival | undefined> = new Array(options.maxQueued);
+  let queueHead = 0;
+  let queueLength = 0;
+  const waiting: Array<(arrival: Arrival | null) => void> = [];
+  let done = false;
+  const take = (): Promise<Arrival | null> => {
+    if (queueLength > 0) {
+      const arrival = queue[queueHead]!;
+      queue[queueHead] = undefined;
+      queueHead = (queueHead + 1) % options.maxQueued;
+      queueLength--;
+      return Promise.resolve(arrival);
+    }
+    if (done) return Promise.resolve(null);
+    return new Promise((resolve) => waiting.push(resolve));
+  };
+  const offer = (arrival: Arrival): boolean => {
+    const resolve = waiting.shift();
+    if (resolve !== undefined) {
+      resolve(arrival);
+      return true;
+    }
+    if (queueLength >= options.maxQueued) return false;
+    queue[(queueHead + queueLength) % options.maxQueued] = arrival;
+    queueLength++;
+    return true;
+  };
+  const workers: Promise<void>[] = [];
+  for (let workerId = 0; workerId < options.concurrency; workerId++) {
+    workers.push(
+      (async () => {
+        for (;;) {
+          const arrival = await take();
+          if (arrival === null) return;
+          await operation(
+            options.operationSignal ?? options.signal,
+            arrival.scheduledAt,
+            arrival.sequence,
+            workerId,
+          );
+        }
+      })(),
+    );
+  }
+  let offered = 0;
+  let scheduledAt = options.now();
+  try {
+    while (!options.signal.aborted) {
+      if (options.requestLimit !== null && offered >= options.requestLimit) break;
+      if (options.deadline !== null && scheduledAt >= options.deadline) break;
+      await options.sleep(Math.max(0, scheduledAt - options.now()), options.signal);
+      if (options.signal.aborted) break;
+      if (options.deadline !== null && options.now() >= options.deadline) break;
+      const sequence = offered++;
+      options.offer();
+      if (!offer({ scheduledAt, sequence })) options.drop();
+      scheduledAt += 1000 / options.rateAt(scheduledAt, sequence);
+    }
+    if (
+      options.requestLimit === null &&
+      options.deadline !== null &&
+      !options.signal.aborted &&
+      options.now() < options.deadline
+    ) {
+      await options.sleep(options.deadline - options.now(), options.signal);
+    }
+    options.finish?.();
+  } finally {
+    if (options.signal.aborted) {
+      while (queueLength > 0) {
+        queue[queueHead] = undefined;
+        queueHead = (queueHead + 1) % options.maxQueued;
+        queueLength--;
+        options.drop();
+      }
+    }
+    done = true;
+    for (const resolve of waiting.splice(0)) resolve(null);
+    await Promise.all(workers);
+  }
+  return offered;
 }
 
 function statusMatches(status: number, expected: ReadonlySet<number> | null): boolean {
   return expected === null ? status >= 200 && status < 400 : expected.has(status);
 }
 
+class LoadRandom {
+  #state: number;
+
+  constructor(seed: number) {
+    this.#state = seed === 0 ? 0x9e3779b9 : seed >>> 0;
+  }
+
+  uint32(): number {
+    let value = this.#state;
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    this.#state = value >>> 0;
+    return this.#state;
+  }
+
+  number(): number {
+    return this.uint32() / 0x100000000;
+  }
+}
+
+function substitute(value: string, sequence: number, random: number): string {
+  return value
+    .replaceAll('{{sequence}}', String(sequence))
+    .replaceAll('{{random}}', String(random));
+}
+
+function targetFor(
+  options: NormalizedLoadOptions,
+  random: LoadRandom,
+  sequence: number,
+): NormalizedTarget {
+  const selection = random.number() * options.totalTargetWeight;
+  let cumulative = 0;
+  let selected = options.targets[options.targets.length - 1]!;
+  for (const target of options.targets) {
+    cumulative += target.weight;
+    if (selection < cumulative) {
+      selected = target;
+      break;
+    }
+  }
+  const randomValue = random.uint32();
+  const headers = new Headers(selected.headers);
+  const substitutedHeaders: string[][] = [];
+  for (const [name, value] of headers) {
+    substitutedHeaders.push([name, substitute(value, sequence, randomValue)]);
+  }
+  return {
+    ...selected,
+    url: substitute(selected.url, sequence, randomValue),
+    headers: substitutedHeaders,
+    body:
+      typeof selected.body === 'string'
+        ? substitute(selected.body, sequence, randomValue)
+        : selected.body,
+  };
+}
+
+function rateAt(
+  rate: LoadRate,
+  durationMs: number | null,
+  requestLimit: number | null,
+  phaseStart: number,
+  scheduledAt: number,
+  sequence: number,
+): number {
+  if (typeof rate === 'number') return rate;
+  const progress =
+    requestLimit !== null
+      ? requestLimit <= 1
+        ? 1
+        : Math.min(1, sequence / (requestLimit - 1))
+      : durationMs === null || durationMs === 0
+        ? 0
+        : Math.min(1, Math.max(0, (scheduledAt - phaseStart) / durationMs));
+  return rate.start + (rate.end - rate.start) * progress;
+}
+
+async function consumeResponse(
+  response: HttpResponse,
+  expected: Uint8Array | null,
+): Promise<{ bytes: number; matched: boolean }> {
+  let bytes = 0;
+  let matched = true;
+  if (response.body !== null) {
+    for await (const chunk of response.body) {
+      if (expected !== null && matched) {
+        for (let index = 0; index < chunk.byteLength; index++) {
+          if (bytes + index >= expected.byteLength || chunk[index] !== expected[bytes + index]) {
+            matched = false;
+          }
+        }
+      }
+      bytes += chunk.byteLength;
+    }
+  }
+  if (expected !== null && bytes !== expected.byteLength) matched = false;
+  return { bytes, matched };
+}
+
 async function performOperation(
   client: HttpClient,
   options: NormalizedLoadOptions,
+  target: NormalizedTarget,
   signal: AbortSignal,
   recorder: LoadRecorder | null,
+  scheduledAt: number,
 ): Promise<void> {
   recorder?.begin();
   let response: HttpResponse | null = null;
   try {
-    response = await client.request(options.url, {
-      method: options.method,
-      headers: options.headers,
-      body: options.body,
+    response = await client.request(target.url, {
+      method: target.method,
+      headers: target.headers,
+      body: target.body,
       signal,
       timeouts: options.timeouts,
       retry: { attempts: options.retryAttempts },
       decompress: options.decompress,
       redirect: options.redirect,
     });
-    recorder?.recordHeaders(response);
-    const bytes = await response.discard(options.responsePolicy);
+    recorder?.recordHeaders(response, scheduledAt);
+    const consumed =
+      options.responsePolicy === 'cancel'
+        ? (await response.discard('cancel'), { bytes: 0, matched: true })
+        : await consumeResponse(response, target.expectedBody);
     if (recorder !== null) {
       recorder.counters.completed++;
-      recorder.counters.responseBytes += bytes;
+      recorder.counters.responseBytes += consumed.bytes;
       if (options.responsePolicy === 'cancel') recorder.counters.headersOnly++;
-      if (statusMatches(response.status, options.expectedStatusSet)) recorder.counters.successful++;
-      else recorder.counters.statusFailed++;
-      recorder.recordFinished(response, response.timing.bodyEnd ?? performance.now());
+      const statusOk = statusMatches(response.status, target.expectedStatusSet);
+      if (!statusOk) recorder.counters.statusFailed++;
+      if (!consumed.matched) recorder.counters.bodyFailed++;
+      if (statusOk && consumed.matched) recorder.counters.successful++;
+      else recorder.expectationFailures++;
+      recorder.recordFinished(response, response.timing.bodyEnd ?? performance.now(), scheduledAt);
+      recorder.checkBailout();
     }
   } catch (error) {
     if (recorder !== null) {
       recorder.recordError(error, signal);
-      if (response !== null) recorder.recordFinished(response, performance.now());
+      if (response !== null) recorder.recordFinished(response, performance.now(), scheduledAt);
     }
   } finally {
     recorder?.end();
@@ -466,30 +947,59 @@ function sortedRecord(map: Map<string, number>): Record<string, number> {
 
 function resultConfig(options: NormalizedLoadOptions): LoadResultConfig {
   const headerNames: string[] = [];
-  for (const [name] of new Headers(options.headers)) {
+  for (const [name] of new Headers(options.targets[0]!.headers)) {
     if (name !== undefined) headerNames.push(name);
   }
   headerNames.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const requestBodyBytes =
-    options.body === undefined
+    options.targets[0]!.body === undefined
       ? 0
-      : typeof options.body === 'string'
-        ? new TextEncoder().encode(options.body).byteLength
-        : options.body.byteLength;
+      : typeof options.targets[0]!.body === 'string'
+        ? new TextEncoder().encode(options.targets[0]!.body).byteLength
+        : options.targets[0]!.body.byteLength;
+  const targets = options.targets.map((target) => {
+    const names: string[] = [];
+    for (const [name] of new Headers(target.headers)) {
+      if (name !== undefined) names.push(name);
+    }
+    names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const bodyBytes =
+      target.body === undefined
+        ? 0
+        : typeof target.body === 'string'
+          ? new TextEncoder().encode(target.body).byteLength
+          : target.body.byteLength;
+    return {
+      url: target.url,
+      weight: target.weight,
+      method: target.method,
+      headerNames: names,
+      requestBodyBytes: bodyBytes,
+      expectedStatus: target.expectedStatus,
+      expectedBody: target.expectedBody !== null,
+    };
+  });
   return {
-    url: options.url.href,
-    method: options.method,
+    url: options.url,
+    targetCount: options.targets.length,
+    targets,
+    method: options.targets[0]!.method,
     headerNames,
     requestBodyBytes,
     protocol: options.protocol,
     connections: options.connections,
     streams: options.streams,
     concurrency: options.concurrency,
+    rate: options.rate,
+    maxQueuedOperations: options.maxQueuedOperations,
+    seed: options.seed,
+    reconnectAfter: options.reconnectAfter,
     durationMs: options.durationMs,
     requests: options.requests,
     warmupMs: options.warmupMs,
     responsePolicy: options.responsePolicy,
     expectedStatus: options.expectedStatus,
+    expectedBody: options.targets.some((target) => target.expectedBody !== null),
     decompress: options.decompress,
     maxBufferedResponseBytes: options.maxBufferedResponseBytes,
     maxPendingRequests: options.maxPendingRequests,
@@ -518,51 +1028,113 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
     decompress: options.decompress,
     ...(options.tls !== undefined ? { tls: options.tls } : {}),
   });
-  try {
-    if (options.warmupMs > 0 && !options.signal?.aborted) {
-      const warmupSchedule = phaseSignal(options.signal, options.warmupMs);
-      const warmupOperations = phaseSignal(options.signal, null);
-      try {
+  const runController = new AbortController();
+  const abortFromParent = () => runController.abort(options.signal?.reason);
+  if (options.signal?.aborted) abortFromParent();
+  else options.signal?.addEventListener('abort', abortFromParent, { once: true });
+  let reconnectGate = Promise.resolve();
+  const maybeReconnect = async (sequence: number): Promise<void> => {
+    if (
+      options.reconnectAfter === null ||
+      sequence === 0 ||
+      sequence % options.reconnectAfter !== 0
+    ) {
+      return;
+    }
+    const pending = reconnectGate.then(() => client.closeIdleSessions());
+    reconnectGate = pending.catch(() => {});
+    await pending;
+  };
+  const runPhase = async (
+    durationMs: number | null,
+    requestLimit: number | null,
+    recorder: LoadRecorder | null,
+    random: LoadRandom,
+    parent: AbortSignal,
+  ): Promise<void> => {
+    const timerOwnsDeadline = options.rate === null || durationMs === null;
+    const phase = phaseSignal(parent, timerOwnsDeadline ? durationMs : null);
+    const operations = durationMs === null ? phase : phaseSignal(parent, null);
+    const start = performance.now();
+    const deadline = phase.deadline ?? (durationMs === null ? null : start + durationMs);
+    const operation = async (signal: AbortSignal, scheduledAt: number, sequence: number) => {
+      await maybeReconnect(sequence);
+      const target = targetFor(options, random, sequence);
+      await performOperation(client, options, target, signal, recorder, scheduledAt);
+    };
+    try {
+      if (options.rate === null) {
         await runClosedLoopPhase(
           {
             concurrency: options.concurrency,
-            requestLimit: null,
-            deadline: warmupSchedule.deadline,
-            signal: warmupSchedule.signal,
-            operationSignal: warmupOperations.signal,
+            requestLimit,
+            deadline,
+            signal: phase.signal,
+            operationSignal: operations.signal,
             now: () => performance.now(),
           },
-          (signal) => performOperation(client, options, signal, null),
+          async (signal, scheduledAt, sequence) => {
+            recorder?.offer();
+            await operation(signal, scheduledAt, sequence);
+          },
         );
-      } finally {
-        warmupSchedule.close();
-        warmupOperations.close();
+      } else {
+        const sleeper = createArrivalSleeper();
+        try {
+          await runArrivalPhase(
+            {
+              concurrency: options.concurrency,
+              maxQueued: options.maxQueuedOperations,
+              requestLimit,
+              deadline,
+              signal: phase.signal,
+              operationSignal: operations.signal,
+              now: () => performance.now(),
+              sleep: sleeper.sleep,
+              rateAt: (scheduledAt, sequence) =>
+                rateAt(options.rate!, durationMs, requestLimit, start, scheduledAt, sequence),
+              offer: () => recorder?.offer(),
+              drop: () => recorder?.drop(),
+            },
+            operation,
+          );
+        } finally {
+          sleeper.close();
+        }
       }
+    } finally {
+      phase.close();
+      if (operations !== phase) operations.close();
+    }
+  };
+  try {
+    if (options.warmupMs > 0 && !runController.signal.aborted) {
+      await runPhase(
+        options.warmupMs,
+        null,
+        null,
+        new LoadRandom(options.seed ^ 0xa5a5a5a5),
+        runController.signal,
+      );
     }
 
-    const recorder = new LoadRecorder(options.connections);
+    const recorder = new LoadRecorder(options.connections, options.bailout, (reason) => {
+      runController.abort(reason);
+    });
     const startedAt = new Date().toISOString();
     const start = performance.now();
-    const measured = phaseSignal(options.signal, options.durationMs);
-    try {
-      await runClosedLoopPhase(
-        {
-          concurrency: options.concurrency,
-          requestLimit: options.requests,
-          deadline: measured.deadline,
-          signal: measured.signal,
-          now: () => performance.now(),
-        },
-        (signal) => performOperation(client, options, signal, recorder),
-      );
-    } finally {
-      measured.close();
-    }
+    await runPhase(
+      options.durationMs,
+      options.requests,
+      recorder,
+      new LoadRandom(options.seed),
+      runController.signal,
+    );
     const durationMs = Math.max(0, performance.now() - start);
     const seconds = durationMs / 1000;
     const counters: LoadCounters = { ...recorder.counters };
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       title: options.title,
       startedAt,
       durationMs,
@@ -580,10 +1152,331 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
         maxActiveOperations: recorder.maxActive,
       },
       latency: recorder.latency(),
+      bailout: recorder.bailoutReason,
     };
   } finally {
+    options.signal?.removeEventListener('abort', abortFromParent);
+    await reconnectGate;
     await client.close();
   }
+}
+
+interface NormalizedScenarioOptions {
+  users: number;
+  durationMs: number | null;
+  sessions: number | null;
+  rate: LoadRate | null;
+  maxQueuedSessions: number;
+  seed: number;
+  maxMetrics: number;
+  maxLogs: number;
+  signal: AbortSignal | null;
+}
+
+function normalizeScenarioOptions(
+  scenario: LoadScenario,
+  overrides: LoadScenarioOptions,
+): NormalizedScenarioOptions {
+  if (typeof scenario !== 'object' || scenario === null || typeof scenario.session !== 'function') {
+    throw new TypeError('fino load: scenario must provide a session() function');
+  }
+  if (!['http', 'sse', 'websocket', 'webtransport', 'quic'].includes(scenario.protocol)) {
+    throw new TypeError('fino load: scenario protocol is not supported');
+  }
+  const input = { ...scenario.options, ...overrides };
+  if (input.durationMs !== undefined && input.sessions !== undefined) {
+    throw new RangeError('fino load: scenario durationMs and sessions are mutually exclusive');
+  }
+  const durationMs =
+    input.sessions === undefined
+      ? finiteNonNegative(input.durationMs ?? DEFAULT_DURATION_MS, 'scenario durationMs')
+      : null;
+  if (durationMs === 0)
+    throw new RangeError('fino load: scenario durationMs must be greater than zero');
+  const sessions =
+    input.sessions === undefined ? null : positiveInteger(input.sessions, 'scenario sessions');
+  const users = positiveInteger(input.users ?? 1, 'scenario users', MAX_CONCURRENCY);
+  const maxQueuedSessions =
+    input.maxQueuedSessions === undefined
+      ? users
+      : nonNegativeInteger(input.maxQueuedSessions, 'scenario maxQueuedSessions');
+  return {
+    users,
+    durationMs,
+    sessions,
+    rate: normalizeRate(input.rate),
+    maxQueuedSessions,
+    seed: normalizedSeed(input.seed),
+    maxMetrics: positiveInteger(
+      input.maxMetrics ?? DEFAULT_MAX_SCENARIO_METRICS,
+      'scenario maxMetrics',
+      MAX_SCENARIO_METRICS,
+    ),
+    maxLogs: nonNegativeInteger(input.maxLogs ?? DEFAULT_MAX_SCENARIO_LOGS, 'scenario maxLogs'),
+    signal: input.signal ?? null,
+  };
+}
+
+class ScenarioRecorder {
+  offered = 0;
+  started = 0;
+  completed = 0;
+  failed = 0;
+  dropped = 0;
+  active = 0;
+  maxActive = 0;
+  bytesSent = 0;
+  bytesReceived = 0;
+  messagesSent = 0;
+  messagesReceived = 0;
+  logsAccepted = 0;
+  logsDropped = 0;
+  readonly errors = new Map<string, number>();
+  readonly metrics = new Map<string, LogHistogram>();
+
+  constructor(
+    readonly maxMetrics: number,
+    readonly maxLogs: number,
+  ) {}
+
+  metric(name: string, value: number): void {
+    if (!/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(name)) {
+      throw new TypeError('fino load: metric names must be 1-64 safe ASCII characters');
+    }
+    finiteNonNegative(value, `metric ${name}`);
+    let metric = this.metrics.get(name);
+    if (metric === undefined) {
+      if (this.metrics.size >= this.maxMetrics) {
+        throw new RangeError(`fino load: scenario metric limit ${this.maxMetrics} reached`);
+      }
+      metric = new LogHistogram();
+      this.metrics.set(name, metric);
+    }
+    metric.record(value);
+  }
+
+  count(direction: 'sent' | 'received', kind: 'bytes' | 'messages', count: number): void {
+    nonNegativeInteger(count, `${kind}.${direction}`);
+    if (kind === 'bytes' && direction === 'sent') this.bytesSent += count;
+    else if (kind === 'bytes') this.bytesReceived += count;
+    else if (direction === 'sent') this.messagesSent += count;
+    else this.messagesReceived += count;
+  }
+
+  log(values: unknown[]): void {
+    if (this.logsAccepted >= this.maxLogs) {
+      this.logsDropped++;
+      return;
+    }
+    this.logsAccepted++;
+    console.log(...values);
+  }
+
+  error(error: unknown): void {
+    this.failed++;
+    const raw = error instanceof Error && error.name !== '' ? error.name : 'Error';
+    const name = this.errors.has(raw) || this.errors.size < MAX_ERROR_CLASSES ? raw : 'Other';
+    this.errors.set(name, (this.errors.get(name) ?? 0) + 1);
+  }
+}
+
+function scenarioMetricResults(
+  metrics: Map<string, LogHistogram>,
+): Readonly<Record<string, LoadScenarioMetricResult>> {
+  return Object.fromEntries(
+    [...metrics.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([name, histogram]) => [
+        name,
+        { ...loadHistogramSnapshot(histogram), total: histogram.total },
+      ]),
+  );
+}
+
+function scenarioRateAt(
+  rate: LoadRate,
+  durationMs: number | null,
+  sessions: number | null,
+  start: number,
+  scheduledAt: number,
+  sequence: number,
+): number {
+  if (typeof rate === 'number') return rate;
+  const progress =
+    sessions !== null
+      ? sessions <= 1
+        ? 1
+        : Math.min(1, sequence / (sessions - 1))
+      : durationMs === null
+        ? 0
+        : Math.min(1, Math.max(0, (scheduledAt - start) / durationMs));
+  return rate.start + (rate.end - rate.start) * progress;
+}
+
+/** Execute a bounded public `LoadScenario`. @internal */
+export async function runLoadScenarioEngine(
+  scenario: LoadScenario,
+  rawOptions: LoadScenarioOptions = {},
+): Promise<LoadScenarioResult> {
+  const options = normalizeScenarioOptions(scenario, rawOptions);
+  const client = new HttpClient();
+  const recorder = new ScenarioRecorder(options.maxMetrics, options.maxLogs);
+  const timedArrival = options.rate !== null && options.durationMs !== null;
+  const phase = phaseSignal(options.signal, timedArrival ? null : options.durationMs);
+  const startedAt = new Date().toISOString();
+  const start = performance.now();
+  const deadline =
+    phase.deadline ?? (options.durationMs === null ? null : start + options.durationMs);
+  const operation = async (
+    signal: AbortSignal,
+    _scheduledAt: number,
+    sequence: number,
+    workerId: number,
+  ) => {
+    recorder.started++;
+    recorder.active++;
+    recorder.maxActive = Math.max(recorder.maxActive, recorder.active);
+    const random = new LoadRandom((options.seed + Math.imul(sequence + 1, 0x9e3779b9)) >>> 0);
+    const responses: HttpResponse[] = [];
+    const eventSources: Array<{ close(): void }> = [];
+    const sockets: Array<{ close(code?: number, reason?: string): Promise<void> }> = [];
+    const transports: Array<{ close(info?: { closeCode?: number; reason?: string }): void }> = [];
+    const quicConnections: Array<{ close(): Promise<void> }> = [];
+    const endpoints: QuicEndpoint[] = [];
+    const controlled: LoadScenarioClient = {
+      async request(input, init = {}) {
+        const response = await client.request(input, { ...init, signal: init.signal ?? signal });
+        responses.push(response);
+        return response;
+      },
+      sse(input, init = {}) {
+        const source = client.sse(input, init);
+        eventSources.push(source);
+        return source;
+      },
+      async websocket(input, init = {}) {
+        const socket = await client.websocket(input, init);
+        sockets.push(socket);
+        return socket;
+      },
+      async webtransport(input, init = {}) {
+        const transport = await client.webtransport(input, init);
+        transports.push(transport);
+        return transport;
+      },
+      async quic(init) {
+        const endpoint = new QuicEndpoint(init.endpoint);
+        endpoints.push(endpoint);
+        const connection = await endpoint.connect(init.connect);
+        quicConnections.push(connection);
+        return connection;
+      },
+    };
+    const context: LoadScenarioContext = {
+      sequence,
+      userId: workerId,
+      signal,
+      random: () => random.number(),
+      metric: (name, value) => recorder.metric(name, value),
+      bytes: (direction, count) => recorder.count(direction, 'bytes', count),
+      messages: (direction, count = 1) => recorder.count(direction, 'messages', count),
+      log: (...values) => recorder.log(values),
+    };
+    try {
+      await scenario.session(controlled, context);
+      recorder.completed++;
+    } catch (error) {
+      recorder.error(error);
+    } finally {
+      try {
+        for (const response of responses) await response.close().catch(() => {});
+        for (const source of eventSources) {
+          try {
+            source.close();
+          } catch {}
+        }
+        for (const socket of sockets) await socket.close().catch(() => {});
+        for (const transport of transports) {
+          try {
+            transport.close();
+          } catch {}
+        }
+        for (const connection of quicConnections) await connection.close().catch(() => {});
+        for (const endpoint of endpoints) await endpoint.close().catch(() => {});
+      } finally {
+        recorder.active--;
+      }
+    }
+  };
+  try {
+    if (options.rate === null) {
+      await runClosedLoopPhase(
+        {
+          concurrency: options.users,
+          requestLimit: options.sessions,
+          deadline,
+          signal: phase.signal,
+          now: () => performance.now(),
+        },
+        async (signal, scheduledAt, sequence, workerId) => {
+          recorder.offered++;
+          await operation(signal, scheduledAt, sequence, workerId);
+        },
+      );
+    } else {
+      const sleeper = createArrivalSleeper();
+      try {
+        await runArrivalPhase(
+          {
+            concurrency: options.users,
+            maxQueued: options.maxQueuedSessions,
+            requestLimit: options.sessions,
+            deadline,
+            signal: phase.signal,
+            now: () => performance.now(),
+            sleep: sleeper.sleep,
+            rateAt: (scheduledAt, sequence) =>
+              scenarioRateAt(
+                options.rate!,
+                options.durationMs,
+                options.sessions,
+                start,
+                scheduledAt,
+                sequence,
+              ),
+            offer: () => recorder.offered++,
+            drop: () => recorder.dropped++,
+            finish: timedArrival
+              ? () => phase.abort(new Error('fino load: scenario measured phase ended'))
+              : undefined,
+          },
+          operation,
+        );
+      } finally {
+        sleeper.close();
+      }
+    }
+  } finally {
+    phase.close();
+    await client.close();
+  }
+  return {
+    schemaVersion: 1,
+    protocol: scenario.protocol,
+    startedAt,
+    durationMs: Math.max(0, performance.now() - start),
+    offered: recorder.offered,
+    started: recorder.started,
+    completed: recorder.completed,
+    failed: recorder.failed,
+    dropped: recorder.dropped,
+    maxActive: recorder.maxActive,
+    bytes: { sent: recorder.bytesSent, received: recorder.bytesReceived },
+    messages: { sent: recorder.messagesSent, received: recorder.messagesReceived },
+    errors: sortedRecord(recorder.errors),
+    metrics: scenarioMetricResults(recorder.metrics),
+    logs: { accepted: recorder.logsAccepted, dropped: recorder.logsDropped },
+  };
 }
 
 function decimal(value: number, digits = 2): string {
@@ -620,7 +1513,7 @@ export function formatLoadResultText(result: LoadResult): string {
   if (result.title !== null) lines.push(result.title);
   lines.push(`fino load ${result.config.method} ${result.config.url}`);
   lines.push(
-    `${result.config.protocol}, ${result.config.connections} connections x ${result.config.streams} streams = ${result.config.concurrency} concurrency, response=${result.config.responsePolicy}`,
+    `${result.config.protocol}, ${result.config.connections} connections x ${result.config.streams} streams = ${result.config.concurrency} concurrency, ${result.config.rate === null ? 'closed-loop' : 'open-loop'}, response=${result.config.responsePolicy}`,
   );
   lines.push(
     `${decimal(result.durationMs / 1000)} s measured, ${decimal(result.requestsPerSecond)} completed req/s, ${bytes(result.bytesPerSecond)}/s`,
@@ -629,7 +1522,7 @@ export function formatLoadResultText(result: LoadResult): string {
     `Requests: offered=${result.counters.offered} started=${result.counters.started} completed=${result.counters.completed} successful=${result.counters.successful}`,
   );
   lines.push(
-    `Failures: status=${result.counters.statusFailed} timeout=${result.counters.timedOut} cancelled=${result.counters.cancelled} transport=${result.counters.transportFailed} dropped=${result.counters.schedulerDropped}`,
+    `Failures: status=${result.counters.statusFailed} body=${result.counters.bodyFailed} timeout=${result.counters.timedOut} cancelled=${result.counters.cancelled} transport=${result.counters.transportFailed} dropped=${result.counters.schedulerDropped}`,
   );
   lines.push(
     `Responses: bytes=${bytes(result.counters.responseBytes)} headers-only=${result.counters.headersOnly}`,
@@ -640,6 +1533,7 @@ export function formatLoadResultText(result: LoadResult): string {
   lines.push(distribution('Status', result.statusCodes));
   lines.push(distribution('Protocols', result.protocols));
   lines.push(distribution('Errors', result.errors));
+  if (result.bailout !== null) lines.push(`Bailout: ${result.bailout}`);
   lines.push('Latency:');
   lines.push(latencyLine('queue', result.latency.queue));
   lines.push(latencyLine('ttfb', result.latency.ttfb));
@@ -647,5 +1541,22 @@ export function formatLoadResultText(result: LoadResult): string {
   lines.push(latencyLine('total', result.latency.total));
   if (result.latency.connect.count > 0) lines.push(latencyLine('connect', result.latency.connect));
   if (result.latency.tls.count > 0) lines.push(latencyLine('tls', result.latency.tls));
+  return lines.join('\n') + '\n';
+}
+
+/** Render a scripted scenario result as stable plain text. @internal */
+export function formatLoadScenarioResultText(result: LoadScenarioResult): string {
+  const seconds = result.durationMs / 1000;
+  const lines = [
+    `fino load scenario (${result.protocol})`,
+    `${decimal(seconds)} s measured, ${decimal(seconds === 0 ? 0 : result.completed / seconds)} completed sessions/s`,
+    `Sessions: offered=${result.offered} started=${result.started} completed=${result.completed} failed=${result.failed} dropped=${result.dropped} max-active=${result.maxActive}`,
+    `Traffic: sent=${bytes(result.bytes.sent)} received=${bytes(result.bytes.received)} messages-sent=${result.messages.sent} messages-received=${result.messages.received}`,
+    distribution('Errors', result.errors),
+    `Logs: accepted=${result.logs.accepted} dropped=${result.logs.dropped}`,
+  ];
+  for (const [name, metric] of Object.entries(result.metrics)) {
+    lines.push(latencyLine(name, metric));
+  }
   return lines.join('\n') + '\n';
 }

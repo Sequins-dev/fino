@@ -1,5 +1,5 @@
 /**
- * fino:load — bounded closed-loop HTTP load generation.
+ * fino:load — bounded HTTP and scripted protocol load generation.
  *
  * Runs repeatable HTTP/1.1, HTTP/2, or HTTP/3 workloads through
  * `fino:net/http/client`. The runner separates physical connections from
@@ -17,16 +17,25 @@
  * always record the selected policy and never compare the two as equivalent
  * workloads.
  *
- * ## Scheduling and limits
+ * ## Scheduling and workloads
  *
- * Phase 1 uses closed-loop scheduling: each worker starts its next request
- * only after the previous response policy completes. HTTP/1.1 has one worker
- * per connection; HTTP/2 and HTTP/3 use `connections * streams` workers.
- * Exactly one of a measured duration or request count can be selected. The
- * defaults are 10 seconds, 10 connections, one stream per connection, a
- * 30-second per-request total timeout, and a 1 MiB unread response bound.
- * Automatic/open-loop rate scheduling and scripted long-lived protocols are
- * intentionally outside this first API.
+ * Without `rate`, scheduling is closed-loop: each worker starts its next
+ * request after the previous response policy completes. Supplying `rate`
+ * switches to a bounded open-loop scheduler. Arrivals retain their intended
+ * timestamp while queued, so latency includes scheduler delay rather than
+ * hiding coordinated omission. Excess arrivals are counted as dropped.
+ *
+ * `targets` adds weighted request variants. `{{sequence}}` and `{{random}}`
+ * placeholders are substituted deterministically from `seed` in URLs, string
+ * bodies, and header values. Exactly one measured duration or operation count
+ * can be selected. Defaults remain 10 seconds, 10 connections, one stream per
+ * connection, a 30-second request timeout, and a 1 MiB unread-response bound.
+ *
+ * Stateful workloads use `runLoadScenario()`. Each virtual user receives a
+ * controlled client that opens HTTP, SSE, WebSocket, WebTransport, and raw
+ * QUIC resources through Fino's public protocol clients. The context provides
+ * deterministic random data, cancellation, bounded custom histograms, and
+ * byte/message counters; scenarios define their own framing and success rules.
  *
  * Latencies use monotonic `performance.now()` timestamps and fixed-size
  * logarithmic histograms. Response byte counts are decoded application bytes
@@ -52,9 +61,32 @@
  * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
  * - Fetch bodies: https://fetch.spec.whatwg.org/#concept-body
+ * - Server-sent events: https://html.spec.whatwg.org/multipage/server-sent-events.html
+ * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
+ * - WebTransport: https://www.w3.org/TR/webtransport/
+ * - QUIC: https://www.rfc-editor.org/rfc/rfc9000
  */
-import type { HttpClientTimeouts, HttpHeadersInit, HttpRequestInit } from './net/http/client.ts';
-import { formatLoadResultText, runLoadEngine } from './internal/load.ts';
+import type {
+  HttpClientTimeouts,
+  HttpHeadersInit,
+  HttpRequestInit,
+  HttpResponse,
+} from './net/http/client.ts';
+import type { EventSource } from './globals/eventsource.ts';
+import type {
+  SseOptions,
+  HttpWebSocketOptions,
+  HttpWebTransportOptions,
+} from './net/http/client.ts';
+import type { WebSocketConnection } from './net/http/websocket.ts';
+import type { WebTransport } from './net/http/webtransport.ts';
+import type { QuicConnection, QuicEndpoint, QuicConnectOptions } from './net/quic/index.ts';
+import {
+  formatLoadResultText,
+  formatLoadScenarioResultText,
+  runLoadEngine,
+  runLoadScenarioEngine,
+} from './internal/load.ts';
 
 /** HTTP version pinned for every operation in one load run. */
 export type LoadProtocol = 'http/1.1' | 'h2' | 'h3';
@@ -64,6 +96,42 @@ export type LoadResponsePolicy = 'consume' | 'cancel';
 
 /** Static, replayable request bodies accepted by the load runner. */
 export type LoadBody = string | Uint8Array | ArrayBuffer;
+
+/** A constant rate or a linear start-to-end arrival-rate ramp, in operations per second. */
+export type LoadRate = number | { readonly start: number; readonly end: number };
+
+/**
+ * One weighted HTTP request variant.
+ *
+ * Fields omitted here inherit the corresponding top-level `LoadOptions`
+ * value. `weight` defaults to `1`. Status and body expectations are evaluated
+ * after the response has streamed; `expectedBody` is matched incrementally and
+ * never causes the received body to be retained.
+ */
+export interface LoadTarget {
+  /** Absolute HTTP(S) URL, including deterministic placeholders. */
+  readonly url: string | URL;
+  /** Relative selection weight. Defaults to `1`. */
+  readonly weight?: number;
+  /** HTTP method overriding the run default. */
+  readonly method?: string;
+  /** Headers replacing the run defaults for this target. */
+  readonly headers?: HttpHeadersInit;
+  /** Replayable body replacing the run default for this target. */
+  readonly body?: LoadBody;
+  /** Acceptable status code or codes for this target. */
+  readonly expectedStatus?: number | readonly number[];
+  /** Exact streaming body expectation for this target. */
+  readonly expectedBody?: string | Uint8Array;
+}
+
+/** Failure thresholds that stop a run early after the threshold is reached. */
+export interface LoadBailoutOptions {
+  /** Maximum status/body expectation failures before stopping. */
+  readonly failures?: number;
+  /** Maximum timeout or transport failures before stopping. */
+  readonly errors?: number;
+}
 
 /** TLS identity and verification options applied to every connection. */
 export interface LoadTlsOptions {
@@ -78,17 +146,20 @@ export interface LoadTlsOptions {
 }
 
 /**
- * Configuration for `runLoad()`.
+ * HTTP configuration for `runLoad()`.
  *
- * `url` is required. When neither `durationMs` nor `requests` is supplied, the
- * measured phase lasts 10 seconds. Supplying both throws. HTTP/1.1 requires
+ * Supply exactly one `url` or a non-empty `targets` list. When neither
+ * `durationMs` nor `requests` is supplied, the measured phase lasts 10 seconds.
+ * Supplying both throws. HTTP/1.1 requires
  * `streams: 1`; stream concurrency greater than one is meaningful only for
  * multiplexed HTTP/2 and HTTP/3 connections. H2 and H3 require `https:` URLs;
  * the current client does not offer h2c load generation.
  */
 export interface LoadOptions {
-  /** Absolute HTTP(S) target URL. */
-  url: string | URL;
+  /** Absolute HTTP(S) target URL. Required when `targets` is omitted. */
+  url?: string | URL;
+  /** Weighted request variants. Mutually exclusive with `url`. */
+  targets?: readonly LoadTarget[];
   /** HTTP version to require. Defaults to `'http/1.1'`. */
   protocol?: LoadProtocol;
   /** Request method. Defaults to `GET`. */
@@ -107,10 +178,22 @@ export interface LoadOptions {
   requests?: number;
   /** Unmeasured warmup duration using the same client and connections. Defaults to `0`. */
   warmupMs?: number;
+  /** Fixed or linearly ramped offered rate in operations per second. Omit for closed-loop. */
+  rate?: LoadRate;
+  /** Maximum open-loop arrivals waiting for a worker. Defaults to the concurrency. */
+  maxQueuedOperations?: number;
+  /** Seed for weighted selection and deterministic placeholders. Defaults to `1`. */
+  seed?: number;
+  /** Recreate pooled sessions after this many started operations. */
+  reconnectAfter?: number;
   /** Response release policy. Defaults to `'consume'`. */
   responsePolicy?: LoadResponsePolicy;
   /** Status code or codes considered successful. Defaults to the 200-399 range. */
   expectedStatus?: number | readonly number[];
+  /** Exact response body expected from every target, matched while streaming. */
+  expectedBody?: string | Uint8Array;
+  /** Optional failure thresholds that abort the measured phase early. */
+  bailout?: LoadBailoutOptions;
   /** Request deadline policy. Total timeout defaults to 30 seconds. */
   timeouts?: HttpClientTimeouts;
   /** Maximum requests queued inside `HttpClient`. Defaults to the worker count. */
@@ -175,7 +258,7 @@ export interface LoadLatencySummary {
 
 /** Outcome counters for the measured phase. */
 export interface LoadCounters {
-  /** Operations offered to the closed-loop scheduler. */
+  /** Operations offered to the scheduler. */
   readonly offered: number;
   /** Operations whose request attempt started. */
   readonly started: number;
@@ -191,8 +274,10 @@ export interface LoadCounters {
   readonly cancelled: number;
   /** Operations rejected by DNS, connection, protocol, or body transport errors. */
   readonly transportFailed: number;
-  /** Arrivals dropped before starting; always zero for the Phase 1 closed-loop scheduler. */
+  /** Open-loop arrivals dropped before starting because the scheduler queue was full. */
   readonly schedulerDropped: number;
+  /** Completed responses whose body did not match the exact streaming expectation. */
+  readonly bodyFailed: number;
   /** Responses deliberately stopped after final headers under `cancel` policy. */
   readonly headersOnly: number;
   /** Body bytes streamed and dropped under `consume` policy. */
@@ -209,10 +294,32 @@ export interface LoadResultTlsConfig {
   readonly clientCertificate: boolean;
 }
 
+/** Sanitized effective configuration for one weighted target variant. */
+export interface LoadResultTargetConfig {
+  /** URL template, including deterministic placeholders when configured. */
+  readonly url: string;
+  /** Relative selection weight. */
+  readonly weight: number;
+  /** Uppercase HTTP method. */
+  readonly method: string;
+  /** Header names without values. */
+  readonly headerNames: readonly string[];
+  /** Replayable request body size before string substitution. */
+  readonly requestBodyBytes: number;
+  /** Explicit acceptable statuses, or `null` for the 200-399 default. */
+  readonly expectedStatus: readonly number[] | null;
+  /** Whether this target has an exact streaming body expectation. */
+  readonly expectedBody: boolean;
+}
+
 /** Effective, normalized configuration recorded with a load result. */
 export interface LoadResultConfig {
   /** Absolute target URL. */
   readonly url: string;
+  /** Number of weighted target variants. */
+  readonly targetCount: number;
+  /** Sanitized weighted target definitions in selection order. */
+  readonly targets: readonly LoadResultTargetConfig[];
   /** Uppercase request method. */
   readonly method: string;
   /** Request header names, without potentially secret values. */
@@ -225,8 +332,16 @@ export interface LoadResultConfig {
   readonly connections: number;
   /** Streams per connection; always `1` for HTTP/1.1. */
   readonly streams: number;
-  /** Total closed-loop worker count. */
+  /** Total operation worker count. */
   readonly concurrency: number;
+  /** Arrival-rate policy, or `null` for closed-loop scheduling. */
+  readonly rate: LoadRate | null;
+  /** Maximum open-loop scheduler queue depth. */
+  readonly maxQueuedOperations: number;
+  /** Deterministic workload seed. */
+  readonly seed: number;
+  /** Started-operation reconnect cadence, or `null` when disabled. */
+  readonly reconnectAfter: number | null;
   /** Requested measured duration, or `null` for an exact request-count run. */
   readonly durationMs: number | null;
   /** Requested operation count, or `null` for a duration run. */
@@ -237,6 +352,8 @@ export interface LoadResultConfig {
   readonly responsePolicy: LoadResponsePolicy;
   /** Explicit acceptable status codes, or `null` for the 200-399 default. */
   readonly expectedStatus: readonly number[] | null;
+  /** Whether an exact streaming body expectation was configured. */
+  readonly expectedBody: boolean;
   /** Whether response content was transparently decoded. */
   readonly decompress: boolean;
   /** Maximum unread response bytes per multiplexed stream. */
@@ -267,8 +384,8 @@ export interface LoadConnectionSummary {
 
 /** Versioned, JSON-safe output returned by `runLoad()`. */
 export interface LoadResult {
-  /** Result schema version. Currently `1`. */
-  readonly schemaVersion: 1;
+  /** Result schema version. Currently `2`. */
+  readonly schemaVersion: 2;
   /** Optional user-supplied run title. */
   readonly title: string | null;
   /** Wall-clock ISO timestamp at the beginning of measurement. */
@@ -293,10 +410,124 @@ export interface LoadResult {
   readonly connections: LoadConnectionSummary;
   /** Bounded latency distributions in milliseconds. */
   readonly latency: LoadLatencySummary;
+  /** Reason a bailout threshold stopped the run, or `null`. */
+  readonly bailout: string | null;
+}
+
+/** Protocol selected by a scripted load scenario. */
+export type LoadScenarioProtocol = 'http' | 'sse' | 'websocket' | 'webtransport' | 'quic';
+
+/** Options controlling bounded virtual-user scenario execution. */
+export interface LoadScenarioOptions {
+  /** Number of concurrent scenario sessions. Defaults to `1`. */
+  readonly users?: number;
+  /** Measured duration in milliseconds. Mutually exclusive with `sessions`. */
+  readonly durationMs?: number;
+  /** Exact scenario-session count. Mutually exclusive with `durationMs`. */
+  readonly sessions?: number;
+  /** Optional fixed or ramped session arrival rate. */
+  readonly rate?: LoadRate;
+  /** Maximum scheduled sessions waiting for a virtual user. Defaults to `users`. */
+  readonly maxQueuedSessions?: number;
+  /** Deterministic random seed. Defaults to `1`. */
+  readonly seed?: number;
+  /** Maximum distinct custom metric names. Defaults to `64`. */
+  readonly maxMetrics?: number;
+  /** Maximum total log calls retained as counters. Defaults to `1000`. */
+  readonly maxLogs?: number;
+  /** Signal that stops scheduling and notifies active scenario hooks. */
+  readonly signal?: AbortSignal;
+}
+
+/** A custom scenario metric snapshot. Values are scenario-defined. */
+export interface LoadScenarioMetricResult extends LoadHistogramSnapshot {
+  /** Sum of all observations. */
+  readonly total: number;
+}
+
+/** Versioned result from `runLoadScenario()`. */
+export interface LoadScenarioResult {
+  /** Scenario result schema version. */
+  readonly schemaVersion: 1;
+  /** Declared scenario protocol. */
+  readonly protocol: LoadScenarioProtocol;
+  /** Wall-clock ISO timestamp at the start of measurement. */
+  readonly startedAt: string;
+  /** Measured elapsed time. */
+  readonly durationMs: number;
+  /** Sessions offered to the scheduler. */
+  readonly offered: number;
+  /** Sessions that began executing. */
+  readonly started: number;
+  /** Sessions that completed without throwing. */
+  readonly completed: number;
+  /** Sessions that threw or were rejected. */
+  readonly failed: number;
+  /** Open-loop sessions dropped from a full scheduler queue. */
+  readonly dropped: number;
+  /** Highest concurrently active session count. */
+  readonly maxActive: number;
+  /** Application bytes reported by scenario helpers. */
+  readonly bytes: { readonly sent: number; readonly received: number };
+  /** Application messages reported by scenario helpers. */
+  readonly messages: { readonly sent: number; readonly received: number };
+  /** Bounded error-name distribution. */
+  readonly errors: Readonly<Record<string, number>>;
+  /** Bounded custom histogram snapshots. */
+  readonly metrics: Readonly<Record<string, LoadScenarioMetricResult>>;
+  /** Number of scenario log calls accepted and dropped by the safety limit. */
+  readonly logs: { readonly accepted: number; readonly dropped: number };
+}
+
+/** Controlled protocol constructors supplied to a scenario session. */
+export interface LoadScenarioClient {
+  /** Send one streaming HTTP request. The scenario owns response disposal. */
+  request(input: string | URL, init?: HttpRequestInit): Promise<HttpResponse>;
+  /** Open an auto-reconnecting SSE stream. */
+  sse(input: string | URL, options?: SseOptions): EventSource;
+  /** Open an HTTP/1.1 WebSocket and wait for `OPEN`. */
+  websocket(input: string | URL, options?: HttpWebSocketOptions): Promise<WebSocketConnection>;
+  /** Open an HTTP/3 WebTransport session and wait for `ready`. */
+  webtransport(input: string | URL, options?: HttpWebTransportOptions): Promise<WebTransport>;
+  /** Open a raw QUIC connection owned by this scenario session. */
+  quic(options: {
+    readonly endpoint?: ConstructorParameters<typeof QuicEndpoint>[0];
+    readonly connect: QuicConnectOptions;
+  }): Promise<QuicConnection>;
+}
+
+/** Per-session deterministic state and bounded metric surface. */
+export interface LoadScenarioContext {
+  /** Zero-based session sequence assigned before asynchronous execution. */
+  readonly sequence: number;
+  /** Stable virtual-user index. */
+  readonly userId: number;
+  /** Signal canceled when the measured phase or parent run ends. */
+  readonly signal: AbortSignal;
+  /** Deterministic pseudo-random value in `[0, 1)`. */
+  random(): number;
+  /** Record a finite non-negative custom metric observation. */
+  metric(name: string, value: number): void;
+  /** Add application byte counts to the result. */
+  bytes(direction: 'sent' | 'received', count: number): void;
+  /** Add application message counts to the result. */
+  messages(direction: 'sent' | 'received', count?: number): void;
+  /** Emit a bounded diagnostic log entry. Excess calls are counted and dropped. */
+  log(...values: unknown[]): void;
+}
+
+/** Scripted stateful workload executed once per scheduled scenario session. */
+export interface LoadScenario {
+  /** Transport family used by the scenario. */
+  readonly protocol: LoadScenarioProtocol;
+  /** Optional default scheduler configuration, overridden by `runLoadScenario()` options. */
+  readonly options?: LoadScenarioOptions;
+  /** Execute one bounded virtual-user session. */
+  session(client: LoadScenarioClient, context: LoadScenarioContext): void | Promise<void>;
 }
 
 /**
- * Run one bounded closed-loop HTTP load test.
+ * Run one bounded closed-loop or open-loop HTTP load test.
  *
  * The promise resolves after warmup, measurement, active-request settlement,
  * and client shutdown. Configuration errors throw before network work begins.
@@ -308,7 +539,28 @@ export function runLoad(options: LoadOptions): Promise<LoadResult> {
   return runLoadEngine(options);
 }
 
+/**
+ * Run a scripted stateful workload through bounded Fino protocol clients.
+ *
+ * Scenario modules define application framing and success. The runner owns and
+ * closes every resource created through `client`, records thrown exceptions,
+ * and caps scheduler queues, custom metric names, and log volume. A scenario
+ * must still close or finish protocol-level streams it creates before its
+ * `session()` hook resolves.
+ */
+export function runLoadScenario(
+  scenario: LoadScenario,
+  options: LoadScenarioOptions = {},
+): Promise<LoadScenarioResult> {
+  return runLoadScenarioEngine(scenario, options);
+}
+
 /** Render a stable human-readable summary for a completed load result. */
 export function formatLoadResult(result: LoadResult): string {
   return formatLoadResultText(result);
+}
+
+/** Render a stable human-readable summary for a scripted scenario result. */
+export function formatLoadScenarioResult(result: LoadScenarioResult): string {
+  return formatLoadScenarioResultText(result);
 }
