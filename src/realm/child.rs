@@ -332,10 +332,6 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             unsafe { crate::profiler::dispose_profiler(ptr) };
         }
 
-        if let Err(error) = crate::coverage::finish_realm(scope, "complete") {
-            eprintln!("[coverage] unable to finish child Realm coverage: {error}");
-        }
-
         if let Some(ptr) = state_rc.borrow_mut().inspector_state.take() {
             unsafe { crate::inspector_module::dispose_inspector(ptr) };
         }

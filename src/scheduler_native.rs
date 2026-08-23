@@ -638,7 +638,8 @@ fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, St
         }
     }
 
-    if let Some(on_done) = workload.state.borrow().on_done_fn.clone() {
+    let on_done = workload.state.borrow().on_done_fn.clone();
+    if let Some(on_done) = on_done {
         let tc = &mut v8::TryCatch::new(tc);
         v8::Local::new(tc, &on_done)
             .call(tc, receiver, &[])
@@ -687,19 +688,6 @@ fn drop_workload(mut workload: Workload) {
         }
     }
     drop(workload);
-}
-
-fn finish_workload_coverage(workload: &mut Workload, status: &str) {
-    if workload.state.borrow().coverage_realm_id.is_none() {
-        return;
-    }
-    let context_global = workload.context.clone();
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
-    let context = v8::Local::new(isolate_scope, &context_global);
-    let scope = &mut v8::ContextScope::new(isolate_scope, context);
-    if let Err(error) = crate::coverage::finish_realm(scope, status) {
-        eprintln!("[coverage] unable to finish Realm coverage: {error}");
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1181,11 +1169,6 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
             ScheduledRealmResult::Error(error) => Some(error.clone()),
             _ => None,
         };
-        let coverage_status = match &result {
-            ScheduledRealmResult::Done | ScheduledRealmResult::Reload => "complete",
-            ScheduledRealmResult::Error(_) => "crashed",
-        };
-        finish_workload_coverage(&mut resident.item.workload.0, coverage_status);
         if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
             scheduled.complete(result);
         }

@@ -200,20 +200,23 @@ Isolate uses the existing per-Realm inspector session to send:
 3. `Profiler.startPreciseCoverage` with `detailed: true`, `callCount: true`, and
    triggered updates disabled.
 4. `Profiler.takePreciseCoverage` during Realm finalization.
-5. `Profiler.stopPreciseCoverage` and `Profiler.disable`.
+5. `Profiler.stopPreciseCoverage`, `Profiler.disable`, and `Debugger.disable`.
 
 `detailed: true` requests block-level rather than function-only ranges.
 `callCount: true` retains useful hit counts in the artifact even though the
 primary coverage decision is whether a coverpoint ran at least once.
 
 The coverage protocol payload contains generated script URLs, functions, and
-end-exclusive character-offset ranges. The collector also retains
-`Debugger.scriptParsed` metadata keyed by script id and obtains the generated
-source text using `Debugger.getScriptSource`. Coverage traffic uses the
-inspector state's monotonic message ids and removes its own responses from the
-shared response buffer. Fino does not create a second inspector for the same
-Isolate. Coverage is currently a test-only mode, so simultaneous interactive
-REPL coverage is outside this release's scope.
+end-exclusive character-offset ranges. The collector obtains generated source
+text using `Debugger.getScriptSource` keyed by the coverage result's script id.
+
+All coverage-specific CDP behavior lives in `js/internal/coverage.ts`. It uses
+the generic synthetic `internal:inspector` transport (`dispatch`, `onMessage`,
+and `nextId`) and submits the completed JSON snapshot through the narrow
+`internal:coverage/bindings` synthetic module. Rust contains no Profiler or
+Debugger method names or parameter policy. Fino does not create a second
+inspector for the same Isolate. Coverage is currently a test-only mode, so
+simultaneous interactive REPL coverage is outside this release's scope.
 
 ### When collection starts and stops
 
@@ -221,8 +224,7 @@ The test command enables the run before it imports any test modules. Existing
 CLI bootstrap modules have already executed by then, but they are runtime code
 and excluded from application totals. Any Realm created while the run is active
 inherits the coverage-run configuration and starts its Isolate-local collector
-after its V8 context is registered but before its bootstrap or user entry module
-is evaluated.
+from the shared TypeScript bootstrap before its user entry module is evaluated.
 
 Finalization cannot live solely at the end of `js/commands/test.ts`. The
 scheduler bootstrap currently runs shutdown hooks after the selected command
@@ -232,10 +234,11 @@ the scheduler bootstrap's final error rethrow. This ordering captures shutdown
 work, lets child Realms submit their final shards, and still preserves the
 original command error.
 
-Each Isolate submits one raw shard before it is disposed. The coordinator waits
-for every Realm registered in the coverage run to either submit or reach a
-known terminal state. A force-terminated or crashed Realm is marked incomplete;
-the coordinator must not wait forever for a shard which cannot arrive.
+Each Isolate submits one normalized shard before it is disposed. The
+coordinator waits for every Realm registered in the coverage run to either
+submit or reach a known terminal state. A force-terminated or crashed Realm is
+marked incomplete; the coordinator must not wait forever for a shard which
+cannot arrive.
 
 ### Process-wide coordinator
 
@@ -244,19 +247,17 @@ run on reactor workers, dedicated threads, or child processes. A run-scoped
 coordinator owns:
 
 - the resolved artifact path and run root;
-- the next Realm id and Realm descriptor registry;
+- per-process Realm id allocation and Realm descriptors;
 - expected, received, and incomplete Realm shards;
 - canonicalization, source-map remapping, aggregation, and artifact writing;
 - the final summary returned to the scheduler bootstrap.
 
-In-process Realms can submit through a shared Rust coordinator or channel.
-Process Realms cannot share memory, so their coverage configuration and assigned
-Realm id must be included in the child launch configuration. On clean exit they
-send a serialized shard through the existing parent bridge or a dedicated
-framed control message. The parent process owns the only final artifact writer.
-A run-specific temporary shard directory is an acceptable fallback if extending
-the control protocol proves substantially more complex, but individual Realms
-must never race to overwrite the final JSON path.
+Every Realm receives the run configuration through native creation plumbing.
+It atomically replaces a placeholder in a run-specific temporary shard
+directory when its TypeScript collector submits the final snapshot. This works
+for in-process and process Realms without adding coverage messages to the user
+Realm protocol. The owning test process is the only final artifact writer, so
+individual Realms never race to overwrite the canonical JSON path.
 
 ### Realm identity
 
@@ -517,8 +518,8 @@ is proposed until those baseline measurements exist.
   snapshot, and verify range/count semantics against known source.
 - Capture `scriptParsed`, retrieve generated source, and confirm UTF-16 offset
   behavior with non-BMP characters.
-- Confirm a private coverage session can coexist with the REPL inspector
-  session.
+- Confirm the TypeScript coverage client can share the generic per-Realm
+  inspector transport without exposing coverage policy from Rust.
 
 This spike should be kept small enough to discard if V8 139 exposes an
 unexpected protocol limitation.
@@ -611,6 +612,7 @@ modules remain in the denominator; explicit include/exclude policy is deferred.
 - [Chrome DevTools Protocol: Debugger.scriptParsed](https://chromedevtools.github.io/devtools-protocol/tot/Debugger/#event-scriptParsed)
 - [ECMA-426 source map format](https://tc39.es/ecma426/)
 - [c8](https://github.com/bcoe/c8)
+- [Fino TypeScript coverage protocol client](../js/internal/coverage.ts)
 - [Current Fino inspector integration](../src/inspector_module.rs)
 - [Current Fino source-map registration](../src/loader.rs)
 - [Current test command](../js/commands/test.ts)

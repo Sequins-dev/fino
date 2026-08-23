@@ -85,6 +85,7 @@ import {
   getRealmBootstrapData,
 } from 'internal:realm-bridge';
 import { runShutdownHooks } from 'internal:shutdown';
+import { finishRealmCoverage, startRealmCoverage } from 'internal:coverage';
 import {
   setTimeout,
   clearTimeout,
@@ -435,6 +436,7 @@ const _childPort: RealmPort | undefined =
 // add their own message listeners (e.g. for port-transfer fixtures).
 (globalThis as Record<string, unknown>).realmPort = _childPort;
 if (_childEntry) {
+  startRealmCoverage();
   let _childDone = false;
   let _entryFailed = false;
   // Set when the parent sends { __terminate: true } via the port.  Used in
@@ -656,7 +658,9 @@ if (_childEntry) {
       }
       return done;
     },
-    function _childOnDone() {},
+    function _childOnDone() {
+      finishRealmCoverage();
+    },
   );
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop

@@ -350,7 +350,6 @@ fn start_realm(
             warnings: vec!["Realm did not submit a final coverage snapshot".to_string()],
         },
     )?;
-    crate::inspector_module::start_precise_coverage(scope)?;
     let state = get_state(scope);
     let mut state = state.borrow_mut();
     state.coverage_realm_id = Some(id.clone());
@@ -359,8 +358,8 @@ fn start_realm(
     Ok(id)
 }
 
-/// Finish the current Realm and replace its placeholder shard.
-pub(crate) fn finish_realm(scope: &mut v8::HandleScope, _status: &str) -> Result<(), String> {
+/// Normalize a TypeScript-collected V8 snapshot and replace this Realm's placeholder shard.
+fn submit_realm_snapshot(scope: &mut v8::HandleScope, snapshot: &Value) -> Result<(), String> {
     let (id, parent_id, kind, entry) = {
         let state = get_state(scope);
         let mut state = state.borrow_mut();
@@ -380,19 +379,11 @@ pub(crate) fn finish_realm(scope: &mut v8::HandleScope, _status: &str) -> Result
     let Some(config) = run_config() else {
         return Ok(());
     };
-    let snapshot = crate::inspector_module::take_precise_coverage(scope);
-    let (files, warnings, final_status) = match snapshot {
-        Ok(snapshot) => match normalize_snapshot(scope, &config, &snapshot) {
-            Ok((files, warnings)) => (files, warnings, "complete".to_string()),
-            Err(error) => (
-                Vec::new(),
-                vec![format!("unable to normalize coverage: {error}")],
-                "missing".to_string(),
-            ),
-        },
+    let (files, warnings, final_status) = match normalize_snapshot(scope, &config, snapshot) {
+        Ok((files, warnings)) => (files, warnings, "complete".to_string()),
         Err(error) => (
             Vec::new(),
-            vec![format!("unable to take V8 coverage: {error}")],
+            vec![format!("unable to normalize coverage: {error}")],
             "missing".to_string(),
         ),
     };
@@ -416,14 +407,13 @@ pub(crate) fn finish_realm(scope: &mut v8::HandleScope, _status: &str) -> Result
 }
 
 /// Finish the owning test Realm and write the aggregate artifact.
-pub(crate) fn finish_run(scope: &mut v8::HandleScope) -> Result<Option<CoverageSummary>, String> {
+pub(crate) fn finish_run(_scope: &mut v8::HandleScope) -> Result<Option<CoverageSummary>, String> {
     let Some(config) = run_config() else {
         return Ok(None);
     };
     if config.owner_pid != std::process::id() {
         return Ok(None);
     }
-    finish_realm(scope, "complete")?;
     let result = (|| {
         wait_for_final_shards(&config)?;
         let artifact = aggregate_shards(&config)?;
@@ -1180,15 +1170,20 @@ fn write_artifact(path: &Path, artifact: &CoverageArtifact) -> Result<(), String
 }
 
 // ---------------------------------------------------------------------------
-// internal:coverage synthetic module
+// internal:coverage/bindings synthetic module
 // ---------------------------------------------------------------------------
 
 pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
-    let export_names = ["startCoverage", "finishCoverage", "coverageActive"]
-        .iter()
-        .map(|name| v8::String::new(scope, name).unwrap())
-        .collect::<Vec<_>>();
-    let name = v8::String::new(scope, "internal:coverage").unwrap();
+    let export_names = [
+        "startCoverageRun",
+        "submitRealmCoverage",
+        "finishCoverageRun",
+        "coverageActive",
+    ]
+    .iter()
+    .map(|name| v8::String::new(scope, name).unwrap())
+    .collect::<Vec<_>>();
+    let name = v8::String::new(scope, "internal:coverage/bindings").unwrap();
     v8::Module::create_synthetic_module(scope, name, &export_names, coverage_eval)
 }
 
@@ -1205,13 +1200,14 @@ fn coverage_eval<'a>(
             module.set_synthetic_module_export(scope, key, function.into())?;
         }};
     }
-    set_fn!("startCoverage", start_coverage_cb);
-    set_fn!("finishCoverage", finish_coverage_cb);
+    set_fn!("startCoverageRun", start_coverage_run_cb);
+    set_fn!("submitRealmCoverage", submit_realm_coverage_cb);
+    set_fn!("finishCoverageRun", finish_coverage_run_cb);
     set_fn!("coverageActive", coverage_active_cb);
     Some(v8::undefined(scope).into())
 }
 
-fn start_coverage_cb(
+fn start_coverage_run_cb(
     scope: &mut v8::HandleScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
@@ -1231,7 +1227,32 @@ fn start_coverage_cb(
     }
 }
 
-fn finish_coverage_cb(
+fn submit_realm_coverage_cb(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let Some(snapshot) = args
+        .get(0)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope))
+    else {
+        throw_error(scope, "coverage snapshot must be JSON text");
+        return;
+    };
+    let snapshot: Value = match serde_json::from_str(&snapshot) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            throw_error(scope, &format!("invalid coverage snapshot: {error}"));
+            return;
+        }
+    };
+    if let Err(error) = submit_realm_snapshot(scope, &snapshot) {
+        throw_error(scope, &error);
+    }
+}
+
+fn finish_coverage_run_cb(
     scope: &mut v8::HandleScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
@@ -1255,7 +1276,8 @@ fn coverage_active_cb(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    rv.set(v8::Boolean::new(scope, run_config().is_some()).into());
+    let active = get_state(scope).borrow().coverage_realm_id.is_some();
+    rv.set(v8::Boolean::new(scope, active).into());
 }
 
 fn throw_error(scope: &mut v8::HandleScope, error: &str) {

@@ -113,7 +113,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(inspector_module::create_module),
     ),
     (
-        "internal:coverage",
+        "internal:coverage/bindings",
         BuiltinKind::Synthetic(coverage::create_module),
     ),
     (
@@ -179,6 +179,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:package_manager", "internal/package_manager"),
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
     source_builtin!("internal:commands/repl", "commands/repl"),
+    source_builtin!("internal:coverage", "internal/coverage"),
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "globals/encoding"),
     source_builtin!("internal:globals/console", "globals/console"),

@@ -1,8 +1,9 @@
 //! `internal:inspector` — generic V8 inspector binding.
 //!
 //! Exposes the Chrome DevTools Protocol over a per-realm inspector session.
-//! The REPL is the primary consumer; future debugger/profiler features share
-//! the same session via the raw `dispatch` / `onMessage` interface.
+//! The REPL and TypeScript coverage client share the same session through the
+//! raw `dispatch` / `onMessage` interface. Protocol-specific policy stays in
+//! the TypeScript consumers.
 //!
 //! JS exports:
 //! - `dispatch(json: string): void` — send a CDP message to the session.
@@ -14,7 +15,6 @@
 //!   resolves/rejects the returned Promise when the inspector sends the result.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr::addr_of;
 use std::rc::Rc;
@@ -250,119 +250,6 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     let raw = Box::into_raw(insp) as *mut c_void;
     state_rc.borrow_mut().inspector_state = Some(raw);
     raw as *mut InspectorState
-}
-
-/// Dispatch one internal inspector request and return its `result` object.
-///
-/// V8's in-process inspector answers the profiler and debugger requests used by
-/// coverage synchronously. Notifications emitted by the request remain in the
-/// ordinary inspector buffer, while the matching response is removed before a
-/// user-facing `onMessage` handler can observe it.
-fn dispatch_internal(
-    insp: &mut InspectorState,
-    method: &str,
-    params: serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    let id = insp.next_id.get();
-    insp.next_id.set(id + 1);
-    let message = serde_json::json!({
-        "id": id,
-        "method": method,
-        "params": params,
-    });
-    let encoded = serde_json::to_string(&message).map_err(|error| error.to_string())?;
-    let Some(session) = insp.session.as_mut() else {
-        return Err("V8 inspector session is unavailable".to_string());
-    };
-    session.dispatch_protocol_message(StringView::from(encoded.as_bytes()));
-
-    let mut messages = insp.channel.buffered_messages.borrow_mut();
-    let response_index = messages.iter().position(|message| {
-        serde_json::from_str::<serde_json::Value>(message)
-            .ok()
-            .and_then(|value| value.get("id").and_then(serde_json::Value::as_i64))
-            == Some(i64::from(id))
-    });
-    let Some(response_index) = response_index else {
-        return Err(format!("V8 inspector did not answer {method}"));
-    };
-    let response = messages.remove(response_index);
-    drop(messages);
-    let response: serde_json::Value =
-        serde_json::from_str(&response).map_err(|error| error.to_string())?;
-    if let Some(error) = response.get("error") {
-        return Err(format!("{method}: {error}"));
-    }
-    Ok(response
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null))
-}
-
-/// Enable V8 precise block coverage for the current Isolate.
-pub(crate) fn start_precise_coverage(scope: &mut v8::HandleScope) -> Result<(), String> {
-    let insp = unsafe { &mut *get_or_init_inspector(scope) };
-    dispatch_internal(insp, "Debugger.enable", serde_json::json!({}))?;
-    dispatch_internal(insp, "Profiler.enable", serde_json::json!({}))?;
-    dispatch_internal(
-        insp,
-        "Profiler.startPreciseCoverage",
-        serde_json::json!({
-            "callCount": true,
-            "detailed": true,
-            "allowTriggeredUpdates": false,
-        }),
-    )?;
-    Ok(())
-}
-
-/// Take the current Isolate's precise coverage and attach generated source text.
-///
-/// The returned object has the Chrome DevTools Protocol
-/// `Profiler.takePreciseCoverage` shape with an additional `sources` object
-/// keyed by script id. Source text is needed to interpret V8's UTF-16 offsets.
-pub(crate) fn take_precise_coverage(
-    scope: &mut v8::HandleScope,
-) -> Result<serde_json::Value, String> {
-    let insp = unsafe { &mut *get_or_init_inspector(scope) };
-    let mut result =
-        dispatch_internal(insp, "Profiler.takePreciseCoverage", serde_json::json!({}))?;
-    let script_ids = result
-        .get("result")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|script| {
-            let url = script.get("url")?.as_str()?;
-            if !url.starts_with("file://") {
-                return None;
-            }
-            script.get("scriptId")?.as_str().map(str::to_string)
-        })
-        .collect::<Vec<_>>();
-    let mut sources = HashMap::new();
-    for script_id in script_ids {
-        let source_result = dispatch_internal(
-            insp,
-            "Debugger.getScriptSource",
-            serde_json::json!({ "scriptId": script_id }),
-        )?;
-        if let Some(source) = source_result
-            .get("scriptSource")
-            .and_then(serde_json::Value::as_str)
-        {
-            sources.insert(script_id, source.to_string());
-        }
-    }
-    if let Some(object) = result.as_object_mut() {
-        object.insert(
-            "sources".to_string(),
-            serde_json::to_value(sources).map_err(|error| error.to_string())?,
-        );
-    }
-    let _ = dispatch_internal(insp, "Profiler.stopPreciseCoverage", serde_json::json!({}));
-    let _ = dispatch_internal(insp, "Profiler.disable", serde_json::json!({}));
-    Ok(result)
 }
 
 // ---------------------------------------------------------------------------
