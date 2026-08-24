@@ -8,8 +8,15 @@ compiler="${1:-}"
 case "$compiler" in
   *clang | *clang++ )
     resource_dir="$($compiler -print-resource-dir)"
-    ln -sfn "$resource_dir/include" \
-      "${CARGO_MANIFEST_DIR}/fino-clang-include"
+    builtin_headers="$resource_dir/include"
+    include_link="${CARGO_MANIFEST_DIR}/fino-clang-include"
+    # Ninja starts many compiler wrappers concurrently. macOS ln can report
+    # EEXIST when another wrapper creates this link between its lookup and
+    # replacement; accept that race only when the winner installed our target.
+    if ! ln -sfn "$builtin_headers" "$include_link"; then
+      [ "$(readlink "$include_link" 2>/dev/null || true)" = \
+        "$builtin_headers" ] || exit 1
+    fi
     ;;
 esac
 
