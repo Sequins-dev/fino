@@ -101,8 +101,10 @@ prove any of these local invariants.
 ### L3. Measure and tune pool sizing
 
 Keep this separate from L1. The current pool starts a configured number of
-threads based on online processors. The alternative from #27 starts small and
-grows with submitted work. Neither policy should be selected from intuition.
+threads based on online processors. The #27 history explored starting small and
+growing with submitted work, then ended with a fixed parallelism-minus-one
+default to reserve capacity for the main loop. Neither policy should be
+selected from intuition.
 
 Measure at least:
 
