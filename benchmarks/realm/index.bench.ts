@@ -10,8 +10,11 @@ import {
   ImportMap,
   SystemDnsConfig,
   SystemNetConfig,
+  Realm,
 } from 'fino:realm';
 import { bench } from 'fino:bench';
+import { cwd } from 'fino:process';
+const echoEntry = `file://${cwd()}/tests/realm/fixtures/echo-fn.ts`;
 bench('realm import rules', (b) => {
   b.measure('ImportMap.inherit', () =>
     ImportMap.inherit([
@@ -52,5 +55,17 @@ bench('realm facades and providers', (b) => {
     new DiskFsConfig({ root: '/tmp' });
     new SystemNetConfig();
     new SystemDnsConfig();
+  });
+});
+bench('realm scheduler', (b) => {
+  b.measure('construct and call 16 realms concurrently', async () => {
+    const realms = Array.from(
+      { length: 16 },
+      () =>
+        new Realm<(value: number) => number>({
+          entry: echoEntry,
+        }),
+    );
+    await Promise.all(realms.map((realm, index) => realm.call(index)));
   });
 });

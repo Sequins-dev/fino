@@ -83,6 +83,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
     let label = config.timing_label;
     let total_start = timing_enabled().then(Instant::now);
+    let force_requested = config.force_requested.clone();
 
     let mut params = v8::CreateParams::default();
     params = params.heap_limits(0, 1 << 30);
@@ -95,12 +96,11 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     {
         *slot = Some(isolate.thread_safe_handle());
     }
-    if config
-        .force_requested
+    if force_requested
         .as_ref()
         .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Acquire))
     {
-        isolate.terminate_execution();
+        return Err("sandbox Realm was force-terminated during initialization".to_string());
     }
     if let Some(t) = t {
         eprintln!(
@@ -240,6 +240,17 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 t.elapsed()
             );
         }
+    }
+
+    // V8 termination requested while bootstrap modules are compiling or
+    // evaluating can be consumed by an internal TryCatch. Recheck the durable
+    // parent-side flag before entering user work so an early force request
+    // cannot leave the child running after initialization.
+    if force_requested
+        .as_ref()
+        .is_some_and(|requested| requested.load(std::sync::atomic::Ordering::Acquire))
+    {
+        return Err("sandbox Realm was force-terminated during initialization".to_string());
     }
 
     // -----------------------------------------------------------------------

@@ -153,13 +153,22 @@ pub fn new_state() -> IsolateAsyncState {
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
+    new_state_with_pipe(fds[0], fds[1])
+}
+
+/// Build a detached async state around an existing wake pipe.
+///
+/// Deferred workload initialization creates the pipe before the isolate so the
+/// process loop can watch it immediately. Ownership of both descriptors moves
+/// to the returned state.
+pub fn new_state_with_pipe(wake_read: RawFd, wake_write: RawFd) -> IsolateAsyncState {
     IsolateAsyncState {
         executor: async_executor::LocalExecutor::new(),
         completions: Arc::new(Mutex::new(Vec::new())),
         js_call_requests: Arc::new(Mutex::new(Vec::new())),
         view_releases: Arc::new(Mutex::new(Vec::new())),
-        wake_read: fds[0],
-        wake_write: fds[1],
+        wake_read,
+        wake_write,
         resolver_table: Vec::new(),
         callback_table: Vec::new(),
     }
