@@ -25,9 +25,10 @@ offering `auto`: explicit selection preserves the requested workload and fails
 when a peer cannot speak it. Safe automatic negotiation needs `HttpClient` to
 adapt per-slot capacity after ALPN so an H1 fallback is never scheduled like a
 multiplexed connection. Phase 2 now adds bounded fixed-rate and linear-ramp
-scheduling, intended-arrival latency, weighted requests, deterministic
-substitution, reconnect cadence, streaming body expectations, bailouts, and the
-TypeScript scenario API. Phase 3 is available through controlled scenario
+scheduling, intended-arrival latency, reconnect cadence, streaming body
+expectations, bailouts, and the TypeScript scenario API. Multi-target and
+generated-data workloads deliberately belong in scenarios rather than the
+maximum-throughput HTTP path. Phase 3 is available through controlled scenario
 clients for SSE, WebSocket, WebTransport, and raw QUIC, with application framing
 and success criteria kept inside the script. Cross-realm worker sharding remains
 deferred until profiling shows the generator reactor is the bottleneck.
@@ -48,8 +49,8 @@ deferred until profiling shows the generator reactor is the bottleneck.
 - Keep measurement in a protocol-neutral core and put wire behavior behind
   adapters. Protocol-specific metrics remain available alongside the common
   summary.
-- Make warmup, duration, timeouts, TLS identity, protocol selection, and random
-  seeds explicit in machine-readable output so runs can be reproduced.
+- Make warmup, duration, timeouts, TLS identity, and protocol selection
+  explicit in machine-readable output so runs can be reproduced.
 - Prefer bounded queues and incremental histograms over per-request result
   retention. The generator must be able to sustain more load than the target.
 
@@ -86,7 +87,7 @@ Initial options:
 
 | Concern | Proposed options | Notes |
 | --- | --- | --- |
-| Target | URL positional, repeatable `--target`, `--method`, `--header`, `--body`, `--body-file` | `--target` accepts `URL` or `WEIGHT:URL`; TypeScript scenarios cover richer variants. |
+| Target | URL positional, `--method`, `--header`, `--body`, `--body-file` | Static mode repeats one request; TypeScript scenarios cover multiple or varying requests. |
 | Protocol | `--protocol h1\|h2\|h3` | Explicit modes fail instead of silently falling back. Safe `auto` remains future work. |
 | Load | `--connections`, `--streams` | `--streams` applies to multiplexed protocols; HTTP/1.1 pipelining is not currently exposed. |
 | Stop condition | `--duration` or `--requests` | Mutually exclusive measured-run boundaries. |
@@ -94,7 +95,7 @@ Initial options:
 | Lifecycle | `--warmup`, `--timeout`, `--connect-timeout`, `--reconnect-after` | Warmup data is excluded but warm connections may carry into the measured phase. |
 | Response | `--response consume\|cancel`, `--expect-status`, `--expect-body` | `consume` streams and black-holes chunks. `cancel` stops after final headers and is labeled headers-only. Body matching is incremental. |
 | TLS | `--ca`, `--cert`, `--key`, `--insecure` | Output records non-secret TLS policy without leaking key material. |
-| Output | `--json`, `--quiet`, `--title`, `--seed` | JSON gets a versioned schema suitable for run-to-run comparison. |
+| Output | `--json`, `--quiet`, `--title` | JSON gets a versioned schema suitable for run-to-run comparison. |
 
 `--response consume` should be the default. It measures final response
 completion, maintains HTTP/1.1 connection framing, increments a byte counter
@@ -129,8 +130,7 @@ text reporter / versioned JSON
 ```
 
 1. **Workload scheduler** — owns warmup and measurement phases, closed-loop
-   concurrency, open-loop arrival times, request selection, deterministic
-   randomization, deadlines, and graceful shutdown.
+   concurrency, open-loop arrival times, deadlines, and graceful shutdown.
 2. **Connection workers** — own connection lifecycle and protocol concurrency.
    Start with several workers in one realm; add process or realm sharding after
    profiling proves the generator is CPU-bound.
@@ -209,8 +209,8 @@ export default {
 } satisfies LoadScenario;
 ```
 
-Hooks should receive controlled clients, deterministic random data, timers,
-metrics, logging, and cancellation. They should not receive engine internals.
+Hooks should receive controlled clients, timers, metrics, logging, and
+cancellation. They should not receive engine internals.
 The runner should cap queued events, per-session state, custom metric names,
 and log volume. Scenario exceptions fail the virtual user and appear by error
 class in the result.
@@ -272,9 +272,10 @@ errors, and close-code distribution. Never combine 0-RTT and 1-RTT results.
 ### Phase 2: controlled arrival and richer workloads — complete except sharding
 
 - Fixed-rate scheduling, coordinated-omission-safe timestamps, linear ramps,
-  weighted requests, deterministic data substitution, reconnect cadence,
-  streaming body expectations, bailouts, and the TypeScript scenario API are
-  implemented.
+  reconnect cadence, streaming body expectations, bailouts, and the TypeScript
+  scenario API are implemented.
+- Static HTTP intentionally has one fixed target and no random-data generation;
+  multi-target or varying workloads compose those primitives in a scenario.
 - Worker sharding is explicitly deferred pending self-profiling. When added, it
   must preserve total connection/rate semantics and merge raw histogram buckets
   rather than average worker percentiles.

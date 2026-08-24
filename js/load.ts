@@ -25,17 +25,17 @@
  * timestamp while queued, so latency includes scheduler delay rather than
  * hiding coordinated omission. Excess arrivals are counted as dropped.
  *
- * `targets` adds weighted request variants. `{{sequence}}` and `{{random}}`
- * placeholders are substituted deterministically from `seed` in URLs, string
- * bodies, and header values. Exactly one measured duration or operation count
- * can be selected. Defaults remain 10 seconds, 10 connections, one stream per
- * connection, a 30-second request timeout, and a 1 MiB unread-response bound.
+ * Each HTTP run uses one static request so the saturation path does no workload
+ * selection or data generation. Exactly one measured duration or operation
+ * count can be selected. Defaults remain 10 seconds, 10 connections, one
+ * stream per connection, a 30-second request timeout, and a 1 MiB unread-response
+ * bound. Use a scripted scenario when request behavior must vary over time.
  *
  * Stateful workloads use `runLoadScenario()`. Each virtual user receives a
  * controlled client that opens HTTP, SSE, WebSocket, WebTransport, and raw
  * QUIC resources through Fino's public protocol clients. The context provides
- * deterministic random data, cancellation, bounded custom histograms, and
- * byte/message counters; scenarios define their own framing and success rules.
+ * cancellation, bounded custom histograms, and byte/message counters;
+ * scenarios define their own inputs, framing, and success rules.
  *
  * Latencies use monotonic `performance.now()` timestamps and fixed-size
  * logarithmic histograms. Response byte counts are decoded application bytes
@@ -100,31 +100,6 @@ export type LoadBody = string | Uint8Array | ArrayBuffer;
 /** A constant rate or a linear start-to-end arrival-rate ramp, in operations per second. */
 export type LoadRate = number | { readonly start: number; readonly end: number };
 
-/**
- * One weighted HTTP request variant.
- *
- * Fields omitted here inherit the corresponding top-level `LoadOptions`
- * value. `weight` defaults to `1`. Status and body expectations are evaluated
- * after the response has streamed; `expectedBody` is matched incrementally and
- * never causes the received body to be retained.
- */
-export interface LoadTarget {
-  /** Absolute HTTP(S) URL, including deterministic placeholders. */
-  readonly url: string | URL;
-  /** Relative selection weight. Defaults to `1`. */
-  readonly weight?: number;
-  /** HTTP method overriding the run default. */
-  readonly method?: string;
-  /** Headers replacing the run defaults for this target. */
-  readonly headers?: HttpHeadersInit;
-  /** Replayable body replacing the run default for this target. */
-  readonly body?: LoadBody;
-  /** Acceptable status code or codes for this target. */
-  readonly expectedStatus?: number | readonly number[];
-  /** Exact streaming body expectation for this target. */
-  readonly expectedBody?: string | Uint8Array;
-}
-
 /** Failure thresholds that stop a run early after the threshold is reached. */
 export interface LoadBailoutOptions {
   /** Maximum status/body expectation failures before stopping. */
@@ -148,18 +123,15 @@ export interface LoadTlsOptions {
 /**
  * HTTP configuration for `runLoad()`.
  *
- * Supply exactly one `url` or a non-empty `targets` list. When neither
- * `durationMs` nor `requests` is supplied, the measured phase lasts 10 seconds.
- * Supplying both throws. HTTP/1.1 requires
+ * When neither `durationMs` nor `requests` is supplied, the measured phase
+ * lasts 10 seconds. Supplying both throws. HTTP/1.1 requires
  * `streams: 1`; stream concurrency greater than one is meaningful only for
  * multiplexed HTTP/2 and HTTP/3 connections. H2 and H3 require `https:` URLs;
  * the current client does not offer h2c load generation.
  */
 export interface LoadOptions {
-  /** Absolute HTTP(S) target URL. Required when `targets` is omitted. */
-  url?: string | URL;
-  /** Weighted request variants. Mutually exclusive with `url`. */
-  targets?: readonly LoadTarget[];
+  /** Absolute HTTP(S) target URL. */
+  url: string | URL;
   /** HTTP version to require. Defaults to `'http/1.1'`. */
   protocol?: LoadProtocol;
   /** Request method. Defaults to `GET`. */
@@ -182,15 +154,13 @@ export interface LoadOptions {
   rate?: LoadRate;
   /** Maximum open-loop arrivals waiting for a worker. Defaults to the concurrency. */
   maxQueuedOperations?: number;
-  /** Seed for weighted selection and deterministic placeholders. Defaults to `1`. */
-  seed?: number;
   /** Recreate pooled sessions after this many started operations. */
   reconnectAfter?: number;
   /** Response release policy. Defaults to `'consume'`. */
   responsePolicy?: LoadResponsePolicy;
   /** Status code or codes considered successful. Defaults to the 200-399 range. */
   expectedStatus?: number | readonly number[];
-  /** Exact response body expected from every target, matched while streaming. */
+  /** Exact response body expected, matched while streaming. */
   expectedBody?: string | Uint8Array;
   /** Optional failure thresholds that abort the measured phase early. */
   bailout?: LoadBailoutOptions;
@@ -294,32 +264,10 @@ export interface LoadResultTlsConfig {
   readonly clientCertificate: boolean;
 }
 
-/** Sanitized effective configuration for one weighted target variant. */
-export interface LoadResultTargetConfig {
-  /** URL template, including deterministic placeholders when configured. */
-  readonly url: string;
-  /** Relative selection weight. */
-  readonly weight: number;
-  /** Uppercase HTTP method. */
-  readonly method: string;
-  /** Header names without values. */
-  readonly headerNames: readonly string[];
-  /** Replayable request body size before string substitution. */
-  readonly requestBodyBytes: number;
-  /** Explicit acceptable statuses, or `null` for the 200-399 default. */
-  readonly expectedStatus: readonly number[] | null;
-  /** Whether this target has an exact streaming body expectation. */
-  readonly expectedBody: boolean;
-}
-
 /** Effective, normalized configuration recorded with a load result. */
 export interface LoadResultConfig {
   /** Absolute target URL. */
   readonly url: string;
-  /** Number of weighted target variants. */
-  readonly targetCount: number;
-  /** Sanitized weighted target definitions in selection order. */
-  readonly targets: readonly LoadResultTargetConfig[];
   /** Uppercase request method. */
   readonly method: string;
   /** Request header names, without potentially secret values. */
@@ -338,8 +286,6 @@ export interface LoadResultConfig {
   readonly rate: LoadRate | null;
   /** Maximum open-loop scheduler queue depth. */
   readonly maxQueuedOperations: number;
-  /** Deterministic workload seed. */
-  readonly seed: number;
   /** Started-operation reconnect cadence, or `null` when disabled. */
   readonly reconnectAfter: number | null;
   /** Requested measured duration, or `null` for an exact request-count run. */
@@ -429,8 +375,6 @@ export interface LoadScenarioOptions {
   readonly rate?: LoadRate;
   /** Maximum scheduled sessions waiting for a virtual user. Defaults to `users`. */
   readonly maxQueuedSessions?: number;
-  /** Deterministic random seed. Defaults to `1`. */
-  readonly seed?: number;
   /** Maximum distinct custom metric names. Defaults to `64`. */
   readonly maxMetrics?: number;
   /** Maximum total log calls retained as counters. Defaults to `1000`. */
@@ -504,8 +448,6 @@ export interface LoadScenarioContext {
   readonly userId: number;
   /** Signal canceled when the measured phase or parent run ends. */
   readonly signal: AbortSignal;
-  /** Deterministic pseudo-random value in `[0, 1)`. */
-  random(): number;
   /** Record a finite non-negative custom metric observation. */
   metric(name: string, value: number): void;
   /** Add application byte counts to the result. */

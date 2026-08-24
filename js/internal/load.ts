@@ -35,7 +35,6 @@ import type {
   LoadScenarioMetricResult,
   LoadScenarioOptions,
   LoadScenarioResult,
-  LoadTarget,
 } from '../load.ts';
 
 const DEFAULT_DURATION_MS = 10_000;
@@ -47,27 +46,13 @@ const MAX_CONNECTIONS = 10_000;
 const MAX_STREAMS = 10_000;
 const MAX_CONCURRENCY = 100_000;
 const MAX_ERROR_CLASSES = 32;
-const DEFAULT_SEED = 1;
 const MAX_EXPECTED_BODY_BYTES = 1024 * 1024;
 const DEFAULT_MAX_SCENARIO_METRICS = 64;
 const MAX_SCENARIO_METRICS = 1024;
 const DEFAULT_MAX_SCENARIO_LOGS = 1000;
 
-interface NormalizedTarget {
-  url: string;
-  method: string;
-  headers: LoadOptions['headers'];
-  body: LoadOptions['body'];
-  weight: number;
-  expectedStatus: readonly number[] | null;
-  expectedStatusSet: ReadonlySet<number> | null;
-  expectedBody: Uint8Array | null;
-}
-
 interface NormalizedLoadOptions {
-  url: string;
-  targets: readonly NormalizedTarget[];
-  totalTargetWeight: number;
+  url: URL;
   method: string;
   headers: LoadOptions['headers'];
   body: LoadOptions['body'];
@@ -80,11 +65,11 @@ interface NormalizedLoadOptions {
   warmupMs: number;
   rate: LoadRate | null;
   maxQueuedOperations: number;
-  seed: number;
   reconnectAfter: number | null;
   responsePolicy: LoadResponsePolicy;
   expectedStatus: readonly number[] | null;
   expectedStatusSet: ReadonlySet<number> | null;
+  expectedBody: Uint8Array | null;
   timeouts: NonNullable<LoadOptions['timeouts']>;
   maxPendingRequests: number;
   maxBufferedResponseBytes: number;
@@ -202,64 +187,6 @@ function normalizeRate(input: LoadRate | undefined): LoadRate | null {
   return { start, end };
 }
 
-function normalizedSeed(input: number | undefined): number {
-  const seed = input ?? DEFAULT_SEED;
-  if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) {
-    throw new RangeError('fino load: seed must be an integer from 0 to 4294967295');
-  }
-  return seed >>> 0;
-}
-
-function normalizeTarget(
-  target: LoadTarget,
-  defaults: {
-    method: string;
-    headers: LoadOptions['headers'];
-    body: LoadOptions['body'];
-    expectedStatus: LoadOptions['expectedStatus'];
-    expectedBody: LoadOptions['expectedBody'];
-  },
-): NormalizedTarget {
-  const template = target.url instanceof URL ? target.url.href : String(target.url);
-  const url = new URL(substitute(template, 0, 0));
-  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-    throw new TypeError('fino load: every target URL must use http: or https:');
-  }
-  if (url.username !== '' || url.password !== '') {
-    throw new TypeError('fino load: target URLs must not contain credentials');
-  }
-  const method = String(target.method ?? defaults.method).toUpperCase();
-  const body = target.body ?? defaults.body;
-  if (
-    body !== undefined &&
-    typeof body !== 'string' &&
-    !(body instanceof Uint8Array) &&
-    !(body instanceof ArrayBuffer)
-  ) {
-    throw new TypeError(
-      'fino load: target body must be a replayable string, Uint8Array, or ArrayBuffer',
-    );
-  }
-  if (body !== undefined && (method === 'GET' || method === 'HEAD')) {
-    throw new TypeError(`fino load: ${method} requests cannot have a body`);
-  }
-  const expected = normalizeExpectedStatus(target.expectedStatus ?? defaults.expectedStatus);
-  const weight = target.weight ?? 1;
-  if (!Number.isFinite(weight) || weight <= 0) {
-    throw new RangeError('fino load: target weight must be a finite positive number');
-  }
-  return {
-    url: template,
-    method,
-    headers: target.headers ?? defaults.headers,
-    body,
-    weight,
-    expectedStatus: expected.values,
-    expectedStatusSet: expected.set,
-    expectedBody: normalizeExpectedBody(target.expectedBody ?? defaults.expectedBody),
-  };
-}
-
 function normalizeTimeouts(input: LoadOptions['timeouts']): NonNullable<LoadOptions['timeouts']> {
   const timeouts: NonNullable<LoadOptions['timeouts']> = {
     total: input?.total ?? DEFAULT_TIMEOUT_MS,
@@ -274,18 +201,19 @@ function normalizeTimeouts(input: LoadOptions['timeouts']): NonNullable<LoadOpti
 }
 
 function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
-  if (options.url !== undefined && options.targets !== undefined) {
-    throw new RangeError('fino load: url and targets are mutually exclusive');
+  const url = options.url instanceof URL ? new URL(options.url.href) : new URL(String(options.url));
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new TypeError('fino load: url must use http: or https:');
   }
-  if (
-    options.url === undefined &&
-    (options.targets === undefined || options.targets.length === 0)
-  ) {
-    throw new TypeError('fino load: url or at least one target is required');
+  if (url.username !== '' || url.password !== '') {
+    throw new TypeError('fino load: url must not contain credentials');
   }
   const protocol = options.protocol ?? 'http/1.1';
   if (protocol !== 'http/1.1' && protocol !== 'h2' && protocol !== 'h3') {
     throw new TypeError('fino load: protocol must be http/1.1, h2, or h3');
+  }
+  if ((protocol === 'h2' || protocol === 'h3') && url.protocol !== 'https:') {
+    throw new TypeError(`fino load: ${protocol.toUpperCase()} requires an https: URL`);
   }
   const method = String(options.method ?? 'GET').toUpperCase();
   if (
@@ -296,26 +224,8 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
   ) {
     throw new TypeError('fino load: body must be a replayable string, Uint8Array, or ArrayBuffer');
   }
-  const sourceTargets: readonly LoadTarget[] = options.targets ?? [
-    { url: options.url!, weight: 1 },
-  ];
-  const targets = sourceTargets.map((target) =>
-    normalizeTarget(target, {
-      method,
-      headers: options.headers,
-      body: options.body,
-      expectedStatus: options.expectedStatus,
-      expectedBody: options.expectedBody,
-    }),
-  );
-  const firstUrl = targets[0]!.url;
-  for (const target of targets) {
-    const targetUrl = new URL(substitute(target.url, 0, 0));
-    if ((protocol === 'h2' || protocol === 'h3') && targetUrl.protocol !== 'https:') {
-      throw new TypeError(
-        `fino load: ${protocol.toUpperCase()} requires an https: URL for every target`,
-      );
-    }
+  if (options.body !== undefined && (method === 'GET' || method === 'HEAD')) {
+    throw new TypeError(`fino load: ${method} requests cannot have a body`);
   }
   const connections = positiveInteger(
     options.connections ?? DEFAULT_CONNECTIONS,
@@ -344,6 +254,7 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
       : positiveInteger(options.requests, 'requests', Number.MAX_SAFE_INTEGER);
   const warmupMs = finiteNonNegative(options.warmupMs ?? 0, 'warmupMs');
   const expected = normalizeExpectedStatus(options.expectedStatus);
+  const expectedBody = normalizeExpectedBody(options.expectedBody);
   const rate = normalizeRate(options.rate);
   const maxQueuedOperations =
     options.maxQueuedOperations === undefined
@@ -366,7 +277,7 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
   if (responsePolicy !== 'consume' && responsePolicy !== 'cancel') {
     throw new TypeError('fino load: responsePolicy must be consume or cancel');
   }
-  if (responsePolicy === 'cancel' && targets.some((target) => target.expectedBody !== null)) {
+  if (responsePolicy === 'cancel' && expectedBody !== null) {
     throw new RangeError('fino load: expectedBody requires responsePolicy consume');
   }
   const bailout = options.bailout ?? null;
@@ -380,9 +291,7 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
     throw new TypeError('fino load: redirect must be follow, error, or manual');
   }
   return {
-    url: firstUrl,
-    targets,
-    totalTargetWeight: targets.reduce((sum, target) => sum + target.weight, 0),
+    url,
     method,
     headers: options.headers,
     body: options.body,
@@ -395,11 +304,11 @@ function normalizeOptions(options: LoadOptions): NormalizedLoadOptions {
     warmupMs,
     rate,
     maxQueuedOperations,
-    seed: normalizedSeed(options.seed),
     reconnectAfter,
     responsePolicy,
     expectedStatus: expected.values,
     expectedStatusSet: expected.set,
+    expectedBody,
     timeouts: normalizeTimeouts(options.timeouts),
     maxPendingRequests,
     maxBufferedResponseBytes,
@@ -792,65 +701,6 @@ function statusMatches(status: number, expected: ReadonlySet<number> | null): bo
   return expected === null ? status >= 200 && status < 400 : expected.has(status);
 }
 
-class LoadRandom {
-  #state: number;
-
-  constructor(seed: number) {
-    this.#state = seed === 0 ? 0x9e3779b9 : seed >>> 0;
-  }
-
-  uint32(): number {
-    let value = this.#state;
-    value ^= value << 13;
-    value ^= value >>> 17;
-    value ^= value << 5;
-    this.#state = value >>> 0;
-    return this.#state;
-  }
-
-  number(): number {
-    return this.uint32() / 0x100000000;
-  }
-}
-
-function substitute(value: string, sequence: number, random: number): string {
-  return value
-    .replaceAll('{{sequence}}', String(sequence))
-    .replaceAll('{{random}}', String(random));
-}
-
-function targetFor(
-  options: NormalizedLoadOptions,
-  random: LoadRandom,
-  sequence: number,
-): NormalizedTarget {
-  const selection = random.number() * options.totalTargetWeight;
-  let cumulative = 0;
-  let selected = options.targets[options.targets.length - 1]!;
-  for (const target of options.targets) {
-    cumulative += target.weight;
-    if (selection < cumulative) {
-      selected = target;
-      break;
-    }
-  }
-  const randomValue = random.uint32();
-  const headers = new Headers(selected.headers);
-  const substitutedHeaders: string[][] = [];
-  for (const [name, value] of headers) {
-    substitutedHeaders.push([name, substitute(value, sequence, randomValue)]);
-  }
-  return {
-    ...selected,
-    url: substitute(selected.url, sequence, randomValue),
-    headers: substitutedHeaders,
-    body:
-      typeof selected.body === 'string'
-        ? substitute(selected.body, sequence, randomValue)
-        : selected.body,
-  };
-}
-
 function rateAt(
   rate: LoadRate,
   durationMs: number | null,
@@ -896,7 +746,6 @@ async function consumeResponse(
 async function performOperation(
   client: HttpClient,
   options: NormalizedLoadOptions,
-  target: NormalizedTarget,
   signal: AbortSignal,
   recorder: LoadRecorder | null,
   scheduledAt: number,
@@ -904,10 +753,10 @@ async function performOperation(
   recorder?.begin();
   let response: HttpResponse | null = null;
   try {
-    response = await client.request(target.url, {
-      method: target.method,
-      headers: target.headers,
-      body: target.body,
+    response = await client.request(options.url, {
+      method: options.method,
+      headers: options.headers,
+      body: options.body,
       signal,
       timeouts: options.timeouts,
       retry: { attempts: options.retryAttempts },
@@ -918,12 +767,12 @@ async function performOperation(
     const consumed =
       options.responsePolicy === 'cancel'
         ? (await response.discard('cancel'), { bytes: 0, matched: true })
-        : await consumeResponse(response, target.expectedBody);
+        : await consumeResponse(response, options.expectedBody);
     if (recorder !== null) {
       recorder.counters.completed++;
       recorder.counters.responseBytes += consumed.bytes;
       if (options.responsePolicy === 'cancel') recorder.counters.headersOnly++;
-      const statusOk = statusMatches(response.status, target.expectedStatusSet);
+      const statusOk = statusMatches(response.status, options.expectedStatusSet);
       if (!statusOk) recorder.counters.statusFailed++;
       if (!consumed.matched) recorder.counters.bodyFailed++;
       if (statusOk && consumed.matched) recorder.counters.successful++;
@@ -947,43 +796,19 @@ function sortedRecord(map: Map<string, number>): Record<string, number> {
 
 function resultConfig(options: NormalizedLoadOptions): LoadResultConfig {
   const headerNames: string[] = [];
-  for (const [name] of new Headers(options.targets[0]!.headers)) {
+  for (const [name] of new Headers(options.headers)) {
     if (name !== undefined) headerNames.push(name);
   }
   headerNames.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   const requestBodyBytes =
-    options.targets[0]!.body === undefined
+    options.body === undefined
       ? 0
-      : typeof options.targets[0]!.body === 'string'
-        ? new TextEncoder().encode(options.targets[0]!.body).byteLength
-        : options.targets[0]!.body.byteLength;
-  const targets = options.targets.map((target) => {
-    const names: string[] = [];
-    for (const [name] of new Headers(target.headers)) {
-      if (name !== undefined) names.push(name);
-    }
-    names.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const bodyBytes =
-      target.body === undefined
-        ? 0
-        : typeof target.body === 'string'
-          ? new TextEncoder().encode(target.body).byteLength
-          : target.body.byteLength;
-    return {
-      url: target.url,
-      weight: target.weight,
-      method: target.method,
-      headerNames: names,
-      requestBodyBytes: bodyBytes,
-      expectedStatus: target.expectedStatus,
-      expectedBody: target.expectedBody !== null,
-    };
-  });
+      : typeof options.body === 'string'
+        ? new TextEncoder().encode(options.body).byteLength
+        : options.body.byteLength;
   return {
-    url: options.url,
-    targetCount: options.targets.length,
-    targets,
-    method: options.targets[0]!.method,
+    url: options.url.href,
+    method: options.method,
     headerNames,
     requestBodyBytes,
     protocol: options.protocol,
@@ -992,14 +817,13 @@ function resultConfig(options: NormalizedLoadOptions): LoadResultConfig {
     concurrency: options.concurrency,
     rate: options.rate,
     maxQueuedOperations: options.maxQueuedOperations,
-    seed: options.seed,
     reconnectAfter: options.reconnectAfter,
     durationMs: options.durationMs,
     requests: options.requests,
     warmupMs: options.warmupMs,
     responsePolicy: options.responsePolicy,
     expectedStatus: options.expectedStatus,
-    expectedBody: options.targets.some((target) => target.expectedBody !== null),
+    expectedBody: options.expectedBody !== null,
     decompress: options.decompress,
     maxBufferedResponseBytes: options.maxBufferedResponseBytes,
     maxPendingRequests: options.maxPendingRequests,
@@ -1049,7 +873,6 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
     durationMs: number | null,
     requestLimit: number | null,
     recorder: LoadRecorder | null,
-    random: LoadRandom,
     parent: AbortSignal,
   ): Promise<void> => {
     const timerOwnsDeadline = options.rate === null || durationMs === null;
@@ -1059,8 +882,7 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
     const deadline = phase.deadline ?? (durationMs === null ? null : start + durationMs);
     const operation = async (signal: AbortSignal, scheduledAt: number, sequence: number) => {
       await maybeReconnect(sequence);
-      const target = targetFor(options, random, sequence);
-      await performOperation(client, options, target, signal, recorder, scheduledAt);
+      await performOperation(client, options, signal, recorder, scheduledAt);
     };
     try {
       if (options.rate === null) {
@@ -1109,13 +931,7 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
   };
   try {
     if (options.warmupMs > 0 && !runController.signal.aborted) {
-      await runPhase(
-        options.warmupMs,
-        null,
-        null,
-        new LoadRandom(options.seed ^ 0xa5a5a5a5),
-        runController.signal,
-      );
+      await runPhase(options.warmupMs, null, null, runController.signal);
     }
 
     const recorder = new LoadRecorder(options.connections, options.bailout, (reason) => {
@@ -1123,13 +939,7 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
     });
     const startedAt = new Date().toISOString();
     const start = performance.now();
-    await runPhase(
-      options.durationMs,
-      options.requests,
-      recorder,
-      new LoadRandom(options.seed),
-      runController.signal,
-    );
+    await runPhase(options.durationMs, options.requests, recorder, runController.signal);
     const durationMs = Math.max(0, performance.now() - start);
     const seconds = durationMs / 1000;
     const counters: LoadCounters = { ...recorder.counters };
@@ -1167,7 +977,6 @@ interface NormalizedScenarioOptions {
   sessions: number | null;
   rate: LoadRate | null;
   maxQueuedSessions: number;
-  seed: number;
   maxMetrics: number;
   maxLogs: number;
   signal: AbortSignal | null;
@@ -1206,7 +1015,6 @@ function normalizeScenarioOptions(
     sessions,
     rate: normalizeRate(input.rate),
     maxQueuedSessions,
-    seed: normalizedSeed(input.seed),
     maxMetrics: positiveInteger(
       input.maxMetrics ?? DEFAULT_MAX_SCENARIO_METRICS,
       'scenario maxMetrics',
@@ -1336,7 +1144,6 @@ export async function runLoadScenarioEngine(
     recorder.started++;
     recorder.active++;
     recorder.maxActive = Math.max(recorder.maxActive, recorder.active);
-    const random = new LoadRandom((options.seed + Math.imul(sequence + 1, 0x9e3779b9)) >>> 0);
     const responses: HttpResponse[] = [];
     const eventSources: Array<{ close(): void }> = [];
     const sockets: Array<{ close(code?: number, reason?: string): Promise<void> }> = [];
@@ -1376,7 +1183,6 @@ export async function runLoadScenarioEngine(
       sequence,
       userId: workerId,
       signal,
-      random: () => random.number(),
       metric: (name, value) => recorder.metric(name, value),
       bytes: (direction, count) => recorder.count(direction, 'bytes', count),
       messages: (direction, count = 1) => recorder.count(direction, 'messages', count),

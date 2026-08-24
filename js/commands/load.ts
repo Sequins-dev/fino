@@ -34,7 +34,6 @@ import type {
   LoadProtocol,
   LoadScenario,
   LoadScenarioOptions,
-  LoadTarget,
   LoadTlsOptions,
 } from '../load.ts';
 import { Task } from '../task.ts';
@@ -42,7 +41,6 @@ import type { TaskJsonValue } from '../task.ts';
 
 interface LoadCommandInput {
   url?: unknown;
-  target?: unknown[];
   scenario?: unknown;
   users?: unknown;
   sessions?: unknown;
@@ -58,7 +56,6 @@ interface LoadCommandInput {
   warmup?: unknown;
   rate?: unknown;
   'rate-to'?: unknown;
-  seed?: unknown;
   'max-queued-operations'?: unknown;
   'reconnect-after'?: unknown;
   response?: unknown;
@@ -162,15 +159,6 @@ function fileUrlFromPath(path: string): string {
   return 'file://' + encoded;
 }
 
-function parseTargets(values: unknown[] | undefined): LoadTarget[] | undefined {
-  if (values === undefined || values.length === 0) return undefined;
-  return values.map((raw) => {
-    const text = String(raw);
-    const weighted = /^(\d+(?:\.\d+)?):(https?:\/\/.*)$/i.exec(text);
-    return weighted === null ? { url: text } : { url: weighted[2]!, weight: Number(weighted[1]) };
-  });
-}
-
 async function importScenario(path: string): Promise<LoadScenario> {
   const mod = (await import(fileUrlFromPath(path))) as { default?: unknown };
   const scenario = mod.default as Partial<LoadScenario> | undefined;
@@ -188,10 +176,10 @@ async function importScenario(path: string): Promise<LoadScenario> {
 /**
  * The `load` subcommand mounted by the root Fino CLI.
  *
- * It accepts one URL, repeatable weighted targets, or one TypeScript scenario.
- * Text mode returns the formatted report string. JSON mode writes and returns
- * the versioned result object. `--quiet` suppresses text output but never
- * suppresses explicitly requested JSON.
+ * It accepts one static HTTP URL or one TypeScript scenario. Text mode returns
+ * the formatted report string. JSON mode writes and returns the versioned
+ * result object. `--quiet` suppresses text output but never suppresses
+ * explicitly requested JSON.
  */
 const command = new Task({
   name: 'load',
@@ -205,10 +193,9 @@ const command = new Task({
     },
   ],
   run: async function runLoadCommand(input: LoadCommandInput, ctx) {
-    const targets = parseTargets(input.target);
     if (input.scenario !== undefined) {
-      if (input.url !== undefined || targets !== undefined) {
-        throw new RangeError('fino load: --scenario cannot be combined with URL targets');
+      if (input.url !== undefined) {
+        throw new RangeError('fino load: --scenario cannot be combined with a URL target');
       }
       if (input.duration !== undefined && input.sessions !== undefined) {
         throw new RangeError('fino load: --duration and --sessions are mutually exclusive');
@@ -223,7 +210,6 @@ const command = new Task({
       const rate = numberOption(input.rate);
       const rateTo = numberOption(input['rate-to']);
       const maxQueued = numberOption(input['max-queued-operations']);
-      const seed = numberOption(input.seed);
       if (rateTo !== undefined && rate === undefined) {
         throw new RangeError('fino load: --rate-to requires --rate');
       }
@@ -233,7 +219,6 @@ const command = new Task({
       if (rate !== undefined)
         scenarioOptions.rate = rateTo === undefined ? rate : { start: rate, end: rateTo };
       if (maxQueued !== undefined) scenarioOptions.maxQueuedSessions = maxQueued;
-      if (seed !== undefined) scenarioOptions.seed = seed;
       const result = await runLoadScenario(scenario, scenarioOptions);
       if (ctx.writer.mode === 'json') {
         await ctx.writer.writeJson(result as unknown as TaskJsonValue);
@@ -241,7 +226,7 @@ const command = new Task({
       }
       return input.quiet === true ? '' : formatLoadScenarioResult(result);
     }
-    if (input.url === undefined && targets === undefined) {
+    if (input.url === undefined) {
       throw new Error('fino load: no target URL specified');
     }
     if (input.duration !== undefined && input.requests !== undefined) {
@@ -281,6 +266,7 @@ const command = new Task({
     const maxBufferedResponseBytes = numberOption(input['max-buffered-response-bytes']);
     const retryAttempts = numberOption(input.retry);
     const options: LoadOptions = {
+      url: String(input.url),
       protocol: protocolOption(input.protocol),
       responsePolicy: input.response === 'cancel' ? 'cancel' : 'consume',
       timeouts,
@@ -288,8 +274,6 @@ const command = new Task({
       tls,
       signal: ctx.signal,
     };
-    if (input.url !== undefined) options.url = String(input.url);
-    if (targets !== undefined) options.targets = targets;
     if (input.method !== undefined) options.method = String(input.method);
     if (headers !== undefined) options.headers = headers;
     if (body !== undefined) options.body = body;
@@ -300,10 +284,8 @@ const command = new Task({
     if (warmupMs !== undefined) options.warmupMs = warmupMs;
     if (rate !== undefined)
       options.rate = rateTo === undefined ? rate : { start: rate, end: rateTo };
-    const seed = numberOption(input.seed);
     const maxQueuedOperations = numberOption(input['max-queued-operations']);
     const reconnectAfter = numberOption(input['reconnect-after']);
-    if (seed !== undefined) options.seed = seed;
     if (maxQueuedOperations !== undefined) options.maxQueuedOperations = maxQueuedOperations;
     if (reconnectAfter !== undefined) options.reconnectAfter = reconnectAfter;
     if (expectedStatus !== undefined) options.expectedStatus = expectedStatus;
@@ -333,13 +315,6 @@ const command = new Task({
   },
   cli: {
     options: [
-      {
-        name: 'target',
-        flags: '--target',
-        type: 'string',
-        multiple: true,
-        description: 'Weighted target as URL or WEIGHT:URL; repeatable',
-      },
       {
         flags: '--scenario',
         type: 'string',
@@ -422,12 +397,6 @@ const command = new Task({
         flags: '--rate-to',
         type: 'number',
         description: 'Linearly ramp the arrival rate to this value',
-      },
-      {
-        flags: '--seed',
-        type: 'number',
-        default: 1,
-        description: 'Deterministic target, substitution, and scenario seed',
       },
       {
         flags: '--max-queued-operations',
@@ -552,7 +521,7 @@ const command = new Task({
         name: 'url',
         type: 'string',
         required: false,
-        description: 'Absolute HTTP(S) target URL unless --target or --scenario is used',
+        description: 'Absolute HTTP(S) target URL unless --scenario is used',
       },
     ],
   },

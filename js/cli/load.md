@@ -13,7 +13,6 @@ supported.
 fino load --connections 100 --duration 30s http://127.0.0.1:3000/
 fino load -p h2 -c 20 -m 10 --warmup 5s -d 30s https://localhost:3000/
 fino load --rate 1000 --rate-to 5000 -d 30s http://127.0.0.1:3000/
-fino load --target 3:https://api.test/read --target 1:https://api.test/write -p h2
 fino load --scenario ./chat.load.ts --users 100 --duration 30s
 ```
 
@@ -41,11 +40,10 @@ Use either `--duration` or `--requests`. With neither, measurement lasts 10
 seconds. `--warmup` runs unmeasured work first and carries the same client and
 surviving connections into measurement.
 
-Repeat `--target` to select among requests. Values are `URL` or `WEIGHT:URL`;
-for example, `3:https://example.test/read` has three times the selection weight
-of `1:https://example.test/write`. URLs, string bodies, and header values
-replace `{{sequence}}` and `{{random}}` from `--seed`, making choices and data
-reproducible.
+Static HTTP mode repeats one normalized request without target selection or
+generated data in its hot path. Put multi-endpoint, stateful, or varying
+request behavior in a TypeScript scenario, where the workload contract is
+explicit.
 
 `--expect-body` compares an exact UTF-8 value while streaming and dropping the
 response. It never buffers the received body and cannot be combined with
@@ -57,9 +55,9 @@ failures or timeout/transport errors reach the configured count.
 Use `--scenario` for protocols whose load behavior is not defined by a URL and
 concurrency alone. The module default-exports a `LoadScenario`. Each virtual
 user receives controlled HTTP, SSE, WebSocket, WebTransport, and raw QUIC
-constructors plus deterministic random data, cancellation, counters, and
-bounded custom metrics. Resources opened through the controlled client are
-closed when the hook returns or throws.
+constructors plus cancellation, counters, and bounded custom metrics. Resources
+opened through the controlled client are closed when the hook returns or
+throws.
 
 ```ts
 import type { LoadScenario } from 'fino:load';
@@ -95,8 +93,7 @@ measurements.
 
 | Name | Value | Description |
 | --- | --- | --- |
-| `url` | URL | Target unless `--target` or `--scenario` is used; H2/H3 require `https:`. |
-| `--target` | `URL`, `WEIGHT:URL` | Repeatable weighted HTTP target; mutually exclusive with positional `url`. |
+| `url` | URL | Static HTTP target unless `--scenario` is used; H2/H3 require `https:`. |
 | `--scenario` | path | TypeScript module default-exporting a `LoadScenario`. |
 | `--users` | integer | Concurrent virtual users for a scenario. |
 | `--sessions` | integer | Exact scenario-session count; mutually exclusive with duration. |
@@ -109,7 +106,6 @@ measurements.
 | `--rate` | number | Fixed arrivals/second or ramp start. |
 | `--rate-to` | number | Linear arrival-rate ramp endpoint. |
 | `--max-queued-operations` | integer | Bound waiting HTTP operations or scenario sessions. |
-| `--seed` | uint32 | Deterministic workload seed; defaults to 1. |
 | `--reconnect-after` | integer | Recreate pooled sessions after this many starts. |
 | `-X`, `--method` | string | HTTP method; defaults to GET. |
 | `-H`, `--header` | `name:value` | Repeatable request header. |
@@ -152,4 +148,4 @@ are limited to 64 safe ASCII characters. Defaults cap distinct metrics at 64
 and diagnostic log calls at 1000.
 
 For comparable runs, keep the build mode, machine, target, TLS policy, protocol,
-response policy, warmup, seed, and content-decoding policy stable.
+response policy, warmup, and content-decoding policy stable.

@@ -244,36 +244,30 @@ describe('HTTP load generation', () => {
     }
   });
 
-  it('selects weighted targets reproducibly and substitutes sequence data', async (t) => {
-    const seen: string[] = [];
+  it('repeats one static request without generated data', async (t) => {
+    const seen: Array<{ path: string; header: string | null; body: string }> = [];
     const server = serveHttp({ port: 0 }, async (request) => {
-      seen.push(new URL(request.url).pathname);
+      seen.push({
+        path: decodeURIComponent(new URL(request.url).pathname),
+        header: request.headers.get('x-static'),
+        body: await request.text(),
+      });
       return new Response('ok');
     });
     try {
-      const base = `http://127.0.0.1:${server.port}`;
-      const options = {
-        targets: [
-          { url: `${base}/a/{{sequence}}`, weight: 1 },
-          { url: `${base}/b/{{sequence}}`, weight: 3 },
-        ],
+      const result = await runLoad({
+        url: `http://127.0.0.1:${server.port}/{{sequence}}`,
+        method: 'POST',
+        headers: { 'x-static': '{{random}}' },
+        body: '{{sequence}}',
         connections: 1,
-        requests: 12,
-        seed: 42,
-      } as const;
-      const first = await runLoad(options);
-      const firstSeen = seen.splice(0);
-      const second = await runLoad(options);
-      t.deepEqual(seen, firstSeen);
-      t.equal(first.config.targetCount, 2);
-      t.equal(first.counters.completed, 12);
-      t.equal(second.counters.completed, 12);
-      t.ok(firstSeen.some((path) => path.startsWith('/a/')));
-      t.ok(firstSeen.some((path) => path.startsWith('/b/')));
-      t.deepEqual(
-        firstSeen.map((path) => Number(path.slice(3))).sort((a, b) => a - b),
-        Array.from({ length: 12 }, (_, index) => index),
-      );
+        requests: 2,
+      });
+      t.equal(result.counters.completed, 2);
+      t.deepEqual(seen, [
+        { path: '/{{sequence}}', header: '{{random}}', body: '{{sequence}}' },
+        { path: '/{{sequence}}', header: '{{random}}', body: '{{sequence}}' },
+      ]);
     } finally {
       await server.close();
     }
@@ -481,10 +475,6 @@ describe('HTTP load generation', () => {
         }),
       /expectedBody requires responsePolicy consume/,
     );
-    await t.rejects(
-      () => runLoad({ targets: [], requests: 1 }),
-      /url or at least one target is required/,
-    );
   });
 });
 
@@ -504,7 +494,7 @@ describe('scripted load scenarios', () => {
             context.metric('round_trip', performance.now() - started);
           },
         },
-        { users: 2, sessions: 4, seed: 7 },
+        { users: 2, sessions: 4 },
       );
       t.equal(result.schemaVersion, 1);
       t.equal(result.offered, 4);
@@ -820,6 +810,17 @@ describe('load command', () => {
     );
   });
 
+  it('does not expose target selection or random seed flags', async (t) => {
+    await t.rejects(
+      async () => await loadCommand.parse(['--target', 'http://127.0.0.1/']),
+      /Unknown option "--target"/,
+    );
+    await t.rejects(
+      async () => await loadCommand.parse(['--seed', '1', 'http://127.0.0.1/']),
+      /Unknown option "--seed"/,
+    );
+  });
+
   it('imports and runs a TypeScript scenario without a URL positional', async (t) => {
     let written: unknown;
     const result = (await loadCommand.parse(
@@ -847,35 +848,19 @@ describe('load command', () => {
     t.equal(written, result);
   });
 
-  it('parses weighted targets and a deterministic arrival-rate ramp', async (t) => {
+  it('parses an arrival-rate ramp for one static target', async (t) => {
     const server = serveHttp({ port: 0 }, async () => new Response('ok'));
     try {
       const url = `http://127.0.0.1:${server.port}/`;
       const result = (await loadCommand.parse(
-        [
-          '--json',
-          '--target',
-          `3:${url}read`,
-          '--target',
-          `1:${url}write`,
-          '--rate',
-          '100',
-          '--rate-to',
-          '200',
-          '--requests',
-          '4',
-          '--seed',
-          '42',
-        ],
+        ['--json', '--rate', '100', '--rate-to', '200', '--requests', '4', url],
         {
           writer: { mode: 'json', writeJson() {} },
         },
       )) as LoadResult;
       t.equal(result.counters.completed, 4);
       t.deepEqual(result.config.rate, { start: 100, end: 200 });
-      t.equal(result.config.seed, 42);
-      t.equal(result.config.targets[0]!.weight, 3);
-      t.equal(result.config.targets[1]!.weight, 1);
+      t.equal(result.config.url, url);
     } finally {
       await server.close();
     }
