@@ -9,7 +9,7 @@ use ::v8;
 
 use crate::state::get_state;
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
         "getEntryPath",
         "isTerminated",
@@ -35,7 +35,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -64,7 +64,7 @@ fn eval_steps<'a>(
 /// Returns the entry module path stored in the current context's FinoState,
 /// or `undefined` if this is the root Realm.
 fn get_entry_path(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -82,7 +82,7 @@ fn get_entry_path(
 /// Returns the JSON-serialized `RealmOptions.data` string passed at creation
 /// time, or `undefined` when none was provided (or for the root Realm).
 fn get_realm_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -100,7 +100,7 @@ fn get_realm_data(
 /// Returns the JSON-serialized runtime bootstrap metadata string passed at
 /// creation time, or `undefined` when none was provided.
 fn get_realm_bootstrap_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -118,7 +118,7 @@ fn get_realm_bootstrap_data(
 /// Record the threaded cgroup joined by this sandbox Realm so its parent can
 /// remove the empty leaf after the dedicated thread exits.
 fn set_sandbox_cgroup_path(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -139,7 +139,7 @@ fn set_sandbox_cgroup_path(
 /// Returns the MessagePort object passed to this child Realm at creation time,
 /// or `undefined` if this is the root Realm or no port was provided.
 fn get_port(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -155,7 +155,7 @@ fn get_port(
 /// Called from `_onChildEntryError` in `internal/bootstrap.ts` so that the parent
 /// can retrieve the error and reject `Realm.run()` instead of resolving it.
 fn set_entry_error(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -169,7 +169,7 @@ fn set_entry_error(
 
 /// Returns `true` if the parent has requested this Realm to terminate.
 fn is_terminated(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -181,7 +181,7 @@ fn is_terminated(
 /// Returns an Array of absolute path strings for every filesystem module this
 /// Realm has imported so far (the keys of `state.fs_cache`).
 fn get_loaded_fs_paths(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -208,7 +208,7 @@ fn get_loaded_fs_paths(
 /// realms, and sets the process-global flag for process realms so the parent
 /// process exits with code 75.
 fn request_reload(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -226,7 +226,7 @@ fn request_reload(
 
 /// Returns `true` if this Realm was started with `watch: true`.
 fn get_watch_mode(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -237,7 +237,7 @@ fn get_watch_mode(
 
 /// Returns `true` if this Realm was started with `repl: true`.
 fn get_repl_mode(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

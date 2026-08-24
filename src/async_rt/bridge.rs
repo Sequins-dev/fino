@@ -45,7 +45,7 @@ pub enum JsValueRepr {
 
 impl JsValueRepr {
     /// Convert to a `v8::Local` with a live scope.
-    pub fn into_v8<'s>(self, scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Value> {
+    pub fn into_v8<'s>(self, scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Value> {
         match self {
             Self::Undefined => v8::undefined(scope).into(),
             Self::Null => v8::null(scope).into(),
@@ -77,7 +77,7 @@ impl JsValueRepr {
     /// Build from a `v8::Local` at a point where a scope is available (e.g.,
     /// inside `promise_to_future` callbacks). Prefers lightweight reprs; falls
     /// back to `Global` for objects.
-    pub fn from_v8<'s>(scope: &mut v8::HandleScope<'s>, val: v8::Local<'s, v8::Value>) -> Self {
+    pub fn from_v8<'s>(scope: &mut v8::PinScope<'s, '_>, val: v8::Local<'s, v8::Value>) -> Self {
         if val.is_undefined() {
             return Self::Undefined;
         }
@@ -186,14 +186,14 @@ impl IntoJsValueRepr for JsValueRepr {
 
 pub trait FromV8: Sized {
     fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError>;
 }
 
 impl FromV8 for JsValueRepr {
     fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
         Ok(JsValueRepr::from_v8(scope, val))
@@ -202,7 +202,7 @@ impl FromV8 for JsValueRepr {
 
 impl FromV8 for f64 {
     fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
         val.number_value(scope)
@@ -212,7 +212,7 @@ impl FromV8 for f64 {
 
 impl FromV8 for i32 {
     fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
         val.int32_value(scope)
@@ -222,7 +222,7 @@ impl FromV8 for i32 {
 
 impl FromV8 for String {
     fn from_v8<'s>(
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         val: v8::Local<'s, v8::Value>,
     ) -> Result<Self, BridgeError> {
         v8::Local::<v8::String>::try_from(val)
@@ -255,7 +255,7 @@ pub struct PendingResolution {
 /// `T` and `E` must implement `IntoJsValueRepr` so the result can be stored
 /// without a scope across the `await` point.
 pub fn future_to_promise<'s, F, T, E>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     fut: F,
 ) -> v8::Local<'s, v8::Promise>
 where
@@ -314,7 +314,7 @@ where
 /// To convert the settled value to a concrete Rust type, convert the
 /// `JsValueRepr` at the call site where a V8 `HandleScope` is available.
 pub fn promise_to_future(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     promise: v8::Local<v8::Promise>,
 ) -> impl std::future::Future<Output = Result<JsValueRepr, BridgeError>> + 'static {
     // Create the settle handlers inside the promise's own creation context:
@@ -383,7 +383,7 @@ impl FromJsValueRepr for JsValueRepr {
 type TxType = futures_channel::oneshot::Sender<Result<JsValueRepr, JsValueRepr>>;
 
 fn settle_fulfilled_cb<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
@@ -400,7 +400,7 @@ fn settle_fulfilled_cb<'s>(
 }
 
 fn settle_rejected_cb<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {

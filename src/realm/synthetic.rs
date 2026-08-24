@@ -94,7 +94,7 @@ fn create_rpc_source(spec: &SyntheticSpec) -> String {
 // ---------------------------------------------------------------------------
 
 pub fn install_synthetic_module(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     spec: &SyntheticSpec,
 ) -> Result<(), String> {
     let state_rc = get_state(scope);
@@ -138,10 +138,7 @@ pub fn install_synthetic_module(
     Ok(())
 }
 
-pub fn uninstall_synthetic_module(
-    scope: &mut v8::HandleScope,
-    specifier: &str,
-) -> Result<(), String> {
+pub fn uninstall_synthetic_module(scope: &mut v8::PinScope, specifier: &str) -> Result<(), String> {
     let state_rc = get_state(scope);
     let mut st = state_rc.borrow_mut();
 
@@ -161,7 +158,7 @@ pub fn uninstall_synthetic_module(
 // internal:synthetic-install — privileged Rust-backed module
 // ---------------------------------------------------------------------------
 
-pub fn create_install_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_install_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let names: Vec<v8::Local<v8::String>> =
         ["_installSyntheticModule", "_uninstallSyntheticModule"]
             .iter()
@@ -175,7 +172,7 @@ fn install_module_eval<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -193,11 +190,7 @@ fn install_module_eval<'a>(
 }
 
 /// `_installSyntheticModule(specifier: string, exports: string[]): void`
-fn js_install(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
+fn js_install(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let spec_val = args.get(0);
     let exports_val = args.get(1);
 
@@ -242,7 +235,7 @@ fn js_install(
 
 /// `_uninstallSyntheticModule(specifier: string): void`
 fn js_uninstall(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -257,7 +250,7 @@ fn js_uninstall(
     }
 }
 
-fn throw_str(scope: &mut v8::HandleScope, msg: &str) {
+fn throw_str(scope: &mut v8::PinScope, msg: &str) {
     if let Some(s) = v8::String::new(scope, msg) {
         let exc = v8::Exception::error(scope, s);
         scope.throw_exception(exc);

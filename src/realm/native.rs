@@ -10,7 +10,7 @@ use ::v8;
 use super::{process, thread, transit};
 use crate::state::{ImportRule, get_state, resolve_directive};
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
         // Linux sandbox realm
         "createSandboxContext",
@@ -41,7 +41,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -141,7 +141,7 @@ fn narrowing_check(
 /// If the child's root differs from the parent's, re-read `.fino/package-map.json`
 /// from the child's root. Otherwise inherit the parent's already-loaded value.
 pub(crate) fn resolve_child_package_map(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     child_root: &std::path::Path,
 ) -> Option<String> {
     let parent_root = get_state(scope).borrow().process_env.root.clone();
@@ -165,7 +165,7 @@ pub(crate) fn resolve_child_package_map(
 /// At merge time, child rules are validated for capability narrowing: a child
 /// rule that would grant access to a specifier the parent has blocked is rejected.
 pub(crate) fn parse_and_merge_rules(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     rules_arg: v8::Local<v8::Value>,
 ) -> Result<Vec<ImportRule>, String> {
     use crate::state::ImportDirective;
@@ -219,7 +219,7 @@ pub(crate) fn parse_and_merge_rules(
 // ---------------------------------------------------------------------------
 
 /// Read an optional string argument: `undefined`/`null` → `None`.
-fn optional_string_arg(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -> Option<String> {
+fn optional_string_arg(scope: &mut v8::PinScope, arg: v8::Local<v8::Value>) -> Option<String> {
     if arg.is_undefined() || arg.is_null() {
         None
     } else {
@@ -233,7 +233,7 @@ fn optional_string_arg(scope: &mut v8::HandleScope, arg: v8::Local<v8::Value>) -
 
 /// Spawn a fixed-thread Linux sandbox Realm.
 fn create_sandbox_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -305,7 +305,7 @@ fn create_sandbox_context(
 
 /// Report whether a sandbox Realm thread is still running.
 fn step_sandbox_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -344,7 +344,7 @@ fn step_sandbox_context(
 
 /// Force V8 to terminate JavaScript running on a sandbox Realm thread.
 fn force_sandbox_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -369,7 +369,7 @@ fn force_sandbox_context(
 }
 
 fn sandbox_port_send(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -447,7 +447,7 @@ fn sandbox_port_send(
 }
 
 fn sandbox_port_recv(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -478,7 +478,7 @@ fn sandbox_port_recv(
 }
 
 fn get_sandbox_port_wake_read_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -500,7 +500,7 @@ fn get_sandbox_port_wake_read_fd(
 
 /// JS: `createProcessContext(root, entryPath, serializedRules) -> number`
 fn create_process_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -570,7 +570,7 @@ fn create_process_context(
 
 /// JS: `stepProcessContext(handle: number) -> boolean`
 fn step_process_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -622,7 +622,7 @@ fn step_process_context(
 
 /// JS: `processPortSend(handle, header, bytes, stores?) -> void`
 fn process_port_send(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -693,7 +693,7 @@ fn process_port_send(
 
 /// JS: `processPortRecv(handle: number) -> [Uint8Array, ...Uint8Array[]][]`
 fn process_port_recv(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -726,7 +726,7 @@ fn process_port_recv(
 
 /// JS: `getProcessSocketFd(handle: number) -> number`
 fn get_process_socket_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -752,7 +752,7 @@ fn get_process_socket_fd(
 /// Descriptor that becomes readable once a sandbox Realm's thread has finished,
 /// so a parent realm waits for completion instead of polling the done flag.
 fn get_sandbox_completion_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -773,7 +773,7 @@ fn get_sandbox_completion_fd(
 /// Descriptor that becomes readable once the child process has exited, so a
 /// parent realm can wait for completion instead of polling the done flag.
 fn get_process_completion_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -790,7 +790,7 @@ fn get_process_completion_fd(
 }
 
 fn kill_process_context(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

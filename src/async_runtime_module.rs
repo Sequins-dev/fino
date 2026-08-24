@@ -11,7 +11,7 @@
 
 use ::v8;
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["wakeFd", "drainWakes"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
@@ -28,7 +28,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     // Read the wake fd from the per-isolate async state (thread-local).
     let wake_fd = crate::async_rt::get_wake_read_fd();
@@ -51,7 +51,7 @@ fn eval_steps<'a>(
 }
 
 fn drain_wakes_cb(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {

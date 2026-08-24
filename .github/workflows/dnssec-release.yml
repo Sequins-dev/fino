@@ -41,6 +41,7 @@ jobs:
             curl \
             g++ \
             git \
+            libclang-dev \
             libsqlite3-dev \
             make \
             perl \

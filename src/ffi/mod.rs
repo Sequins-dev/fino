@@ -17,7 +17,7 @@ use types::{NativeType, StructField, StructFieldKind, StructLayout, align_to};
 
 use call::{CallScratch, ffi_call};
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> =
         ["dlopen", "Pointer", "FfiCallback", "structType"]
             .iter()
@@ -31,7 +31,7 @@ fn ffi_eval<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     let dlopen_tmpl = v8::FunctionTemplate::new(scope, dlopen_callback);
     let dlopen_fn = dlopen_tmpl.get_function(scope)?;
@@ -60,7 +60,7 @@ fn ffi_eval<'a>(
 // ---------------------------------------------------------------------------
 
 fn dlopen_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -247,9 +247,12 @@ fn dlopen_callback(
         let ext = v8::External::new(scope, sym_ptr as *mut std::ffi::c_void);
 
         let sym_tmpl = if let Some(cfn) = fast_cfn {
+            // V8 retains the overload table for the lifetime of the function
+            // template, so rusty_v8 now requires static storage here.
+            let overloads = Box::leak(Box::new([cfn]));
             v8::FunctionTemplate::builder(symbol_call_callback)
                 .data(ext.into())
-                .build_fast(scope, &[cfn])
+                .build_fast(scope, overloads)
         } else {
             v8::FunctionTemplate::builder(symbol_call_callback)
                 .data(ext.into())
@@ -303,7 +306,7 @@ struct CloseData {
 }
 
 fn symbol_call_callback<'a>(
-    scope: &mut v8::HandleScope<'a>,
+    scope: &mut v8::PinScope<'a, '_>,
     args: v8::FunctionCallbackArguments<'a>,
     mut rv: v8::ReturnValue,
 ) {
@@ -337,7 +340,7 @@ fn symbol_call_callback<'a>(
 }
 
 fn close_callback(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -354,7 +357,7 @@ fn close_callback(
 // ---------------------------------------------------------------------------
 
 fn ffi_callback_constructor(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -445,7 +448,7 @@ fn ffi_callback_constructor(
 }
 
 fn symbol_property<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     name: &str,
 ) -> Option<v8::Local<'s, v8::Value>> {
     let context = scope.get_current_context();
@@ -463,7 +466,7 @@ fn symbol_property<'s>(
 }
 
 fn ffi_callback_close(
-    _scope: &mut v8::HandleScope,
+    _scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -483,7 +486,7 @@ fn ffi_callback_close(
 // ---------------------------------------------------------------------------
 
 fn parse_type_array(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     val: v8::Local<v8::Value>,
 ) -> Result<Vec<NativeType>, String> {
     let arr = v8::Local::<v8::Array>::try_from(val).map_err(|_| "expected an array".to_string())?;
@@ -498,7 +501,7 @@ fn parse_type_array(
 }
 
 fn parse_native_type(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     val: v8::Local<v8::Value>,
 ) -> Result<NativeType, String> {
     if let Some(layout) = struct_layout_from_value(scope, val) {
@@ -519,12 +522,12 @@ struct StructTypeData {
     layout: std::sync::Arc<StructLayout>,
 }
 
-fn struct_type_marker<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::String> {
+fn struct_type_marker<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::String> {
     v8::String::new(scope, "__finoFfiStructType").unwrap()
 }
 
 fn struct_layout_from_value(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     val: v8::Local<v8::Value>,
 ) -> Option<std::sync::Arc<StructLayout>> {
     let obj = v8::Local::<v8::Object>::try_from(val).ok()?;
@@ -536,7 +539,7 @@ fn struct_layout_from_value(
 }
 
 fn struct_type_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -568,18 +571,13 @@ fn struct_type_callback(
     rv.set(obj.into());
 }
 
-fn set_number_prop(
-    scope: &mut v8::HandleScope,
-    obj: v8::Local<v8::Object>,
-    name: &str,
-    value: f64,
-) {
+fn set_number_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, name: &str, value: f64) {
     let key = v8::String::new(scope, name).unwrap();
     let value = v8::Number::new(scope, value);
     obj.set(scope, key.into(), value.into());
 }
 
-fn set_fields_prop(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, layout: &StructLayout) {
+fn set_fields_prop(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, layout: &StructLayout) {
     let arr = v8::Array::new(scope, layout.fields.len() as i32);
     for (i, field) in layout.fields.iter().enumerate() {
         let f = v8::Object::new(scope);
@@ -595,7 +593,7 @@ fn set_fields_prop(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, layo
 }
 
 fn set_struct_method(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     obj: v8::Local<v8::Object>,
     name: &str,
     cb: impl v8::MapFnTo<v8::FunctionCallback>,
@@ -607,7 +605,7 @@ fn set_struct_method(
 }
 
 fn parse_struct_fields(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     fields_val: v8::Local<v8::Value>,
     opts_val: v8::Local<v8::Value>,
 ) -> Result<StructLayout, String> {
@@ -643,7 +641,7 @@ fn parse_struct_fields(
 }
 
 fn parse_struct_opts(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     opts_val: v8::Local<v8::Value>,
 ) -> Result<(Option<usize>, Option<usize>), String> {
     if opts_val.is_undefined() || opts_val.is_null() {
@@ -658,7 +656,7 @@ fn parse_struct_opts(
 }
 
 fn parse_struct_field<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     val: v8::Local<'s, v8::Value>,
     next_offset: &mut usize,
 ) -> Result<StructField, String> {
@@ -718,14 +716,14 @@ fn parse_struct_field<'s>(
     })
 }
 
-fn type_name(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> String {
+fn type_name(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> String {
     val.to_string(scope)
         .map(|s| s.to_rust_string_lossy(scope))
         .unwrap_or_default()
 }
 
 fn get_required_prop<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     obj: v8::Local<'s, v8::Object>,
     name: &str,
 ) -> Result<v8::Local<'s, v8::Value>, String> {
@@ -735,7 +733,7 @@ fn get_required_prop<'s>(
 }
 
 fn get_string_prop(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     obj: v8::Local<v8::Object>,
     name: &str,
 ) -> Result<Option<String>, String> {
@@ -750,7 +748,7 @@ fn get_string_prop(
 }
 
 fn get_usize_prop(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     obj: v8::Local<v8::Object>,
     name: &str,
 ) -> Result<Option<usize>, String> {
@@ -769,7 +767,7 @@ fn get_usize_prop(
 }
 
 fn struct_data_from_this<'a, 's>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     this: v8::Local<'s, v8::Object>,
 ) -> Option<&'a StructTypeData> {
     let marker = struct_type_marker(scope);
@@ -779,7 +777,7 @@ fn struct_data_from_this<'a, 's>(
 }
 
 fn struct_alloc<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
@@ -790,7 +788,7 @@ fn struct_alloc<'s>(
 }
 
 fn struct_offset_of<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
@@ -810,7 +808,7 @@ fn struct_offset_of<'s>(
 }
 
 fn struct_get<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     mut rv: v8::ReturnValue,
 ) {
@@ -901,7 +899,7 @@ fn struct_get<'s>(
 }
 
 fn struct_set<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
@@ -991,7 +989,7 @@ fn struct_set<'s>(
 }
 
 fn js_buffer_bytes<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     val: v8::Local<'s, v8::Value>,
 ) -> Option<(*mut u8, usize, v8::SharedRef<v8::BackingStore>)> {
     let (ab, offset, len) = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(val) {
@@ -1012,7 +1010,7 @@ fn js_buffer_bytes<'s>(
     Some((ptr, len, bs))
 }
 
-fn throw_error(scope: &mut v8::HandleScope, msg: &str) {
+fn throw_error(scope: &mut v8::PinScope, msg: &str) {
     if let Some(msg_str) = v8::String::new(scope, msg) {
         let exc = v8::Exception::error(scope, msg_str);
         scope.throw_exception(exc);

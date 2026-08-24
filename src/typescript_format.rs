@@ -20,7 +20,7 @@ use oxc_transformer::{JsxOptions, TransformOptions, Transformer, TypeScriptOptio
 use serde::Serialize;
 use v8;
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["parse", "transpile", "format", "lint"]
         .iter()
         .map(|name| v8::String::new(scope, name).unwrap())
@@ -33,7 +33,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     let tmpl = v8::FunctionTemplate::new(scope, parse_callback);
     let func = tmpl.get_function(scope)?;
     let key = v8::String::new(scope, "parse")?;
@@ -54,7 +54,7 @@ fn eval_steps<'a>(
 }
 
 fn parse_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     rv: v8::ReturnValue,
 ) {
@@ -72,7 +72,7 @@ fn parse_callback(
 }
 
 fn transpile_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     rv: v8::ReturnValue,
 ) {
@@ -90,7 +90,7 @@ fn transpile_callback(
 }
 
 fn format_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     rv: v8::ReturnValue,
 ) {
@@ -108,7 +108,7 @@ fn format_callback(
 }
 
 fn lint_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     rv: v8::ReturnValue,
 ) {
@@ -126,7 +126,7 @@ fn lint_callback(
 }
 
 fn set_json_result(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     mut rv: v8::ReturnValue,
     operation: &str,
     result: Result<Result<String, String>, Box<dyn std::any::Any + Send>>,
@@ -148,7 +148,7 @@ fn set_json_result(
     }
 }
 
-fn throw_error(scope: &mut v8::HandleScope, message: &str) {
+fn throw_error(scope: &mut v8::PinScope, message: &str) {
     let msg = v8::String::new(scope, message).unwrap();
     let exc = v8::Exception::type_error(scope, msg);
     scope.throw_exception(exc);
@@ -163,7 +163,7 @@ struct ParseOptions {
 }
 
 fn parse_options(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     value: v8::Local<v8::Value>,
     default_tokens: bool,
 ) -> ParseOptions {
@@ -191,7 +191,7 @@ fn parse_options(
 }
 
 fn get_string_property(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     object: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<String> {
@@ -206,7 +206,7 @@ fn get_string_property(
 }
 
 fn get_bool_property(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     object: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<bool> {

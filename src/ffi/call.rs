@@ -76,7 +76,7 @@ impl CallScratch {
 /// This calls an arbitrary C function pointer.  The caller is responsible for
 /// supplying a symbol whose declared types match the actual C signature.
 pub fn ffi_call<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     symbol: &FfiSymbol,
     js_args: &[v8::Local<'s, v8::Value>],
     scratch: &mut CallScratch,
@@ -148,7 +148,7 @@ pub fn ffi_call<'s>(
 }
 
 fn js_to_native<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     val: v8::Local<'s, v8::Value>,
     ty: &NativeType,
     store_pins: &mut SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
@@ -334,7 +334,7 @@ unsafe impl Send for OwnedArg {}
 /// the blocking thread pool, and returns a JS Promise that resolves when the
 /// thread completes.
 pub fn ffi_call_async<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     symbol: &FfiSymbol,
     js_args: &[v8::Local<'s, v8::Value>],
 ) -> Option<v8::Local<'s, v8::Promise>> {
@@ -574,7 +574,7 @@ unsafe fn ret_from_mut_ptr<'a>(ptr: *mut u8) -> Ret<'a> {
 /// Null is accepted and maps to a C null pointer.
 /// The BackingStore ref is pushed to `pins` to keep it alive during the call.
 fn js_buffer_ptr<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     val: v8::Local<'s, v8::Value>,
     pins: &mut SmallVec<[v8::SharedRef<v8::BackingStore>; 4]>,
 ) -> Option<*mut c_void> {
@@ -615,7 +615,7 @@ fn js_buffer_ptr<'s>(
 }
 
 fn js_struct_bytes<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     val: v8::Local<'s, v8::Value>,
     size: usize,
 ) -> Option<Vec<u8>> {
@@ -655,7 +655,7 @@ fn js_struct_bytes<'s>(
 }
 
 /// Convert a V8 number or BigInt to i128.
-fn js_to_i128(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> Option<i128> {
+fn js_to_i128(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Option<i128> {
     if let Ok(bi) = v8::Local::<v8::BigInt>::try_from(val) {
         return Some(bi.i64_value().0 as i128);
     }
@@ -667,7 +667,7 @@ fn js_to_i128(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> Option<
 /// # Safety
 /// `symbol.code_ptr` must point to a valid C function matching `symbol.cif`.
 unsafe fn dispatch_and_convert<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     symbol: &FfiSymbol,
     ffi_args: &[Arg<'_>],
 ) -> Option<v8::Local<'s, v8::Value>> {
@@ -783,7 +783,7 @@ unsafe fn dispatch_and_convert<'s>(
 /// same integer/pointer-only signatures that are safe for fast calls, this
 /// avoids rebuilding libffi argument descriptors and `ffi_call_SYSV`.
 unsafe fn direct_dispatch_and_convert<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     symbol: &FfiSymbol,
     values: &[NativeValue],
 ) -> Option<v8::Local<'s, v8::Value>> {

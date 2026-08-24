@@ -26,7 +26,7 @@ enum BuiltinKind {
         /// eliminating the duplicate match expression.
         path: &'static str,
     },
-    Synthetic(for<'s> fn(&mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module>),
+    Synthetic(for<'s> fn(&mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module>),
 }
 
 type BuiltinEntry = (&'static str, BuiltinKind);
@@ -795,7 +795,7 @@ fn source_specifier_path(specifier: &str) -> Option<PathBuf> {
     None
 }
 
-fn builtin_source_override_root(scope: &mut v8::HandleScope) -> Option<PathBuf> {
+fn builtin_source_override_root(scope: &mut v8::PinScope) -> Option<PathBuf> {
     let state_rc = get_state(scope);
     state_rc
         .borrow()
@@ -806,7 +806,7 @@ fn builtin_source_override_root(scope: &mut v8::HandleScope) -> Option<PathBuf> 
         .map(PathBuf::from)
 }
 
-fn builtin_source_override_enabled(scope: &mut v8::HandleScope, spec: &str) -> bool {
+fn builtin_source_override_enabled(scope: &mut v8::PinScope, spec: &str) -> bool {
     let state_rc = get_state(scope);
     let state = state_rc.borrow();
     let Some(filter) = state.process_env.env_vars.get("FINO_BUILTIN_SOURCE_FILTER") else {
@@ -827,7 +827,7 @@ fn builtin_source_override_enabled(scope: &mut v8::HandleScope, spec: &str) -> b
 }
 
 fn load_builtin_source_override<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     spec: &str,
     path: &str,
 ) -> Option<v8::Local<'s, v8::Module>> {
@@ -864,7 +864,7 @@ fn load_builtin_source_override<'s>(
 /// Creates `internal:loader-hooks` — exposes `registerResolve` and
 /// `registerInitMeta` so `internal:loader` can install JS callbacks for
 /// filesystem resolution and `import.meta` population.
-pub fn loader_hooks_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn loader_hooks_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
         "registerResolve",
         "registerInitMeta",
@@ -885,7 +885,7 @@ fn loader_hooks_eval<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -908,7 +908,7 @@ fn loader_hooks_eval<'a>(
 }
 
 fn register_resolve(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -920,7 +920,7 @@ fn register_resolve(
 }
 
 fn register_init_meta(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -932,7 +932,7 @@ fn register_init_meta(
 }
 
 fn register_transpile(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -944,7 +944,7 @@ fn register_transpile(
 }
 
 fn get_package_map(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -967,7 +967,7 @@ fn get_package_map(
 /// Consumers own decoding and position lookup; the loader only exposes data it
 /// already retains for stack-trace mapping.
 fn get_source_map(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -992,7 +992,7 @@ fn get_source_map(
 }
 
 fn allow_internal_for_tests(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1004,7 +1004,7 @@ fn allow_internal_for_tests(
 }
 
 fn lookup_original_position(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1060,7 +1060,7 @@ pub fn resolve_module_callback<'s>(
     _import_attrs: v8::Local<'s, v8::FixedArray>,
     referrer: v8::Local<'s, v8::Module>,
 ) -> Option<v8::Local<'s, v8::Module>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     let raw_spec = specifier.to_rust_string_lossy(scope);
 
     // Resolve builtin-relative specifiers (e.g. './loop.ts' from a builtin).
@@ -1133,7 +1133,7 @@ pub unsafe extern "C" fn init_import_meta_callback(
     module: v8::Local<v8::Module>,
     meta: v8::Local<v8::Object>,
 ) {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     let state_rc = get_state(scope);
 
     let path = {
@@ -1209,7 +1209,7 @@ pub unsafe extern "C" fn init_import_meta_callback(
 }
 
 fn meta_resolve(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1290,7 +1290,7 @@ fn meta_resolve(
 // ---------------------------------------------------------------------------
 
 pub fn dynamic_import_callback<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     host_defined_options: v8::Local<'s, v8::Data>,
     resource_name: v8::Local<'s, v8::Value>,
     specifier: v8::Local<'s, v8::String>,
@@ -1368,7 +1368,7 @@ pub fn dynamic_import_callback<'s>(
         }
     }
 
-    let tc = &mut v8::TryCatch::new(scope);
+    v8::tc_scope!(tc, scope);
 
     let module: Option<v8::Local<v8::Module>> = if spec.starts_with("fino:")
         || spec.starts_with("internal:")
@@ -1404,7 +1404,7 @@ pub fn dynamic_import_callback<'s>(
 /// Called when a TLA module's evaluation Promise fulfills (all top-level awaits done).
 /// Resolves the dynamic-import Promise with the module namespace.
 fn tla_fulfill_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1429,7 +1429,7 @@ fn tla_fulfill_callback(
 /// Called when a TLA module's evaluation Promise rejects.
 /// Rejects the dynamic-import Promise with the rejection reason.
 fn tla_reject_callback(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1465,7 +1465,7 @@ fn tla_reject_callback(
 /// either the one we set or an empty default — so the unchecked cast is safe
 /// and the length check guards the `get()` call.
 fn referrer_from_hdo(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     hdo: v8::Local<v8::Data>,
     resource_name: v8::Local<v8::Value>,
 ) -> String {
@@ -1488,7 +1488,7 @@ fn referrer_from_hdo(
 /// Delegates to the JS `resolve_fn` callback if one has been registered by
 /// `internal:loader`, otherwise falls back to the Rust `resolve_path` helper.
 fn resolve_fs_specifier(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     spec: &str,
     referrer_dir: Option<&Path>,
 ) -> Option<PathBuf> {
@@ -1529,8 +1529,8 @@ fn resolve_fs_specifier(
 ///
 /// Handles TLA by storing the resolver in `tla_resolvers` and chaining
 /// `.then2()` on the eval promise; non-TLA modules resolve immediately.
-fn settle_dynamic_import<'s, 'tc>(
-    tc: &mut v8::TryCatch<'tc, v8::HandleScope<'s>>,
+fn settle_dynamic_import<'s>(
+    tc: &mut v8::PinnedRef<'_, v8::TryCatch<'_, 's, v8::HandleScope<'_>>>,
     module: Option<v8::Local<'s, v8::Module>>,
     resolver: v8::Local<'s, v8::PromiseResolver>,
 ) {
@@ -1586,7 +1586,7 @@ fn settle_dynamic_import<'s, 'tc>(
 }
 
 fn get_or_load_builtin<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     spec: &str,
     from: Option<&str>,
 ) -> Option<v8::Local<'s, v8::Module>> {
@@ -1594,7 +1594,7 @@ fn get_or_load_builtin<'s>(
 }
 
 fn get_or_load_builtin_inner<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     spec: &str,
     from: Option<&str>,
     visited: &mut std::collections::HashSet<String>,
@@ -1767,7 +1767,7 @@ fn get_or_load_builtin_inner<'s>(
 }
 
 fn get_or_load_fs_module<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     path: &Path,
 ) -> Option<v8::Local<'s, v8::Module>> {
     let state_rc = get_state(scope);
@@ -1798,7 +1798,7 @@ fn get_or_load_fs_module<'s>(
 }
 
 fn load_fs_module_uncached<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     path: &Path,
 ) -> Option<v8::Local<'s, v8::Module>> {
     let resource_name = file_url_from_path(path);
@@ -1828,7 +1828,7 @@ fn load_fs_module_uncached<'s>(
 /// so the dynamic-import callback can reliably identify the referrer
 /// regardless of how the code was invoked (module, eval, etc.).
 pub fn compile_source_module<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     source_text: &str,
     resource_name: &str,
     source_map_json: Option<&str>,
@@ -1858,7 +1858,7 @@ pub fn compile_source_module<'s>(
     v8::script_compiler::compile_module(scope, &mut source)
 }
 
-pub fn register_source_map(scope: &mut v8::HandleScope, resource_name: &str, map: SourceMap) {
+pub fn register_source_map(scope: &mut v8::PinScope, resource_name: &str, map: SourceMap) {
     get_state(scope).borrow_mut().source_maps.insert(
         resource_name.to_string(),
         crate::state::SourceMapCache::new(map),
@@ -1866,7 +1866,7 @@ pub fn register_source_map(scope: &mut v8::HandleScope, resource_name: &str, map
 }
 
 pub fn register_source_map_from_json(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     resource_name: &str,
     source_map_json: &str,
 ) {
@@ -1877,7 +1877,7 @@ pub fn register_source_map_from_json(
 
 /// Register a module's script_id as a builtin so `internal:*` imports are
 /// allowed from it.
-pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Module>, spec: &str) {
+pub fn register_as_builtin(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, spec: &str) {
     if let Some(id) = module.script_id() {
         get_state(scope)
             .borrow_mut()
@@ -1887,7 +1887,7 @@ pub fn register_as_builtin(scope: &mut v8::HandleScope, module: v8::Local<v8::Mo
 }
 
 fn instantiate_and_evaluate<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     module: v8::Local<'s, v8::Module>,
 ) -> Option<v8::Local<'s, v8::Value>> {
     use v8::ModuleStatus;
@@ -2054,7 +2054,7 @@ struct TranspiledSource {
 }
 
 fn transpile_typescript(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     path: &Path,
     source_text: &str,
 ) -> Option<TranspiledSource> {
@@ -2104,7 +2104,7 @@ fn transpile_typescript(
 }
 
 fn get_object_string(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     object: v8::Local<v8::Object>,
     name: &str,
 ) -> Option<String> {
@@ -2118,7 +2118,7 @@ fn get_object_string(
         .map(|value| value.to_rust_string_lossy(scope))
 }
 
-fn throw_loader_error(scope: &mut v8::HandleScope, message: &str) {
+fn throw_loader_error(scope: &mut v8::PinScope, message: &str) {
     if let Some(msg) = v8::String::new(scope, message) {
         let exc = v8::Exception::error(scope, msg);
         scope.throw_exception(exc);

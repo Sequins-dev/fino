@@ -271,7 +271,7 @@ where
 /// Drain all async FFI completions, JS call requests, and per-realm pending
 /// resolutions for the given scope. Returns true if anything was drained.
 pub fn drain_all(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
     let mut progress = false;
@@ -284,7 +284,7 @@ pub fn drain_all(
 
 /// Invoke `onRelease` callbacks for external views whose backing stores were
 /// freed, and roll back their external-memory accounting.
-fn drain_view_releases(scope: &mut v8::HandleScope) -> bool {
+fn drain_view_releases(scope: &mut v8::PinScope) -> bool {
     let releases: Vec<ViewRelease> = STATE.with(|s| {
         s.borrow()
             .as_ref()
@@ -309,7 +309,7 @@ fn drain_view_releases(scope: &mut v8::HandleScope) -> bool {
         };
         let func = v8::Local::new(scope, &global);
         let recv: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let tc = &mut v8::TryCatch::new(scope);
+        v8::tc_scope!(tc, scope);
         if func.call(tc, recv, &[]).is_none() && tc.has_caught() {
             let msg = tc
                 .exception()
@@ -322,7 +322,7 @@ fn drain_view_releases(scope: &mut v8::HandleScope) -> bool {
 }
 
 /// Take all pending JS call requests from the queue and process them.
-fn drain_js_call_requests(scope: &mut v8::HandleScope) -> bool {
+fn drain_js_call_requests(scope: &mut v8::PinScope) -> bool {
     let requests: Vec<js_calls::JsCallRequest> = STATE.with(|s| {
         s.borrow()
             .as_ref()
@@ -337,7 +337,7 @@ fn drain_js_call_requests(scope: &mut v8::HandleScope) -> bool {
 
 /// Read all bytes from the wake pipe (non-blocking) and drain the FfiCompletion
 /// queue, resolving each promise with the FFI result.
-fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
+fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
     // Drain the wake pipe (non-blocking; ignore errors if empty).
     STATE.with(|s| {
         if let Some(st) = s.borrow().as_ref() {
@@ -388,7 +388,7 @@ fn drain_ffi_completions(scope: &mut v8::HandleScope) -> bool {
 /// Every realm is its own isolate under the reactor scheduler, so a realm's
 /// resolutions are always reachable from its own context slot.
 fn drain_pending_resolutions(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
     drain_pending_for(scope, state_rc)
@@ -396,7 +396,7 @@ fn drain_pending_resolutions(
 
 /// Drain pending_resolutions from a single realm's FinoState.
 fn drain_pending_for(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     state_rc: &std::rc::Rc<std::cell::RefCell<crate::state::FinoState>>,
 ) -> bool {
     let pending: Vec<PendingResolution> = {
@@ -428,7 +428,7 @@ fn drain_pending_for(
 // ---------------------------------------------------------------------------
 
 fn raw_to_v8<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     raw: &RawFfiResult,
 ) -> Option<v8::Local<'s, v8::Value>> {
     use crate::ffi::types::NativeType;

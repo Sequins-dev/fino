@@ -22,7 +22,7 @@ fn loop_debug_enabled() -> bool {
 // internal:async-context synthetic module
 // ---------------------------------------------------------------------------
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
         "getCPED",
         "setCPED",
@@ -43,7 +43,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -80,7 +80,7 @@ fn eval_steps<'a>(
 }
 
 fn drain_microtasks(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut _rv: v8::ReturnValue,
 ) {
@@ -105,7 +105,7 @@ fn drain_microtasks(
 /// `pump_message_loop` here would cause infinite loops because V8 continuously
 /// posts JIT/TurboFan optimization tasks.
 fn has_pending_v8_tasks(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -122,7 +122,7 @@ fn has_pending_v8_tasks(
 ///
 /// Returns a Promise that resolves (or rejects) with the return value of `fn`.
 fn schedule_sync(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -155,11 +155,7 @@ fn schedule_sync(
 /// zero means it is alive but quiescent, and positive means it did work. The
 /// reactor scheduler in `scheduler_native` uses that distinction to park a
 /// realm instead of spinning on it.
-fn run_loop(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
+fn run_loop(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let state_rc = get_state(scope);
     let mut st = state_rc.borrow_mut();
     st.loop_step_fn = v8::Local::<v8::Function>::try_from(args.get(0))

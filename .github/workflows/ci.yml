@@ -50,6 +50,7 @@ jobs:
             cmake \
             g++ \
             git \
+            libclang-dev \
             libsqlite3-dev \
             make \
             perl \
@@ -98,6 +99,7 @@ jobs:
             curl \
             g++ \
             git \
+            libclang-dev \
             libsqlite3-dev \
             make \
             perl \
@@ -139,7 +141,9 @@ jobs:
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
-        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
+        run: |
+          brew install gnutls libnghttp2 libnghttp3 libngtcp2 llvm openssl@3 sqlite
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build

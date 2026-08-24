@@ -13,25 +13,36 @@ use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
 fn main() {
     println!("cargo:rerun-if-changed=js/");
     println!("cargo:rerun-if-changed=src/profiler/binding.cc");
-    println!("cargo:rerun-if-changed=src/v8_threading/binding.cc");
+    println!("cargo:rerun-if-changed=src/v8_isolate_group/binding.cc");
+    println!("cargo:rerun-if-changed=scripts/v8-compiler-wrapper.sh");
+    println!("cargo:rerun-if-changed=scripts/v8-ninja-wrapper.sh");
     println!("cargo:rerun-if-env-changed=FINO_PROTOCOL_DEPS_PREFIX");
 
     link_linux_protocol_dependencies();
 
-    // Compile the CpuProfiler C++ shim against V8 headers.
+    // Compile Fino's C++ V8 shims against the crate's matching headers.
     let v8_include = find_v8_include();
     let v8_src = v8_include.parent().unwrap().parent().unwrap().join("src"); // for support.h
-    cc::Build::new()
+    let mut v8_bindings = cc::Build::new();
+    v8_bindings
         .cpp(true)
         .flag("-std=c++20")
+        // Keep the public V8 header ABI aligned with the custom rusty_v8
+        // build. The shared-cage define is intentionally absent: every realm
+        // gets its own pointer-compression cage.
+        .define("V8_COMPRESS_POINTERS", None)
+        .define("V8_31BIT_SMIS_ON_64BIT_ARCH", None)
+        .define("V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES", None)
         // V8 headers intentionally leave many virtual/interface parameters
         // unnamed by use. Keep profiler shim builds quiet without disabling
         // broader diagnostics for our C++ source.
         .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-comment")
+        .flag_if_supported("-Wno-cast-function-type")
         .include(&v8_include)
         .include(&v8_src)
         .file("src/profiler/binding.cc")
-        .file("src/v8_threading/binding.cc")
+        .file("src/v8_isolate_group/binding.cc")
         .compile("fino_profiler_binding");
 
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -216,9 +227,32 @@ fn strip_types(path: &Path, source_text: &str) -> Result<TranspiledSource, Strin
     })
 }
 
-/// Locate the V8 crate's `v8/include/` directory by scanning the Cargo registry.
-/// The v8 crate vendors its V8 headers, and we need them to compile our C++ shim.
+/// Locate the locked V8 crate's `v8/include/` directory in the Cargo registry.
+/// The v8 crate vendors its V8 headers, and we need the exact matching version
+/// to compile our C++ shim with the same ABI.
 fn find_v8_include() -> PathBuf {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let lockfile = fs::read_to_string(manifest_dir.join("Cargo.lock"))
+        .expect("failed to read Cargo.lock while locating V8 headers");
+    let mut in_v8_package = false;
+    let mut v8_version = None;
+    for line in lockfile.lines() {
+        if line == "[[package]]" {
+            in_v8_package = false;
+        } else if line == "name = \"v8\"" {
+            in_v8_package = true;
+        } else if in_v8_package && line.starts_with("version = \"") {
+            v8_version = line
+                .strip_prefix("version = \"")
+                .and_then(|line| line.strip_suffix('"'));
+            break;
+        }
+    }
+    let v8_package = format!(
+        "v8-{}",
+        v8_version.expect("Cargo.lock does not contain the v8 package")
+    );
+
     let cargo_home = env::var("CARGO_HOME").unwrap_or_else(|_| {
         let home = env::var("HOME").expect("HOME not set");
         format!("{home}/.cargo")
@@ -231,7 +265,7 @@ fn find_v8_include() -> PathBuf {
                 for pkg_entry in pkgs.flatten() {
                     let name = pkg_entry.file_name();
                     let name = name.to_string_lossy();
-                    if name.starts_with("v8-") {
+                    if name == v8_package.as_str() {
                         let include = pkg_entry.path().join("v8/include");
                         if include.exists() {
                             return include;
@@ -242,6 +276,6 @@ fn find_v8_include() -> PathBuf {
         }
     }
     panic!(
-        "Could not find v8 crate include directory in Cargo registry. Set CARGO_HOME if needed."
+        "Could not find {v8_package} include directory in Cargo registry. Set CARGO_HOME if needed."
     );
 }

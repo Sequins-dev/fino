@@ -16,12 +16,11 @@
 
 use std::cell::RefCell;
 use std::ffi::c_void;
-use std::ptr::addr_of;
 use std::rc::Rc;
 
 use ::v8;
 use ::v8::inspector::{
-    ChannelBase, ChannelImpl, StringView, V8InspectorClientBase, V8InspectorClientImpl,
+    Channel, ChannelImpl, StringView, V8InspectorClient, V8InspectorClientImpl,
     V8InspectorClientTrustLevel,
 };
 
@@ -43,7 +42,10 @@ struct PendingEval {
 // ---------------------------------------------------------------------------
 
 struct InspectorChannel {
-    base: ChannelBase,
+    state: Rc<InspectorChannelState>,
+}
+
+struct InspectorChannelState {
     /// Pending evaluate() call waiting for its response.
     pending_eval: Rc<RefCell<Option<PendingEval>>>,
     /// CDP messages buffered since the last drain; routed to the JS handler.
@@ -54,28 +56,11 @@ struct InspectorChannel {
 }
 
 impl ChannelImpl for InspectorChannel {
-    fn base(&self) -> &ChannelBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut ChannelBase {
-        &mut self.base
-    }
-    unsafe fn base_ptr(this: *const Self) -> *const ChannelBase
-    where
-        Self: Sized,
-    {
-        unsafe { addr_of!((*this).base) }
-    }
-
-    fn send_response(
-        &mut self,
-        call_id: i32,
-        mut message: v8::UniquePtr<v8::inspector::StringBuffer>,
-    ) {
+    fn send_response(&self, call_id: i32, mut message: v8::UniquePtr<v8::inspector::StringBuffer>) {
         let json = message.as_mut().unwrap().string().to_string();
         // Resolve a pending evaluate() if the call_id matches.
         {
-            let mut slot = self.pending_eval.borrow_mut();
+            let mut slot = self.state.pending_eval.borrow_mut();
             if slot.as_ref().map_or(false, |e| e.call_id == call_id) {
                 let eval = slot.take().unwrap();
                 eval.pending_resolutions
@@ -86,21 +71,21 @@ impl ChannelImpl for InspectorChannel {
                     });
             }
         }
-        self.buffered_messages.borrow_mut().push(json);
+        self.state.buffered_messages.borrow_mut().push(json);
     }
 
-    fn send_notification(&mut self, mut message: v8::UniquePtr<v8::inspector::StringBuffer>) {
+    fn send_notification(&self, mut message: v8::UniquePtr<v8::inspector::StringBuffer>) {
         let json = message.as_mut().unwrap().string().to_string();
         // Capture context_id from Runtime.executionContextCreated notification.
-        if self.context_id.get() < 0 && json.contains("executionContextCreated") {
+        if self.state.context_id.get() < 0 && json.contains("executionContextCreated") {
             if let Some(id) = extract_context_id(&json) {
-                self.context_id.set(id);
+                self.state.context_id.set(id);
             }
         }
-        self.buffered_messages.borrow_mut().push(json);
+        self.state.buffered_messages.borrow_mut().push(json);
     }
 
-    fn flush_protocol_notifications(&mut self) {}
+    fn flush_protocol_notifications(&self) {}
 }
 
 /// Extract `params.context.id` from a `Runtime.executionContextCreated` JSON notification.
@@ -124,36 +109,20 @@ fn extract_context_id(json: &str) -> Option<i32> {
 // InspectorClient — minimal V8InspectorClient implementation
 // ---------------------------------------------------------------------------
 
-struct InspectorClient {
-    base: V8InspectorClientBase,
-}
+struct InspectorClient;
 
-impl V8InspectorClientImpl for InspectorClient {
-    fn base(&self) -> &V8InspectorClientBase {
-        &self.base
-    }
-    fn base_mut(&mut self) -> &mut V8InspectorClientBase {
-        &mut self.base
-    }
-    unsafe fn base_ptr(this: *const Self) -> *const V8InspectorClientBase
-    where
-        Self: Sized,
-    {
-        unsafe { addr_of!((*this).base) }
-    }
-}
+impl V8InspectorClientImpl for InspectorClient {}
 
 // ---------------------------------------------------------------------------
 // InspectorState — all inspector objects for one realm
 // ---------------------------------------------------------------------------
 
 pub struct InspectorState {
-    _client: Box<InspectorClient>,
-    channel: Box<InspectorChannel>,
+    channel: Rc<InspectorChannelState>,
     // Dropped in declaration order: session first, then inspector, then client/channel.
     // We use Option so we can take() them in the correct order during Drop.
-    session: Option<v8::UniqueRef<v8::inspector::V8InspectorSession>>,
-    inspector: Option<v8::UniqueRef<v8::inspector::V8Inspector>>,
+    session: Option<v8::inspector::V8InspectorSession>,
+    inspector: Option<v8::inspector::V8Inspector>,
     next_id: std::cell::Cell<i32>,
     pending_eval: Rc<RefCell<Option<PendingEval>>>,
     message_handler: Option<v8::Global<v8::Function>>,
@@ -186,7 +155,7 @@ pub unsafe fn dispose_inspector(ptr: *mut c_void) {
 // Lazy inspector initialisation
 // ---------------------------------------------------------------------------
 
-fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
+fn get_or_init_inspector(scope: &mut v8::PinScope) -> *mut InspectorState {
     let state_rc = get_state(scope);
 
     // Fast path: already initialised.
@@ -196,11 +165,8 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
 
     let pending_eval: Rc<RefCell<Option<PendingEval>>> = Rc::new(RefCell::new(None));
 
-    let mut client = Box::new(InspectorClient {
-        base: V8InspectorClientBase::new::<InspectorClient>(),
-    });
-    let mut channel = Box::new(InspectorChannel {
-        base: ChannelBase::new::<InspectorChannel>(),
+    let client = V8InspectorClient::new(Box::new(InspectorClient));
+    let channel = Rc::new(InspectorChannelState {
         pending_eval: Rc::clone(&pending_eval),
         buffered_messages: RefCell::new(Vec::new()),
         context_id: std::cell::Cell::new(-1),
@@ -210,7 +176,7 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     let context = scope.get_current_context();
 
     // V8Inspector::create takes &mut Isolate; HandleScope coerces via AsMut.
-    let mut inspector = v8::inspector::V8Inspector::create(scope.as_mut(), &mut *client);
+    let inspector = v8::inspector::V8Inspector::create(scope.as_mut(), client);
 
     let name_bytes = b"realm" as &[u8];
     let aux_bytes = b"{}" as &[u8];
@@ -222,9 +188,12 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     );
 
     let state_bytes = b"{}" as &[u8];
-    let mut session = inspector.connect(
+    let channel_handle = Channel::new(Box::new(InspectorChannel {
+        state: Rc::clone(&channel),
+    }));
+    let session = inspector.connect(
         context_group_id,
-        &mut *channel,
+        channel_handle,
         StringView::from(state_bytes),
         V8InspectorClientTrustLevel::FullyTrusted,
     );
@@ -238,7 +207,6 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
     channel.buffered_messages.borrow_mut().clear();
 
     let insp = Box::new(InspectorState {
-        _client: client,
         channel,
         session: Some(session),
         inspector: Some(inspector),
@@ -256,7 +224,7 @@ fn get_or_init_inspector(scope: &mut v8::HandleScope) -> *mut InspectorState {
 // Drain buffered messages to the JS onMessage handler
 // ---------------------------------------------------------------------------
 
-fn drain_messages(scope: &mut v8::HandleScope, insp: &mut InspectorState) {
+fn drain_messages(scope: &mut v8::PinScope, insp: &mut InspectorState) {
     let handler = match &insp.message_handler {
         Some(h) => v8::Local::new(scope, h),
         None => {
@@ -285,7 +253,7 @@ fn drain_messages(scope: &mut v8::HandleScope, insp: &mut InspectorState) {
 // Synthetic module
 // ---------------------------------------------------------------------------
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["dispatch", "onMessage", "nextId", "evaluate"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
@@ -299,7 +267,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -323,7 +291,7 @@ fn eval_steps<'a>(
 // ---------------------------------------------------------------------------
 
 fn dispatch_cb(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -347,7 +315,7 @@ fn dispatch_cb(
 // ---------------------------------------------------------------------------
 
 fn on_message_cb(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -369,7 +337,7 @@ fn on_message_cb(
 // ---------------------------------------------------------------------------
 
 fn next_id_cb(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -391,7 +359,7 @@ fn next_id_cb(
 // ---------------------------------------------------------------------------
 
 fn evaluate_cb(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
