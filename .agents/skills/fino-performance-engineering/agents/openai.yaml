@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Performance Engineering"
+  short_description: "Benchmark and profile Fino reliably"
+  default_prompt: "Use $fino-performance-engineering to measure this Fino performance change with a controlled, repeatable workload."
