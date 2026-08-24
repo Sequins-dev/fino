@@ -140,6 +140,21 @@ slice time, loop turns, and isolate heap use. Keep process RSS/CPU fixes as
 small standalone correctness changes. Do not introduce a `NodeLoad` protocol
 type before there are nodes.
 
+### L6. Local resource envelopes
+
+Many isolates also need explicit local containment. Pointer compression reduces
+fixed overhead, but it does not stop one scheduled Realm from consuming the
+heap capacity intended for its peers. Add an optional V8 heap envelope through
+the smallest native creation primitive, with TypeScript owning validation,
+resource classes, and policy.
+
+Keep the contract honest: a V8 heap limit does not include external
+`ArrayBuffer` stores, native libraries, async FFI allocations, or process-wide
+caches. Test limit enforcement, parent-visible failure, cleanup, and peer
+progress after exhaustion before using the value for admission. CPU timeouts
+and watchdog policy are separate from memory limits and should not be bundled
+into the same public API change without a shared resource contract.
+
 ### Existing local validation debt
 
 The focused sandbox suite can print a complete passing TAP result and then
@@ -160,7 +175,8 @@ the scheduler iterations above. Because it overlaps the native isolate and
 scheduler boundaries changed by L1, rebase it after L1 and require an explicit
 per-Realm memory and handoff benchmark in addition to its correctness tests.
 Its V8 upgrade, build changes, isolate wrapper, and SharedArrayBuffer behavior
-should be reviewed as one runtime-substrate change, not as clustering support.
+should be reviewed as one runtime-substrate change, not as clustering support
+or as a substitute for the L6 resource contract.
 
 ## The future portability boundary
 
