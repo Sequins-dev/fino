@@ -19,12 +19,16 @@ import {
   registerReactorWake,
   startReactorPool,
   stopReactorPool,
+  submitReactorWorkload,
   takeReactorEvents,
+  workloadOwner,
+  workloadWakeFd,
 } from 'internal:scheduler-native';
 import { currentProcessReadinessController } from './reactor.ts';
 
 /**
- * Reactor thread count: one per online processor, or `FINO_REACTOR_THREADS`.
+ * Reactor thread count: one per online processor, less one where there is a
+ * processor to spare, or `FINO_REACTOR_THREADS`.
  *
  * The pool sized itself from `navigator.hardwareConcurrency`, which fino does
  * not define, so it silently ran a single thread for the whole life of the
@@ -35,13 +39,25 @@ import { currentProcessReadinessController } from './reactor.ts';
  * with the thread count under that scheme and is flat under this one, while
  * CPU-bound realms overlap almost perfectly.
  *
+ * One fewer reactor than processors, so the main thread — which owns the host
+ * loop, the cluster session, and heartbeats — has a core of its own. Saturating
+ * every processor with workloads starves it into missing heartbeats, and the
+ * node is swept from cluster membership while the scheduler underneath it is
+ * working perfectly.
+ *
+ * Not below three processors, where there is no core to spare and taking one
+ * away costs more than it protects: a two-processor host would run a single
+ * reactor, and interdependent realms — an in-process cluster seed and its
+ * workers, most visibly — cannot make progress through one.
+ *
  * Pin the variable to 1 to get single-threaded behaviour back when isolating a
  * scheduling problem.
  */
 function configuredThreadCount(): number {
   const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
   if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
-  return onlineProcessors();
+  const processors = onlineProcessors();
+  return processors > 2 ? processors - 1 : Math.max(1, processors);
 }
 
 /**
@@ -64,28 +80,46 @@ export async function runReactorPool(
   const controlFd = startReactorPool();
   const threadCount = Math.max(1, Math.floor(options.threads ?? configuredThreadCount()));
   const threads: number[] = [];
-  for (let index = 0; index < threadCount; index++) threads.push(createReactorThread());
+  for (let index = 0; index < threadCount; index++) threads.push(createReactorThread().handle);
 
-  const entry = createWorkload(entryPath);
+  // Creating a workload and queueing it are separate steps: until it is
+  // submitted, no reactor can claim it, which is what makes it safe to read its
+  // owner and arm its wake descriptor first. Doing that after submission would
+  // race a reactor that has already started the realm.
+  const workload = createWorkload(entryPath);
+  const owner = workloadOwner(workload);
   // Realms register their own wake descriptor the same way, whether they are
   // created here or by another realm: the mailbox tells this realm to watch it
   // and re-signal the owner. Keeping one path means the reactor cannot be woken
   // by two mechanisms with different lifetimes.
-  registerReactorWake(entry.owner, entry.wakeFd);
+  registerReactorWake(owner, workloadWakeFd(workload));
+  submitReactorWorkload(null, workload);
   // Owners tracked here are the entry realm plus every realm it spawns onto the
   // same pool; the run ends only once all of them have settled.
-  const liveOwners = new Set([entry.owner]);
+  const liveOwners = new Set([owner]);
 
   try {
     while (liveOwners.size > 0) {
       await loop.readable(controlFd);
       for (const event of takeReactorEvents()) {
-        if (event.kind === 'activated') {
-          liveOwners.add(event.owner);
-          continue;
+        // `settled`, `error` and `shed` retire an owner; `submitted` and
+        // `activated` announce one. `overrun` and `halted` are watchdog
+        // escalations against a slice, and the workload they interrupt still
+        // reports its own terminal event afterwards — treating them as
+        // terminal would end the run while realms were still going.
+        switch (event.kind) {
+          case 'submitted':
+          case 'activated':
+            liveOwners.add(event.owner);
+            continue;
+          case 'overrun':
+          case 'halted':
+            continue;
+          default:
+            break;
         }
         liveOwners.delete(event.owner);
-        if (event.owner === entry.owner && event.kind === 'error') {
+        if (event.owner === owner && event.kind === 'error') {
           throw event.error ?? `scheduled realm ${event.owner} failed`;
         }
       }

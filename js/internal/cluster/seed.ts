@@ -37,9 +37,13 @@
  */
 import type { ClusterSeedTransport } from './transport.ts';
 import { type ClusterMessage } from './protocol.ts';
+import type { WorkloadLedger } from './ledger.ts';
 import { RealmRegistry } from './registry.ts';
+import { DiskFileSystem } from 'fino:file';
+import { caskSha256Hex, concatCaskChunks, inspectCask } from './cask.ts';
 import { env } from 'internal:process';
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
+
 type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
 interface PortSequenceState {
   next: number;
@@ -97,6 +101,28 @@ function heartbeatTimeoutMs(): number {
  *
  * @internal
  */
+/** Optional identity and authentication configuration for a seed. */
+export interface SeedServerOptions {
+  /**
+   * Join token every HELLO must present. When set, a HELLO with a missing or
+   * mismatched token receives JOIN_DENIED and is never registered. When
+   * absent, the seed admits any HELLO (development mode).
+   */
+  joinToken?: string;
+  /** Cluster identity advertised in every WELCOME. */
+  clusterId?: string;
+  /**
+   * Durable workload ledger. When present, every routed spawn is committed
+   * before it is forwarded — the commit-before-acknowledge guarantee — with
+   * ownership leased to the chosen node and renewed by its heartbeats.
+   */
+  ledger?: WorkloadLedger;
+  /** Lease duration for ledger ownership; defaults to 30 seconds. */
+  leaseMs?: number;
+  /** Directory for uploaded casks; cask transfer is refused when absent. */
+  caskDir?: string;
+}
+
 export class SeedServer {
   /**
    * Seed-side transport the router listens and routes on.
@@ -132,7 +158,11 @@ export class SeedServer {
       load: {
         cpu: number;
         memory: number;
+        loopIdle?: number;
       };
+      incarnation?: number;
+      endpoint?: string;
+      certHash?: string;
     }
   >();
   /**
@@ -162,6 +192,10 @@ export class SeedServer {
       requesterNodeId: string;
       parentPortId: string;
       targetNodeId: string;
+      /** The original spawn, retained so a refusal can be routed elsewhere. */
+      spawn: Extract<ClusterMessage, { t: 'SPAWN' }>;
+      /** Nodes already tried; excluded from retries. */
+      attempted: Set<string>;
     }
   >();
   // portId -> nodeId for PORT_MSG routing and death propagation.
@@ -182,6 +216,14 @@ export class SeedServer {
   #portNodes = new Map<string, string>();
   /** Per-source ordering for PORT_MSG frames received on independent streams. */
   #portSequences = new Map<string, PortSequenceState>();
+  /**
+   * Realm-to-realm frames this seed has forwarded on behalf of two other nodes.
+   *
+   * The number a seed operator cares about: it should stay near zero once
+   * nodes form direct sessions, and every frame counted here is one that made
+   * the control plane carry data-plane load. `FINO_CLUSTER_TRACE=1` reports it.
+   */
+  #relayedPortMessages = 0;
   /** Realm exits held until their declared final port message is routed. */
   #pendingRealmExits = new Map<string, RealmExitMessage>();
   /**
@@ -205,8 +247,483 @@ export class SeedServer {
    * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
    * ```
    */
-  constructor(transport: ClusterSeedTransport) {
+  constructor(transport: ClusterSeedTransport, options: SeedServerOptions = {}) {
     this.#transport = transport;
+    this.#joinToken = options.joinToken ?? null;
+    this.#clusterId = options.clusterId ?? null;
+    this.#ledger = options.ledger ?? null;
+    this.#leaseMs = options.leaseMs ?? 30_000;
+    this.#caskDir = options.caskDir ?? null;
+  }
+  /** Cask artifact store directory, or null when the seed is stateless. */
+  #caskDir: string | null;
+  /** In-flight cask uploads keyed by `{from}/{hash}`. */
+  #caskUploads = new Map<string, { chunks: Uint8Array[]; nextSeq: number }>();
+  /**
+   * Accept one chunk of a cask upload; on the last chunk, verify the whole
+   * artifact against its claimed hash before it enters the store. A mismatch
+   * or out-of-order chunk drops the transfer and tells the uploader why —
+   * the store never holds bytes whose name lies about their content.
+   */
+  async #handleCaskPut(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'CASK_PUT' }>,
+  ): Promise<void> {
+    const nack = (error: string): void => {
+      this.#transport.send(from, { t: 'CASK_ACK', hash: msg.hash, ok: false, error });
+    };
+    if (this.#caskDir === null) {
+      nack('this seed has no cask store (start it with --state)');
+      return;
+    }
+    const key = `${from}/${msg.hash}`;
+    const upload = this.#caskUploads.get(key) ?? { chunks: [], nextSeq: 0 };
+    if (msg.seq !== upload.nextSeq) {
+      this.#caskUploads.delete(key);
+      nack(`out-of-order chunk ${msg.seq}, expected ${upload.nextSeq}`);
+      return;
+    }
+    upload.chunks.push(msg.chunk);
+    upload.nextSeq++;
+    if (!msg.last) {
+      this.#caskUploads.set(key, upload);
+      return;
+    }
+    this.#caskUploads.delete(key);
+    const bytes = concatCaskChunks(upload.chunks);
+    if ((await caskSha256Hex(bytes)) !== msg.hash) {
+      nack('cask bytes do not match their claimed hash');
+      return;
+    }
+    const fs = new DiskFileSystem();
+    try {
+      await fs.stat(this.#caskDir);
+    } catch {
+      await fs.mkdir(this.#caskDir);
+    }
+    await fs.writeFile(`${this.#caskDir}/${msg.hash}.cask`, bytes);
+    this.#transport.send(from, { t: 'CASK_ACK', hash: msg.hash, ok: true });
+  }
+  /**
+   * Deploy a named application from an uploaded cask.
+   *
+   * Records the generation first — a deployment the cluster acknowledged is
+   * always in history, even if placement then fails — and forwards the spawn
+   * with the cask hash attached so the target fetches the artifact before it
+   * spawns. Everything after the record rides the normal spawn machinery:
+   * pressure placement, retryable admission, node-down rerouting,
+   * commit-before-ack.
+   */
+  async #handleDeploy(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'DEPLOY' }>,
+  ): Promise<void> {
+    const fail = (error: string): void => {
+      this.#transport.send(from, {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error,
+      });
+    };
+    if (this.#caskDir === null || this.#ledger === null) {
+      fail('deploy requires a seed with durable state (--state)');
+      return;
+    }
+    let entry: string;
+    let replicas = 1;
+    let readyAfterMs = 2000;
+    let minHealthy: number;
+    try {
+      const inspected = await inspectCask(`${this.#caskDir}/${msg.hash}.cask`);
+      entry = inspected.manifest.entry;
+      replicas = inspected.manifest.replicas ?? 1;
+      readyAfterMs = inspected.manifest.readyAfterMs ?? 2000;
+      minHealthy = inspected.manifest.minHealthy ?? Math.max(1, replicas - 1);
+    } catch {
+      fail(`unknown cask ${msg.hash}; upload it first`);
+      return;
+    }
+    let generation: number;
+    try {
+      generation = (await this.#ledger.recordDeployment(msg.name, msg.hash, entry, replicas))
+        .generation;
+    } catch (err) {
+      fail(`deployment record failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // Desired state: a new generation replaces the old one's replica set.
+    // Old-generation replicas keep running until their realms exit — rolling
+    // replacement with health gates is later scope; reconciliation maintains
+    // only the ACTIVE generation's count.
+    // A generation replacing live replicas rolls: old replicas keep serving,
+    // and reconciliation advances one fenced step per pass. A fresh
+    // deployment bursts all replicas at once — there is nothing to protect.
+    const existing = this.#deployments.get(msg.name);
+    const previous =
+      existing !== undefined && existing.running.size > 0
+        ? new Map(
+            [...existing.running.values(), ...(existing.previous?.values() ?? [])].map(
+              (replica) => [replica.childPortId, replica],
+            ),
+          )
+        : null;
+    const state = {
+      generation,
+      caskHash: msg.hash,
+      entry,
+      want: replicas,
+      readyAfterMs,
+      minHealthy,
+      running: new Map<number, { childPortId: string; nodeId: string; ackAt: number }>(),
+      placing: new Map<number, string>(),
+      previous,
+    };
+    this.#deployments.set(msg.name, state);
+    // Replica 0 answers the deployer's DEPLOY (the --wait semantic). A fresh
+    // deployment places the rest immediately; a rollout leaves them to
+    // reconciliation so replacement stays one step at a time.
+    this.#replicaSpawns.set(msg.spawnReqId, { name: msg.name, replica: 0 });
+    state.placing.set(0, msg.spawnReqId);
+    this.#placeDeployment(from, msg.spawnReqId, msg.parentPortId, msg.name, msg.hash, entry, fail);
+    if (previous === null) {
+      for (let replica = 1; replica < replicas; replica++) {
+        this.#placeReplica(msg.name, replica);
+      }
+    }
+  }
+
+  /** Place one replica of a deployment's active generation, seed-owned. */
+  #placeReplica(name: string, replica: number): void {
+    const state = this.#deployments.get(name);
+    if (state === undefined || state.running.has(replica) || state.placing.has(replica)) return;
+    const spawnReqId = `${this.#transport.nodeId}-${name}-g${state.generation}-r${replica}-${Date.now() % 1e6}`;
+    const parentPortId = `${this.#transport.nodeId}/p-${name}-r${replica}`;
+    state.placing.set(replica, spawnReqId);
+    this.#replicaSpawns.set(spawnReqId, { name, replica });
+    this.#placeDeployment(
+      this.#transport.nodeId,
+      spawnReqId,
+      parentPortId,
+      name,
+      state.caskHash,
+      state.entry,
+      (error) => {
+        state.placing.delete(replica);
+        this.#replicaSpawns.delete(spawnReqId);
+        console.error(`fino:cluster replica ${name}#${replica} placement failed: ${error}`);
+      },
+    );
+  }
+
+  /** Forget every replica hosted on a node that left or died. */
+  #forgetReplicasOnNode(nodeId: string): void {
+    for (const state of this.#deployments.values()) {
+      for (const [replica, info] of state.running) {
+        if (info.nodeId === nodeId) {
+          state.running.delete(replica);
+          this.#replicasByChildPort.delete(info.childPortId);
+        }
+      }
+      if (state.previous !== null) {
+        for (const [portId, info] of state.previous) {
+          if (info.nodeId === nodeId) state.previous.delete(portId);
+        }
+        if (state.previous.size === 0) state.previous = null;
+      }
+    }
+  }
+
+  /** Drop a live replica record when its realm exits or its node dies. */
+  #forgetReplica(childPortId: string): void {
+    for (const state of this.#deployments.values()) {
+      if (state.previous?.delete(childPortId) === true && state.previous.size === 0) {
+        state.previous = null;
+      }
+    }
+    const info = this.#replicasByChildPort.get(childPortId);
+    if (info === undefined) return;
+    this.#replicasByChildPort.delete(childPortId);
+    this.#deployments.get(info.name)?.running.delete(info.replica);
+  }
+
+  /**
+   * Converge every deployment toward its desired replica count. Runs on the
+   * heartbeat sweep; missing replicas are re-placed one at a time per pass —
+   * the one-fenced-action-at-a-time rule from the design.
+   */
+  #reconcileDeployments(now = Date.now()): void {
+    for (const [name, state] of this.#deployments) {
+      const ready = [...state.running.values()].filter(
+        (replica) => now - replica.ackAt >= state.readyAfterMs,
+      ).length;
+      if (state.previous !== null) {
+        // Rolling replacement: retire ONE old replica per pass, and only
+        // while the combined ready count stays at or above minHealthy.
+        if (ready + state.previous.size - 1 >= state.minHealthy && ready > 0) {
+          const [portId, victim] = state.previous.entries().next().value as [
+            string,
+            { childPortId: string; nodeId: string },
+          ];
+          state.previous.delete(portId);
+          if (state.previous.size === 0) state.previous = null;
+          this.#transport.send(victim.nodeId, { t: 'TERMINATE', realmId: victim.childPortId });
+          continue;
+        }
+      }
+      const live = state.running.size + state.placing.size;
+      if (live >= state.want) continue;
+      for (let replica = 0; replica < state.want; replica++) {
+        if (!state.running.has(replica) && !state.placing.has(replica)) {
+          this.#placeReplica(name, replica);
+          break;
+        }
+      }
+    }
+  }
+
+  /**
+   * Place a recorded deployment generation onto a node.
+   *
+   * The requester is excluded: deploy and rollback CLIs are ephemeral
+   * joiners, and a deployment must not land on a process that leaves after
+   * the ack. The SEED owns the deployment's parent port for the same reason —
+   * the requester's node-down must not cascade a TERMINATE into the
+   * application it just deployed.
+   */
+  #placeDeployment(
+    from: string,
+    spawnReqId: string,
+    parentPortId: string,
+    name: string,
+    hash: string,
+    entry: string,
+    fail: (error: string) => void,
+  ): void {
+    // Anti-affinity: prefer nodes not already hosting a replica of this
+    // deployment; fall back to co-location rather than refusing when the
+    // cluster is smaller than the replica count.
+    const hosting = new Set<string>();
+    const state = this.#deployments.get(name);
+    if (state !== undefined) {
+      for (const replica of state.running.values()) hosting.add(replica.nodeId);
+      // In-flight placements count as hosting: sibling replicas placed in
+      // the same burst have not acked yet, and spreading is the whole point.
+      for (const [, inFlightId] of state.placing) {
+        const inFlight = this.#pendingSpawns.get(inFlightId);
+        if (inFlight !== undefined && inFlightId !== spawnReqId) {
+          hosting.add(inFlight.targetNodeId);
+        }
+      }
+    }
+    const spread = hosting.size > 0 ? this.#selectTarget(new Set([from, ...hosting])) : null;
+    const target = spread ?? this.#selectTarget(new Set([from]));
+    if (target === null) {
+      const peers = [...this.#peers.entries()]
+        .map(([id, p]) => `${id}(draining=${p.load.draining === true})`)
+        .join(', ');
+      fail(`no available node to run the deployment (from=${from}; peers: ${peers || 'none'})`);
+      return;
+    }
+    const spawn: Extract<ClusterMessage, { t: 'SPAWN' }> = {
+      t: 'SPAWN',
+      spawnReqId,
+      parentPortId,
+      config: { entry, root: '', rules: [] },
+      caskHash: hash,
+    };
+    this.#pendingSpawns.set(spawnReqId, {
+      requesterNodeId: from,
+      parentPortId,
+      targetNodeId: target,
+      spawn,
+      attempted: new Set([from, target]),
+    });
+    this.#portNodes.set(parentPortId, this.#transport.nodeId);
+    this.#registry.register(parentPortId, null, this.#transport.nodeId);
+    this.#ledgerOp(async (ledger) => {
+      await ledger.commit(spawnReqId, JSON.stringify({ deploy: name, cask: hash }));
+      await ledger.claim(
+        spawnReqId,
+        target,
+        this.#peers.get(target)?.incarnation ?? 0,
+        this.#leaseMs,
+      );
+    });
+    this.#transport.send(target, spawn);
+  }
+
+  /** Answer a deployment-history query from the ledger. */
+  async #handleDeploymentsGet(from: string, spawnReqId: string, name?: string): Promise<void> {
+    const records = this.#ledger === null ? [] : await this.#ledger.deployments(name);
+    this.#transport.send(from, {
+      t: 'DEPLOYMENTS',
+      spawnReqId,
+      deployments: records.map((record) => ({
+        name: record.name,
+        generation: record.generation,
+        caskHash: record.caskHash,
+        entry: record.entry,
+        state: record.state,
+        createdAt: record.createdAt,
+      })),
+    });
+  }
+
+  /**
+   * Record a rollback generation — a new generation pointing at the previous
+   * cask — and place it like any deploy. Instant by construction: the
+   * artifact is content-addressed and already cached wherever it ever ran.
+   */
+  async #handleRollback(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'ROLLBACK' }>,
+  ): Promise<void> {
+    const fail = (error: string): void => {
+      this.#transport.send(from, {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error,
+      });
+    };
+    if (this.#ledger === null || this.#caskDir === null) {
+      fail('rollback requires a seed with durable state (--state)');
+      return;
+    }
+    const record = await this.#ledger.rollbackDeployment(msg.name);
+    if (record === null) {
+      fail(`nothing to roll back: ${msg.name} has fewer than two generations`);
+      return;
+    }
+    this.#placeDeployment(
+      from,
+      msg.spawnReqId,
+      msg.parentPortId,
+      msg.name,
+      record.caskHash,
+      record.entry,
+      fail,
+    );
+  }
+  /** Stream a stored cask back to a fetching node in order, last flagged. */
+  async #handleCaskGet(from: string, hash: string): Promise<void> {
+    const nack = (error: string): void => {
+      this.#transport.send(from, { t: 'CASK_ACK', hash, ok: false, error });
+    };
+    if (this.#caskDir === null) {
+      nack('this seed has no cask store (start it with --state)');
+      return;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await new DiskFileSystem().readFile(`${this.#caskDir}/${hash}.cask`);
+    } catch {
+      nack('unknown cask');
+      return;
+    }
+    const CHUNK = 256 * 1024;
+    for (let offset = 0, seq = 0; offset < bytes.length || seq === 0; offset += CHUNK, seq++) {
+      const chunk = bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length));
+      this.#transport.send(from, {
+        t: 'CASK_DATA',
+        hash,
+        seq,
+        chunk,
+        last: offset + CHUNK >= bytes.length,
+      });
+    }
+  }
+  /** Durable workload ledger, or null in soft (stateless) mode. */
+  #ledger: WorkloadLedger | null;
+  /** Ledger lease duration in milliseconds. */
+  #leaseMs: number;
+  /** Serialized ledger operations, preserving per-run write order. */
+  #ledgerQueue: Promise<void> = Promise.resolve();
+  /** Enqueue a ledger operation; failures are logged, never routing-fatal. */
+  #ledgerOp(op: (ledger: WorkloadLedger) => Promise<unknown>): void {
+    const ledger = this.#ledger;
+    if (ledger === null) return;
+    this.#ledgerQueue = this.#ledgerQueue
+      .then(() => op(ledger))
+      .then(
+        () => undefined,
+        (err: unknown) => {
+          console.error(`fino:cluster seed ledger operation failed: ${err}`);
+        },
+      );
+  }
+  /** Test hook: resolves after previously enqueued ledger ops settle. @internal */
+  _ledgerSettled(): Promise<void> {
+    return this.#ledgerQueue.then(() => undefined);
+  }
+  /**
+   * Reclaim expired leases and reroute the in-flight spawns they belonged to.
+   *
+   * This catches the failure the node-down path cannot: a target that goes
+   * silent without disconnecting. Its lease lapses, the record returns to the
+   * unclaimed pool, and any spawn still waiting on it moves to another node.
+   * Reclaimed records with no pending spawn are left for reconciliation —
+   * their requester is gone or they were initialized, which make-before-break
+   * replacement handles rather than blind re-execution.
+   */
+  async #sweepLedger(ledger: WorkloadLedger): Promise<void> {
+    const reclaimed = await ledger.sweepExpired();
+    for (const record of reclaimed) {
+      const pending = this.#pendingSpawns.get(record.id);
+      if (pending === undefined) continue;
+      const next = this.#selectTarget(pending.attempted);
+      if (next === null) continue;
+      pending.attempted.add(next);
+      pending.targetNodeId = next;
+      await ledger.claim(record.id, next, this.#peers.get(next)?.incarnation ?? 0, this.#leaseMs);
+      this.#transport.send(next, pending.spawn);
+    }
+  }
+  /** Test hook: run one ledger sweep and resolve when it settles. @internal */
+  _sweepLedgerForTest(): Promise<void> {
+    this.#ledgerOp((ledger) => this.#sweepLedger(ledger));
+    return this._ledgerSettled();
+  }
+  /** childPortId -> ledger record id, so realm exits can settle records. */
+  #ledgerIdsByChildPort = new Map<string, string>();
+  /**
+   * Desired state per deployment: the active generation's cask, entry, and
+   * replica count, plus which replicas are currently live and where. The
+   * reconcile pass replaces missing replicas one placement at a time.
+   */
+  #deployments = new Map<
+    string,
+    {
+      generation: number;
+      caskHash: string;
+      entry: string;
+      want: number;
+      readyAfterMs: number;
+      minHealthy: number;
+      running: Map<number, { childPortId: string; nodeId: string; ackAt: number }>;
+      placing: Map<number, string>;
+      /**
+       * The generation being rolled away from, when a rollout is under way.
+       * Its replicas keep serving until each successor is ready; they are
+       * terminated one per pass, never below minHealthy.
+       */
+      previous: Map<string, { childPortId: string; nodeId: string; ackAt: number }> | null;
+    }
+  >();
+  /** spawnReqId -> { name, replica } for deployment placements in flight. */
+  #replicaSpawns = new Map<string, { name: string; replica: number }>();
+  /** childPortId -> { name, replica } for live deployment replicas. */
+  #replicasByChildPort = new Map<string, { name: string; replica: number }>();
+  /** Join token every HELLO must present, or null when auth is disabled. */
+  #joinToken: string | null;
+  /** Cluster identity advertised in WELCOME, or null when unset. */
+  #clusterId: string | null;
+  /** The cluster identity advertised to joiners, or null when unset. */
+  get clusterId(): string | null {
+    return this.#clusterId;
   }
   /**
    * Start listening and begin heartbeat monitoring.
@@ -225,7 +742,21 @@ export class SeedServer {
   async start(): Promise<void> {
     this.#transport.on((from, msg) => this.#handle(from, msg));
     await this.#transport.listen();
-    this.#heartbeatTimer = setInterval(() => this.#checkHeartbeats(), heartbeatIntervalMs());
+    this.#heartbeatTimer = setInterval(() => {
+      this.#checkHeartbeats();
+      if (env.FINO_CLUSTER_TRACE === '1') {
+        console.error(`fino:cluster seed relayed ${this.#relayedPortMessages} port messages`);
+      }
+    }, heartbeatIntervalMs());
+  }
+  /**
+   * Realm-to-realm frames forwarded on behalf of two other nodes.
+   *
+   * Zero means every pair that talked had a direct session. A number that
+   * climbs with load means the seed is the data plane.
+   */
+  get relayedPortMessages(): number {
+    return this.#relayedPortMessages;
   }
   /**
    * Stop heartbeat monitoring and close the underlying transport.
@@ -288,7 +819,51 @@ export class SeedServer {
   #handle(from: string, msg: ClusterMessage): void {
     switch (msg.t) {
       case 'HELLO': {
-        this.#peers.set(from, { load: msg.load });
+        if (this.#joinToken !== null && msg.token !== this.#joinToken) {
+          this.#transport.send(from, {
+            t: 'JOIN_DENIED',
+            reason: 'invalid join token',
+          });
+          break;
+        }
+        const existing = this.#peers.get(from);
+        if (
+          existing?.incarnation !== undefined &&
+          (msg.incarnation === undefined || msg.incarnation < existing.incarnation)
+        ) {
+          // A replacement process must present an incarnation at least as
+          // new as the member it replaces; anything older is a zombie.
+          this.#transport.send(from, {
+            t: 'JOIN_DENIED',
+            reason: 'stale incarnation',
+          });
+          break;
+        }
+        if (msg.observer === true) {
+          // Observers see the membership snapshot but never join it: no
+          // registration, no PEER_UP broadcast, no heartbeat tracking.
+          this.#transport.send(from, {
+            t: 'WELCOME',
+            nodeId: this.#transport.nodeId,
+            peers: [
+              ...Array.from(this.#peers.entries()).map(([nodeId, p]) => ({
+                nodeId,
+                load: p.load,
+                ...(p.incarnation !== undefined ? { incarnation: p.incarnation } : {}),
+                ...(p.endpoint !== undefined ? { endpoint: p.endpoint } : {}),
+                ...(p.certHash !== undefined ? { certHash: p.certHash } : {}),
+              })),
+            ],
+            ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
+          });
+          break;
+        }
+        this.#peers.set(from, {
+          load: msg.load,
+          ...(msg.incarnation !== undefined ? { incarnation: msg.incarnation } : {}),
+          ...(msg.endpoint !== undefined ? { endpoint: msg.endpoint } : {}),
+          ...(msg.certHash !== undefined ? { certHash: msg.certHash } : {}),
+        });
         this.#lastSeen.set(from, Date.now());
         // WELCOME: send current peer list to the new node
         this.#transport.send(from, {
@@ -298,8 +873,12 @@ export class SeedServer {
             ...Array.from(this.#peers.entries()).map(([nodeId, p]) => ({
               nodeId,
               load: p.load,
+              ...(p.incarnation !== undefined ? { incarnation: p.incarnation } : {}),
+              ...(p.endpoint !== undefined ? { endpoint: p.endpoint } : {}),
+              ...(p.certHash !== undefined ? { certHash: p.certHash } : {}),
             })),
           ],
+          ...(this.#clusterId !== null ? { clusterId: this.#clusterId } : {}),
         });
         // Notify existing peers of the new arrival (excluding the new peer)
         this.#transport.broadcastExcept(from, {
@@ -307,6 +886,9 @@ export class SeedServer {
           peer: {
             nodeId: from,
             load: msg.load,
+            ...(msg.incarnation !== undefined ? { incarnation: msg.incarnation } : {}),
+            ...(msg.endpoint !== undefined ? { endpoint: msg.endpoint } : {}),
+            ...(msg.certHash !== undefined ? { certHash: msg.certHash } : {}),
           },
         });
         break;
@@ -323,11 +905,27 @@ export class SeedServer {
         break;
       }
       case 'HEARTBEAT': {
+        const peer = this.#peers.get(from);
+        if (
+          peer?.incarnation !== undefined &&
+          msg.incarnation !== undefined &&
+          msg.incarnation < peer.incarnation
+        ) {
+          // A beat from a replaced process must not keep its ghost alive.
+          break;
+        }
         this.#lastSeen.set(from, Date.now());
+        // Refresh the placement view: without this, load is only ever the
+        // value advertised once at HELLO and target selection is arbitrary.
+        if (peer !== undefined && msg.load !== undefined) peer.load = msg.load;
+        if (peer !== undefined) {
+          const incarnation = peer.incarnation ?? 0;
+          this.#ledgerOp((ledger) => ledger.renewAll(from, incarnation, this.#leaseMs));
+        }
         break;
       }
       case 'SPAWN': {
-        const target = this.#selectTarget(from);
+        const target = this.#selectTarget(new Set([from]));
         if (target === null) {
           // No eligible worker - reject immediately.
           this.#transport.send(from, {
@@ -343,20 +941,80 @@ export class SeedServer {
           requesterNodeId: from,
           parentPortId: msg.parentPortId,
           targetNodeId: target,
+          spawn: msg,
+          attempted: new Set([from, target]),
         });
         this.#portNodes.set(msg.parentPortId, from);
         this.#registry.register(msg.parentPortId, null, from);
+        // Commit before the spawn is forwarded: if every node vanished right
+        // now, the ledger still remembers this workload.
+        this.#ledgerOp(async (ledger) => {
+          await ledger.commit(msg.spawnReqId, JSON.stringify(msg.config));
+          await ledger.claim(
+            msg.spawnReqId,
+            target,
+            this.#peers.get(target)?.incarnation ?? 0,
+            this.#leaseMs,
+          );
+        });
         this.#transport.send(target, msg);
         break;
       }
       case 'SPAWN_ACK': {
         const spawnInfo = this.#pendingSpawns.get(msg.spawnReqId);
+        if (spawnInfo === undefined) break;
+        if (!msg.ok && msg.retryable === true) {
+          // The destination refused admission (overload, not error): route
+          // the same spawn to the next-best node instead of failing it.
+          const next = this.#selectTarget(spawnInfo.attempted);
+          if (next !== null) {
+            spawnInfo.attempted.add(next);
+            spawnInfo.targetNodeId = next;
+            this.#ledgerOp(async (ledger) => {
+              await ledger.release(msg.spawnReqId, from);
+              await ledger.claim(
+                msg.spawnReqId,
+                next,
+                this.#peers.get(next)?.incarnation ?? 0,
+                this.#leaseMs,
+              );
+            });
+            this.#transport.send(next, spawnInfo.spawn);
+            break;
+          }
+        }
         this.#pendingSpawns.delete(msg.spawnReqId);
-        if (msg.ok && spawnInfo) {
+        const replicaInfo = this.#replicaSpawns.get(msg.spawnReqId);
+        if (replicaInfo !== undefined) {
+          this.#replicaSpawns.delete(msg.spawnReqId);
+          const deployment = this.#deployments.get(replicaInfo.name);
+          if (deployment !== undefined) {
+            deployment.placing.delete(replicaInfo.replica);
+            if (msg.ok) {
+              deployment.running.set(replicaInfo.replica, {
+                childPortId: msg.childPortId,
+                nodeId: from,
+                ackAt: Date.now(),
+              });
+              this.#replicasByChildPort.set(msg.childPortId, replicaInfo);
+            }
+          }
+        }
+        if (msg.ok) {
           this.#portNodes.set(msg.childPortId, from);
           this.#registry.register(msg.childPortId, spawnInfo.parentPortId, from);
+          this.#ledgerIdsByChildPort.set(msg.childPortId, msg.spawnReqId);
+          this.#ledgerOp(async (ledger) => {
+            await ledger.markInitialized(
+              msg.spawnReqId,
+              from,
+              this.#peers.get(from)?.incarnation ?? 0,
+            );
+          });
+        } else {
+          this.#ledgerOp((ledger) => ledger.settle(msg.spawnReqId));
         }
-        if (spawnInfo) this.#transport.send(spawnInfo.requesterNodeId, msg);
+        this.#transport.send(spawnInfo.requesterNodeId, msg);
         break;
       }
       case 'REALM_EXIT': {
@@ -367,10 +1025,49 @@ export class SeedServer {
         }
         break;
       }
+      case 'SHED_OFFER':
+      case 'SHED_RESULT': {
+        // Peers reach each other directly when a mesh session exists. Nodes
+        // that never opened a peer listener have none, and their offers fall
+        // back to here — so the seed relays them by the destination the
+        // message names, exactly as it relays SPAWN. Without this the offer
+        // vanishes and the balancer waits forever on a reply that cannot
+        // come.
+        this.#transport.send(msg.toNode, msg);
+        break;
+      }
+      case 'DEPLOY': {
+        void this.#handleDeploy(from, msg);
+        break;
+      }
+      case 'DEPLOYMENTS_GET': {
+        void this.#handleDeploymentsGet(from, msg.spawnReqId, msg.name);
+        break;
+      }
+      case 'ROLLBACK': {
+        void this.#handleRollback(from, msg);
+        break;
+      }
+      case 'CASK_PUT': {
+        void this.#handleCaskPut(from, msg);
+        break;
+      }
+      case 'CASK_GET': {
+        void this.#handleCaskGet(from, msg.hash);
+        break;
+      }
       case 'PORT_MSG': {
         for (const ready of this.#takeOrderedPortMessages(msg)) {
           const targetNodeId = this.#portNodes.get(ready.toPort);
-          if (targetNodeId) this.#transport.send(targetNodeId, ready);
+          if (targetNodeId) {
+            // Traffic between two other nodes: this is the relay that a direct
+            // peer session is meant to replace. Frames the seed hosts an end of
+            // are not counted — those have nowhere else to go.
+            if (targetNodeId !== this.#transport.nodeId && from !== this.#transport.nodeId) {
+              this.#relayedPortMessages++;
+            }
+            this.#transport.send(targetNodeId, ready);
+          }
         }
         const pendingExit = this.#pendingRealmExits.get(msg.fromPort);
         if (
@@ -383,6 +1080,15 @@ export class SeedServer {
         break;
       }
       default:
+        // Loud on purpose. Twice now a message kind has reached this arm and
+        // been dropped in silence: SHED_OFFER, which hung the balancer mid-pass
+        // forever waiting on a reply that could not come, and one before it.
+        // Both cost far more to find than this line costs to print. The seed
+        // legitimately never receives its own downstream kinds, so anything
+        // landing here is a routing mistake, not traffic.
+        console.error(
+          `fino:cluster seed has no handler for ${msg.t} from ${from} — message dropped`,
+        );
         break;
     }
   }
@@ -407,6 +1113,12 @@ export class SeedServer {
   }
   /** Forward an ordered exit and remove the exited realm subtree. */
   #handleRealmExit(msg: RealmExitMessage): void {
+    this.#forgetReplica(msg.realmId);
+    const ledgerId = this.#ledgerIdsByChildPort.get(msg.realmId);
+    if (ledgerId !== undefined) {
+      this.#ledgerIdsByChildPort.delete(msg.realmId);
+      this.#ledgerOp((ledger) => ledger.settle(ledgerId));
+    }
     const portId = msg.realmId;
     const parentPortId = this.#registry.getParentPortId(portId);
     const removed = this.#registry.exit(portId);
@@ -443,13 +1155,34 @@ export class SeedServer {
    * @internal
    */
   #handleNodeDown(nodeId: string): void {
+    this.#forgetReplicasOnNode(nodeId);
     for (const [spawnReqId, pending] of [...this.#pendingSpawns]) {
       if (pending.requesterNodeId === nodeId) {
         this.#pendingSpawns.delete(spawnReqId);
         continue;
       }
       if (pending.targetNodeId === nodeId) {
+        // The chosen node died mid-spawn. The workload record is durable and
+        // uninitialized, so route it to the next-best node when one exists.
+        pending.attempted.add(nodeId);
+        const next = this.#selectTarget(pending.attempted);
+        if (next !== null) {
+          pending.attempted.add(next);
+          pending.targetNodeId = next;
+          this.#ledgerOp(async (ledger) => {
+            await ledger.release(spawnReqId, nodeId);
+            await ledger.claim(
+              spawnReqId,
+              next,
+              this.#peers.get(next)?.incarnation ?? 0,
+              this.#leaseMs,
+            );
+          });
+          this.#transport.send(next, pending.spawn);
+          continue;
+        }
         this.#pendingSpawns.delete(spawnReqId);
+        this.#ledgerOp((ledger) => ledger.settle(spawnReqId));
         this.#transport.send(pending.requesterNodeId, {
           t: 'SPAWN_ACK',
           spawnReqId,
@@ -487,16 +1220,34 @@ export class SeedServer {
    *
    * @internal
    */
-  #selectTarget(excludeNodeId: string): string | null {
-    // Pick the peer with the lowest CPU load; return null if no eligible peer.
+  #selectTarget(excluded: ReadonlySet<string>): string | null {
+    // Lowest pressure wins. Each queued pre-init spec counts like a fully
+    // saturated core: specs are the balancing unit, and a node with a deep
+    // pending queue is oversubscribed for new work regardless of current CPU.
     let best: string | null = null;
-    let bestLoad = Infinity;
+    let bestScore = Infinity;
+    const trace: string[] = [];
     for (const [nId, peer] of this.#peers) {
-      if (nId === excludeNodeId) continue;
-      if (peer.load.cpu < bestLoad) {
-        best = nId;
-        bestLoad = peer.load.cpu;
+      if (excluded.has(nId)) continue;
+      if (peer.load.draining === true) continue;
+      const score = peer.load.cpu + (peer.load.pendingSpecs ?? 0);
+      if (env.FINO_CLUSTER_TRACE === '1') {
+        trace.push(`${nId}=${score.toFixed(2)}(pending=${peer.load.pendingSpecs ?? 0})`);
       }
+      if (score < bestScore) {
+        best = nId;
+        bestScore = score;
+      }
+    }
+    if (env.FINO_CLUSTER_TRACE === '1') {
+      // Why a deployment landed where it did. "Placement never spreads" and
+      // "the only candidate was the loaded node" look identical from outside,
+      // and the difference decides whether to reach for the balancer or for
+      // membership.
+      console.error(
+        `fino:cluster placement candidates=[${trace.join(' ') || 'none'}] chose=${best ?? 'none'} ` +
+          `(of ${this.#peers.size} known peers)`,
+      );
     }
     return best;
   }
@@ -511,6 +1262,8 @@ export class SeedServer {
    * @internal
    */
   #checkHeartbeats(): void {
+    this.#ledgerOp((ledger) => this.#sweepLedger(ledger));
+    this.#reconcileDeployments();
     const now = Date.now();
     for (const [nodeId, ts] of this.#lastSeen) {
       if (now - ts > heartbeatTimeoutMs()) {

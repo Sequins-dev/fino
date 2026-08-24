@@ -238,6 +238,12 @@ const _cryptoSymbols = {
     parameters: ['buffer', 'i32', 'buffer', 'i32', 'i32', 'pointer', 'i32', 'buffer'],
     result: 'i32',
   },
+  // libcrypto, not libssl: reading a private key from memory is a crypto
+  // operation, and declaring it in the ssl table breaks that handle's dlsym.
+  PEM_read_bio_PrivateKey: {
+    parameters: ['pointer', 'pointer', 'pointer', 'pointer'],
+    result: 'pointer',
+  },
   EVP_PKEY_CTX_new: {
     parameters: ['pointer', 'pointer'],
     result: 'pointer',
@@ -526,6 +532,109 @@ const _cryptoSymbols = {
     parameters: ['i32', 'buffer', 'i32', 'buffer', 'i32', 'pointer'],
     result: 'i32',
   },
+  // Certificate minting. Every name here is a real exported function, verified
+  // against libcrypto — the accessors that look like they belong in this list
+  // but do NOT are `X509_get_notBefore`/`X509_get_notAfter` (macros; the `getm`
+  // forms below are the functions) and `BIO_get_mem_data` (a macro over
+  // BIO_ctrl). Declaring a macro here fails dlsym and nulls the whole handle.
+  X509_new: {
+    parameters: [],
+    result: 'pointer',
+  },
+  X509_set_version: {
+    parameters: ['pointer', 'i64'],
+    result: 'i32',
+  },
+  X509_get_serialNumber: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  ASN1_INTEGER_set: {
+    parameters: ['pointer', 'i64'],
+    result: 'i32',
+  },
+  X509_getm_notBefore: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  X509_getm_notAfter: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  X509_gmtime_adj: {
+    parameters: ['pointer', 'i64'],
+    result: 'pointer',
+  },
+  X509_set_pubkey: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  X509_get_subject_name: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  X509_NAME_add_entry_by_txt: {
+    parameters: ['pointer', 'buffer', 'i32', 'buffer', 'i32', 'i32', 'i32'],
+    result: 'i32',
+  },
+  X509_set_issuer_name: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  X509_sign: {
+    parameters: ['pointer', 'pointer', 'pointer'],
+    result: 'i32',
+  },
+  X509V3_EXT_conf_nid: {
+    parameters: ['pointer', 'pointer', 'i32', 'buffer'],
+    result: 'pointer',
+  },
+  X509_add_ext: {
+    parameters: ['pointer', 'pointer', 'i32'],
+    result: 'i32',
+  },
+  X509_EXTENSION_free: {
+    parameters: ['pointer'],
+    result: 'void',
+  },
+  PEM_write_bio_X509: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  // kstr is declared 'pointer' rather than 'buffer' so the unencrypted form can
+  // pass null: an ephemeral key that is never written to disk has no passphrase
+  // to protect, and nothing to protect it from.
+  PEM_write_bio_PrivateKey: {
+    parameters: ['pointer', 'pointer', 'pointer', 'pointer', 'i32', 'pointer', 'pointer'],
+    result: 'i32',
+  },
+  BIO_new: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
+  BIO_s_mem: {
+    parameters: [],
+    result: 'pointer',
+  },
+  BIO_ctrl: {
+    parameters: ['pointer', 'i32', 'i64', 'pointer'],
+    result: 'i64',
+  },
+  BIO_read: {
+    parameters: ['pointer', 'buffer', 'i32'],
+    result: 'i32',
+  },
+  // Also declared on the libssl handle, which finds them through its dependency
+  // on libcrypto. They are libcrypto's, and minting runs entirely on that
+  // handle, so it needs its own binding rather than reaching across.
+  BIO_free: {
+    parameters: ['pointer'],
+    result: 'i32',
+  },
+  X509_free: {
+    parameters: ['pointer'],
+    result: 'void',
+  },
 } satisfies NativeSymbolMap;
 const _sslSymbols = {
   TLS_client_method: {
@@ -608,10 +717,6 @@ const _sslSymbols = {
     parameters: ['pointer'],
     result: 'i32',
   },
-  SSL_shutdown_ex: {
-    parameters: ['pointer', 'u64', 'pointer', 'usize'],
-    result: 'i32',
-  },
   SSL_get_error: {
     parameters: ['pointer', 'i32'],
     result: 'i32',
@@ -644,9 +749,22 @@ const _sslSymbols = {
     parameters: ['pointer'],
     result: 'pointer',
   },
-  BIO_new_mem_buf: {
-    parameters: ['buffer', 'i32'],
+  // An owning memory BIO, built rather than aliased. `BIO_new_mem_buf` is
+  // shorter but keeps a pointer into the caller's bytes, and every caller here
+  // passes a JS Uint8Array: the FFI layer pins its backing store for one call
+  // and no longer, so the array can be collected while OpenSSL still holds the
+  // pointer. It is deliberately not declared — see `memBio`.
+  BIO_new: {
+    parameters: ['pointer'],
     result: 'pointer',
+  },
+  BIO_s_mem: {
+    parameters: [],
+    result: 'pointer',
+  },
+  BIO_write: {
+    parameters: ['pointer', 'buffer', 'i32'],
+    result: 'i32',
   },
   BIO_free: {
     parameters: ['pointer'],
@@ -695,10 +813,6 @@ const _sslSymbols = {
   SSL_set_recv_max_early_data: {
     parameters: ['pointer', 'u32'],
     result: 'i32',
-  },
-  SSL_set_quic_tls_early_data_enabled: {
-    parameters: ['pointer', 'i32'],
-    result: 'void',
   },
   SSL_get1_session: {
     parameters: ['pointer'],
@@ -780,6 +894,36 @@ const _sslSymbols = {
     parameters: ['pointer', 'buffer', 'i32'],
     result: 'i32',
   },
+  // In-memory equivalents of the *_file loaders above. Certificates that are
+  // generated at runtime — ACME renewals, rotating workload identities, a
+  // cluster node's own ephemeral identity — must never be forced through the
+  // filesystem just to be installed.
+  // NOTE: SSL_CTX_add1_chain_cert is a MACRO over SSL_CTX_ctrl, not an
+  // exported symbol — declaring it here makes dlsym fail and nulls the entire
+  // libssl handle, disabling TLS process-wide. Chain certificates go through
+  // SSL_CTX_ctrl below.
+  SSL_CTX_use_certificate: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  SSL_CTX_use_PrivateKey: {
+    parameters: ['pointer', 'pointer'],
+    result: 'i32',
+  },
+  // libcrypto's, reached through libssl's dependency on it — the same way
+  // BIO_free and X509_free are bound here. They belong on this handle because
+  // an `EVP_PKEY` must be created, installed, and freed by one OpenSSL: the
+  // key carries provider and library-context pointers, and handing one to a
+  // second instance crashes inside `ssl_cert_lookup_by_pkey` the moment
+  // `SSL_CTX_use_PrivateKey` looks at what kind of key it is.
+  PEM_read_bio_PrivateKey: {
+    parameters: ['pointer', 'pointer', 'pointer', 'pointer'],
+    result: 'pointer',
+  },
+  EVP_PKEY_free: {
+    parameters: ['pointer'],
+    result: 'void',
+  },
   SSL_CTX_check_private_key: {
     parameters: ['pointer'],
     result: 'i32',
@@ -799,6 +943,20 @@ const _sslSymbols = {
 } satisfies NativeSymbolMap;
 const _sslQuicSymbols = {
   ..._sslSymbols,
+  // Declared here rather than in `_sslSymbols` even though neither name says
+  // QUIC: both arrived with OpenSSL's QUIC stack and are absent from 3.0 and
+  // 3.1, which is what Ubuntu 22.04/24.04 and Debian 12 ship. A failed dlsym
+  // nulls the whole handle, so declaring them above cost those systems every
+  // bit of TLS — not just QUIC — and the loader reported the library as simply
+  // missing.
+  SSL_shutdown_ex: {
+    parameters: ['pointer', 'u64', 'pointer', 'usize'],
+    result: 'i32',
+  },
+  SSL_set_quic_tls_early_data_enabled: {
+    parameters: ['pointer', 'i32'],
+    result: 'void',
+  },
   OSSL_QUIC_client_thread_method: {
     parameters: [],
     result: 'pointer',
@@ -866,6 +1024,8 @@ const _sslQuicSymbols = {
   },
 } satisfies NativeSymbolMap;
 const SSL_CTRL_SET_GROUPS_LIST = 92;
+/** `SSL_CTX_add1_chain_cert(ctx, x)` expands to this ctrl. */
+const SSL_CTRL_CHAIN_CERT = 89;
 // ---------------------------------------------------------------------------
 // Library loading
 // ---------------------------------------------------------------------------
@@ -3242,14 +3402,142 @@ export function sslCtxNewQuicServer(): object {
     throw new Error('SSL_CTX_new(OSSL_QUIC_server_method) failed: ' + getErrorString());
   return ctx;
 }
+const PEM_HEADER = '-----BEGIN ';
+/**
+ * Whether a certificate or key option carries PEM text rather than a file path.
+ *
+ * Every TLS surface in the runtime takes one string per certificate and per key,
+ * and that string is either a path to read or the PEM itself. This is the single
+ * rule that decides which, so callers that need to branch earlier — a backend
+ * that cannot load from memory, say — agree with the loader by construction.
+ *
+ * A PEM file may carry bag attributes or a human-readable dump before the first
+ * `-----BEGIN` line, so the marker is searched for rather than anchored. No
+ * plausible filesystem path contains it.
+ *
+ * @internal
+ */
+export function isPemText(value: string): boolean {
+  return value.includes(PEM_HEADER);
+}
+/**
+ * Describe a certificate or key source for an error message.
+ *
+ * PEM text is never interpolated: for a key that would put private key material
+ * into a log line, and for a certificate it would bury the actual failure under
+ * a screenful of base64.
+ */
+function describeSource(value: string): string {
+  return isPemText(value) ? 'PEM held in memory' : `"${value}"`;
+}
+function useCertFile(ctx: object, certPath: string): void {
+  const lib = _requireSsl();
+  const certBuf = encodeUtf8(certPath + '\0');
+  if (lib.symbols.SSL_CTX_use_certificate_chain_file(ctx, certBuf) !== 1) {
+    throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
+  }
+}
+/**
+ * A memory BIO holding its own copy of `bytes`.
+ *
+ * Deliberately not `BIO_new_mem_buf`, which keeps a pointer into the caller's
+ * buffer rather than copying. That buffer is a JS `Uint8Array`: the FFI layer
+ * pins its backing store for the duration of a single call, so once
+ * `BIO_new_mem_buf` returns, nothing keeps the bytes alive and a collection
+ * during the reads that follow leaves OpenSSL parsing freed memory. Copying
+ * costs one allocation the size of a PEM blob and removes the aliasing.
+ */
+function memBio(lib: SslLibrary, bytes: Uint8Array): object {
+  const bio = lib.symbols.BIO_new(lib.symbols.BIO_s_mem()) as object | null;
+  if (bio === null) throw new Error('TLS: BIO_new(BIO_s_mem()) failed: ' + getErrorString());
+  if (bytes.byteLength > 0) {
+    const written = lib.symbols.BIO_write(bio, bytes, bytes.byteLength);
+    if (written !== bytes.byteLength) {
+      lib.symbols.BIO_free(bio);
+      throw new Error(
+        `TLS: short BIO_write (${written} of ${bytes.byteLength}): ` + getErrorString(),
+      );
+    }
+  }
+  return bio;
+}
+function useCertPem(ctx: object, certPem: string): void {
+  const ssl = _requireSsl();
+  const certBio = memBio(ssl, encodeUtf8(certPem));
+  try {
+    // The first certificate is the leaf; anything after it is chain.
+    let index = 0;
+    for (;;) {
+      const cert = ssl.symbols.PEM_read_bio_X509(certBio, null, null, null) as object | null;
+      if (cert === null) break;
+      const rc =
+        index === 0
+          ? ssl.symbols.SSL_CTX_use_certificate(ctx, cert)
+          : // SSL_CTX_add1_chain_cert(ctx, x) expands to this ctrl.
+            ssl.symbols.SSL_CTX_ctrl(ctx, SSL_CTRL_CHAIN_CERT, 1n, cert);
+      // use_certificate and add1_chain_cert both take their own reference, so
+      // this handle is ours to release either way.
+      ssl.symbols.X509_free(cert);
+      if (rc !== 1) {
+        throw new Error(
+          `TLS: failed to install ${index === 0 ? 'certificate' : 'chain certificate'} from memory: ` +
+            getErrorString(),
+        );
+      }
+      index++;
+    }
+    if (index === 0) {
+      throw new Error('TLS: no certificate found in the supplied PEM');
+    }
+  } finally {
+    ssl.symbols.BIO_free(certBio);
+  }
+}
+function useKeyFile(ctx: object, keyPath: string): void {
+  const lib = _requireSsl();
+  const keyBuf = encodeUtf8(keyPath + '\0');
+  if (lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1) !== 1) {
+    throw new Error(`TLS: failed to load private key "${keyPath}": ` + getErrorString());
+  }
+}
+function useKeyPem(ctx: object, keyPem: string): void {
+  const ssl = _requireSsl();
+  const keyBio = memBio(ssl, encodeUtf8(keyPem));
+  try {
+    // Read, install, and free on the one handle. Crossing to the libcrypto
+    // handle here produced a key whose provider pointers belonged to a
+    // different OpenSSL instance than the context consuming it, and
+    // `SSL_CTX_use_PrivateKey` segfaulted dereferencing them.
+    const pkey = ssl.symbols.PEM_read_bio_PrivateKey(keyBio, null, null, null) as object | null;
+    if (pkey === null)
+      throw new Error('TLS: failed to read private key from memory: ' + getErrorString());
+    const rc = ssl.symbols.SSL_CTX_use_PrivateKey(ctx, pkey);
+    ssl.symbols.EVP_PKEY_free(pkey);
+    if (rc !== 1) {
+      throw new Error('TLS: failed to install private key from memory: ' + getErrorString());
+    }
+  } finally {
+    ssl.symbols.BIO_free(keyBio);
+  }
+}
+function checkCertKeyMatch(ctx: object, cert: string, key: string): void {
+  if (_requireSsl().symbols.SSL_CTX_check_private_key(ctx) !== 1) {
+    throw new Error(
+      `TLS: certificate ${describeSource(cert)} and key ${describeSource(key)} do not match: ` +
+        getErrorString(),
+    );
+  }
+}
 /**
  * Load a PEM certificate chain and private key into an existing SSL context.
  *
- * Both paths must reference PEM files. The certificate chain, the private key,
- * and a consistency check between them are applied in order; a failure at any
- * step throws with the offending path and the OpenSSL error text. Unlike
- * `sslCtxLoadCertKey()`, this configures a context the caller already created
- * and does not touch ALPN.
+ * `cert` and `key` are each either a path to a PEM file or the PEM text itself
+ * (see `isPemText()`), decided independently — a certificate fetched from ACME
+ * pairs happily with a key that lives on disk. The certificate chain, the
+ * private key, and a consistency check between them are applied in order; a
+ * failure at any step throws with the offending source and the OpenSSL error
+ * text. Unlike `sslCtxLoadCertKey()`, this configures a context the caller
+ * already created and does not touch ALPN.
  *
  * ```ts no_run
  * import { sslCtxNewServer, sslCtxUseCertKey, sslCtxFree } from 'internal:openssl';
@@ -3261,30 +3549,210 @@ export function sslCtxNewQuicServer(): object {
  *
  * @internal
  */
-export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string): void {
-  const lib = _requireSsl();
-  const certBuf = encodeUtf8(certPath + '\0');
-  if (lib.symbols.SSL_CTX_use_certificate_chain_file(ctx, certBuf) !== 1) {
-    throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
+export function sslCtxUseCertKey(ctx: object, cert: string, key: string): void {
+  if (isPemText(cert)) useCertPem(ctx, cert);
+  else useCertFile(ctx, cert);
+  if (isPemText(key)) useKeyPem(ctx, key);
+  else useKeyFile(ctx, key);
+  checkCertKeyMatch(ctx, cert, key);
+}
+/**
+ * Load a PEM certificate chain and private key held in memory into `ctx`.
+ *
+ * The always-in-memory form of `sslCtxUseCertKey()`, for callers that hold PEM
+ * text and want a path to be rejected rather than quietly read. Certificates
+ * minted at runtime — ACME renewals, rotating workload identities, a cluster
+ * node's own ephemeral identity — have no reason to touch the filesystem, and
+ * writing a private key to disk purely to hand it to OpenSSL is a security
+ * regression rather than a convenience.
+ *
+ * `certPem` may contain a leaf followed by intermediates; every certificate
+ * after the first is added to the context's chain in order.
+ *
+ * ```ts no_run
+ * import { sslCtxNewServer, sslCtxUseCertKeyPem } from 'internal:openssl';
+ * const ctx = sslCtxNewServer();
+ * sslCtxUseCertKeyPem(ctx, certPem, keyPem);
+ * ```
+ *
+ * @internal
+ */
+export function sslCtxUseCertKeyPem(ctx: object, certPem: string, keyPem: string): void {
+  useCertPem(ctx, certPem);
+  useKeyPem(ctx, keyPem);
+  checkCertKeyMatch(ctx, certPem, keyPem);
+}
+/** `MBSTRING_FLAG | B_ASN1_ASCII` — an ASCII string for X509_NAME entries. */
+const MBSTRING_ASC = 0x1001;
+/** `BIO_pending(b)` expands to this ctrl. */
+const BIO_CTRL_PENDING = 10;
+const NID_subject_alt_name = 85;
+const NID_basic_constraints = 87;
+const NID_key_usage = 83;
+const NID_ext_key_usage = 126;
+/** A certificate and its private key, both as PEM text. */
+export interface SelfSignedCertificate {
+  /** PEM certificate, safe to publish — its hash is what peers pin. */
+  certPem: string;
+  /** PEM private key. Keep it in memory; writing it to disk defeats the point. */
+  keyPem: string;
+}
+/** Drain a memory BIO into a string. */
+function bioToString(bio: object): string {
+  const lib = _requireCrypto();
+  // BIO_get_mem_data is a macro that hands back an interior pointer; reading
+  // the bytes out is both simpler from JS and does not outlive the BIO.
+  const pending = Number(lib.symbols.BIO_ctrl(bio, BIO_CTRL_PENDING, 0n, null));
+  if (pending <= 0) throw new Error('TLS: PEM output was empty: ' + getErrorString());
+  const out = new Uint8Array(pending);
+  const read = lib.symbols.BIO_read(bio, out, pending);
+  if (read !== pending) throw new Error(`TLS: short PEM read (${read} of ${pending})`);
+  return new TextDecoder().decode(out);
+}
+function addExtension(cert: object, nid: number, value: string): void {
+  const lib = _requireCrypto();
+  const ext = lib.symbols.X509V3_EXT_conf_nid(
+    null,
+    null,
+    nid,
+    encodeUtf8(value + '\0'),
+  ) as object | null;
+  if (ext === null) {
+    throw new Error(`TLS: failed to build extension ${nid} ("${value}"): ` + getErrorString());
   }
-  const keyBuf = encodeUtf8(keyPath + '\0');
-  if (lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1) !== 1) {
-    throw new Error(`TLS: failed to load private key "${keyPath}": ` + getErrorString());
+  const rc = lib.symbols.X509_add_ext(cert, ext, -1);
+  lib.symbols.X509_EXTENSION_free(ext);
+  if (rc !== 1) throw new Error(`TLS: failed to add extension ${nid}: ` + getErrorString());
+}
+/**
+ * Mint a self-signed certificate and its key, both returned as PEM text.
+ *
+ * For identities that are born and die with the process: a cluster node's own
+ * peer-mesh certificate, a test fixture, a short-lived workload identity. The
+ * key is returned rather than written anywhere, so it can go straight into
+ * `sslCtxUseCertKey()` without ever existing as a file.
+ *
+ * The certificate is a channel binding, not a credential — nothing verifies a
+ * chain to it, so peers must pin its hash (or otherwise establish trust out of
+ * band) for it to mean anything. `subjectAltNames` takes OpenSSL's extension
+ * syntax (`'DNS:node-a,IP:127.0.0.1'`) and defaults to a DNS entry for
+ * `commonName`.
+ *
+ * ```ts no_run
+ * import { generateSelfSignedCertificate, sslCtxNewServer, sslCtxUseCertKey } from 'internal:openssl';
+ * const identity = generateSelfSignedCertificate({ commonName: 'node-a' });
+ * const ctx = sslCtxNewServer();
+ * sslCtxUseCertKey(ctx, identity.certPem, identity.keyPem);
+ * ```
+ *
+ * @internal
+ */
+export function generateSelfSignedCertificate(options: {
+  commonName: string;
+  subjectAltNames?: string;
+  days?: number;
+  namedCurve?: string;
+}): SelfSignedCertificate {
+  const lib = _requireCrypto();
+  const days = options.days ?? 365;
+  const pkey = evpPkeyGenerateEc(options.namedCurve ?? 'P-256');
+  try {
+    const cert = lib.symbols.X509_new() as object | null;
+    if (cert === null) throw new Error('TLS: X509_new failed: ' + getErrorString());
+    try {
+      // Version 3 (the field is zero-based), which is what extensions require.
+      if (lib.symbols.X509_set_version(cert, 2n) !== 1) {
+        throw new Error('TLS: X509_set_version failed: ' + getErrorString());
+      }
+      // A random serial: two nodes minting at the same instant must not collide,
+      // and 63 bits is far more than enough for identities this short-lived.
+      const serialBytes = new ArrayBuffer(8);
+      randBytes(serialBytes, 8);
+      const serialView = new DataView(serialBytes);
+      const serial = serialView.getBigUint64(0, false) & 0x7fffffffffffffffn;
+      const serialField = lib.symbols.X509_get_serialNumber(cert) as object | null;
+      if (serialField === null || lib.symbols.ASN1_INTEGER_set(serialField, serial) !== 1) {
+        throw new Error('TLS: failed to set serial number: ' + getErrorString());
+      }
+      const notBefore = lib.symbols.X509_getm_notBefore(cert) as object | null;
+      const notAfter = lib.symbols.X509_getm_notAfter(cert) as object | null;
+      if (notBefore === null || notAfter === null) {
+        throw new Error('TLS: certificate has no validity fields: ' + getErrorString());
+      }
+      // Backdate slightly so a peer whose clock trails ours still accepts it.
+      if (
+        lib.symbols.X509_gmtime_adj(notBefore, -300n) === null ||
+        lib.symbols.X509_gmtime_adj(notAfter, BigInt(days) * 86400n) === null
+      ) {
+        throw new Error('TLS: failed to set validity window: ' + getErrorString());
+      }
+      if (lib.symbols.X509_set_pubkey(cert, pkey) !== 1) {
+        throw new Error('TLS: X509_set_pubkey failed: ' + getErrorString());
+      }
+      const name = lib.symbols.X509_get_subject_name(cert) as object | null;
+      if (name === null) throw new Error('TLS: certificate has no subject: ' + getErrorString());
+      if (
+        lib.symbols.X509_NAME_add_entry_by_txt(
+          name,
+          encodeUtf8('CN\0'),
+          MBSTRING_ASC,
+          encodeUtf8(options.commonName),
+          options.commonName.length,
+          -1,
+          0,
+        ) !== 1
+      ) {
+        throw new Error('TLS: failed to set common name: ' + getErrorString());
+      }
+      // Self-signed: the issuer is the subject.
+      if (lib.symbols.X509_set_issuer_name(cert, name) !== 1) {
+        throw new Error('TLS: X509_set_issuer_name failed: ' + getErrorString());
+      }
+      addExtension(cert, NID_basic_constraints, 'critical,CA:FALSE');
+      addExtension(cert, NID_key_usage, 'critical,digitalSignature,keyEncipherment');
+      addExtension(cert, NID_ext_key_usage, 'serverAuth,clientAuth');
+      addExtension(
+        cert,
+        NID_subject_alt_name,
+        options.subjectAltNames ?? `DNS:${options.commonName}`,
+      );
+      if (lib.symbols.X509_sign(cert, pkey, lib.symbols.EVP_sha256()) === 0) {
+        throw new Error('TLS: X509_sign failed: ' + getErrorString());
+      }
+      return {
+        certPem: writePem((bio) => lib.symbols.PEM_write_bio_X509(bio, cert)),
+        keyPem: writePem((bio) =>
+          lib.symbols.PEM_write_bio_PrivateKey(bio, pkey, null, null, 0, null, null),
+        ),
+      };
+    } finally {
+      lib.symbols.X509_free(cert);
+    }
+  } finally {
+    evpPkeyFree(pkey);
   }
-  if (lib.symbols.SSL_CTX_check_private_key(ctx) !== 1) {
-    throw new Error(
-      `TLS: certificate "${certPath}" and key "${keyPath}" do not match: ` + getErrorString(),
-    );
+}
+function writePem(write: (bio: object) => number): string {
+  const lib = _requireCrypto();
+  const memMethod = lib.symbols.BIO_s_mem() as object | null;
+  if (memMethod === null) throw new Error('TLS: BIO_s_mem failed: ' + getErrorString());
+  const bio = lib.symbols.BIO_new(memMethod) as object | null;
+  if (bio === null) throw new Error('TLS: BIO_new failed: ' + getErrorString());
+  try {
+    if (write(bio) !== 1) throw new Error('TLS: PEM write failed: ' + getErrorString());
+    return bioToString(bio);
+  } finally {
+    lib.symbols.BIO_free(bio);
   }
 }
 /**
  * Create a server SSL context and load a PEM certificate chain and private key.
  *
  * A one-call convenience over `sslCtxNewServer()` + `sslCtxUseCertKey()` that
- * also advertises `http/1.1` via ALPN. Both paths must point to PEM files; the
- * certificate, key, and their consistency are checked in order, and any failure
- * frees the context and throws with the offending path. The returned `SSL_CTX*`
- * is owning and must be freed with `sslCtxFree()`.
+ * also advertises `http/1.1` via ALPN. `cert` and `key` are each a PEM file path
+ * or PEM text; the certificate, key, and their consistency are checked in order,
+ * and any failure frees the context and throws with the offending source. The
+ * returned `SSL_CTX*` is owning and must be freed with `sslCtxFree()`.
  *
  * ```ts no_run
  * import { sslCtxLoadCertKey, sslNew, sslSetAcceptState, sslFree, sslCtxFree } from 'internal:openssl';
@@ -3298,27 +3766,14 @@ export function sslCtxUseCertKey(ctx: object, certPath: string, keyPath: string)
  *
  * @internal
  */
-export function sslCtxLoadCertKey(certPath: string, keyPath: string): object {
+export function sslCtxLoadCertKey(cert: string, key: string): object {
   const lib = _requireSsl();
   const ctx = sslCtxNewServer();
-  const certBuf = encodeUtf8(certPath + '\0');
-  const rc1 = lib.symbols.SSL_CTX_use_certificate_chain_file(ctx, certBuf);
-  if (rc1 !== 1) {
+  try {
+    sslCtxUseCertKey(ctx, cert, key);
+  } catch (error) {
     lib.symbols.SSL_CTX_free(ctx);
-    throw new Error(`TLS: failed to load certificate chain "${certPath}": ` + getErrorString());
-  }
-  const keyBuf = encodeUtf8(keyPath + '\0');
-  const rc2 = lib.symbols.SSL_CTX_use_PrivateKey_file(ctx, keyBuf, 1);
-  if (rc2 !== 1) {
-    lib.symbols.SSL_CTX_free(ctx);
-    throw new Error(`TLS: failed to load private key "${keyPath}": ` + getErrorString());
-  }
-  const rc3 = lib.symbols.SSL_CTX_check_private_key(ctx);
-  if (rc3 !== 1) {
-    lib.symbols.SSL_CTX_free(ctx);
-    throw new Error(
-      `TLS: certificate "${certPath}" and key "${keyPath}" do not match: ` + getErrorString(),
-    );
+    throw error;
   }
   // Advertise HTTP/1.1 via ALPN so clients can negotiate the protocol during
   // handshake. This is a prerequisite for future HTTP/2 (h2) support.
@@ -3820,8 +4275,7 @@ export function sslCtxAddCaCertificates(
   for (const entry of entries) {
     const bytes = typeof entry === 'string' ? encodeUtf8(entry) : entry;
     if (bytes.byteLength === 0) throw new TypeError('QUIC ca.pem entries must not be empty');
-    const bio = lib.symbols.BIO_new_mem_buf(bytes, bytes.byteLength) as ArrayBuffer | null;
-    if (bio === null) throw new Error('BIO_new_mem_buf failed: ' + getErrorString());
+    const bio = memBio(lib, bytes);
     try {
       let added = 0;
       while (true) {
@@ -4159,7 +4613,7 @@ export function sslCtxSetRecvMaxEarlyData(ctx: object, maxBytes: number): void {
  * @internal
  */
 export function sslEnableQuicEarlyData(ssl: object, enabled: boolean): void {
-  _requireSsl().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
+  _requireSslQuic().symbols.SSL_set_quic_tls_early_data_enabled(ssl, enabled ? 1 : 0);
 }
 /**
  * Serialize the current TLS session of an `SSL*` to DER, or `null`.
@@ -4932,7 +5386,7 @@ export function sslStreamConclude(ssl: object): void {
  * @internal
  */
 export function sslShutdownQuicRapid(ssl: object): number {
-  return _requireSsl().symbols.SSL_shutdown_ex(ssl, SSL_SHUTDOWN_FLAG_RAPID, null, 0);
+  return _requireSslQuic().symbols.SSL_shutdown_ex(ssl, SSL_SHUTDOWN_FLAG_RAPID, null, 0);
 }
 /**
  * Initiate or continue the TLS shutdown sequence.

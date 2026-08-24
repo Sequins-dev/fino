@@ -92,9 +92,9 @@ export function requireH3(): ReturnType<typeof _requireH3> {
  * `port` is required; use `0` to request an ephemeral port and read the actual
  * value back from the returned `H3Server`. `hostname` defaults to `127.0.0.1`,
  * so pass an explicit address (for example `::` or `0.0.0.0`) to listen on
- * other interfaces. `certificateFile` and `privateKeyFile` are PEM file paths
- * read by the QUIC TLS layer and match the corresponding `fino:net/quic`
- * options; the remaining QUIC listen options are inherited unchanged, while
+ * other interfaces. `certificateFile` and `privateKeyFile` are read by the QUIC
+ * TLS layer and match the corresponding `fino:net/quic` options — each is a PEM
+ * file path or the PEM text itself; the remaining QUIC listen options are inherited unchanged, while
  * `address`, `alpnProtocols`, and the certificate fields are managed by
  * `serve()` itself.
  *
@@ -118,9 +118,9 @@ export interface H3ServeOptions extends Omit<
   port: number;
   /** Local bind address. Defaults to `127.0.0.1`. */
   hostname?: string;
-  /** PEM certificate chain file presented by the HTTP/3 server. */
+  /** PEM certificate chain presented by the HTTP/3 server — path or PEM text. */
   certificateFile: string;
-  /** PEM private key file matching `certificateFile`. */
+  /** PEM private key matching `certificateFile` — path or PEM text. */
   privateKeyFile: string;
 }
 /**

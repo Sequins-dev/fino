@@ -33,7 +33,12 @@ describe('Realm messaging', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 20));
     realm.port.postMessage('hello');
     realm.port.postMessage('world');
-    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    // Isolate construction happens on the claiming reactor, concurrently with
+    // this realm — wait for the echoes rather than assuming a fixed delay.
+    const deadline = Date.now() + 5000;
+    while (responses.length < 2 && Date.now() < deadline) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
     t.equal(responses.length, 2, 'received both responses');
     t.equal(responses[0], 'echo:hello', 'first response correct');
     t.equal(responses[1], 'echo:world', 'second response correct');

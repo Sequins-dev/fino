@@ -33,13 +33,6 @@ describe('Reactor scheduler native surface', () => {
       'addReactorWorkload',
       'signalReactorWorkload',
       'routeSharedLoopEvent',
-      // Superseded by the single create-and-submit path onto the process pool.
-      'createReactorQueue',
-      'closeReactorQueue',
-      'submitReactorWorkload',
-      'terminateWorkload',
-      'workloadWakeFd',
-      'workloadOwner',
       // Persistent watches acknowledge installation through an ordinary routed
       // completion instead of blocking the registering thread.
       'registerProcessPersistentReadiness',
@@ -48,8 +41,26 @@ describe('Reactor scheduler native surface', () => {
       t.equal(name in schedulerNative, false, `${name} is not exported`);
     }
   });
-  it('exposes one create-and-submit path onto the process pool', (t) => {
-    for (const name of ['startReactorPool', 'createWorkload', 'stopReactorPool']) {
+  it('separates creating a workload from submitting it', (t) => {
+    // Creation and submission were briefly collapsed into one call, which is
+    // correct only while every workload is claimed by a local reactor. A spec
+    // that has no isolate yet is the unit the balancer moves between nodes, so
+    // there has to be a window in which it exists but is not yet claimable —
+    // that window is also what lets a caller arm its wake descriptor with no
+    // race against a reactor that has already started it.
+    for (const name of [
+      'startReactorPool',
+      'stopReactorPool',
+      'createWorkload',
+      'workloadOwner',
+      'workloadWakeFd',
+      'terminateWorkload',
+      'submitReactorWorkload',
+      // Queues are addressable so the balancer can operate on one explicitly,
+      // and so tests can run an isolated pool with its own watchdog thresholds.
+      'createReactorQueue',
+      'closeReactorQueue',
+    ]) {
       t.equal(name in schedulerNative, true, `${name} is exported`);
     }
   });

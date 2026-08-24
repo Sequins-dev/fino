@@ -9,14 +9,20 @@
  * `broadcastExcept()`) so `SeedServer` can route on it. Sessions negotiate the
  * `fino-cluster-v1` WebTransport protocol.
  *
- * Every message travels on its own short-lived reliable bidirectional stream.
- * The first frame on a stream is a `ClusterStreamMetadata` protobuf frame that
- * tags the stream as control-plane or as data for one logical port pair (see
- * `internal:cluster/webtransport-framing`); message frames follow. Each
- * `PORT_MSG` uses a separate stream tagged with the canonical logical port
- * pair, so one noisy realm link does not share stream ordering with the
- * control plane. Sends to a given peer connection are serialized through a
- * per-connection promise queue so writes complete in submission order.
+ * Each connection carries its messages on two long-lived reliable bidirectional
+ * streams — lanes — one for control-plane traffic and one for `PORT_MSG` data.
+ * The first frame on a lane is a `ClusterStreamMetadata` protobuf frame (see
+ * `internal:cluster/webtransport-framing`) declaring which kind it is; message
+ * frames follow for the life of the connection. Lanes are one-way: a peer
+ * answers on lanes it opens itself. Each lane serializes its own writes, so a
+ * large payload cannot delay a heartbeat, and stream count stays constant
+ * rather than scaling with traffic.
+ *
+ * A stream per message is what this used to do, and it wedged: nothing closed
+ * the write half, so streams accrued against the peer's `initial_max_streams_bidi`
+ * (100) until `createBidirectionalStream()` blocked forever on credit that only
+ * returns as lingering streams are reaped. Realm messaging stopped dead at
+ * ~100 messages per direction.
  *
  * `fino:cluster` composes these transports with `SeedServer` and
  * `ClusterClient`; use this module directly only when wiring cluster plumbing
@@ -51,7 +57,6 @@ import { Response } from 'internal:net/http/wire';
 import type { ClusterTransport } from './transport.ts';
 import { decode, encode, nodeIdFromId, type ClusterMessage } from './protocol.ts';
 import {
-  canonicalPortPair,
   ClusterStreamFrameReader,
   decodeClusterStreamMetadata,
   encodeClusterStreamFrame,
@@ -78,6 +83,8 @@ export const DEFAULT_CLUSTER_PATH = '/__fino_cluster';
 const CLUSTER_PROTOCOL = 'fino-cluster-v1';
 type ServerHandle = {
   ready: Promise<void>;
+  /** The actual bound port, which is the only way to learn it after `port: 0`. */
+  readonly port: number;
   close(): Promise<void>;
 };
 type Handler = (from: string, msg: ClusterMessage) => void;
@@ -189,11 +196,104 @@ export interface WebTransportWorkerConnectOptions {
    * WebTransport `serverCertificateHashes` option.
    */
   serverCertificateHashes?: readonly WebTransportHash[];
+  /**
+   * Join token presented in the HELLO frame. Required when the seed was
+   * started with join authentication; wrong or missing tokens receive
+   * JOIN_DENIED instead of WELCOME.
+   */
+  token?: string;
+  /**
+   * Announce as an observer: the seed answers with WELCOME (peer list and
+   * cluster identity) but never registers the connection as a member.
+   */
+  observer?: boolean;
+  /** Process incarnation announced in HELLO; the seed fences older ones. */
+  incarnation?: number;
+  /** Directly dialable endpoint advertised for peer introductions. */
+  endpoint?: string;
+  /** Hex sha-256 of this node's own listener certificate. */
+  certHash?: string;
+}
+/**
+ * A long-lived outbound stream carrying every message of one kind.
+ *
+ * One QUIC stream per message looks harmless and is not: nothing ever closes
+ * the write half (`closeWriter` only releases the lock), so streams accumulate
+ * against the peer's `initial_max_streams_bidi` — 100 by default. The 101st
+ * `createBidirectionalStream()` then waits for credit that arrives only as
+ * lingering streams are reaped, which across a real connection is indistinct
+ * from never. Realm traffic stalled dead at ~100 messages.
+ *
+ * A lane opens once, writes its metadata frame once, and then carries an
+ * unbounded number of messages. Two lanes per connection — control and port —
+ * keep a heartbeat from queueing behind a large payload while bounding stream
+ * count at a constant instead of scaling it with traffic.
+ */
+interface OutboundLane {
+  writer: StreamWriter | null;
+  queue: Promise<void>;
+  /** Set by `closeLanes`, so writes already queued behind it do not run. */
+  closed: boolean;
 }
 interface PeerConnection {
   wt: WebTransport;
+  /** Write half of the stream the peer opened; retained so `close()` releases it. */
   control: StreamWriter | null;
-  queue: Promise<void>;
+  /** Our own outbound lanes. The peer answers on lanes it opens itself. */
+  lanes: { control: OutboundLane; port: OutboundLane };
+}
+function newLanes(): { control: OutboundLane; port: OutboundLane } {
+  return {
+    control: { writer: null, queue: Promise.resolve(), closed: false },
+    port: { writer: null, queue: Promise.resolve(), closed: false },
+  };
+}
+/**
+ * Write one message on a lane, opening the underlying stream on first use.
+ *
+ * The open runs inside the lane's queue, so concurrent sends cannot race to
+ * create two streams for the same lane. A write failure drops the writer so the
+ * next message opens a fresh stream rather than inheriting a broken one.
+ */
+function laneSend(
+  lane: OutboundLane,
+  wt: WebTransport,
+  kind: 'control' | 'port',
+  msg: ClusterMessage,
+): Promise<void> {
+  const task = async (): Promise<void> => {
+    if (lane.closed) return;
+    if (lane.writer === null) {
+      const stream = await wt.createBidirectionalStream();
+      const writer = stream.writable.getWriter();
+      await writeMetadata(writer, { v: 1, kind });
+      // Lanes are one-way: a peer answers on lanes it opens itself, so nothing
+      // will ever be read from this one. Cancelling releases the loop
+      // registration that would otherwise outlive every message on it.
+      try {
+        await stream.readable.cancel();
+      } catch {
+        // Already gone; nothing to release.
+      }
+      lane.writer = writer;
+    }
+    try {
+      await writeMessage(lane.writer, msg);
+    } catch (error) {
+      lane.writer = null;
+      throw error;
+    }
+  };
+  const next = lane.queue.catch(() => {}).then(task);
+  lane.queue = next.catch(() => {});
+  return next;
+}
+function closeLanes(lanes: { control: OutboundLane; port: OutboundLane }): void {
+  for (const lane of [lanes.control, lanes.port]) {
+    lane.closed = true;
+    if (lane.writer !== null) closeWriter(lane.writer);
+    lane.writer = null;
+  }
 }
 function normalizePath(path: string | undefined): string {
   if (path === undefined || path === '') return DEFAULT_CLUSTER_PATH;
@@ -236,12 +336,8 @@ function isExpectedCloseError(error: unknown): boolean {
 }
 function closeConnection(conn: PeerConnection): void {
   if (conn.control !== null) closeWriter(conn.control);
+  closeLanes(conn.lanes);
   conn.wt.close();
-}
-function enqueueConnectionSend(conn: PeerConnection, task: () => Promise<void>): Promise<void> {
-  const next = conn.queue.catch(() => {}).then(task);
-  conn.queue = next.catch(() => {});
-  return conn.queue;
 }
 async function readClusterStream(
   stream: WebTransportBidirectionalStream,
@@ -277,41 +373,6 @@ async function readClusterStream(
     } catch {}
     onClose(metadata);
   }
-}
-async function sendPortMessage(
-  wt: WebTransport,
-  msg: Extract<
-    ClusterMessage,
-    {
-      t: 'PORT_MSG';
-    }
-  >,
-): Promise<void> {
-  const fromPort = msg.fromPort;
-  const toPort = msg.toPort;
-  const pair = canonicalPortPair(fromPort, toPort);
-  const stream = await wt.createBidirectionalStream();
-  const writer = stream.writable.getWriter();
-  const metadata = {
-    v: 1,
-    kind: 'port',
-    pair,
-    a: fromPort,
-    b: toPort,
-  } satisfies ClusterStreamMetadata;
-  await writeMetadata(writer, metadata);
-  await writeMessage(writer, msg);
-  closeWriter(writer);
-}
-async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
-  const stream = await wt.createBidirectionalStream();
-  const writer = stream.writable.getWriter();
-  await writeMetadata(writer, {
-    v: 1,
-    kind: 'control',
-  } satisfies ClusterStreamMetadata);
-  await writeMessage(writer, msg);
-  closeWriter(writer);
 }
 /**
  * Seed-side cluster transport: the HTTP/3 hub that workers dial into.
@@ -432,13 +493,11 @@ export class WebTransportSeedTransport implements ClusterTransport {
     const conn = this.#connections.get(to);
     if (conn === undefined) return Promise.resolve();
     if (isPortMessage(msg)) {
-      return enqueueConnectionSend(conn, () => sendPortMessage(conn.wt, msg));
+      return laneSend(conn.lanes.port, conn.wt, 'port', msg);
     }
-    return enqueueConnectionSend(conn, () => sendControlMessage(conn.wt, msg)).catch(
-      (err: unknown) => {
-        console.error(`fino:cluster seed control write failed: ${err}`);
-      },
-    );
+    return laneSend(conn.lanes.control, conn.wt, 'control', msg).catch((err: unknown) => {
+      console.error(`fino:cluster seed control write failed: ${err}`);
+    });
   }
   /**
    * Send a message to every connected worker.
@@ -557,7 +616,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
               this.#connections.set(peerNodeId, {
                 wt,
                 control: streamWriter,
-                queue: Promise.resolve(),
+                lanes: newLanes(),
               });
             }
             const from = peerNodeId ?? (msg.t === 'HELLO' ? msg.nodeId : '__unknown__');
@@ -567,9 +626,12 @@ export class WebTransportSeedTransport implements ClusterTransport {
             void metadata;
           },
         ).catch((err: unknown) => {
+          // One bad stream is not a dead peer: messages ride short-lived
+          // streams, and a stray reset or idle timeout on one of them must
+          // not deregister a member whose session is healthy. Session death
+          // is detected by wt.closed above.
           if (!isExpectedCloseError(err))
             console.error(`fino:cluster seed received malformed WebTransport stream: ${err}`);
-          if (peerNodeId !== null) this.#emitPeerDown(peerNodeId);
         });
       }
     } finally {
@@ -621,7 +683,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
    */
   readonly nodeId: string;
   #wt: WebTransport | null = null;
-  #control: StreamWriter | null = null;
+  #lanes = newLanes();
   #handlers: Handler[] = [];
   #pending: Array<{
     from: string;
@@ -678,7 +740,9 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     void this.#readIncomingStreams(wt);
     const control = await wt.createBidirectionalStream();
     const writer = control.writable.getWriter();
-    this.#control = writer;
+    // HELLO's stream is the control lane: every later control message rides it
+    // instead of opening one of its own.
+    this.#lanes.control.writer = writer;
     await writeMetadata(writer, {
       v: 1,
       kind: 'control',
@@ -691,9 +755,15 @@ export class WebTransportWorkerTransport implements ClusterTransport {
       t: 'HELLO',
       nodeId: this.nodeId,
       load,
+      ...(options.token !== undefined ? { token: options.token } : {}),
+      ...(options.observer === true ? { observer: true } : {}),
+      ...(options.incarnation !== undefined ? { incarnation: options.incarnation } : {}),
+      ...(options.endpoint !== undefined ? { endpoint: options.endpoint } : {}),
+      ...(options.certHash !== undefined ? { certHash: options.certHash } : {}),
     });
-    closeWriter(writer);
-    this.#control = null;
+    // The writer is NOT released here: HELLO's stream is the control lane, and
+    // every later control message rides it. Releasing it was correct only while
+    // each send opened a stream of its own.
   }
   #enqueue(task: () => Promise<void>): Promise<void> {
     const next = this.#queue.catch(() => {}).then(task);
@@ -715,14 +785,12 @@ export class WebTransportWorkerTransport implements ClusterTransport {
    * ```
    */
   send(_to: string, msg: ClusterMessage): Promise<void> {
-    if (isPortMessage(msg)) {
-      const wt = this.#wt;
-      if (wt === null) return Promise.resolve();
-      return this.#enqueue(() => sendPortMessage(wt, msg));
-    }
     const wt = this.#wt;
     if (wt === null) return Promise.resolve();
-    return this.#enqueue(() => sendControlMessage(wt, msg)).catch((err: unknown) => {
+    if (isPortMessage(msg)) {
+      return laneSend(this.#lanes.port, wt, 'port', msg);
+    }
+    return laneSend(this.#lanes.control, wt, 'control', msg).catch((err: unknown) => {
       console.error(`fino:cluster worker control write failed: ${err}`);
     });
   }
@@ -778,8 +846,7 @@ export class WebTransportWorkerTransport implements ClusterTransport {
    * ```
    */
   close(): void {
-    if (this.#control !== null) closeWriter(this.#control);
-    this.#control = null;
+    closeLanes(this.#lanes);
     this.#wt?.close();
     this.#wt = null;
   }
@@ -852,5 +919,406 @@ export class WebTransportWorkerTransport implements ClusterTransport {
       nodeId: this.#seedNodeId,
     };
     for (const handler of this.#handlers) handler(this.#seedNodeId, synth);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Direct peer mesh
+// ---------------------------------------------------------------------------
+/** Configuration for one node's participation in the direct peer mesh. */
+export interface PeerMeshOptions {
+  /** This node's identity, sent in the peer handshake. */
+  nodeId: string;
+  /** Cluster identity; a dialer from another cluster is refused. */
+  clusterId: string | null;
+  /** Join token presented and required on peer handshakes. */
+  token?: string;
+  /** This process incarnation, so a listener can fence a replaced peer. */
+  incarnation: number;
+  /** Listener configuration; omit to participate dial-only. */
+  listen?: {
+    port: number;
+    hostname?: string;
+    path?: string;
+    tls: { cert: string; key: string };
+    h3?: unknown;
+  };
+}
+
+/**
+ * Direct node-to-node sessions, so realm traffic bypasses the seed.
+ *
+ * The control plane introduces peers (endpoint plus certificate hash); this
+ * class dials them, authenticates with the same join token over a
+ * certificate-pinned WebTransport session, and carries `PORT_MSG` frames
+ * straight between nodes. The seed remains the fallback path: a node without
+ * a listener, or a pair that has not connected yet, keeps relaying through
+ * it, so direct sessions are a pure optimization rather than a requirement.
+ *
+ * Exactly one session exists per pair: the node with the smaller identity
+ * dials and the larger one accepts, so simultaneous introductions cannot
+ * produce two sessions.
+ *
+ * @internal
+ */
+export class PeerMesh {
+  #options: PeerMeshOptions;
+  #server: ServerHandle | null = null;
+  #sessions = new Map<string, PeerConnection>();
+  /**
+   * Every session this node accepted, including ones refused before they
+   * became a peer. Tracked so `close()` can tear down refused sessions too —
+   * an untracked open session keeps the listener from shutting down.
+   */
+  #inbound = new Set<WebTransport>();
+  /**
+   * HTTP clients backing dialed sessions. Each owns a QUIC connection that
+   * outlives its WebTransport session, so closing the session alone would
+   * leave the loop alive; they are closed with the mesh.
+   */
+  #clients = new Set<HttpClient>();
+  #incarnations = new Map<string, number>();
+  #dialing = new Set<string>();
+  #handlers: Handler[] = [];
+  /**
+   * Streams this node has accepted across every session.
+   *
+   * Exposed so a test can assert the invariant that matters — messages ride
+   * long-lived lanes — rather than the symptom. A transport that opens a
+   * stream per message passes a delivery test right up until it exhausts
+   * stream credit, which is exactly how that bug survived.
+   */
+  #inboundStreams = 0;
+  #path: string;
+  #closed = false;
+
+  constructor(options: PeerMeshOptions) {
+    this.#options = options;
+    this.#path = normalizePath(options.listen?.path);
+  }
+
+  /** Node IDs with a live direct session. */
+  get connected(): string[] {
+    return Array.from(this.#sessions.keys());
+  }
+
+  /**
+   * The port the listener actually bound, or `null` when this node has none.
+   *
+   * A node that asked for port `0` cannot advertise an endpoint until this is
+   * readable, so the join sequence listens before it announces itself.
+   */
+  get port(): number | null {
+    return this.#server?.port ?? null;
+  }
+
+  /** Total streams accepted from peers; see `#inboundStreams`. */
+  get inboundStreams(): number {
+    return this.#inboundStreams;
+  }
+
+  /** Register a handler for messages arriving over direct sessions. */
+  on(handler: Handler): void {
+    this.#handlers.push(handler);
+  }
+
+  /**
+   * Start the listener, if this node was configured with one. Returns nothing;
+   * the caller already knows the endpoint and certificate hash it advertises.
+   */
+  async listen(): Promise<void> {
+    const config = this.#options.listen;
+    if (config === undefined) return;
+    this.#server = serve(
+      {
+        port: config.port,
+        hostname: config.hostname,
+        tls: config.tls,
+        h3: config.h3 ?? true,
+      },
+      async (incoming) => {
+        const url = new URL(incoming.request.url);
+        if (incoming.kind !== 'webtransport' || url.pathname !== this.#path) {
+          await incoming.reject(
+            new Response('fino cluster peer', {
+              status: incoming.kind === 'webtransport' ? 404 : 200,
+            }),
+          );
+          return;
+        }
+        const wt = await incoming.accept({ protocols: [CLUSTER_PROTOCOL] });
+        void this.#acceptSession(wt).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer session error: ${err}`);
+          }
+        });
+      },
+    );
+    await this.#server.ready;
+  }
+
+  /**
+   * Dial a peer introduced by the control plane. No-op when the peer has no
+   * endpoint, a session already exists, or this node should be the acceptor.
+   */
+  async dial(peer: {
+    nodeId: string;
+    endpoint?: string;
+    certHash?: string;
+    incarnation?: number;
+  }): Promise<boolean> {
+    if (this.#closed) return false;
+    const { nodeId, endpoint, certHash } = peer;
+    if (endpoint === undefined || nodeId === this.#options.nodeId) return false;
+    // One session per pair: the smaller identity dials, the larger accepts.
+    if (this.#options.nodeId > nodeId) return false;
+    if (this.#sessions.has(nodeId) || this.#dialing.has(nodeId)) return false;
+    this.#dialing.add(nodeId);
+    try {
+      const url = new URL(endpoint);
+      const client = new HttpClient({ baseUrl: url.origin, protocols: ['h3'] });
+      this.#clients.add(client);
+      const wt = await client.webtransport(url.pathname + url.search, {
+        protocols: [CLUSTER_PROTOCOL],
+        ...(certHash !== undefined
+          ? {
+              serverCertificateHashes: [
+                {
+                  algorithm: 'sha-256' as const,
+                  value: Uint8Array.from(
+                    certHash.match(/../g)!.map((byte) => parseInt(byte, 16)),
+                  ),
+                },
+              ],
+            }
+          : {}),
+      });
+      await wt.ready;
+      const control = await wt.createBidirectionalStream();
+      const writer = control.writable.getWriter();
+      await writeMetadata(writer, { v: 1, kind: 'control' });
+      this.#readSessionStream(control, writer, nodeId);
+      await writeMessage(writer, {
+        t: 'HELLO',
+        nodeId: this.#options.nodeId,
+        load: { cpu: 0, memory: 0 },
+        incarnation: this.#options.incarnation,
+        ...(this.#options.token !== undefined ? { token: this.#options.token } : {}),
+        ...(this.#options.clusterId !== null ? { clusterId: this.#options.clusterId } : {}),
+      });
+      const lanes = newLanes();
+      // HELLO already opened a control stream and wrote its metadata; adopt it
+      // as the control lane rather than opening a second one alongside it.
+      lanes.control.writer = writer;
+      const conn: PeerConnection = { wt, control: writer, lanes };
+      this.#sessions.set(nodeId, conn);
+      wt.closed.finally(() => this.#dropSession(nodeId, conn)).catch(() => {});
+      void this.#readIncoming(wt, nodeId);
+      return true;
+    } catch {
+      // A failed dial is not fatal: traffic keeps flowing through the seed.
+      return false;
+    } finally {
+      this.#dialing.delete(nodeId);
+    }
+  }
+
+  /**
+   * Send over the direct session to `to`. Returns false when no session
+   * exists, so the caller can fall back to the seed path.
+   */
+  send(to: string, msg: ClusterMessage): boolean {
+    const conn = this.#sessions.get(to);
+    if (conn === undefined) return false;
+    const lane = isPortMessage(msg) ? conn.lanes.port : conn.lanes.control;
+    void laneSend(lane, conn.wt, isPortMessage(msg) ? 'port' : 'control', msg).catch((err: unknown) => {
+      if (!isExpectedCloseError(err)) {
+        console.error(`fino:cluster peer write failed: ${err}`);
+      }
+      this.#dropSession(to, conn);
+    });
+    return true;
+  }
+
+  /**
+   * Resolve once everything already queued for `to` has been written.
+   *
+   * A realm's exit must not overtake its own last messages. When those went
+   * over a direct session and the exit goes through the seed, the only thing
+   * keeping them ordered is that the frames are on the wire first — so the
+   * sender waits for this before announcing the exit.
+   */
+  flush(to: string): Promise<void> {
+    return this.#sessions.get(to)?.queue ?? Promise.resolve();
+  }
+
+  /** Close every session and the listener. */
+  close(): void {
+    this.#closed = true;
+    for (const [nodeId, conn] of this.#sessions) {
+      this.#sessions.delete(nodeId);
+      closeConnection(conn);
+    }
+    for (const wt of this.#inbound) {
+      try {
+        wt.close();
+      } catch {}
+    }
+    this.#inbound.clear();
+    for (const client of this.#clients) {
+      void client.close().catch(() => {});
+    }
+    this.#clients.clear();
+    this.#server?.close().catch(() => {});
+    this.#server = null;
+    this.#handlers = [];
+  }
+
+  async #acceptSession(wt: WebTransport): Promise<void> {
+    await wt.ready;
+    let peerNodeId: string | null = null;
+    this.#inbound.add(wt);
+    const streams = wt.incomingBidirectionalStreams.getReader();
+    wt.closed
+      .finally(() => {
+        this.#inbound.delete(wt);
+        if (peerNodeId !== null) {
+          const conn = this.#sessions.get(peerNodeId);
+          if (conn !== undefined) this.#dropSession(peerNodeId, conn);
+        }
+      })
+      .catch(() => {});
+    try {
+      while (true) {
+        const read = await streams.read();
+        if (read.done) break;
+        const stream = read.value;
+        if (stream === undefined) continue;
+        this.#inboundStreams++;
+        let streamWriter: StreamWriter | null = null;
+        void readClusterStream(
+          stream,
+          async (metadata, writer) => {
+            if (metadata.kind === 'control') streamWriter = writer;
+          },
+          (metadata, msg) => {
+            if (msg.t === 'HELLO') {
+              if (!this.#admit(msg)) {
+                // Refused: drop the whole session rather than the stream, so
+                // an unauthenticated dialer holds no resources here. The
+                // session stays tracked until its close handler fires, so a
+                // teardown that races the refusal still reaps it.
+                if (streamWriter !== null) closeWriter(streamWriter);
+                wt.close();
+                return;
+              }
+              peerNodeId = msg.nodeId;
+              this.#incarnations.set(msg.nodeId, msg.incarnation ?? 0);
+              this.#sessions.set(peerNodeId, {
+                wt,
+                control: streamWriter,
+                lanes: newLanes(),
+              });
+              return;
+            }
+            if (peerNodeId === null) return;
+            for (const handler of this.#handlers) handler(peerNodeId, msg);
+          },
+          (metadata) => {
+            void metadata;
+          },
+        ).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer received malformed stream: ${err}`);
+          }
+        });
+      }
+    } finally {
+      try {
+        streams.releaseLock();
+      } catch {}
+    }
+  }
+
+  /** Authenticate and fence one inbound peer handshake. */
+  #admit(msg: Extract<ClusterMessage, { t: 'HELLO' }>): boolean {
+    if (this.#options.token !== undefined && msg.token !== this.#options.token) return false;
+    if (
+      this.#options.clusterId !== null &&
+      msg.clusterId !== undefined &&
+      msg.clusterId !== this.#options.clusterId
+    ) {
+      return false;
+    }
+    const known = this.#incarnations.get(msg.nodeId);
+    if (known !== undefined && msg.incarnation !== undefined && msg.incarnation < known) {
+      // A replaced process must not reclaim the session it lost.
+      return false;
+    }
+    return true;
+  }
+
+  async #readIncoming(wt: WebTransport, nodeId: string): Promise<void> {
+    const streams = wt.incomingBidirectionalStreams.getReader();
+    try {
+      while (true) {
+        const read = await streams.read();
+        if (read.done) break;
+        const stream = read.value;
+        if (stream === undefined) continue;
+        this.#inboundStreams++;
+        void readClusterStream(
+          stream,
+          async () => {},
+          (metadata, msg) => {
+            void metadata;
+            for (const handler of this.#handlers) handler(nodeId, msg);
+          },
+          () => {},
+        ).catch((err: unknown) => {
+          if (!isExpectedCloseError(err)) {
+            console.error(`fino:cluster peer stream error: ${err}`);
+          }
+        });
+      }
+    } catch {
+      // Session teardown is handled by the closed promise.
+    } finally {
+      try {
+        streams.releaseLock();
+      } catch {}
+    }
+  }
+
+  #readSessionStream(
+    stream: { readable: unknown; writable: unknown },
+    writer: StreamWriter,
+    nodeId: string,
+  ): void {
+    void readClusterStream(
+      stream as never,
+      async () => {},
+      (metadata, msg) => {
+        void metadata;
+        for (const handler of this.#handlers) handler(nodeId, msg);
+      },
+      () => {},
+      // dial() already holds this stream's writer. Without passing it the
+      // reader tried to take a second one and threw on every dial, so a
+      // dialer never read anything the peer sent back on its own stream.
+      writer,
+      { v: 1, kind: 'control' },
+    ).catch((err: unknown) => {
+      if (!isExpectedCloseError(err)) {
+        console.error(`fino:cluster peer control stream error: ${err}`);
+      }
+    });
+  }
+
+  #dropSession(nodeId: string, conn: PeerConnection): void {
+    const current = this.#sessions.get(nodeId);
+    if (current !== conn) return;
+    this.#sessions.delete(nodeId);
+    closeConnection(conn);
   }
 }

@@ -23,6 +23,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:commands/doc/theme` | not yet benchmarked |
 | `fino:commands/fmt` | not yet benchmarked |
 | `fino:commands/lint` | not yet benchmarked |
+| `fino:commands/cluster` | not yet benchmarked |
 | `fino:realm` | `benchmarks/realm/index.bench.ts` |
 | `fino:module` | `benchmarks/module.bench.ts` |
 | `fino:realm/self` | `benchmarks/realm/self.bench.ts` |

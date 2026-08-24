@@ -354,9 +354,32 @@ export function tick(timeoutMs: number | null): number {
       installed: batch[base + 6] === 1,
     });
   }
-  const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
+  // Time blocked in the backend is the loop-idle signal the telemetry contract
+  // publishes, so it is measured around the wait rather than derived.
+  let events: LoopEvent[];
+  if (_processReadiness) {
+    events = [];
+  } else {
+    const waitStarted = performance.now();
+    events = _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
+    _waitedMs += performance.now() - waitStarted;
+  }
   for (const ev of events) _dispatch(ev);
   return routed + events.length;
+}
+
+let _waitedMs = 0;
+/**
+ * Cumulative wall time this loop has spent blocked inside the backend wait.
+ *
+ * The stats module samples this against wall time to derive the loop idle
+ * ratio. Realms driven by the process reactor never block here — their idle
+ * time lives in the reactor pool and is attributed by its load counters.
+ *
+ * @internal
+ */
+export function _loopWaitedMs(): number {
+  return _waitedMs;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.

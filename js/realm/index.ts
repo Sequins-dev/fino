@@ -1984,6 +1984,15 @@ export interface RealmOptions {
    */
   repl?: boolean;
   /**
+   * Run this realm in the scheduler's system priority class: it outranks
+   * every app realm whenever it has unserviced readiness signals and is
+   * exempt from balancing. Reserved for the node's own runtime machinery
+   * (the per-node system realm); application code must not set it.
+   *
+   * @internal
+   */
+  _system?: boolean;
+  /**
    * Arbitrary JSON-serializable configuration delivered to the child realm.
    * The child reads it via `internal:realm-bridge.getRealmData()` before the
    * entry module is imported, so it can shape application-specific worker
@@ -2622,6 +2631,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       opts.data,
       bootstrapData,
       opts.repl ?? false,
+      opts._system ?? false,
     );
     this.#handle = scheduled.handle;
     const port = createScheduledPort(scheduled.portWakeFd, scheduled.handle);

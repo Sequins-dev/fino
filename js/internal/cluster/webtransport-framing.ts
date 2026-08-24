@@ -17,10 +17,10 @@
  * stack produces, so a single frame may span several chunks and a single
  * chunk may contain several frames.
  *
- * `canonicalPortPair` is a small naming helper used by the port-stream
- * metadata: both endpoints of a logical port pair must agree on one key
- * regardless of which side opened the stream, so the key is
- * direction-independent.
+ * `canonicalPortPair` builds a direction-independent key for a logical port
+ * pair. Port metadata may carry one, but a multiplexed port lane — which is
+ * what the transport opens — carries every pair on the connection and names
+ * none of them, so the field is optional and purely descriptive.
  *
  * ```ts no_run
  * import {
@@ -56,10 +56,11 @@ import { defineMessage } from 'fino:format/protobuf';
  *
  * The `kind` discriminant declares what the rest of the stream carries. A
  * `'control'` stream carries control-plane cluster messages between two
- * nodes. A `'port'` stream is dedicated to `PORT_MSG` traffic for one
- * logical port pair: `a` and `b` are the two port addresses and `pair` is
- * their canonical key as produced by `canonicalPortPair`, so both peers
- * index the stream under the same key no matter which side opened it.
+ * nodes; a `'port'` stream carries `PORT_MSG` traffic. When a stream serves
+ * exactly one logical port pair it may name it — `a` and `b` are the two port
+ * addresses and `pair` their canonical key — but the transport multiplexes
+ * every pair onto one lane, so those fields are normally absent. Nothing
+ * routes on them: a `PORT_MSG` names its own `fromPort` and `toPort`.
  *
  * `v` is the framing protocol version; the only defined version is `1`.
  *
@@ -84,9 +85,17 @@ export type ClusterStreamMetadata =
   | {
       v: 1;
       kind: 'port';
-      pair: string;
-      a: string;
-      b: string;
+      /**
+       * The logical port pair this stream serves, when it serves exactly one.
+       *
+       * Omitted on a multiplexed port lane, which carries every pair on the
+       * connection over a single long-lived stream. Nothing routes on these —
+       * a `PORT_MSG` names its own `fromPort` and `toPort` — so they are
+       * descriptive only.
+       */
+      pair?: string;
+      a?: string;
+      b?: string;
     };
 
 interface WireMetadata {
@@ -129,13 +138,16 @@ export function decodeClusterStreamMetadata(bytes: Uint8Array): ClusterStreamMet
     throw new Error(`unsupported cluster WebTransport metadata version ${value.version}`);
   }
   if (value.kind === 1) return { v: 1, kind: 'control' };
-  if (
-    value.kind === 2 &&
-    typeof value.pair === 'string' &&
-    typeof value.a === 'string' &&
-    typeof value.b === 'string'
-  ) {
-    return { v: 1, kind: 'port', pair: value.pair, a: value.a, b: value.b };
+  if (value.kind === 2) {
+    // The pair fields are optional: a multiplexed lane carries every pair on
+    // the connection and names none of them.
+    return {
+      v: 1,
+      kind: 'port',
+      ...(typeof value.pair === 'string' ? { pair: value.pair } : {}),
+      ...(typeof value.a === 'string' ? { a: value.a } : {}),
+      ...(typeof value.b === 'string' ? { b: value.b } : {}),
+    };
   }
   throw new Error('invalid cluster WebTransport metadata');
 }

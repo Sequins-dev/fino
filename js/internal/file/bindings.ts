@@ -647,7 +647,17 @@ export function _toStr(p: Path | string): string {
  * @internal
  */
 export function _toPath(p: Path | string): Path {
-  return p instanceof Path ? p : new Path(p);
+  if (p instanceof Path) return p;
+  // TypeScript's types promise a string, but every public fs API funnels
+  // through here and JS callers keep no promises. `new Path(undefined)`
+  // stringifies to the path "undefined", which silently creates a file by
+  // that name in the working directory — found as a literal `undefined` file
+  // in the repo root that took two debugging sessions to attribute. One
+  // guard at the choke point beats a check in every API.
+  if (typeof p !== 'string') {
+    throw new TypeError(`path must be a string or Path, got ${p === null ? 'null' : typeof p}`);
+  }
+  return new Path(p);
 }
 /**
  * Join a directory path and child name.

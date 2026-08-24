@@ -66,6 +66,7 @@ import {
 import { drainMicrotasks, runLoop } from 'internal:async-context';
 import { setSchedulerPollingRequired, usesProcessReadiness } from 'internal:scheduler-native';
 import { EnvelopeKind } from 'internal:realm/envelope';
+import { signalTerminate } from 'internal:realm/lifecycle';
 import { wakeFd } from 'internal:async-runtime';
 import { env } from '../process.ts';
 // Register the async-runtime wake pipe with kqueue so background FFI threads
@@ -476,6 +477,12 @@ if (_childEntry) {
       if (envelope.kind === EnvelopeKind.Terminate) {
         _childDone = true;
         _externalTerminate = true;
+        // Announce it to the entry module too. Marking the realm done is not
+        // enough on its own: the loop exits only once the realm is done *and*
+        // holds no live handles, so an entry whose work is a repeating timer
+        // keeps itself alive indefinitely unless it hears the request and
+        // stops re-arming.
+        signalTerminate();
         return true;
       }
       if (envelope.kind === EnvelopeKind.Call && !_callHandlerInstalled) {

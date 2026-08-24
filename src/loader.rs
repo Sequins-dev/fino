@@ -131,9 +131,14 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:realm/self", "realm/self"),
     source_builtin!("fino:realm/messaging", "realm/messaging"),
     source_builtin!("internal:realm/envelope", "internal/realm/envelope"),
+    source_builtin!("internal:realm/lifecycle", "internal/realm/lifecycle"),
     source_builtin!(
         "internal:realm/transport-port",
         "internal/realm/transport-port"
+    ),
+    source_builtin!(
+        "internal:realm/workload-spawn",
+        "internal/realm/workload-spawn"
     ),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
@@ -151,6 +156,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
+    source_builtin!("fino:commands/cluster", "commands/cluster"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/coverage", "commands/coverage"),
@@ -266,6 +272,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         },
     ),
     source_builtin!("internal:runtime/loop", "internal/runtime/loop"),
+    source_builtin!("internal:runtime/stats", "internal/runtime/stats"),
     source_builtin!("fino:process", "process"),
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),
@@ -390,6 +397,22 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:cluster/webtransport-transport",
         "internal/cluster/webtransport-transport"
     ),
+    source_builtin!(
+        "internal:cluster/join-string",
+        "internal/cluster/join-string"
+    ),
+    source_builtin!(
+        "internal:cluster/system-realm",
+        "internal/cluster/system-realm"
+    ),
+    source_builtin!("internal:cluster/agent", "internal/cluster/agent"),
+    source_builtin!("internal:cluster/ledger", "internal/cluster/ledger"),
+    source_builtin!("internal:cluster/balancer", "internal/cluster/balancer"),
+    source_builtin!(
+        "internal:cluster/balance-loop",
+        "internal/cluster/balance-loop"
+    ),
+    source_builtin!("internal:cluster/cask", "internal/cluster/cask"),
     source_builtin!("internal:cluster/registry", "internal/cluster/registry"),
     source_builtin!("internal:cluster/seed", "internal/cluster/seed"),
     source_builtin!("internal:cluster/client", "internal/cluster/client"),
@@ -1408,6 +1431,9 @@ fn tla_fulfill_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if scope.is_execution_terminating() {
+        return;
+    }
     let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
     let state_rc = get_state(scope);
     let entry = {
@@ -1433,6 +1459,9 @@ fn tla_reject_callback(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
+    if scope.is_execution_terminating() {
+        return;
+    }
     let id = args.data().integer_value(scope).unwrap_or(-1) as u32;
     let state_rc = get_state(scope);
     let entry = {
@@ -1534,9 +1563,21 @@ fn settle_dynamic_import<'s, 'tc>(
     module: Option<v8::Local<'s, v8::Module>>,
     resolver: v8::Local<'s, v8::PromiseResolver>,
 ) {
+    // Termination can arrive while the imported module's top level runs —
+    // the watchdog stopping a runaway loop lands exactly here, inside the
+    // microtask checkpoint. Every V8 API below (exception(), reject(),
+    // resolve()) CHECK-fails on a terminating isolate, which aborts the
+    // process. Leave the promise unsettled: the workload is being torn down,
+    // so nobody will await it.
+    if tc.is_execution_terminating() {
+        return;
+    }
     if let Some(m) = module {
         match instantiate_and_evaluate(tc, m) {
             Some(eval_result) if !tc.has_caught() => {
+                if tc.is_execution_terminating() {
+                    return;
+                }
                 let namespace = m.get_module_namespace();
                 if let Ok(eval_promise) = v8::Local::<v8::Promise>::try_from(eval_result) {
                     // TLA: defer resolution until the eval Promise settles.
@@ -1569,6 +1610,9 @@ fn settle_dynamic_import<'s, 'tc>(
                 }
             }
             _ => {
+                if tc.is_execution_terminating() {
+                    return;
+                }
                 let exc = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
                 resolver.reject(tc, exc);
             }
@@ -1577,9 +1621,17 @@ fn settle_dynamic_import<'s, 'tc>(
         let exc = if tc.has_caught() {
             tc.exception().unwrap_or_else(|| v8::undefined(tc).into())
         } else {
-            v8::String::new(tc, "dynamic import failed")
-                .map(|s| -> v8::Local<v8::Value> { s.into() })
-                .unwrap_or_else(|| v8::undefined(tc).into())
+            // A resolver returned nothing and threw nothing. That is a bug in
+            // the resolver rather than in the importing code, so reject with a
+            // real Error — a bare string arrives at the catch clause with no
+            // message and no stack, which is indistinguishable from nothing
+            // having happened at all.
+            v8::String::new(
+                tc,
+                "dynamic import failed: module resolver returned no module",
+            )
+            .map(|s| v8::Exception::error(tc, s))
+            .unwrap_or_else(|| v8::undefined(tc).into())
         };
         resolver.reject(tc, exc);
     }
@@ -1732,7 +1784,27 @@ fn get_or_load_builtin_inner<'s>(
     }
 
     // 3. Fall back to the static BUILTINS registry.
-    let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
+    //
+    // A miss must throw. V8's module-resolve contract is that an empty result
+    // carries a pending exception; returning None without one makes
+    // instantiation fail silently — the import promise never settles, and the
+    // process exits 0 having run nothing at all. That is how a whole test file
+    // could vanish from a suite (and take the rest of the run with it) because
+    // of one unregistered specifier.
+    let Some(entry) = BUILTINS.iter().find(|(s, _)| *s == spec) else {
+        let msg = v8::String::new(
+            scope,
+            &match from {
+                Some(referrer) => {
+                    format!("Cannot resolve builtin module '{spec}' imported from '{referrer}'")
+                }
+                None => format!("Cannot resolve builtin module '{spec}'"),
+            },
+        )?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    };
     let (spec_key, kind) = entry;
 
     let module = match kind {
@@ -1891,15 +1963,28 @@ fn instantiate_and_evaluate<'s>(
     module: v8::Local<'s, v8::Module>,
 ) -> Option<v8::Local<'s, v8::Value>> {
     use v8::ModuleStatus;
-    match module.get_status() {
+    // The watchdog must not terminate while a module evaluation is in
+    // flight: V8's async-module resume CHECK-fails on a terminating isolate.
+    // Bracketing here (with a depth counter for nested dynamic imports) is
+    // what makes everything OUTSIDE evaluation safely enforceable.
+    crate::scheduler_native::enter_module_evaluation();
+    let result = match module.get_status() {
         ModuleStatus::Uninstantiated => {
-            module.instantiate_module(scope, resolve_module_callback)?;
-            module.evaluate(scope)
+            let instantiated = module
+                .instantiate_module(scope, resolve_module_callback)
+                .is_some();
+            if instantiated {
+                module.evaluate(scope)
+            } else {
+                None
+            }
         }
         ModuleStatus::Instantiated => module.evaluate(scope),
         ModuleStatus::Evaluated => Some(v8::undefined(scope).into()),
         _ => Some(v8::undefined(scope).into()),
-    }
+    };
+    crate::scheduler_native::exit_module_evaluation();
+    result
 }
 
 // ---------------------------------------------------------------------------

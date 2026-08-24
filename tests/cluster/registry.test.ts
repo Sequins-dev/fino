@@ -78,4 +78,49 @@ describe('RealmRegistry', () => {
     const children = reg.getChildren('root');
     t.equal(children.length, 0, 'child removed from root children');
   });
+
+  it('re-registering a known port keeps its edges', (t) => {
+    // The seed registers a spawn's parent port on every SPAWN, so a port that
+    // spawns twice is registered twice. Rebuilding the entry each time reset
+    // its children and detached its own parent edge, so the first child fell
+    // out of the tree and survived a cancellation that should have reached it.
+    const reg = new RealmRegistry();
+    reg.register('root', null, 'n1');
+    reg.register('mid', 'root', 'n1');
+    reg.register('first', 'mid', 'n2');
+    // Second spawn from the same parent, exactly as the seed does it.
+    reg.register('mid', null, 'n1');
+    reg.register('second', 'mid', 'n2');
+
+    t.deepEqual(reg.getChildren('mid').sort(), ['first', 'second'], 'both children retained');
+    t.equal(reg.getParentPortId('mid'), 'root', 'the parent edge is not erased');
+    const removed = reg.exit('mid').sort();
+    t.deepEqual(removed, ['first', 'mid', 'second'], 'cancelling the parent reaches both children');
+  });
+
+  it('a port that changes host leaves the old node index', (t) => {
+    // Shedding moves a workload between nodes. If the old node keeps the port
+    // in its index, that node going down cancels a port it no longer hosts.
+    const reg = new RealmRegistry();
+    reg.register('moved', null, 'node-a');
+    reg.register('moved', null, 'node-b');
+    t.equal(reg.getNodeId('moved'), 'node-b', 'host updated');
+    t.deepEqual(reg.nodeDown('node-a'), [], 'the old host no longer claims it');
+    t.equal(reg.getNodeId('moved'), 'node-b', 'and it survives the old host going down');
+    t.equal(reg.nodeDown('node-b').length, 1, 'the new host does claim it');
+  });
+
+  it('cancels a whole subtree to arbitrary depth', (t) => {
+    // Structured concurrency: a workload spawning a workload spawning a
+    // workload must all die together.
+    const reg = new RealmRegistry();
+    reg.register('root', null, 'n1');
+    reg.register('child', 'root', 'n2');
+    reg.register('grandchild', 'child', 'n3');
+    reg.register('greatgrandchild', 'grandchild', 'n1');
+    const removed = reg.exit('root');
+    t.equal(removed.length, 4, 'every descendant removed');
+    t.ok(removed.indexOf('greatgrandchild') < removed.indexOf('root'), 'depth-first: leaves first');
+    t.equal(reg.getNodeId('grandchild'), undefined, 'descendants are forgotten');
+  });
 });

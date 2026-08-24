@@ -42,3 +42,28 @@ export const port = usesProcessReadiness()
       }
     ).realmPort
   : undefined;
+
+/**
+ * Be told when this realm's parent asks it to stop.
+ *
+ * A termination request is a control frame, so it never appears as a message on
+ * the port and cannot be observed by listening for one. A realm that finishes
+ * on its own does not need this; a realm whose work is a repeating timer or an
+ * open watch does, because the loop exits only once the realm is done *and*
+ * holds no live handles — nothing releases those handles unless the realm
+ * itself decides to.
+ *
+ * The listener fires at most once, and fires immediately if the request has
+ * already arrived. Returns an unsubscribe function.
+ *
+ * ```ts no_run
+ * import { onTerminate } from 'fino:realm/self';
+ *
+ * let running = true;
+ * onTerminate(() => {
+ *   running = false;
+ * });
+ * while (running) await work();
+ * ```
+ */
+export { onTerminate, terminateRequested } from 'internal:realm/lifecycle';

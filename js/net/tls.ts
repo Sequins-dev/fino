@@ -107,7 +107,8 @@ export interface TlsConnectOptions extends ConnectOptions {
    * ```
    */
   ca?: string;
-  /** Path to the PEM client certificate chain presented when requested.
+  /** PEM client certificate chain presented when requested: a file path or the
+   * PEM text itself.
    *
    * Must be paired with `key`; partial certificate configuration throws before
    * the TCP connection is opened.
@@ -117,7 +118,7 @@ export interface TlsConnectOptions extends ConnectOptions {
    * ```
    */
   cert?: string;
-  /** Path to the PEM private key matching `cert`.
+  /** PEM private key matching `cert`: a file path or the PEM text itself.
    *
    * ```ts no_run
    * await TlsSocket.connect(addr, { cert: './client.pem', key: './client.key' });
@@ -148,9 +149,9 @@ export type TlsClientAuth = 'none' | 'request' | 'require';
  * client certificate is provided.
  */
 export interface TlsServerContextOptions {
-  /** PEM certificate chain presented by the server. */
+  /** PEM certificate chain presented by the server: a file path or PEM text. */
   cert: string;
-  /** PEM private key matching `cert`. */
+  /** PEM private key matching `cert`: a file path or PEM text. */
   key: string;
   /** PEM CA bundle used to verify client certificates. */
   ca?: string;

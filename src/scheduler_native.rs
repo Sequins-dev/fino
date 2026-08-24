@@ -7,7 +7,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{BinaryHeap, HashMap, HashSet, VecDeque},
     os::unix::io::RawFd,
     rc::Rc,
     sync::{
@@ -42,6 +42,76 @@ struct TransferWorkload(Workload);
 // worker owns the value at a time.
 unsafe impl Send for TransferWorkload {}
 
+/// Everything needed to construct a workload's isolate, captured at submission
+/// time. Until a reactor first claims it, a workload is pure data — movable
+/// between threads (and across nodes) with no V8 involvement. The isolate is
+/// constructed on the claiming reactor's thread.
+struct WorkloadSpecInner {
+    entry: String,
+    process_env: ProcessEnv,
+    package_map_json: Option<String>,
+    import_rules: Vec<crate::state::ImportRule>,
+    channel_rx: Option<mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
+    channel_tx: Option<mpsc::Sender<crate::realm::thread::ThreadMessage>>,
+    wake_read_fd: Option<RawFd>,
+    wake_write_fd: Option<RawFd>,
+    watch_mode: bool,
+    repl_mode: bool,
+    realm_data: Option<String>,
+    realm_bootstrap_data: Option<String>,
+    reload_requested_signal: Option<Arc<AtomicBool>>,
+    scheduled: Option<Arc<ScheduledRealmState>>,
+    port_fds: Option<(RawFd, RawFd)>,
+    /// Wake pipe created at submission so the parent can watch `wakeFd`
+    /// before the isolate exists; ownership moves into the isolate's async
+    /// state at initialization.
+    async_pipe: (RawFd, RawFd),
+}
+
+struct WorkloadSpec {
+    owner: u32,
+    class: u8,
+    inner: Option<Box<WorkloadSpecInner>>,
+}
+
+impl WorkloadSpec {
+    fn wake_read_fd(&self) -> RawFd {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.async_pipe.0)
+            .unwrap_or(-1)
+    }
+
+    /// Construct the isolate on the calling thread. Consumes the spec; on
+    /// failure the completion channel is returned so the allocation settles.
+    fn initialize(mut self) -> Result<Workload, (String, Option<Arc<ScheduledRealmState>>)> {
+        let inner = self
+            .inner
+            .take()
+            .expect("workload spec already initialized");
+        let scheduled = inner.scheduled.clone();
+        setup_workload(*inner, self.owner).map_err(|error| (error, scheduled))
+    }
+}
+
+impl Drop for WorkloadSpec {
+    fn drop(&mut self) {
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        if let Some((wake_read, partner_write)) = inner.port_fds {
+            unsafe {
+                libc::close(wake_read);
+                libc::close(partner_write);
+            }
+        }
+        unsafe {
+            libc::close(inner.async_pipe.0);
+            libc::close(inner.async_pipe.1);
+        }
+    }
+}
+
 struct ActiveWorkload {
     saved_async_state: Option<crate::async_rt::IsolateAsyncState>,
     _locker: crate::v8_threading::IsolateLocker,
@@ -49,6 +119,15 @@ struct ActiveWorkload {
 
 thread_local! {
     static REACTOR_THREADS: RefCell<HashMap<u64, ReactorThread>> = RefCell::new(HashMap::new());
+    /// Specs created but not yet submitted to a queue. The gap between the two
+    /// is the whole point of the split: a caller can read a workload's owner and
+    /// wake descriptor, and arm a listener on them, before anything is running.
+    static WORKLOADS: RefCell<HashMap<u64, WorkloadSpec>> = RefCell::new(HashMap::new());
+    /// Reactor queues created on this thread. The process pool is registered
+    /// separately in `process_pool()` because realms other than the one that
+    /// created it — the system realm in particular — must reach it, and a
+    /// thread-local handle does not travel.
+    static REACTOR_QUEUES: RefCell<HashMap<u64, Arc<PoolShared>>> = RefCell::new(HashMap::new());
 }
 
 /// Allocate a handle that is never reused.
@@ -128,6 +207,74 @@ impl Drop for ScheduledRealmState {
             libc::close(self.parent_wake_write);
         }
     }
+}
+
+/// One in-flight slice, as the watchdog sees it.
+struct RunningSlice {
+    owner: u32,
+    started_micros: u64,
+    /// Thread-safe interrupt handle. Calls after the isolate is disposed are
+    /// no-ops, so a slice that finishes mid-escalation is harmless.
+    handle: v8::IsolateHandle,
+    /// True while a module evaluation is in flight on the slice. Termination
+    /// is never requested in that window: V8's async-module machinery
+    /// (`SourceTextModule::ExecuteAsyncModule`) CHECK-fails when resumed on a
+    /// terminating isolate, and it resumes within the same checkpoint.
+    /// Ordinary microtasks — promise reactions, handler and timer dispatch —
+    /// unwind from termination cleanly, so everything outside module
+    /// evaluation is enforceable. Top-level runaways stay advisory; the
+    /// deploy readiness gate is the layer that catches those.
+    module_evaluating: Arc<AtomicBool>,
+    /// Set once the soft interrupt has been delivered for this slice.
+    warned: bool,
+    /// Set once termination has been requested, so it is asked for exactly
+    /// once per slice however long the unwind takes.
+    terminated: bool,
+}
+
+thread_local! {
+    /// The running slice's module-evaluation flag for THIS reactor thread,
+    /// with a depth counter: dynamic imports nest evaluations, and the outer
+    /// one is still in flight when an inner one finishes.
+    static MODULE_EVALUATING: RefCell<(u32, Option<Arc<AtomicBool>>)> =
+        const { RefCell::new((0, None)) };
+}
+
+/// Bracket a module evaluation on this thread. No-op outside a reactor slice.
+///
+/// The starvation watchdog must never terminate an isolate inside one: V8's
+/// `SourceTextModule::ExecuteAsyncModule` CHECK-fails on a terminating
+/// isolate, which aborts the process rather than stopping the realm.
+pub(crate) fn enter_module_evaluation() {
+    MODULE_EVALUATING.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        cell.0 += 1;
+        if let Some(flag) = cell.1.as_ref() {
+            flag.store(true, Ordering::Release);
+        }
+    });
+}
+
+pub(crate) fn exit_module_evaluation() {
+    MODULE_EVALUATING.with(|cell| {
+        let mut cell = cell.borrow_mut();
+        cell.0 = cell.0.saturating_sub(1);
+        if cell.0 == 0
+            && let Some(flag) = cell.1.as_ref()
+        {
+            flag.store(false, Ordering::Release);
+        }
+    });
+}
+
+/// Monotonic clock shared by the pool and its watchdog.
+fn pool_clock() -> &'static std::time::Instant {
+    static CLOCK: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    CLOCK.get_or_init(std::time::Instant::now)
+}
+
+fn now_micros() -> u64 {
+    pool_clock().elapsed().as_micros() as u64
 }
 
 struct ScheduledRealmHandle {
@@ -386,24 +533,30 @@ fn set_scheduler_polling_required(
     get_state(scope).borrow_mut().scheduler_polling_fn = Some(v8::Global::new(scope, function));
 }
 
-fn setup_workload(
-    entry: String,
-    process_env: ProcessEnv,
-    package_map_json: Option<String>,
-    import_rules: Vec<crate::state::ImportRule>,
-    owner: u32,
-    channel_rx: Option<mpsc::Receiver<crate::realm::thread::ThreadMessage>>,
-    channel_tx: Option<mpsc::Sender<crate::realm::thread::ThreadMessage>>,
-    wake_read_fd: Option<RawFd>,
-    wake_write_fd: Option<RawFd>,
-    watch_mode: bool,
-    repl_mode: bool,
-    realm_data: Option<String>,
-    realm_bootstrap_data: Option<String>,
-    reload_requested_signal: Option<Arc<AtomicBool>>,
-    scheduled: Option<Arc<ScheduledRealmState>>,
-    port_fds: Option<(RawFd, RawFd)>,
-) -> Result<Workload, String> {
+/// Construct the isolate for a submitted spec.
+///
+/// Takes the whole `WorkloadSpecInner` rather than sixteen positional
+/// arguments because a submitted-but-unclaimed workload has to carry exactly
+/// this state around until some reactor initializes it.
+fn setup_workload(inner: WorkloadSpecInner, owner: u32) -> Result<Workload, String> {
+    let WorkloadSpecInner {
+        entry,
+        process_env,
+        package_map_json,
+        import_rules,
+        channel_rx,
+        channel_tx,
+        wake_read_fd,
+        wake_write_fd,
+        watch_mode,
+        repl_mode,
+        realm_data,
+        realm_bootstrap_data,
+        reload_requested_signal,
+        scheduled,
+        port_fds,
+        async_pipe,
+    } = inner;
     crate::runtime::init_v8();
     let params = v8::CreateParams::default()
         .array_buffer_allocator(crate::runtime::shared_allocator().clone());
@@ -412,8 +565,19 @@ fn setup_workload(
     isolate.set_allow_atomics_wait(true);
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
+    // Publish the isolate handle the moment it exists. Creation used to do
+    // this before submitting, which a pre-init spec cannot: there is no
+    // isolate until a reactor claims the spec, so a forced termination
+    // requested in that window has nothing to act on until here.
+    if let Some(scheduled) = scheduled.as_ref() {
+        *scheduled.isolate_handle.lock().unwrap() = Some(isolate.thread_safe_handle());
+    }
 
-    let saved_async_state = crate::async_rt::swap_state(Some(crate::async_rt::new_state()));
+    // The pipe was created at submission so the parent could watch `wakeFd`
+    // before this isolate existed; ownership moves into the async state here.
+    let saved_async_state = crate::async_rt::swap_state(Some(
+        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1),
+    ));
     let initialized = (|| {
         let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
         let queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
@@ -579,7 +743,11 @@ enum Slice {
 /// deliberately rare: exiting an isolate and entering another costs a Locker
 /// round trip, so a realm that still has completable work keeps the thread
 /// unless `shared` reports a strictly higher-priority realm waiting.
-fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, String> {
+fn drive_slice(
+    workload: &mut Workload,
+    shared: &PoolShared,
+    turns: &mut u64,
+) -> Result<Slice, String> {
     let owner = workload.owner;
     let context_global = workload.context.clone();
     let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
@@ -595,6 +763,7 @@ fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, St
     let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
     let tc = &mut v8::TryCatch::new(scope);
     loop {
+        *turns += 1;
         let step = v8::Local::new(tc, &loop_step_fn)
             .call(tc, receiver, &[])
             .ok_or_else(|| {
@@ -689,9 +858,22 @@ fn drop_workload(mut workload: Workload) {
 
 #[derive(Clone, Copy)]
 enum PoolEventKind {
+    /// A workload entered the queue. The sizing policy scales reactor threads
+    /// to demand from these.
+    Submitted,
     Activated,
     Settled,
     Error,
+    /// The workload left this queue for another node. Terminal locally: this
+    /// node is no longer responsible for it. Its actual result reaches the
+    /// parent over the completion channel, which `shedComplete` settles.
+    Shed,
+    /// The watchdog interrupted a slice that has held its reactor while
+    /// system-class work waited. Advisory: execution continues.
+    Overrun,
+    /// The slice did not yield after its warning and was terminated, freeing
+    /// its reactor. The workload settles as a failure.
+    Halted,
 }
 
 struct PoolEvent {
@@ -701,8 +883,34 @@ struct PoolEvent {
     error: Option<String>,
 }
 
+/// App realms. The default class; shed candidates come only from here.
+const CLASS_APP: u8 = 0;
+/// The node's system realm: outranks every app realm whenever it has
+/// unserviced readiness signals, and (having no heap entry) costs nothing
+/// when it has none. Never eligible for shedding.
+const CLASS_SYSTEM: u8 = 1;
+
+enum PoolWorkload {
+    /// Submitted but not yet claimed by a reactor: no isolate exists.
+    Pending(WorkloadSpec),
+    /// Isolate constructed; movable between threads only while exited.
+    Live(TransferWorkload),
+}
+
 struct PoolItem {
-    workload: TransferWorkload,
+    owner: u32,
+    class: u8,
+    workload: PoolWorkload,
+}
+
+impl PoolItem {
+    /// The live isolate. Only valid once claimed — a resident always has one.
+    fn live_mut(&mut self) -> &mut Workload {
+        match &mut self.workload {
+            PoolWorkload::Live(workload) => &mut workload.0,
+            PoolWorkload::Pending(_) => unreachable!("resident workload has no isolate"),
+        }
+    }
 }
 
 struct Resident {
@@ -710,11 +918,27 @@ struct Resident {
     active: ActiveWorkload,
 }
 
+// Field order defines the derived ordering: class dominates, then signal
+// count, then recency.
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 struct ReadyEntry {
+    class: u8,
     priority: usize,
     generation: u64,
     owner: u32,
+}
+
+/// Accumulated load attribution for one workload, drained by the sampling
+/// API. All values are deltas since the previous sample.
+#[derive(Default, Clone, Copy)]
+struct LoadCounters {
+    /// Wall time spent inside `drive_slice` for this workload.
+    busy_micros: u64,
+    slices: u64,
+    loop_turns: u64,
+    /// Runnable delay: signal-to-activation, summed over `activations`.
+    activation_delay_micros: u64,
+    activations: u64,
 }
 
 struct PoolSharedInner {
@@ -723,6 +947,21 @@ struct PoolSharedInner {
     ready: BinaryHeap<ReadyEntry>,
     priorities: HashMap<u32, usize>,
     generations: HashMap<u32, u64>,
+    /// Scheduling class per owner. Kept beside the item rather than inside it
+    /// so a resident's ready entries still rank correctly while it is entered
+    /// and its `PoolItem` has moved out of `parked`.
+    classes: HashMap<u32, u8>,
+    /// Owners marked for shedding but not yet taken. A mark is a claim on the
+    /// spec, not a removal: a local reactor may still win the race, and
+    /// `take_shed` fails if it did — local execution always beats a transfer.
+    shedding: HashSet<u32>,
+    /// Per-workload load deltas, drained by `takeReactorLoadSample`.
+    load: HashMap<u32, LoadCounters>,
+    /// When each owner became runnable, cleared when a claim takes it. The
+    /// difference is the runnable delay — how long work sat queued with no
+    /// thread for it, which is the number that distinguishes a saturated node
+    /// from a merely busy one.
+    signaled_at: HashMap<u32, std::time::Instant>,
     /// Which worker currently has each entered realm. Supersedes a bare set of
     /// active owners: knowing *where* a realm is entered is what lets a signal
     /// wake the one worker that can actually run it.
@@ -790,6 +1029,19 @@ impl PoolSharedInner {
 struct PoolShared {
     inner: Mutex<PoolSharedInner>,
     wake: WakePipe,
+    /// Slices currently executing, keyed by worker. Held under its own mutex,
+    /// never `inner`: the watchdog inspects it on every tick and must not
+    /// contend with the claim path to do so.
+    slices: Mutex<HashMap<usize, RunningSlice>>,
+    /// When a queued entry was last dequeued for execution.
+    ///
+    /// Only a dequeue counts. Advancing this on every `claim()` call would let
+    /// a worker that keeps its current workload — which calls `claim` every
+    /// loop turn — continuously reset the clock meant to detect starvation,
+    /// so the watchdog would never fire on a healthy-looking but starved pool.
+    last_progress_micros: AtomicU64,
+    /// Cleared when the pool shuts down, so the watchdog thread exits.
+    running: AtomicBool,
 }
 
 impl PoolShared {
@@ -800,16 +1052,30 @@ impl PoolShared {
             ready: BinaryHeap::new(),
             priorities: HashMap::new(),
             generations: HashMap::new(),
+            classes: HashMap::new(),
+            shedding: HashSet::new(),
+            load: HashMap::new(),
+            signaled_at: HashMap::new(),
             residents: HashMap::new(),
             waiting: VecDeque::new(),
             wakes: Vec::new(),
             shutdown: false,
             next_worker: 0,
         };
+        pool_clock();
         Self {
             inner: Mutex::new(inner),
             wake: WakePipe::new(),
+            slices: Mutex::new(HashMap::new()),
+            last_progress_micros: AtomicU64::new(now_micros()),
+            running: AtomicBool::new(true),
         }
+    }
+
+    /// Record that a queued entry was dequeued for execution.
+    fn note_progress(&self) {
+        self.last_progress_micros
+            .store(now_micros(), Ordering::Relaxed);
     }
 
     /// Allocate a worker slot and its wake-up.
@@ -822,8 +1088,13 @@ impl PoolShared {
         (worker, wake)
     }
 
-    fn submit(self: &Arc<Self>, workload: Workload) -> u32 {
-        let owner = workload.owner;
+    /// Submit a workload, live or still a pre-init spec.
+    ///
+    /// Taking a `PoolItem` rather than a `Workload` is the point of the split:
+    /// a spec has no isolate yet, so it can be handed to whichever reactor
+    /// claims it first — and, across the cluster, to another node — for free.
+    fn submit(self: &Arc<Self>, item: PoolItem) -> u32 {
+        let owner = item.owner;
         owner_pools()
             .lock()
             .unwrap()
@@ -834,13 +1105,15 @@ impl PoolShared {
             !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner),
             "workload {owner} is already in the reactor"
         );
-        inner.parked.insert(
-            owner,
-            PoolItem {
-                workload: TransferWorkload(workload),
-            },
-        );
+        inner.classes.insert(owner, item.class);
+        inner.parked.insert(owner, item);
         Self::signal_inner(&mut inner, owner);
+        inner.events.push_back(PoolEvent {
+            kind: PoolEventKind::Submitted,
+            worker: usize::MAX,
+            owner,
+            error: None,
+        });
         owner
     }
 
@@ -852,11 +1125,22 @@ impl PoolShared {
         *priority += 1;
         let generation = inner.generations.entry(owner).or_default();
         *generation += 1;
+        let priority = *priority;
+        let generation = *generation;
+        let class = inner.classes.get(&owner).copied().unwrap_or(CLASS_APP);
         inner.ready.push(ReadyEntry {
-            priority: *priority,
-            generation: *generation,
+            class,
+            priority,
+            generation,
             owner,
         });
+        // First signal of a runnable stretch starts the clock; later ones
+        // during the same stretch keep the original, so the delay measures how
+        // long the owner waited rather than how recently it was re-signalled.
+        inner
+            .signaled_at
+            .entry(owner)
+            .or_insert_with(std::time::Instant::now);
         inner.wake_for(owner);
     }
 
@@ -890,9 +1174,12 @@ impl PoolShared {
             let priority = *priority;
             let generation = inner.generations.entry(owner).or_default();
             *generation += 1;
+            let generation = *generation;
+            let class = inner.classes.get(&owner).copied().unwrap_or(CLASS_APP);
             inner.ready.push(ReadyEntry {
+                class,
                 priority,
-                generation: *generation,
+                generation,
                 owner,
             });
             inner.wake_for(owner);
@@ -964,8 +1251,20 @@ impl PoolShared {
                 let current_priority = current
                     .and_then(|owner| inner.priorities.get(&owner).copied())
                     .unwrap_or(0);
+                let current_class = current
+                    .and_then(|owner| inner.classes.get(&owner).copied())
+                    .unwrap_or(CLASS_APP);
                 let owner = if let Some(current) = current {
-                    if candidate.owner != current && candidate.priority <= current_priority {
+                    // Class dominates: the node's system realm outranks an app
+                    // realm whenever it has unserviced signals, however busy
+                    // that app realm is. Priority only decides between peers of
+                    // the same class — a system realm that loses this
+                    // comparison is a system realm that never runs, which is
+                    // the starvation the watchdog exists to catch.
+                    let outranks = candidate.class > current_class
+                        || (candidate.class == current_class
+                            && candidate.priority > current_priority);
+                    if candidate.owner != current && !outranks {
                         current
                     } else {
                         candidate.owner
@@ -987,6 +1286,7 @@ impl PoolShared {
                 let Some(item) = inner.parked.remove(&owner) else {
                     continue;
                 };
+                Self::record_activation(&mut inner, owner);
                 inner.residents.insert(owner, worker);
                 return Claim::Work(item);
             }
@@ -1005,8 +1305,8 @@ impl PoolShared {
     }
 
     fn park(&self, mut resident: Resident) {
-        let owner = resident.item.workload.0.owner;
-        deactivate(&mut resident.item.workload.0, resident.active);
+        let owner = resident.item.owner;
+        deactivate(resident.item.live_mut(), resident.active);
         let mut inner = self.inner.lock().unwrap();
         inner.residents.remove(&owner);
         inner.parked.insert(owner, resident.item);
@@ -1019,8 +1319,194 @@ impl PoolShared {
         inner.residents.remove(&owner);
         inner.priorities.remove(&owner);
         inner.generations.remove(&owner);
+        inner.classes.remove(&owner);
+        inner.shedding.remove(&owner);
+        inner.load.remove(&owner);
+        inner.signaled_at.remove(&owner);
         drop(inner);
         owner_pools().lock().unwrap().remove(&owner);
+    }
+
+    /// Publish the slice about to run so the watchdog can see it.
+    fn begin_slice(&self, worker: usize, owner: u32, handle: v8::IsolateHandle) {
+        let module_evaluating = Arc::new(AtomicBool::new(false));
+        MODULE_EVALUATING.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            // A reactor thread can re-enter a realm from inside an evaluation
+            // it is already nested in; seed the flag from the live depth rather
+            // than assuming a slice starts outside one.
+            module_evaluating.store(cell.0 > 0, Ordering::Release);
+            cell.1 = Some(Arc::clone(&module_evaluating));
+        });
+        self.slices.lock().unwrap().insert(
+            worker,
+            RunningSlice {
+                owner,
+                started_micros: now_micros(),
+                handle,
+                module_evaluating,
+                warned: false,
+                terminated: false,
+            },
+        );
+    }
+
+    /// Retire the slice; the worker is about to return to the scheduler.
+    fn end_slice(&self, worker: usize) {
+        MODULE_EVALUATING.with(|cell| cell.borrow_mut().1 = None);
+        self.slices.lock().unwrap().remove(&worker);
+    }
+
+    /// Fold one finished slice into the owner's load counters.
+    fn record_slice(&self, owner: u32, busy_micros: u64, loop_turns: u64) {
+        let mut inner = self.inner.lock().unwrap();
+        let counters = inner.load.entry(owner).or_default();
+        counters.busy_micros += busy_micros;
+        counters.slices += 1;
+        counters.loop_turns += loop_turns;
+    }
+
+    /// Record signal-to-activation delay when a claim takes an owner.
+    fn record_activation(inner: &mut PoolSharedInner, owner: u32) {
+        let delay = inner
+            .signaled_at
+            .remove(&owner)
+            .map(|since| since.elapsed().as_micros() as u64)
+            .unwrap_or(0);
+        let counters = inner.load.entry(owner).or_default();
+        counters.activation_delay_micros += delay;
+        counters.activations += 1;
+    }
+
+    /// Drain every owner's accumulated load counters (delta sampling).
+    fn take_load_sample(&self) -> Vec<(u32, LoadCounters)> {
+        self.inner.lock().unwrap().load.drain().collect()
+    }
+
+    /// Queue occupancy: specs waiting for a first claim, live realms parked
+    /// between slices, and realms currently entered on a reactor.
+    fn depth(&self) -> (usize, usize, usize) {
+        let inner = self.inner.lock().unwrap();
+        let mut pending = 0;
+        let mut parked_live = 0;
+        for item in inner.parked.values() {
+            match item.workload {
+                PoolWorkload::Pending(_) => pending += 1,
+                PoolWorkload::Live(_) => parked_live += 1,
+            }
+        }
+        (pending, parked_live, inner.residents.len())
+    }
+
+    /// Pick the lowest-priority pre-init app workload as a shed candidate and
+    /// mark it. Comparative order: least signal count first, oldest first — if
+    /// everything is high priority, the least-high item is still chosen.
+    ///
+    /// Only a `Pending` spec is eligible. A live isolate is pinned to this
+    /// node; shedding one would mean serializing a running V8 heap, which is
+    /// exactly the thing the spec/init split exists to avoid needing.
+    fn mark_shedding_lowest(&self) -> u32 {
+        let inner = &mut *self.inner.lock().unwrap();
+        let mut best: Option<(usize, u64, u32)> = None;
+        for (owner, item) in inner.parked.iter() {
+            if !matches!(item.workload, PoolWorkload::Pending(_)) {
+                continue;
+            }
+            if item.class != CLASS_APP || inner.shedding.contains(owner) {
+                continue;
+            }
+            let priority = inner.priorities.get(owner).copied().unwrap_or(0);
+            let generation = inner.generations.get(owner).copied().unwrap_or(0);
+            let key = (priority, generation, *owner);
+            if best.is_none_or(|current| key < current) {
+                best = Some(key);
+            }
+        }
+        match best {
+            Some((_, _, owner)) => {
+                inner.shedding.insert(owner);
+                owner
+            }
+            None => 0,
+        }
+    }
+
+    /// Commit a shed: remove the marked spec from the queue. Fails (returns
+    /// `None`) if a local reactor claimed the workload since it was marked —
+    /// local execution always wins.
+    fn take_shed(&self, owner: u32) -> Option<(WorkloadSpec, usize, u8)> {
+        let (spec, priority, class) = {
+            let inner = &mut *self.inner.lock().unwrap();
+            if !inner.shedding.remove(&owner) {
+                return None;
+            }
+            match inner.parked.get(&owner) {
+                Some(item) if matches!(item.workload, PoolWorkload::Pending(_)) => {}
+                _ => return None,
+            }
+            let item = inner.parked.remove(&owner).expect("checked above");
+            let priority = inner.priorities.remove(&owner).unwrap_or(0);
+            inner.generations.remove(&owner);
+            inner.classes.remove(&owner);
+            inner.signaled_at.remove(&owner);
+            inner.load.remove(&owner);
+            let PoolWorkload::Pending(spec) = item.workload else {
+                unreachable!("checked above");
+            };
+            // A shed owner leaves the queue without ever settling on it.
+            // Without a terminal event, anything tracking live owners from the
+            // event stream waits forever for a workload that is no longer here.
+            inner.events.push_back(PoolEvent {
+                kind: PoolEventKind::Shed,
+                worker: usize::MAX,
+                owner,
+                error: None,
+            });
+            (spec, priority, item.class)
+        };
+        owner_pools().lock().unwrap().remove(&owner);
+        self.wake.notify();
+        Some((spec, priority, class))
+    }
+
+    fn clear_shedding(&self, owner: u32) -> bool {
+        self.inner.lock().unwrap().shedding.remove(&owner)
+    }
+
+    /// Return a shed spec to the queue, restoring its accumulated priority so
+    /// a rejected offer does not lose its position.
+    fn resubmit(self: &Arc<Self>, spec: WorkloadSpec, priority: usize, class: u8) -> u32 {
+        let owner = spec.owner;
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(self));
+        let mut inner = self.inner.lock().unwrap();
+        debug_assert!(!inner.shutdown, "cannot submit work to a stopped reactor");
+        inner.classes.insert(owner, class);
+        inner.parked.insert(
+            owner,
+            PoolItem {
+                owner,
+                class,
+                workload: PoolWorkload::Pending(spec),
+            },
+        );
+        // `signal_inner` adds one back, so the restored value is what the spec
+        // carried when it was taken.
+        if priority > 1 {
+            inner.priorities.insert(owner, priority - 1);
+        }
+        Self::signal_inner(&mut inner, owner);
+        inner.events.push_back(PoolEvent {
+            kind: PoolEventKind::Submitted,
+            worker: usize::MAX,
+            owner,
+            error: None,
+        });
+        drop(inner);
+        self.wake.notify();
+        owner
     }
 
     fn notify(&self, event: PoolEvent) {
@@ -1031,6 +1517,174 @@ impl PoolShared {
     fn drain_wake(&self) {
         self.wake.drain();
     }
+}
+
+/// Watchdog tuning. Defaults are deliberately slow: this exists to break
+/// deadlocks, not to police latency.
+fn watchdog_env_ms(name: &str, fallback: u64) -> u64 {
+    std::env::var(name)
+        .ok()
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(fallback)
+}
+
+/// Watchdog thresholds. Environment supplies the defaults; `createReactorQueue`
+/// can override them per queue so tests do not depend on process-wide state.
+#[derive(Clone, Copy)]
+struct WatchdogTuning {
+    interval_ms: u64,
+    stall_ms: u64,
+    sustained_ms: u64,
+}
+
+impl WatchdogTuning {
+    fn from_env() -> Self {
+        Self {
+            interval_ms: watchdog_env_ms("FINO_WATCHDOG_INTERVAL_MS", 250),
+            stall_ms: watchdog_env_ms("FINO_WATCHDOG_STALL_MS", 2_000),
+            sustained_ms: watchdog_env_ms("FINO_WATCHDOG_SUSTAINED_MS", 10_000),
+        }
+    }
+}
+
+fn watchdog_enabled() -> bool {
+    !matches!(std::env::var("FINO_WATCHDOG").as_deref(), Ok("off" | "0"))
+}
+
+/// Guarantee that queued work is schedulable.
+///
+/// Priority in the claim model is claim-time ordering, not preemption: a
+/// reactor running a workload that never yields never asks for work again, so
+/// the highest-priority entry in the queue can wait forever. The system realm
+/// therefore cannot police the one condition that stops it running — which is
+/// why this lives on a thread that never claims a workload.
+///
+/// The mandate is deliberately narrow. It does not decide what "greedy" means;
+/// it restores the invariant everything else depends on: if work is queued and
+/// no reactor has come back for it, the longest-running slice is interrupted.
+/// Policy — thresholds, exemptions, what to do with a repeat offender —
+/// belongs to the system realm, which this makes schedulable again.
+///
+/// Holds a `Weak`, never an `Arc`: a watchdog must not keep alive the thing it
+/// watches. `closeReactorQueue` unwraps the queue's `Arc` to reclaim it, so a
+/// strong reference here would make every queue close fail.
+fn run_watchdog(watched: Weak<PoolShared>, tuning: WatchdogTuning) {
+    let interval = std::time::Duration::from_millis(tuning.interval_ms);
+    let stall_micros = tuning.stall_ms * 1_000;
+    let terminate_micros = tuning.sustained_ms * 1_000;
+    // FINO_WATCHDOG_TRACE=1 dumps the gate state every pass. Permanent: "why
+    // is the watchdog silent" is a question that recurs, and the answer is
+    // always one of these numbers.
+    let trace = matches!(std::env::var("FINO_WATCHDOG_TRACE").as_deref(), Ok("1"));
+    loop {
+        std::thread::sleep(interval);
+        // Upgrade per tick and drop before sleeping again, so the queue can be
+        // reclaimed the moment its owner is done with it.
+        let Some(shared) = watched.upgrade() else {
+            return;
+        };
+        if !shared.running.load(Ordering::Acquire) {
+            return;
+        }
+        let work_waiting = {
+            let inner = shared.inner.lock().unwrap();
+            if inner.shutdown {
+                return;
+            }
+            if trace {
+                let stale_ms = now_micros()
+                    .saturating_sub(shared.last_progress_micros.load(Ordering::Relaxed))
+                    / 1_000;
+                let system_ready = inner
+                    .ready
+                    .iter()
+                    .filter(|entry| entry.class == CLASS_SYSTEM)
+                    .count();
+                eprintln!(
+                    "fino:watchdog trace sysready={system_ready} ready={} residents={} stale_progress={stale_ms}ms",
+                    inner.ready.len(),
+                    inner.residents.len(),
+                );
+            }
+            // Any ready entry counts, not just system-class. The original
+            // system-only gate had a blind spot: the system realm's ready entry
+            // is delivered by the main realm's readiness routing, and total CPU
+            // saturation can starve that delivery — the gate then depended on
+            // the very component being starved. Ready work of any class going
+            // unclaimed while no reactor returns is a deadlock regardless of
+            // who is waiting.
+            !inner.ready.is_empty()
+        };
+        if !work_waiting {
+            continue;
+        }
+        let now = now_micros();
+        // Some reactor came back recently, so queued work is being served and
+        // nothing is wedged — the two conditions only mean deadlock together.
+        if now.saturating_sub(shared.last_progress_micros.load(Ordering::Relaxed)) < stall_micros {
+            continue;
+        }
+        let mut escalation: Option<(u32, bool)> = None;
+        {
+            let mut slices = shared.slices.lock().unwrap();
+            let longest = slices
+                .values_mut()
+                .filter(|slice| now.saturating_sub(slice.started_micros) >= stall_micros)
+                .max_by_key(|slice| now.saturating_sub(slice.started_micros));
+            if let Some(slice) = longest {
+                let held = now.saturating_sub(slice.started_micros);
+                if !slice.warned {
+                    slice.warned = true;
+                    // The interrupt runs on the workload's own thread at a safe
+                    // point, giving cooperative code a chance to yield before
+                    // anything is taken away from it.
+                    slice
+                        .handle
+                        .request_interrupt(watchdog_interrupt, std::ptr::null_mut());
+                    escalation = Some((slice.owner, false));
+                } else if held >= terminate_micros
+                    && !slice.terminated
+                    && !slice.module_evaluating.load(Ordering::Acquire)
+                {
+                    slice.terminated = true;
+                    // Delivered as an interrupt rather than called from this
+                    // thread: the isolate raises termination on itself at a
+                    // safe point, which is where V8 expects it.
+                    slice
+                        .handle
+                        .request_interrupt(watchdog_terminate, std::ptr::null_mut());
+                    escalation = Some((slice.owner, true));
+                }
+            }
+        }
+        if let Some((owner, sustained)) = escalation {
+            shared.notify(PoolEvent {
+                kind: if sustained {
+                    PoolEventKind::Halted
+                } else {
+                    PoolEventKind::Overrun
+                },
+                worker: usize::MAX,
+                owner,
+                error: None,
+            });
+        }
+    }
+}
+
+/// Advisory interrupt: runs at a V8 safe point on the workload's own thread and
+/// returns, letting execution continue. Its only purpose is to give cooperative
+/// code a scheduling point before enforcement.
+extern "C" fn watchdog_interrupt(_isolate: &mut v8::Isolate, _data: *mut std::ffi::c_void) {}
+
+/// Enforcing interrupt: raises termination from inside the isolate, on its own
+/// thread, at a point V8 chose. Termination may land while the module's top
+/// level is running inside the microtask checkpoint; every embedder callback on
+/// that path bails out when the isolate is terminating rather than touching V8
+/// APIs that CHECK.
+extern "C" fn watchdog_terminate(isolate: &mut v8::Isolate, _data: *mut std::ffi::c_void) {
+    isolate.terminate_execution();
 }
 
 struct ReactorThread {
@@ -1085,18 +1739,65 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
     let mut current: Option<Resident> = None;
     let mut current_state = CurrentState::Idle;
     loop {
-        let current_owner = current
-            .as_ref()
-            .map(|resident| resident.item.workload.0.owner);
+        let current_owner = current.as_ref().map(|resident| resident.item.owner);
         match shared.claim(worker, &wake, current_owner, &stop, current_state) {
             Claim::Shutdown => break,
             Claim::Current => {}
             Claim::Work(mut item) => {
+                // A dequeue is the only thing that counts as progress for the
+                // watchdog's staleness clock. Counting `claim` calls instead
+                // would let a worker that keeps its current realm — which
+                // calls `claim` every loop turn — reset the very clock meant
+                // to detect that nothing else is getting a thread.
+                shared.note_progress();
                 if let Some(resident) = current.take() {
                     shared.park(resident);
                 }
-                let owner = item.workload.0.owner;
-                let active = activate(&mut item.workload.0);
+                let owner = item.owner;
+                // First claim constructs the isolate, here, on the claiming
+                // reactor's thread. A failure settles the allocation exactly
+                // as a runtime error in a live workload would.
+                if let PoolWorkload::Pending(spec) = item.workload {
+                    match spec.initialize() {
+                        Ok(workload) => {
+                            item.workload = PoolWorkload::Live(TransferWorkload(workload));
+                        }
+                        Err((error, scheduled)) => {
+                            // A force can land while the isolate is still
+                            // evaluating its bootstrap: the handle is published
+                            // the moment the isolate exists, precisely so a
+                            // runaway top level is interruptible. The aborted
+                            // startup is then the stop that was asked for, not
+                            // a realm that crashed, and reporting it as a
+                            // failure surfaced the interrupt as the realm's
+                            // own error.
+                            let forced = scheduled
+                                .as_ref()
+                                .is_some_and(|scheduled| scheduled.was_forced());
+                            if let Some(scheduled) = scheduled {
+                                scheduled.complete(if forced {
+                                    ScheduledRealmResult::Done
+                                } else {
+                                    ScheduledRealmResult::Error(error.clone())
+                                });
+                            }
+                            shared.finish(owner);
+                            shared.notify(PoolEvent {
+                                kind: if forced {
+                                    PoolEventKind::Settled
+                                } else {
+                                    PoolEventKind::Error
+                                },
+                                worker,
+                                owner,
+                                error: (!forced).then_some(error),
+                            });
+                            current_state = CurrentState::Idle;
+                            continue;
+                        }
+                    }
+                }
+                let active = activate(item.live_mut());
                 current = Some(Resident { item, active });
                 shared.notify(PoolEvent {
                     kind: PoolEventKind::Activated,
@@ -1108,8 +1809,17 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
         }
 
         let mut resident = current.take().expect("reactor worker claimed no workload");
-        let owner = resident.item.workload.0.owner;
-        let outcome = drive_slice(&mut resident.item.workload.0, &shared);
+        let owner = resident.item.owner;
+        // Publish the slice before entering JavaScript and retire it the moment
+        // control comes back. The window between the two is exactly the span
+        // the watchdog is allowed to interrupt.
+        let isolate_handle = resident.item.live_mut().isolate.thread_safe_handle();
+        shared.begin_slice(worker, owner, isolate_handle);
+        let started_micros = now_micros();
+        let mut turns = 0u64;
+        let outcome = drive_slice(resident.item.live_mut(), &shared, &mut turns);
+        shared.record_slice(owner, now_micros().saturating_sub(started_micros), turns);
+        shared.end_slice(worker);
         let (result, event) = match outcome {
             Ok(Slice::Preempted) => {
                 // The realm still has work it could complete immediately, so it
@@ -1136,7 +1846,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 continue;
             }
             Ok(Slice::Settled) => {
-                let result = if resident.item.workload.0.state.borrow().reload_requested {
+                let result = if resident.item.live_mut().state.borrow().reload_requested {
                     ScheduledRealmResult::Reload
                 } else {
                     ScheduledRealmResult::Done
@@ -1150,8 +1860,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 // surface the interrupt it asked for as a crash.
                 let forced = resident
                     .item
-                    .workload
-                    .0
+                    .live_mut()
                     .scheduled
                     .as_ref()
                     .is_some_and(|scheduled| scheduled.was_forced());
@@ -1166,11 +1875,15 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
             ScheduledRealmResult::Error(error) => Some(error.clone()),
             _ => None,
         };
-        if let Some(scheduled) = resident.item.workload.0.scheduled.as_ref() {
+        if let Some(scheduled) = resident.item.live_mut().scheduled.clone() {
             scheduled.complete(result);
         }
-        deactivate(&mut resident.item.workload.0, resident.active);
-        drop_workload(resident.item.workload.0);
+        deactivate(resident.item.live_mut(), resident.active);
+        match resident.item.workload {
+            PoolWorkload::Live(TransferWorkload(workload)) => drop_workload(workload),
+            // Unreachable: a resident always holds a live isolate.
+            PoolWorkload::Pending(_) => {}
+        }
         shared.finish(owner);
         current_state = CurrentState::Idle;
         shared.notify(PoolEvent {
@@ -1208,50 +1921,111 @@ fn create_workload(
             parent.import_rules.clone(),
         )
     };
-    let Some(pool) = process_pool().lock().unwrap().clone() else {
-        throw_error(scope, "createWorkload: process reactor is not running");
-        return;
-    };
     let owner = next_owner();
-    let workload = match setup_workload(
-        entry,
-        process_env,
-        package_map_json,
-        import_rules,
-        owner,
-        None,
-        None,
-        None,
-        None,
-        false,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ) {
-        Ok(workload) => workload,
+    // The isolate is NOT constructed here. A submitted workload stays a pure
+    // data spec until some reactor claims it, which is what makes it free to
+    // reassign between threads — and, across the cluster, between nodes.
+    let async_pipe = match create_pipe() {
+        Ok(pipe) => pipe,
         Err(error) => {
             throw_error(scope, &format!("createWorkload: {error}"));
             return;
         }
     };
-    let wake_fd = workload
-        .async_state
-        .as_ref()
-        .map(|state| state.wake_read)
-        .unwrap_or(-1);
-    pool.submit(workload);
-    let result = v8::Object::new(scope);
-    for (name, value) in [
-        ("owner", v8::Integer::new_from_unsigned(scope, owner).into()),
-        ("wakeFd", v8::Integer::new(scope, wake_fd).into()),
-    ] {
-        let key = v8::String::new(scope, name).unwrap();
-        result.set(scope, key.into(), value);
-    }
-    rv.set(result.into());
+    let class = if args.get(1).boolean_value(scope) {
+        CLASS_SYSTEM
+    } else {
+        CLASS_APP
+    };
+    let spec = WorkloadSpec {
+        owner,
+        class,
+        inner: Some(Box::new(WorkloadSpecInner {
+            entry,
+            process_env,
+            package_map_json,
+            import_rules,
+            channel_rx: None,
+            channel_tx: None,
+            wake_read_fd: None,
+            wake_write_fd: None,
+            watch_mode: false,
+            repl_mode: false,
+            realm_data: None,
+            realm_bootstrap_data: None,
+            reload_requested_signal: None,
+            scheduled: None,
+            port_fds: None,
+            async_pipe,
+        })),
+    };
+    // Parked, not submitted. Creating and queueing are separate calls so the
+    // caller can read the owner and wake descriptor — and arm a listener on
+    // them — before any reactor can claim the spec and start running it.
+    let handle = next_handle();
+    WORKLOADS.with(|workloads| workloads.borrow_mut().insert(handle, spec));
+    rv.set(handle_value(scope, handle));
+}
+
+/// Take a created-but-unsubmitted spec off the parking table.
+fn take_workload(handle: u64) -> Result<WorkloadSpec, String> {
+    WORKLOADS
+        .with(|workloads| workloads.borrow_mut().remove(&handle))
+        .ok_or_else(|| format!("invalid workload handle {handle}"))
+}
+
+/// The owner id a spec will run under once submitted.
+fn workload_owner(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let owner = WORKLOADS.with(|workloads| {
+        workloads
+            .borrow()
+            .get(&handle)
+            .map(|spec| spec.owner)
+            .unwrap_or(0)
+    });
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+/// The descriptor that becomes readable when the workload has host work
+/// pending. Readable before submission, which is the point: the parent arms
+/// its listener first, so no wake-up can be missed in the gap.
+fn workload_wake_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let fd = WORKLOADS.with(|workloads| {
+        workloads
+            .borrow()
+            .get(&handle)
+            .map(WorkloadSpec::wake_read_fd)
+            .unwrap_or(-1)
+    });
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
+/// Discard a spec that was never submitted, releasing its owner registration
+/// and the pipes it pre-created.
+fn terminate_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let Ok(spec) = take_workload(handle) else {
+        throw_error(
+            scope,
+            &format!("terminateWorkload: invalid workload handle {handle}"),
+        );
+        return;
+    };
+    retire_owner(spec.owner);
 }
 
 fn create_scheduled_realm(
@@ -1342,25 +2116,11 @@ fn create_scheduled_realm(
         force_requested: AtomicBool::new(false),
     });
     let owner = next_owner();
-    let workload = match setup_workload(
-        entry,
-        process_env,
-        package_map_json,
-        import_rules,
-        owner,
-        Some(child_rx),
-        Some(child_tx),
-        Some(child_wake_read),
-        Some(parent_wake_write),
-        watch_mode,
-        repl_mode,
-        realm_data,
-        realm_bootstrap_data,
-        Some(reload_requested),
-        Some(Arc::clone(&scheduled)),
-        Some((child_wake_read, parent_wake_write)),
-    ) {
-        Ok(workload) => workload,
+    // The isolate is NOT constructed here — see `WorkloadSpec`. The wake pipe
+    // is created now so the parent can watch `wakeFd` from the moment it
+    // submits, which is the whole reason the pipe outlives the isolate.
+    let async_pipe = match create_pipe() {
+        Ok(pipe) => pipe,
         Err(error) => {
             unsafe {
                 libc::close(child_wake_read);
@@ -1374,14 +2134,34 @@ fn create_scheduled_realm(
             return;
         }
     };
-    // Publish the isolate handle before the workload is submitted, so a forced
-    // termination issued at any point after creation has something to act on.
-    *scheduled.isolate_handle.lock().unwrap() = Some(workload.isolate.thread_safe_handle());
-    let wake_fd = workload
-        .async_state
-        .as_ref()
-        .map(|state| state.wake_read)
-        .unwrap_or(-1);
+    let class = if args.get(7).boolean_value(scope) {
+        CLASS_SYSTEM
+    } else {
+        CLASS_APP
+    };
+    let wake_fd = async_pipe.0;
+    let spec = WorkloadSpec {
+        owner,
+        class,
+        inner: Some(Box::new(WorkloadSpecInner {
+            entry,
+            process_env,
+            package_map_json,
+            import_rules,
+            channel_rx: Some(child_rx),
+            channel_tx: Some(child_tx),
+            wake_read_fd: Some(child_wake_read),
+            wake_write_fd: Some(parent_wake_write),
+            watch_mode,
+            repl_mode,
+            realm_data,
+            realm_bootstrap_data,
+            reload_requested_signal: Some(reload_requested),
+            scheduled: Some(Arc::clone(&scheduled)),
+            port_fds: Some((child_wake_read, parent_wake_write)),
+            async_pipe,
+        })),
+    };
     let handle = next_handle();
     scheduled_realms().lock().unwrap().insert(
         handle,
@@ -1394,7 +2174,11 @@ fn create_scheduled_realm(
             state: scheduled,
         },
     );
-    pool.submit(workload);
+    pool.submit(PoolItem {
+        owner,
+        class,
+        workload: PoolWorkload::Pending(spec),
+    });
     let result = v8::Object::new(scope);
     for (name, value) in [
         ("handle", handle_value(scope, handle)),
@@ -1587,11 +2371,53 @@ fn close_scheduled_realm(
 /// is scheduled on it. Modelling it as a singleton rather than a table of
 /// queues removes a generality that never existed — creating a second queue
 /// used to silently replace the pool that realms were already submitting to.
+/// Construct a queue and attach its watchdog thread.
+fn new_pool(tuning: WatchdogTuning) -> Arc<PoolShared> {
+    let shared = Arc::new(PoolShared::new());
+    if watchdog_enabled() {
+        let watched = Arc::downgrade(&shared);
+        std::thread::spawn(move || run_watchdog(watched, tuning));
+    }
+    shared
+}
+
+/// Read per-queue watchdog overrides off an options object, falling back to the
+/// environment. Tests pin thresholds this way so they do not depend on
+/// process-wide state.
+fn watchdog_tuning_arg(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> WatchdogTuning {
+    let mut tuning = WatchdogTuning::from_env();
+    let Ok(options) = v8::Local::<v8::Object>::try_from(value) else {
+        return tuning;
+    };
+    for (key, field) in [("intervalMs", 0u8), ("stallMs", 1), ("sustainedMs", 2)] {
+        let Some(name) = v8::String::new(scope, key) else {
+            continue;
+        };
+        let Some(ms) = options
+            .get(scope, name.into())
+            .and_then(|value| value.number_value(scope))
+        else {
+            continue;
+        };
+        if !ms.is_finite() || ms <= 0.0 {
+            continue;
+        }
+        let ms = ms as u64;
+        match field {
+            0 => tuning.interval_ms = ms,
+            1 => tuning.stall_ms = ms,
+            _ => tuning.sustained_ms = ms,
+        }
+    }
+    tuning
+}
+
 fn start_reactor_pool(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    let tuning = watchdog_tuning_arg(scope, args.get(0));
     let mut registered = process_pool().lock().unwrap();
     if registered.is_some() {
         throw_error(
@@ -1600,27 +2426,421 @@ fn start_reactor_pool(
         );
         return;
     }
-    let shared = Arc::new(PoolShared::new());
+    let shared = new_pool(tuning);
     let control_fd = shared.wake.read;
     *registered = Some(shared);
     rv.set(v8::Integer::new(scope, control_fd).into());
 }
 
-/// Resolve the process reactor pool, or throw when it is not running.
-fn require_pool(scope: &mut v8::HandleScope, caller: &str) -> Option<Arc<PoolShared>> {
-    let pool = process_pool().lock().unwrap().clone();
-    if pool.is_none() {
-        throw_error(scope, &format!("{caller}: process reactor is not running"));
+/// Create a reactor queue.
+///
+/// `install` registers it as the process pool, which is what makes it reachable
+/// from realms other than this one. Standalone queues (`install: false`) exist
+/// for tests and tooling: they own no process-wide state, so several can run at
+/// once with independent watchdog thresholds.
+fn create_reactor_queue(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let install = args.get(0).is_undefined() || args.get(0).boolean_value(scope);
+    let tuning = watchdog_tuning_arg(scope, args.get(1));
+    if install && process_pool().lock().unwrap().is_some() {
+        throw_error(
+            scope,
+            "createReactorQueue: process reactor is already running",
+        );
+        return;
     }
-    pool
+    let shared = new_pool(tuning);
+    if install {
+        *process_pool().lock().unwrap() = Some(Arc::clone(&shared));
+    }
+    let control_fd = shared.wake.read;
+    let handle = next_handle();
+    REACTOR_QUEUES.with(|queues| queues.borrow_mut().insert(handle, shared));
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("handle", handle_value(scope, handle)),
+        ("controlFd", v8::Integer::new(scope, control_fd).into()),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
+fn reactor_queue(handle: u64) -> Option<Arc<PoolShared>> {
+    REACTOR_QUEUES.with(|queues| queues.borrow().get(&handle).cloned())
+}
+
+/// Resolve a queue argument: a handle names a queue created on this thread;
+/// undefined or null names the installed process pool, so realms other than the
+/// main realm — the system realm in particular — can operate on it. Queue
+/// handles are thread-locals and do not travel.
+fn reactor_queue_arg(
+    scope: &mut v8::HandleScope,
+    value: v8::Local<v8::Value>,
+) -> Option<Arc<PoolShared>> {
+    if value.is_null_or_undefined() {
+        return process_pool().lock().unwrap().clone();
+    }
+    reactor_queue(handle_arg(scope, value))
+}
+
+/// Resolve a queue argument, throwing a caller-named error when it names
+/// nothing.
+fn require_queue(
+    scope: &mut v8::HandleScope,
+    value: v8::Local<v8::Value>,
+    caller: &str,
+) -> Option<Arc<PoolShared>> {
+    let queue = reactor_queue_arg(scope, value);
+    if queue.is_none() {
+        throw_error(
+            scope,
+            &format!("{caller}: no such queue and no process reactor is running"),
+        );
+    }
+    queue
+}
+
+/// Move a created spec onto a queue. Returns the owner it will run under.
+fn submit_reactor_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(shared) = require_queue(scope, args.get(0), "submitReactorWorkload") else {
+        return;
+    };
+    let spec = match take_workload(handle_arg(scope, args.get(1))) {
+        Ok(spec) => spec,
+        Err(error) => {
+            throw_error(scope, &format!("submitReactorWorkload: {error}"));
+            return;
+        }
+    };
+    let owner = shared.submit(PoolItem {
+        owner: spec.owner,
+        class: spec.class,
+        workload: PoolWorkload::Pending(spec),
+    });
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+/// A spec taken off a queue's tail by the balancer, parked here until the offer
+/// resolves: resubmitted on rejection, dropped on successful transfer.
+struct ShedWorkload {
+    spec: WorkloadSpec,
+    priority: usize,
+    class: u8,
+}
+
+fn shed_workloads() -> &'static Mutex<HashMap<u64, ShedWorkload>> {
+    static SHED: std::sync::OnceLock<Mutex<HashMap<u64, ShedWorkload>>> =
+        std::sync::OnceLock::new();
+    SHED.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Nominate the cheapest pre-init app spec on a queue for transfer.
+///
+/// Returns the owner, or 0 when nothing is eligible. A mark is a claim on the
+/// spec, not a removal: a local reactor may still claim it first, and
+/// `takeShedWorkload` fails if one did.
+fn mark_shedding_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(shared) = require_queue(scope, args.get(0), "markSheddingWorkload") else {
+        return;
+    };
+    rv.set(v8::Integer::new_from_unsigned(scope, shared.mark_shedding_lowest()).into());
+}
+
+/// Commit a mark, moving the spec off the queue and into the shed table.
+/// Returns null when a local reactor won the race.
+fn take_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(shared) = require_queue(scope, args.get(0), "takeShedWorkload") else {
+        return;
+    };
+    let Some((spec, priority, class)) = shared.take_shed(owner) else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    let handle = next_handle();
+    shed_workloads().lock().unwrap().insert(
+        handle,
+        ShedWorkload {
+            spec,
+            priority,
+            class,
+        },
+    );
+    rv.set(handle_value(scope, handle));
+}
+
+/// Release a mark without transferring, returning the spec to ordinary
+/// contention.
+fn clear_shedding_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let Some(shared) = require_queue(scope, args.get(0), "clearSheddingWorkload") else {
+        return;
+    };
+    rv.set(v8::Boolean::new(scope, shared.clear_shedding(owner)).into());
+}
+
+/// Put a shed spec back on a queue after a refused offer, keeping its identity
+/// and its accumulated position.
+fn resubmit_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(1));
+    let Some(shared) = require_queue(scope, args.get(0), "resubmitShedWorkload") else {
+        return;
+    };
+    let Some(entry) = shed_workloads().lock().unwrap().remove(&shed_handle) else {
+        throw_error(
+            scope,
+            &format!("resubmitShedWorkload: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let owner = shared.resubmit(entry.spec, entry.priority, entry.class);
+    rv.set(v8::Integer::new_from_unsigned(scope, owner).into());
+}
+
+/// The serializable half of a shed spec: everything a destination node needs to
+/// reconstruct an equivalent workload. Rules serialize to the same
+/// `ImportRule[]` JSON that `createScheduledRealm` accepts, so the claimable
+/// unit and the network-transferable unit share one shape — the port plumbing
+/// is per-node and is rebuilt at the destination.
+fn shed_workload_config(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let shed = shed_workloads().lock().unwrap();
+    let Some(inner) = shed
+        .get(&shed_handle)
+        .and_then(|entry| entry.spec.inner.as_ref())
+    else {
+        throw_error(
+            scope,
+            &format!("shedWorkloadConfig: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let rules_json = serde_json::to_string(&inner.import_rules).unwrap_or_else(|_| "[]".into());
+    let root = inner.process_env.root.to_string_lossy().into_owned();
+    let entry = inner.entry.clone();
+    let watch = inner.watch_mode;
+    let repl = inner.repl_mode;
+    let realm_data = inner.realm_data.clone();
+    let bootstrap_data = inner.realm_bootstrap_data.clone();
+    drop(shed);
+    fn optional<'s>(
+        scope: &mut v8::HandleScope<'s>,
+        value: &Option<String>,
+    ) -> v8::Local<'s, v8::Value> {
+        match value {
+            Some(value) => v8::String::new(scope, value).unwrap().into(),
+            None => v8::null(scope).into(),
+        }
+    }
+    let data = optional(scope, &realm_data);
+    let bootstrap_data = optional(scope, &bootstrap_data);
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("entry", v8::String::new(scope, &entry).unwrap().into()),
+        ("root", v8::String::new(scope, &root).unwrap().into()),
+        ("rules", v8::String::new(scope, &rules_json).unwrap().into()),
+        ("watch", v8::Boolean::new(scope, watch).into()),
+        ("repl", v8::Boolean::new(scope, repl).into()),
+        ("data", data),
+        ("bootstrapData", bootstrap_data),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
+}
+
+/// The wake descriptor that fires when the parent sends to a shed workload.
+///
+/// After a spec is shed, its realm lives on another node but the parent still
+/// holds the local port. The source relays between them, and watches this
+/// descriptor to know when the parent has written something to forward.
+fn shed_workload_wake_fd(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let fd = shed_workloads()
+        .lock()
+        .unwrap()
+        .get(&shed_handle)
+        .and_then(|entry| entry.spec.inner.as_ref())
+        .and_then(|inner| inner.wake_read_fd)
+        .unwrap_or(-1);
+    rv.set(v8::Integer::new(scope, fd).into());
+}
+
+/// Drain everything the parent has sent to a shed workload, for forwarding to
+/// the node that now owns it.
+fn shed_recv_from_parent(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let shed = shed_workloads().lock().unwrap();
+    let Some(inner) = shed
+        .get(&shed_handle)
+        .and_then(|entry| entry.spec.inner.as_ref())
+    else {
+        throw_error(
+            scope,
+            &format!("shedRecvFromParent: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    let mut messages = Vec::new();
+    if let Some(rx) = inner.channel_rx.as_ref() {
+        while let Ok(message) = rx.try_recv() {
+            messages.push(message);
+        }
+    }
+    if let Some(wake_read) = inner.wake_read_fd {
+        let mut discard = [0u8; 256];
+        while unsafe { libc::read(wake_read, discard.as_mut_ptr().cast(), discard.len()) } > 0 {}
+    }
+    drop(shed);
+    rv.set(crate::realm::transit::build_message_array(scope, messages).into());
+}
+
+/// Deliver a message from the workload's new host back to the local parent.
+fn shed_send_to_parent(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let Some(data) = copy_uint8_array(scope, args.get(1)) else {
+        throw_error(
+            scope,
+            "shedSendToParent: second argument must be a Uint8Array",
+        );
+        return;
+    };
+    let transfer_stores = if let Ok(values) = v8::Local::<v8::Array>::try_from(args.get(2)) {
+        let mut stores = Vec::new();
+        for index in 0..values.length() {
+            if let Some(value) = values.get_index(scope, index)
+                && let Some(bytes) = copy_uint8_array(scope, value)
+            {
+                stores.push(bytes);
+            }
+        }
+        stores
+    } else {
+        Vec::new()
+    };
+    // Envelope metadata rides beside the payload, exactly as it does on the
+    // local transport. Absent, the parent decodes an ordinary `Message`, which
+    // is what relayed application traffic is.
+    let header = copy_uint8_array(scope, args.get(3)).unwrap_or_default();
+    let shed = shed_workloads().lock().unwrap();
+    let Some(inner) = shed
+        .get(&shed_handle)
+        .and_then(|entry| entry.spec.inner.as_ref())
+    else {
+        throw_error(
+            scope,
+            &format!("shedSendToParent: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    if let Some(tx) = inner.channel_tx.as_ref() {
+        let _ = tx.send(crate::realm::thread::ThreadMessage {
+            header,
+            data,
+            transfer_stores,
+            transfer_ports: Vec::new(),
+        });
+    }
+    if let Some(wake_write) = inner.wake_write_fd {
+        WakePipe::signal(wake_write);
+    }
+}
+
+/// Settle the parent's completion await for a workload that finished on another
+/// node, so `run()` resolves exactly as it would have locally.
+fn shed_complete(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let error = optional_string(scope, args.get(1));
+    let scheduled = shed_workloads()
+        .lock()
+        .unwrap()
+        .get(&shed_handle)
+        .and_then(|entry| entry.spec.inner.as_ref())
+        .and_then(|inner| inner.scheduled.clone());
+    let Some(scheduled) = scheduled else {
+        throw_error(
+            scope,
+            &format!("shedComplete: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    scheduled.complete(match error {
+        Some(message) => ScheduledRealmResult::Error(message),
+        None => ScheduledRealmResult::Done,
+    });
+}
+
+/// Discard a shed spec whose transfer succeeded. The workload now exists on
+/// another node; this releases the local half.
+fn drop_shed_workload(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let shed_handle = handle_arg(scope, args.get(0));
+    let Some(entry) = shed_workloads().lock().unwrap().remove(&shed_handle) else {
+        throw_error(
+            scope,
+            &format!("dropShedWorkload: invalid shed workload {shed_handle}"),
+        );
+        return;
+    };
+    retire_owner(entry.spec.owner);
+    drop(entry);
 }
 
 fn create_reactor_thread(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Some(shared) = require_pool(scope, "createReactorThread") else {
+    let Some(shared) = require_queue(scope, args.get(0), "createReactorThread") else {
         return;
     };
     let (worker, wake) = shared.register_worker();
@@ -1638,7 +2858,18 @@ fn create_reactor_thread(
     };
     let handle = next_handle();
     REACTOR_THREADS.with(|threads| threads.borrow_mut().insert(handle, reactor));
-    rv.set(handle_value(scope, handle));
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("handle", handle_value(scope, handle)),
+        (
+            "worker",
+            v8::Integer::new_from_unsigned(scope, worker as u32).into(),
+        ),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        result.set(scope, key.into(), value);
+    }
+    rv.set(result.into());
 }
 
 fn close_reactor_thread(
@@ -1676,10 +2907,10 @@ fn signal_reactor_owner(
 
 fn take_reactor_events(
     scope: &mut v8::HandleScope,
-    _args: v8::FunctionCallbackArguments,
+    args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    let Some(pool) = require_pool(scope, "takeReactorEvents") else {
+    let Some(pool) = require_queue(scope, args.get(0), "takeReactorEvents") else {
         return;
     };
     pool.drain_wake();
@@ -1694,9 +2925,13 @@ fn take_reactor_events(
     for (index, event) in events.into_iter().enumerate() {
         let value = v8::Object::new(scope);
         let kind = match event.kind {
+            PoolEventKind::Submitted => "submitted",
             PoolEventKind::Activated => "activated",
             PoolEventKind::Settled => "settled",
             PoolEventKind::Error => "error",
+            PoolEventKind::Shed => "shed",
+            PoolEventKind::Overrun => "overrun",
+            PoolEventKind::Halted => "halted",
         };
         for (name, field) in [
             ("kind", v8::String::new(scope, kind).unwrap().into()),
@@ -1751,18 +2986,86 @@ fn stop_reactor_pool(
         .unwrap()
         .take()
         .expect("reactor pool disappeared between validation and close");
+    if let Err(error) = dispose_pool(pool) {
+        throw_error(scope, &format!("stopReactorPool: {error}"));
+    }
+}
+
+/// Shut a queue down and dispose everything still parked on it.
+///
+/// The `Arc` must be the last one: the queue is unwrapped so its realms are
+/// disposed on this thread, which is the only thread allowed to enter them.
+fn dispose_pool(pool: Arc<PoolShared>) -> Result<(), String> {
+    // Clear `running` before unwrapping. The watchdog holds a `Weak` and
+    // upgrades it every tick; the flag is what tells it to stop trying, and
+    // clearing it after the unwrap would leave one more tick able to succeed.
+    pool.running.store(false, Ordering::Release);
     {
         let inner = &mut *pool.inner.lock().unwrap();
         inner.shutdown = true;
         inner.wake_all();
     }
     let Ok(pool) = Arc::try_unwrap(pool) else {
-        throw_error(scope, "stopReactorPool: reactor threads are still attached");
-        return;
+        return Err("reactor threads are still attached".to_string());
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
     for item in parked.into_values() {
-        drop_workload(item.workload.0);
+        match item.workload {
+            PoolWorkload::Live(TransferWorkload(workload)) => drop_workload(workload),
+            // A spec never became an isolate, so there is nothing to tear down
+            // beyond dropping it; its `Drop` closes the pipes it pre-created.
+            PoolWorkload::Pending(spec) => {
+                retire_owner(item.owner);
+                drop(spec);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Tear down a queue created by `createReactorQueue`.
+///
+/// Validation happens before any mutation, so a refused close leaves the queue
+/// exactly as it was and the handle still usable.
+fn close_reactor_queue(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let handle = handle_arg(scope, args.get(0));
+    let Some(queue) = reactor_queue(handle) else {
+        throw_error(
+            scope,
+            &format!("closeReactorQueue: invalid queue handle {handle}"),
+        );
+        return;
+    };
+    // The handle table's reference, this local, and the process registration if
+    // it is the installed pool. Anything beyond that is a live reactor thread.
+    let installed = process_pool()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|active| Arc::ptr_eq(active, &queue));
+    let permitted = if installed { 3 } else { 2 };
+    if Arc::strong_count(&queue) > permitted {
+        throw_error(
+            scope,
+            "closeReactorQueue: reactor threads are still attached",
+        );
+        return;
+    }
+    // Release the validation reference before taking the table's, so what
+    // `dispose_pool` receives is the last one and can be unwrapped.
+    drop(queue);
+    if installed {
+        *process_pool().lock().unwrap() = None;
+    }
+    let pool = REACTOR_QUEUES
+        .with(|queues| queues.borrow_mut().remove(&handle))
+        .expect("queue disappeared between validation and close");
+    if let Err(error) = dispose_pool(pool) {
+        throw_error(scope, &format!("closeReactorQueue: {error}"));
     }
 }
 
@@ -1912,6 +3215,102 @@ fn take_shared_loop_events(
     }
 }
 
+/// Processors this process may actually run on.
+///
+/// Deliberately native: `navigator.hardwareConcurrency` is absent from fino on
+/// purpose, and the pool that once sized itself from it silently ran a single
+/// thread forever.
+fn available_parallelism(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let parallelism = std::thread::available_parallelism()
+        .map(|value| value.get() as u32)
+        .unwrap_or(1);
+    rv.set(v8::Integer::new_from_unsigned(scope, parallelism).into());
+}
+
+/// Drain per-workload load counters accumulated since the previous call. The
+/// stats module samples this on a timer; every value is a delta.
+fn take_reactor_load_sample(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(shared) = require_queue(scope, args.get(0), "takeReactorLoadSample") else {
+        return;
+    };
+    let sample = shared.take_load_sample();
+    let result = v8::Array::new(scope, sample.len() as i32);
+    for (index, (owner, counters)) in sample.into_iter().enumerate() {
+        let value = v8::Object::new(scope);
+        for (name, field) in [
+            ("owner", owner as f64),
+            ("busyMicros", counters.busy_micros as f64),
+            ("slices", counters.slices as f64),
+            ("loopTurns", counters.loop_turns as f64),
+            (
+                "activationDelayMicros",
+                counters.activation_delay_micros as f64,
+            ),
+            ("activations", counters.activations as f64),
+        ] {
+            let key = v8::String::new(scope, name).unwrap();
+            let field = v8::Number::new(scope, field);
+            value.set(scope, key.into(), field.into());
+        }
+        result.set_index(scope, index as u32, value.into());
+    }
+    rv.set(result.into());
+}
+
+/// A point-in-time queue-pressure snapshot: parked pre-init specs, parked live
+/// isolates, and workloads currently entered on a reactor.
+fn reactor_queue_depth(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(shared) = require_queue(scope, args.get(0), "reactorQueueDepth") else {
+        return;
+    };
+    let (pending_specs, parked_live, active) = shared.depth();
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("pendingSpecs", pending_specs),
+        ("parkedLive", parked_live),
+        ("active", active),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let value = v8::Number::new(scope, value as f64);
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
+}
+
+/// Heap statistics for the calling isolate, so every realm can self-report.
+fn isolate_heap_statistics(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let stats = scope.get_heap_statistics();
+    let result = v8::Object::new(scope);
+    for (name, value) in [
+        ("totalHeapSize", stats.total_heap_size()),
+        ("usedHeapSize", stats.used_heap_size()),
+        ("heapSizeLimit", stats.heap_size_limit()),
+        ("mallocedMemory", stats.malloced_memory()),
+        ("externalMemory", stats.external_memory()),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let value = v8::Number::new(scope, value as f64);
+        result.set(scope, key.into(), value.into());
+    }
+    rv.set(result.into());
+}
+
 fn process_readiness_control_fd(
     scope: &mut v8::HandleScope,
     _args: v8::FunctionCallbackArguments,
@@ -1926,6 +3325,9 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "usesProcessReadiness",
         "setSchedulerPollingRequired",
         "createWorkload",
+        "workloadOwner",
+        "workloadWakeFd",
+        "terminateWorkload",
         "createScheduledRealm",
         "scheduledRealmSend",
         "scheduledRealmRecv",
@@ -1933,10 +3335,27 @@ pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::M
         "closeScheduledRealm",
         "forceScheduledRealm",
         "startReactorPool",
+        "createReactorQueue",
+        "submitReactorWorkload",
+        "markSheddingWorkload",
+        "takeShedWorkload",
+        "clearSheddingWorkload",
+        "resubmitShedWorkload",
+        "shedWorkloadConfig",
+        "shedWorkloadWakeFd",
+        "shedRecvFromParent",
+        "shedSendToParent",
+        "shedComplete",
+        "dropShedWorkload",
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
         "takeReactorEvents",
+        "availableParallelism",
+        "takeReactorLoadSample",
+        "reactorQueueDepth",
+        "isolateHeapStatistics",
+        "closeReactorQueue",
         "stopReactorPool",
         "processReadinessControlFd",
         "registerProcessReadiness",
@@ -1972,6 +3391,9 @@ fn eval_steps<'a>(
         set_scheduler_polling_required
     );
     set_fn!("createWorkload", create_workload);
+    set_fn!("workloadOwner", workload_owner);
+    set_fn!("workloadWakeFd", workload_wake_fd);
+    set_fn!("terminateWorkload", terminate_workload);
     set_fn!("createScheduledRealm", create_scheduled_realm);
     set_fn!("scheduledRealmSend", scheduled_realm_send);
     set_fn!("scheduledRealmRecv", scheduled_realm_recv);
@@ -1979,10 +3401,27 @@ fn eval_steps<'a>(
     set_fn!("closeScheduledRealm", close_scheduled_realm);
     set_fn!("forceScheduledRealm", force_scheduled_realm);
     set_fn!("startReactorPool", start_reactor_pool);
+    set_fn!("createReactorQueue", create_reactor_queue);
+    set_fn!("submitReactorWorkload", submit_reactor_workload);
+    set_fn!("markSheddingWorkload", mark_shedding_workload);
+    set_fn!("takeShedWorkload", take_shed_workload);
+    set_fn!("clearSheddingWorkload", clear_shedding_workload);
+    set_fn!("resubmitShedWorkload", resubmit_shed_workload);
+    set_fn!("shedWorkloadConfig", shed_workload_config);
+    set_fn!("shedWorkloadWakeFd", shed_workload_wake_fd);
+    set_fn!("shedRecvFromParent", shed_recv_from_parent);
+    set_fn!("shedSendToParent", shed_send_to_parent);
+    set_fn!("shedComplete", shed_complete);
+    set_fn!("dropShedWorkload", drop_shed_workload);
     set_fn!("createReactorThread", create_reactor_thread);
     set_fn!("closeReactorThread", close_reactor_thread);
     set_fn!("signalReactorOwner", signal_reactor_owner);
     set_fn!("takeReactorEvents", take_reactor_events);
+    set_fn!("availableParallelism", available_parallelism);
+    set_fn!("takeReactorLoadSample", take_reactor_load_sample);
+    set_fn!("reactorQueueDepth", reactor_queue_depth);
+    set_fn!("isolateHeapStatistics", isolate_heap_statistics);
+    set_fn!("closeReactorQueue", close_reactor_queue);
     set_fn!("stopReactorPool", stop_reactor_pool);
     set_fn!("processReadinessControlFd", process_readiness_control_fd);
     set_fn!("registerProcessReadiness", register_process_readiness);

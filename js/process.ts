@@ -724,7 +724,10 @@ function currentRssBytes(): number {
   const buf = new ArrayBuffer(256);
   const rc = Number(lib.symbols.getrusage(RUSAGE_SELF, buf));
   if (rc !== 0) return 1;
-  const maxrss = Number(new DataView(buf).getBigInt64(16, true));
+  // ru_maxrss follows the two 16-byte timevals (ru_utime, ru_stime); the
+  // previous offset of 16 read ru_stime.tv_sec and reported CPU seconds as
+  // bytes.
+  const maxrss = Number(new DataView(buf).getBigInt64(32, true));
   if (!Number.isFinite(maxrss) || maxrss <= 0) return 1;
   return isLinux ? maxrss * 1024 : maxrss;
 }

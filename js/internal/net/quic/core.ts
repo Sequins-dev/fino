@@ -693,9 +693,9 @@ export interface QuicListenOptions {
   address?: QuicAddress;
   /** ALPN protocols this listener accepts; overrides the endpoint default. */
   alpnProtocols?: string[];
-  /** Path to the PEM server certificate chain. Required. */
+  /** PEM server certificate chain — a file path or the PEM text. Required. */
   certificateFile?: string;
-  /** Path to the PEM server private key. Required. */
+  /** PEM server private key — a file path or the PEM text. Required. */
   privateKeyFile?: string;
   /** Whether client certificates are requested or required during the handshake. */
   clientAuth?: 'none' | 'request' | 'require';
@@ -742,9 +742,9 @@ export interface QuicListenOptions {
  * while presenting a different certificate.
  */
 export type QuicSNIContextOptions = {
-  /** Path to the PEM certificate chain presented for this server name. */
+  /** PEM certificate chain presented for this server name — path or PEM text. */
   certificateFile: string;
-  /** Path to the PEM private key for this server name. */
+  /** PEM private key for this server name — path or PEM text. */
   privateKeyFile: string;
   /** ALPN protocols for this server name; defaults to the listener's list. */
   alpnProtocols?: string[];
@@ -788,9 +788,9 @@ export interface QuicConnectOptions {
   serverName?: string;
   /** Verify the server certificate against the trust store. Defaults to `false`. */
   verifyPeer?: boolean;
-  /** Path to a PEM client certificate chain for mutual TLS. */
+  /** PEM client certificate chain for mutual TLS — a file path or PEM text. */
   certificateFile?: string;
-  /** Path to the PEM client private key for mutual TLS. */
+  /** PEM client private key for mutual TLS — a file path or PEM text. */
   privateKeyFile?: string;
   /** Trust anchors used to verify the server certificate. */
   ca?: QuicCaOptions;

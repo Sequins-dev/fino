@@ -39,6 +39,7 @@ import lintCommand from './lint.ts';
 import replCommand from './repl.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
+import clusterCommand from './cluster.ts';
 /**
  * The root `fino` CLI command.
  *
@@ -136,6 +137,7 @@ const command = new Task({
     lintCommand,
     taskCommand,
     replCommand,
+    clusterCommand,
   ],
 });
 export { command as default };

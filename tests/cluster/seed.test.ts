@@ -6,6 +6,9 @@
  */
 import { describe, it, afterEach } from 'fino:test/test';
 import { SeedServer } from 'internal:cluster/seed';
+import { WorkloadLedger } from 'internal:cluster/ledger';
+import { DiskFileSystem } from 'fino:file';
+import { packCask } from 'internal:cluster/cask';
 import { RealmRegistry } from 'internal:cluster/registry';
 import type { ClusterMessage } from 'internal:cluster/protocol';
 // ---------------------------------------------------------------------------
@@ -78,12 +81,34 @@ class TestSeedTransport {
   }
 }
 let _activeSeed: SeedServer | null = null;
-async function makeSeed(nodeId = 'seed-node'): Promise<{
+/**
+ * Poll until `check` passes. The seed handles DEPLOY, cask, and ledger
+ * messages asynchronously — inspectCask reads an archive, the ledger writes
+ * SQLite — so fixed sleeps race those operations and flake under load.
+ */
+async function settleUntil(check: () => boolean, timeoutMs = 3000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function makeSeed(
+  nodeId = 'seed-node',
+  options: {
+    joinToken?: string;
+    clusterId?: string;
+    ledger?: WorkloadLedger;
+    leaseMs?: number;
+    caskDir?: string;
+  } = {},
+): Promise<{
   seed: SeedServer;
   transport: TestSeedTransport;
 }> {
   const transport = new TestSeedTransport(nodeId);
-  const seed = new SeedServer(transport as any);
+  const seed = new SeedServer(transport as any, options);
   await seed.start();
   _activeSeed = seed;
   return {
@@ -970,6 +995,888 @@ describe('SeedServer — nodeDown cascade', () => {
     t.ok(
       peerDowns.some((msg) => msg.nodeId === 'worker-1'),
       'future worker timestamp does not suppress timeout',
+    );
+  });
+});
+
+describe('SeedServer — join authentication and observers', () => {
+  afterEach(stopActiveSeed);
+  it('denies HELLO with a missing or wrong token when a joinToken is set', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+    });
+    transport.inject('worker-2', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+      token: 'wrong',
+    });
+    const denials = transport.sentOfType('JOIN_DENIED');
+    t.equal(denials.length, 2, 'both HELLOs were denied');
+    t.equal(transport.sentOfType('WELCOME').length, 0, 'no WELCOME was sent');
+    t.equal(transport.sentOfType('PEER_UP').length, 0, 'no membership broadcast happened');
+  });
+  it('admits HELLO with the right token and advertises the cluster id', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+    });
+    const welcomes = transport.sentOfType('WELCOME');
+    t.equal(welcomes.length, 1, 'the tokened HELLO was welcomed');
+    t.equal(welcomes[0]!.clusterId, 'c-test', 'WELCOME carries the cluster identity');
+  });
+  it('observer HELLO receives WELCOME but never joins membership', async (t) => {
+    const { transport } = await makeSeed('seed-node', { joinToken: 'secret', clusterId: 'c-test' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.5, memory: 1 },
+      token: 'secret',
+    });
+    transport.sent.length = 0;
+    transport.inject('watcher', {
+      t: 'HELLO',
+      nodeId: 'watcher',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+      observer: true,
+    });
+    const welcomes = transport.sentOfType('WELCOME');
+    t.equal(welcomes.length, 1, 'observer got a WELCOME');
+    t.equal(welcomes[0]!.peers.length, 1, 'observer sees the existing member');
+    t.equal(welcomes[0]!.peers[0]!.nodeId, 'worker-1', 'membership snapshot is correct');
+    t.equal(transport.sentOfType('PEER_UP').length, 0, 'observer was not broadcast as a member');
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+      token: 'secret',
+    });
+    const next = transport.sentOfType('WELCOME');
+    t.equal(next.length, 1, 'later member still welcomed');
+    t.equal(
+      next[0]!.peers.some((p) => p.nodeId === 'watcher'),
+      false,
+      'observer never appears in the peer list',
+    );
+  });
+});
+
+describe('SeedServer — incarnation fencing', () => {
+  afterEach(stopActiveSeed);
+  it('denies a HELLO with an older incarnation and admits a newer one', async (t) => {
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-fence' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 5,
+    });
+    t.equal(transport.sentOfType('WELCOME').length, 1, 'first incarnation admitted');
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 4,
+    });
+    t.equal(transport.sentOfType('JOIN_DENIED').length, 1, 'older incarnation denied');
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      incarnation: 6,
+    });
+    t.equal(transport.sentOfType('WELCOME').length, 2, 'newer incarnation replaces the member');
+  });
+  it('ignores heartbeats from a replaced incarnation', async (t) => {
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-fence' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.1, memory: 1 },
+      incarnation: 2,
+    });
+    transport.inject('worker-1', {
+      t: 'HEARTBEAT',
+      ts: Date.now(),
+      load: { cpu: 0.9, memory: 9 },
+      incarnation: 1,
+    });
+    transport.sent.length = 0;
+    transport.inject('watcher', {
+      t: 'HELLO',
+      nodeId: 'watcher',
+      load: { cpu: 0, memory: 0 },
+      observer: true,
+    });
+    const snapshot = transport.sentOfType('WELCOME')[0]!;
+    const member = snapshot.peers.find((p) => p.nodeId === 'worker-1')!;
+    t.equal(member.load.cpu, 0.1, 'a stale-incarnation heartbeat cannot update the load view');
+    t.equal(member.incarnation, 2, 'the membership record keeps the live incarnation');
+  });
+  it('advertises peer endpoints and certificate hashes for introductions', async (t) => {
+    const hash = 'ab'.repeat(32);
+    const { transport } = await makeSeed('seed-node', { clusterId: 'c-intro' });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0, memory: 0 },
+      endpoint: 'https://10.0.0.7:4433/__fino_cluster',
+      certHash: hash,
+    });
+    transport.sent.length = 0;
+    transport.inject('worker-2', {
+      t: 'HELLO',
+      nodeId: 'worker-2',
+      load: { cpu: 0, memory: 0 },
+    });
+    const welcome = transport.sentOfType('WELCOME')[0]!;
+    const introduced = welcome.peers.find((p) => p.nodeId === 'worker-1')!;
+    t.equal(introduced.endpoint, 'https://10.0.0.7:4433/__fino_cluster', 'endpoint introduced');
+    t.equal(introduced.certHash, hash, 'certificate hash introduced');
+  });
+});
+
+describe('SeedServer — pressure placement and admission retry', () => {
+  afterEach(stopActiveSeed);
+  const load = (cpu: number, pendingSpecs?: number) => ({
+    cpu,
+    memory: 1,
+    ...(pendingSpecs === undefined ? {} : { pendingSpecs }),
+  });
+  const spawn = (spawnReqId: string) => ({
+    t: 'SPAWN' as const,
+    spawnReqId,
+    parentPortId: 'requester/p-1',
+    config: { entry: '/app/main.ts', root: '/app', rules: [] },
+  });
+
+  it('places by queue pressure, not CPU alone', async (t) => {
+    const { transport } = await makeSeed();
+    // busy-cpu has higher CPU but an empty queue; deep-queue looks idle but
+    // has specs waiting — pending work is the stronger signal.
+    transport.inject('busy-cpu', { t: 'HELLO', nodeId: 'busy-cpu', load: load(0.6, 0) });
+    transport.inject('deep-queue', { t: 'HELLO', nodeId: 'deep-queue', load: load(0.05, 5) });
+    transport.sent.length = 0;
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0, 0) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-1'));
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(routed[0]!.to, 'busy-cpu', 'the empty queue wins over lower CPU');
+  });
+
+  it('reroutes a retryable refusal to the next node and never reuses one', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-2'));
+    const first = transport.sent.filter((s) => s.msg.t === 'SPAWN')[0]!;
+    t.equal(first.to, 'worker-1', 'lowest pressure chosen first');
+
+    transport.sent.length = 0;
+    transport.inject(first.to as string, {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-2',
+      childPortId: '',
+      ok: false,
+      error: 'overloaded',
+      retryable: true,
+    });
+    const second = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(second.length, 1, 'the refusal was retried elsewhere');
+    t.equal(second[0]!.to, 'worker-2', 'the retry avoids the node that refused');
+    t.equal(
+      transport.sentOfType('SPAWN_ACK').length,
+      0,
+      'no failure was reported to the requester while a retry remained',
+    );
+
+    transport.sent.length = 0;
+    transport.inject('worker-2', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-2',
+      childPortId: '',
+      ok: false,
+      error: 'overloaded',
+      retryable: true,
+    });
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'with no nodes left the failure reaches the requester');
+    t.equal(acks[0]!.ok, false, 'reported as a failure');
+  });
+
+  it('does not retry a non-retryable failure', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-3'));
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'requester/s-3',
+      childPortId: '',
+      ok: false,
+      error: 'entry module threw',
+    });
+    t.equal(transport.sent.filter((s) => s.msg.t === 'SPAWN').length, 0, 'no retry attempted');
+    t.equal(transport.sentOfType('SPAWN_ACK').length, 1, 'the error reached the requester');
+  });
+
+  it('never places onto a draining node', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('leaving', {
+      t: 'HELLO',
+      nodeId: 'leaving',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('staying', {
+      t: 'HELLO',
+      nodeId: 'staying',
+      load: { cpu: 0.9, memory: 1, pendingSpecs: 8 },
+    });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0, 0) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-drain'));
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(
+      routed[0]!.to,
+      'staying',
+      'the heavily loaded survivor still beats the idle-looking leaver',
+    );
+  });
+
+  it('reroutes when the chosen node dies mid-spawn', async (t) => {
+    const { transport } = await makeSeed();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1, 0) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2, 0) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9, 9) });
+    transport.sent.length = 0;
+    transport.inject('requester', spawn('requester/s-4'));
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'PEER_DOWN', nodeId: 'worker-1' });
+    const rerouted = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(rerouted.length, 1, 'the durable spawn was rerouted rather than failed');
+    t.equal(rerouted[0]!.to, 'worker-2', 'rerouted to the surviving node');
+  });
+});
+
+describe('SeedServer — ledger lease sweep', () => {
+  afterEach(stopActiveSeed);
+
+  it('reroutes an in-flight spawn whose target went silent', async (t) => {
+    const ledger = await WorkloadLedger.open(
+      `/tmp/fino-ledger-sweep-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`,
+    );
+    const { seed, transport } = await makeSeed('seed-node', { ledger, leaseMs: 40 });
+    const load = (cpu: number) => ({ cpu, memory: 1, pendingSpecs: 0 });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: load(0.1) });
+    transport.inject('worker-2', { t: 'HELLO', nodeId: 'worker-2', load: load(0.2) });
+    transport.inject('requester', { t: 'HELLO', nodeId: 'requester', load: load(0.9) });
+    transport.sent.length = 0;
+    transport.inject('requester', {
+      t: 'SPAWN',
+      spawnReqId: 'requester/s-sweep',
+      parentPortId: 'requester/p-1',
+      config: { entry: '/app/main.ts', root: '/app', rules: [] },
+    });
+    await seed._ledgerSettled();
+    const first = transport.sent.filter((s) => s.msg.t === 'SPAWN')[0]!;
+    t.equal(first.to, 'worker-1', 'routed to the lightest node first');
+    const before = await ledger.get('requester/s-sweep');
+    t.equal(before?.owner, 'worker-1', 'the lease belongs to the silent node');
+
+    // worker-1 neither acks nor disconnects. Its lease simply lapses.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    transport.sent.length = 0;
+    await seed._sweepLedgerForTest();
+
+    const rerouted = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(rerouted.length, 1, 'the sweep rerouted the spawn');
+    t.equal(rerouted[0]!.to, 'worker-2', 'to the remaining node');
+    const after = await ledger.get('requester/s-sweep');
+    t.equal(after?.owner, 'worker-2', 'the ledger lease moved with it');
+    t.equal(after?.state, 'claimed', 'the record is claimed by the new target');
+    await ledger.close();
+  });
+
+  it('leaves reclaimed records without a pending spawn for reconciliation', async (t) => {
+    const ledger = await WorkloadLedger.open(
+      `/tmp/fino-ledger-sweep2-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.db`,
+    );
+    await ledger.commit('ghost/w-1', '{}');
+    await ledger.claim('ghost/w-1', 'dead-node', 1, 10);
+    const { seed, transport } = await makeSeed('seed-node', { ledger, leaseMs: 10 });
+    transport.inject('worker-1', {
+      t: 'HELLO',
+      nodeId: 'worker-1',
+      load: { cpu: 0.1, memory: 1 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    transport.sent.length = 0;
+    await seed._sweepLedgerForTest();
+    t.equal(
+      transport.sent.filter((s) => s.msg.t === 'SPAWN').length,
+      0,
+      'no blind re-execution of a workload nobody is waiting on',
+    );
+    const record = await ledger.get('ghost/w-1');
+    t.equal(record?.state, 'unclaimed', 'but the lease was reclaimed');
+    t.equal(record?.owner, null, 'and the dead owner cleared');
+    await ledger.close();
+  });
+});
+
+describe('SeedServer — cask store', () => {
+  afterEach(stopActiveSeed);
+
+  async function hashOf(bytes: Uint8Array): Promise<string> {
+    const digest = await crypto.subtle.digest('SHA-256', bytes.buffer as ArrayBuffer);
+    return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
+
+  it('stores a verified upload and streams it back', async (t) => {
+    const caskDir = `/tmp/fino-casks-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const { transport } = await makeSeed('seed-node', { caskDir });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+
+    const bytes = new Uint8Array(300 * 1024).fill(7);
+    const hash = await hashOf(bytes);
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_PUT', hash, seq: 0, chunk: bytes.subarray(0, 1024), last: false });
+    transport.inject('worker-1', { t: 'CASK_PUT', hash, seq: 1, chunk: bytes.subarray(1024), last: true });
+    await settle();
+    const acks = transport.sent.filter((s) => s.msg.t === 'CASK_ACK');
+    t.equal(acks.length, 1, 'the upload was acknowledged');
+    t.equal((acks[0]!.msg as { ok: boolean }).ok, true, 'and accepted');
+    const stored = await new DiskFileSystem().readFile(`${caskDir}/${hash}.cask`);
+    t.equal(stored.length, bytes.length, 'the artifact is in the store');
+
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_GET', hash });
+    await settle();
+    const data = transport.sent.filter((s) => s.msg.t === 'CASK_DATA');
+    t.ok(data.length >= 2, 'the cask streamed back in chunks');
+    const lastMsg = data[data.length - 1]!.msg as { last: boolean };
+    t.equal(lastMsg.last, true, 'the final chunk is flagged');
+    const total = data.reduce((sum, d) => sum + (d.msg as { chunk: Uint8Array }).chunk.length, 0);
+    t.equal(total, bytes.length, 'every byte came back');
+  });
+
+  it('refuses an upload whose bytes do not match the claimed hash', async (t) => {
+    const caskDir = `/tmp/fino-casks-bad-${Date.now()}`;
+    const { transport } = await makeSeed('seed-node', { caskDir });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'CASK_PUT',
+      hash: 'a'.repeat(64),
+      seq: 0,
+      chunk: new Uint8Array([1, 2, 3]),
+      last: true,
+    });
+    await settle();
+    const acks = transport.sent.filter((s) => s.msg.t === 'CASK_ACK');
+    t.equal(acks.length, 1, 'answered');
+    const ack = acks[0]!.msg as { ok: boolean; error?: string };
+    t.equal(ack.ok, false, 'refused');
+    t.ok((ack.error ?? '').includes('claimed hash'), 'with the reason');
+    const missing = await new DiskFileSystem()
+      .stat(`${caskDir}/${'a'.repeat(64)}.cask`)
+      .then(() => false, () => true);
+    t.ok(missing, 'nothing entered the store');
+  });
+
+  it('refuses fetches for unknown casks and without a store', async (t) => {
+    const { transport } = await makeSeed('seed-node', { caskDir: `/tmp/fino-casks-x-${Date.now()}` });
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', { t: 'CASK_GET', hash: 'b'.repeat(64) });
+    await settle();
+    const ack = transport.sent.filter((s) => s.msg.t === 'CASK_ACK')[0]!.msg as { error?: string };
+    t.ok((ack.error ?? '').includes('unknown cask'), 'unknown hash is a clean refusal');
+  });
+});
+
+describe('SeedServer — deploy flow', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
+
+  async function seedWithStore() {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const caskDir = `/tmp/fino-deploy-store-${stamp}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-deploy-ledger-${stamp}.db`);
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    return { ...made, caskDir, ledger };
+  }
+
+  async function uploadFixtureCask(
+    transport: Awaited<ReturnType<typeof makeSeed>>['transport'],
+  ): Promise<string> {
+    const fs = new DiskFileSystem();
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const app = `/tmp/fino-deploy-app-${stamp}`;
+    await fs.mkdir(app);
+    await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('svc');\n`));
+    const packed = await packCask(app, `${app}.cask`, { name: 'svc', version: '1', entry: 'main.ts' });
+    const bytes = await fs.readFile(packed.path);
+    transport.inject('deployer', { t: 'CASK_PUT', hash: packed.hash, seq: 0, chunk: bytes, last: true });
+    await settle();
+    return packed.hash;
+  }
+
+  it('records the generation and forwards a cask-carrying spawn', async (t) => {
+    const { seed, transport, ledger } = await seedWithStore();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.inject('deployer', { t: 'HELLO', nodeId: 'deployer', load: { cpu: 0.9, memory: 1 } });
+    const hash = await uploadFixtureCask(transport);
+
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer/d-1',
+      parentPortId: 'deployer/p-1',
+      name: 'svc',
+      hash,
+    });
+    await settle();
+    await seed._ledgerSettled();
+
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 1, 'the deployment was placed');
+    const spawn = spawns[0]!.msg as { caskHash?: string; config: { entry: string } };
+    t.equal(spawn.caskHash, hash, 'the spawn carries the cask identity');
+    t.equal(spawn.config.entry, 'main.ts', 'the entry is slot-relative');
+
+    const active = await ledger.activeDeployment('svc');
+    t.equal(active?.generation, 1, 'the generation was recorded');
+    t.equal(active?.caskHash, hash, 'pinning the cask');
+    const workload = await ledger.get('deployer/d-1');
+    t.equal(workload?.owner, spawns[0]!.to, 'the workload record is leased to the target');
+
+    transport.sent.length = 0;
+    transport.inject(spawns[0]!.to as string, {
+      t: 'SPAWN_ACK',
+      spawnReqId: 'deployer/d-1',
+      childPortId: `${spawns[0]!.to}/7`,
+      ok: true,
+    });
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'the ack reached the deployer — the --wait semantic');
+    t.equal(acks[0]!.ok, true, 'success');
+    await ledger.close();
+  });
+
+  it('fails a deploy of a cask nobody uploaded, recording nothing', async (t) => {
+    const { seed, transport, ledger } = await seedWithStore();
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('worker-1', {
+      t: 'DEPLOY',
+      spawnReqId: 'worker-1/d-2',
+      parentPortId: 'worker-1/p-2',
+      name: 'ghost',
+      hash: 'c'.repeat(64),
+    });
+    await settle();
+    await seed._ledgerSettled();
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'answered');
+    t.equal(acks[0]!.ok, false, 'refused');
+    t.ok((acks[0]!.error ?? '').includes('unknown cask'), 'with the reason');
+    t.equal(await ledger.activeDeployment('ghost'), null, 'no generation was recorded');
+    await ledger.close();
+  });
+});
+
+describe('SeedServer — deployment history and rollback', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
+
+  it('lists history and places a rollback of the previous generation', async (t) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rollback-${stamp}.db`);
+    const caskDir = `/tmp/fino-rollback-store-${stamp}`;
+    const { transport } = await makeSeed('seed-node', { caskDir, ledger });
+    const hashA = 'a'.repeat(64);
+    const hashB = 'b'.repeat(64);
+    await ledger.recordDeployment('web', hashA, 'main.ts');
+    await ledger.recordDeployment('web', hashB, 'main.ts');
+
+    transport.inject('worker-1', { t: 'HELLO', nodeId: 'worker-1', load: { cpu: 0.1, memory: 1 } });
+    transport.inject('cli', { t: 'HELLO', nodeId: 'cli', load: { cpu: 0.9, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('cli', { t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-q-1', name: 'web' });
+    await settle();
+    const listed = transport.sent.filter((s) => s.msg.t === 'DEPLOYMENTS')[0]!.msg;
+    if (listed.t !== 'DEPLOYMENTS') throw new Error('wrong kind');
+    t.equal(listed.deployments.length, 2, 'both generations reported');
+    t.equal(listed.deployments[0]!.caskHash, hashB, 'newest first and active');
+
+    transport.sent.length = 0;
+    transport.inject('cli', {
+      t: 'ROLLBACK',
+      spawnReqId: 'cli-r-1',
+      parentPortId: 'cli/p-r-1',
+      name: 'web',
+    });
+    await settle();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 1, 'the rollback was placed');
+    const spawn = spawns[0]!.msg as { caskHash?: string };
+    t.equal(spawn.caskHash, hashA, 'running the PREVIOUS cask again');
+    t.equal(spawns[0]!.to, 'worker-1', 'excluding the requester');
+    const active = await ledger.activeDeployment('web');
+    t.equal(active?.generation, 3, 'rollback is a new generation');
+    t.equal(active?.caskHash, hashA, 'pointing at the previous cask');
+    await ledger.close();
+  });
+
+  it('refuses a rollback with fewer than two generations', async (t) => {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rollback1-${stamp}.db`);
+    const { transport } = await makeSeed('seed-node', {
+      caskDir: `/tmp/fino-rollback1-store-${stamp}`,
+      ledger,
+    });
+    await ledger.recordDeployment('solo', 'e'.repeat(64), 'main.ts');
+    transport.inject('cli', { t: 'HELLO', nodeId: 'cli', load: { cpu: 0.1, memory: 1 } });
+    transport.sent.length = 0;
+    transport.inject('cli', {
+      t: 'ROLLBACK',
+      spawnReqId: 'cli-r-2',
+      parentPortId: 'cli/p-r-2',
+      name: 'solo',
+    });
+    await settle();
+    const acks = transport.sentOfType('SPAWN_ACK');
+    t.equal(acks.length, 1, 'answered');
+    t.equal(acks[0]!.ok, false, 'refused');
+    t.ok((acks[0]!.error ?? '').includes('fewer than two'), 'with the reason');
+    t.equal((await ledger.activeDeployment('solo'))?.generation, 1, 'history untouched');
+    await ledger.close();
+  });
+});
+
+describe('SeedServer — replica-set controller', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
+
+  async function replicatedSetup(replicas: number) {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-rs-${stamp}.db`);
+    const caskDir = `/tmp/fino-rs-store-${stamp}`;
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    const fs = new DiskFileSystem();
+    const app = `/tmp/fino-rs-app-${stamp}`;
+    await fs.mkdir(app);
+    await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('replica');\n`));
+    const packed = await packCask(app, `${app}.cask`, {
+      name: 'svc',
+      version: '1',
+      entry: 'main.ts',
+      replicas,
+    });
+    made.transport.inject('deployer', {
+      t: 'CASK_PUT',
+      hash: packed.hash,
+      seq: 0,
+      chunk: await fs.readFile(packed.path),
+      last: true,
+    });
+    await settle();
+    return { ...made, ledger, hash: packed.hash };
+  }
+
+  it('places every replica on a distinct node when membership allows', async (t) => {
+    const { seed, transport, ledger, hash } = await replicatedSetup(3);
+    for (const node of ['w1', 'w2', 'w3', 'deployer']) {
+      transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer-d-1',
+      parentPortId: 'deployer/p-1',
+      name: 'web',
+      hash,
+    });
+    await settle();
+    await seed._ledgerSettled();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 3, 'all three replicas placed');
+    const targets = new Set(spawns.map((s) => s.to));
+    t.equal(targets.size, 3, 'anti-affinity spread them across distinct nodes');
+    t.equal((await ledger.activeDeployment('web'))?.replicas, 3, 'the count is durable');
+
+    for (const [index, spawn] of spawns.entries()) {
+      const req = (spawn.msg as { spawnReqId: string }).spawnReqId;
+      transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: req,
+        childPortId: `${spawn.to}/${index}`,
+        ok: true,
+      });
+    }
+    transport.sent.length = 0;
+    seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      transport.sent.filter((s) => s.msg.t === 'SPAWN').length,
+      0,
+      'a converged deployment places nothing',
+    );
+
+    // One replica's realm exits: reconciliation replaces exactly one.
+    transport.inject(spawns[1]!.to as string, {
+      t: 'REALM_EXIT',
+      realmId: `${spawns[1]!.to}/1`,
+      lastPortSeq: 0,
+    });
+    transport.sent.length = 0;
+    seed._checkHeartbeatsForTest();
+    await settle();
+    const replaced = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(replaced.length, 1, 'exactly one replacement per pass');
+    await ledger.close();
+  });
+
+  it('replaces replicas lost with their node', async (t) => {
+    const { seed, transport, ledger, hash } = await replicatedSetup(2);
+    for (const node of ['w1', 'w2', 'deployer']) {
+      transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    transport.sent.length = 0;
+    transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: 'deployer-d-2',
+      parentPortId: 'deployer/p-2',
+      name: 'ha',
+      hash,
+    });
+    await settle();
+    const spawns = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(spawns.length, 2, 'both replicas placed');
+    for (const [index, spawn] of spawns.entries()) {
+      transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId: `${spawn.to}/${index}`,
+        ok: true,
+      });
+    }
+    const victim = spawns[0]!.to as string;
+    transport.sent.length = 0;
+    transport.inject(victim, { t: 'PEER_DOWN', nodeId: victim });
+    seed._checkHeartbeatsForTest();
+    await settle();
+    const replaced = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(replaced.length, 1, 'the lost replica is re-placed');
+    t.ok(replaced[0]!.to !== victim, 'onto a surviving node');
+    await ledger.close();
+  });
+});
+
+describe('SeedServer — rolling generation replacement', () => {
+  afterEach(stopActiveSeed);
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+  // 250ms, not 25: the seed's async handlers read archives and write
+  // SQLite with no fixed latency, and shorter settles race them under
+  // suite load. This costs ~5s across the file and removes the flake.
+
+  async function rolloutSetup(options: { readyAfterMs: number; minHealthy?: number }) {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const ledger = await WorkloadLedger.open(`/tmp/fino-roll-${stamp}.db`);
+    const caskDir = `/tmp/fino-roll-store-${stamp}`;
+    const made = await makeSeed('seed-node', { caskDir, ledger });
+    const fs = new DiskFileSystem();
+    const upload = async (marker: string): Promise<string> => {
+      const app = `/tmp/fino-roll-app-${stamp}-${marker}`;
+      await fs.mkdir(app);
+      await fs.writeFile(`${app}/main.ts`, new TextEncoder().encode(`console.log('${marker}');\n`));
+      const packed = await packCask(app, `${app}.cask`, {
+        name: 'svc',
+        version: marker,
+        entry: 'main.ts',
+        replicas: 2,
+        readyAfterMs: options.readyAfterMs,
+        ...(options.minHealthy === undefined ? {} : { minHealthy: options.minHealthy }),
+      });
+      made.transport.inject('deployer', {
+        t: 'CASK_PUT',
+        hash: packed.hash,
+        seq: 0,
+        chunk: await fs.readFile(packed.path),
+        last: true,
+      });
+      await settle();
+      return packed.hash;
+    };
+    for (const node of ['w1', 'w2', 'w3', 'deployer']) {
+      made.transport.inject(node, { t: 'HELLO', nodeId: node, load: { cpu: 0.1, memory: 1 } });
+    }
+    return { ...made, ledger, upload };
+  }
+
+  async function deployAndAck(
+    made: Awaited<ReturnType<typeof rolloutSetup>>,
+    hash: string,
+    reqId: string,
+  ): Promise<Array<{ to: string; childPortId: string }>> {
+    made.transport.sent.length = 0;
+    made.transport.inject('deployer', {
+      t: 'DEPLOY',
+      spawnReqId: reqId,
+      parentPortId: `deployer/p-${reqId}`,
+      name: 'web',
+      hash,
+    });
+    await settle();
+    const spawns = made.transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    const acked: Array<{ to: string; childPortId: string }> = [];
+    for (const [index, spawn] of spawns.entries()) {
+      const childPortId = `${spawn.to}/${reqId}-${index}`;
+      made.transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId,
+        ok: true,
+      });
+      acked.push({ to: spawn.to as string, childPortId });
+    }
+    return acked;
+  }
+
+  it('rolls one step per pass and never dips below minHealthy', async (t) => {
+    const made = await rolloutSetup({ readyAfterMs: 0, minHealthy: 2 });
+    const gen1 = await made.upload('v1');
+    const first = await deployAndAck(made, gen1, 'd1');
+    t.equal(first.length, 2, 'generation 1 bursts both replicas');
+
+    const gen2 = await made.upload('v2');
+    const second = await deployAndAck(made, gen2, 'd2');
+    t.equal(second.length, 1, 'a rollout places only replica 0 up front');
+
+    // Pass 1: one new ready + two old = 3; retiring one keeps 2 >= minHealthy.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    const terminates1 = made.transport.sent.filter((s) => s.msg.t === 'TERMINATE');
+    t.equal(terminates1.length, 1, 'exactly one old replica retires per pass');
+
+    // Pass 2: one ready + one old = 2; retiring would leave 1 < minHealthy,
+    // so the pass places the second new replica instead.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      0,
+      'minHealthy blocks the second retirement',
+    );
+    const placed = made.transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(placed.length, 1, 'the pass advances by placing the second new replica');
+    for (const spawn of placed) {
+      made.transport.inject(spawn.to as string, {
+        t: 'SPAWN_ACK',
+        spawnReqId: (spawn.msg as { spawnReqId: string }).spawnReqId,
+        childPortId: `${spawn.to}/r1-new`,
+        ok: true,
+      });
+    }
+
+    // Pass 3: two new ready + one old = 3; the last old replica retires.
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      1,
+      'the final old replica retires once both successors are ready',
+    );
+    await made.ledger.close();
+  });
+
+  it('holds every old replica until a successor is ready', async (t) => {
+    const made = await rolloutSetup({ readyAfterMs: 60_000 });
+    const gen1 = await made.upload('v1');
+    await deployAndAck(made, gen1, 'd1');
+    const gen2 = await made.upload('v2');
+    await deployAndAck(made, gen2, 'd2');
+
+    made.transport.sent.length = 0;
+    made.seed._checkHeartbeatsForTest();
+    await settle();
+    t.equal(
+      made.transport.sent.filter((s) => s.msg.t === 'TERMINATE').length,
+      0,
+      'no old replica retires while the successor is inside its readiness window',
+    );
+    await made.ledger.close();
+  });
+});
+
+describe('SeedServer — control-plane-only and ephemeral members', () => {
+  afterEach(stopActiveSeed);
+
+  it('never places onto a node that advertised draining at HELLO', async (t) => {
+    const { transport } = await makeSeed();
+    // A control-plane seed and ephemeral CLIs both announce draining in
+    // their very first HELLO, closing the window where they would otherwise
+    // be targetable until their first heartbeat.
+    transport.inject('control-plane', {
+      t: 'HELLO',
+      nodeId: 'control-plane',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('deploy-cli', {
+      t: 'HELLO',
+      nodeId: 'deploy-cli',
+      load: { cpu: 0, memory: 1, pendingSpecs: 0, draining: true },
+    });
+    transport.inject('worker', {
+      t: 'HELLO',
+      nodeId: 'worker',
+      load: { cpu: 0.95, memory: 1, pendingSpecs: 7 },
+    });
+    transport.sent.length = 0;
+    transport.inject('deploy-cli', {
+      t: 'SPAWN',
+      spawnReqId: 'deploy-cli-s-1',
+      parentPortId: 'deploy-cli/p-1',
+      config: { entry: '/app/main.ts', root: '/app', rules: [] },
+    });
+    const routed = transport.sent.filter((s) => s.msg.t === 'SPAWN');
+    t.equal(routed.length, 1, 'the spawn was routed');
+    t.equal(
+      routed[0]!.to,
+      'worker',
+      'the loaded worker wins over an idle control plane and an idle CLI',
     );
   });
 });

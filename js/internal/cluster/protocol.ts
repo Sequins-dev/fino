@@ -81,10 +81,12 @@ export interface NodeLoad {
    */
   cpu: number;
   /**
-   * Resident memory in bytes.
+   * **Peak** resident memory in bytes — `ru_maxrss`, not current RSS.
    *
-   * The value defaults only at the caller layer; the wire decoder requires a
-   * finite, non-negative number and rejects missing or negative memory samples.
+   * Peak never decreases, so this cannot observe a node recovering memory; it
+   * answers "how big has this process been", which is the conservative side
+   * of a placement decision. Compare against `capacityMemory` accordingly.
+   * The wire decoder requires a finite, non-negative number.
    *
    * ```ts
    * const load = { cpu: 0, memory: 0 };
@@ -92,6 +94,44 @@ export interface NodeLoad {
    * ```
    */
   memory: number;
+  /**
+   * Fraction of wall time the sender's loop spent blocked waiting, in the
+   * inclusive range `[0, 1]`.
+   *
+   * A node at moderate CPU whose loop idle is collapsing is saturated for
+   * latency-sensitive work — this is the signal external orchestrators cannot
+   * see. Optional: realms whose idle time is attributed by the reactor pool
+   * omit it rather than reporting a misleading zero.
+   *
+   * ```ts
+   * const load = { cpu: 0.25, memory: 1024, loopIdle: 0.9 };
+   * load.loopIdle;
+   * ```
+   */
+  loopIdle?: number;
+  /**
+   * Pre-initialization workload specs queued on the node. The primary
+   * balancing signal: specs are pure data and free to place elsewhere, so a
+   * deep pending queue means the node is oversubscribed for new work.
+   */
+  pendingSpecs?: number;
+  /** Workloads currently initialized or running on the node's reactors. */
+  activeWorkloads?: number;
+  /**
+   * The node is leaving and offloading its work. A draining node accepts no
+   * new placements — the seed skips it, peers stop offering to it — while its
+   * own balancer sheds everything it can before the node exits.
+   */
+  draining?: boolean;
+  /**
+   * Schedulable cores on the sender, from `availableParallelism()`.
+   *
+   * Capacity is what makes `cpu` comparable across heterogeneous nodes: the
+   * same 0.5 is different headroom on 2 cores and on 64. Static per process.
+   */
+  capacityCores?: number;
+  /** Total physical memory on the sender in bytes. Static per process. */
+  capacityMemory?: number;
 }
 /**
  * Cluster membership record for one peer node.
@@ -132,6 +172,28 @@ export interface PeerInfo {
    * ```
    */
   load: NodeLoad;
+  /**
+   * Process incarnation the peer announced at HELLO. Monotonically increases
+   * across restarts of the same node identity, so stale-process traffic can
+   * be fenced after a crash or replacement.
+   */
+  incarnation?: number;
+  /**
+   * Directly dialable WebTransport endpoint (`https://host:port/path`) for
+   * future peer-to-peer sessions; absent while a node has no listener.
+   */
+  endpoint?: string;
+  /** Hex sha-256 of the certificate the peer's own listener presents. */
+  certHash?: string;
+}
+/** One deployment generation as carried by a `DEPLOYMENTS` reply. @internal */
+export interface DeploymentInfo {
+  name: string;
+  generation: number;
+  caskHash: string;
+  entry: string;
+  state: 'active' | 'superseded';
+  createdAt: number;
 }
 /**
  * Serialized realm spawn configuration carried by a `SPAWN` message.
@@ -246,11 +308,126 @@ export type ClusterMessage =
       t: 'HELLO';
       nodeId: string;
       load: NodeLoad;
+      /** Join token minted by `cluster start`; checked when the seed enforces one. */
+      token?: string;
+      /** Observer connections receive WELCOME but never become members. */
+      observer?: boolean;
+      /** Process incarnation; the seed fences HELLOs older than the member's. */
+      incarnation?: number;
+      /** Directly dialable endpoint for peer introductions, when listening. */
+      endpoint?: string;
+      /** Hex sha-256 of the node's own listener certificate. */
+      certHash?: string;
+      /**
+       * Cluster identity, sent on peer-to-peer handshakes so a listener can
+       * refuse a dialer from a different cluster. Omitted toward the seed,
+       * which is the authority on identity.
+       */
+      clusterId?: string;
+    }
+  | {
+      t: 'JOIN_DENIED';
+      reason: string;
+    }
+  | {
+      /**
+       * Offer a pre-init workload spec to a peer during queue balancing. The
+       * offer is advisory: the destination may refuse, and the source keeps
+       * the spec until it accepts.
+       */
+      t: 'SHED_OFFER';
+      /**
+       * The node being offered the workload. Peers reach each other directly
+       * when a mesh session exists; otherwise the seed relays, and it needs
+       * the destination named in the message to do so.
+       */
+      toNode: string;
+      /** Correlates the reply; unique to the offering node. */
+      spawnReqId: string;
+      /** Port the source proxies for, so the destination addresses replies. */
+      parentPortId: string;
+      config: SerializedSpawnConfig;
+    }
+  | {
+      /**
+       * One chunk of a cask being uploaded to the control plane (`CASK_PUT`)
+       * or streamed down to a fetching node (`CASK_DATA`). Chunks arrive in
+       * `seq` order on the reliable transport; `last` closes the transfer,
+       * after which the receiver verifies the assembled bytes against `hash`
+       * before anything is stored or unpacked.
+       */
+      t: 'CASK_PUT' | 'CASK_DATA';
+      /** Expected sha-256 of the complete cask — the transfer's identity. */
+      hash: string;
+      seq: number;
+      chunk: Uint8Array;
+      last: boolean;
+    }
+  | {
+      /** Request a cask's bytes from the control plane by hash. */
+      t: 'CASK_GET';
+      hash: string;
+    }
+  | {
+      /**
+       * Deploy a named application from a previously uploaded cask. The seed
+       * records the generation, then places it like any spawn — deployments
+       * ride the same admission, retry, and durability machinery.
+       */
+      t: 'DEPLOY';
+      spawnReqId: string;
+      parentPortId: string;
+      name: string;
+      hash: string;
+    }
+  | {
+      /** Ask the seed for deployment history; `name` narrows to one app. */
+      t: 'DEPLOYMENTS_GET';
+      /** Correlates the DEPLOYMENTS reply. */
+      spawnReqId: string;
+      name?: string;
+    }
+  | {
+      /** Deployment history, newest generation first per name. */
+      t: 'DEPLOYMENTS';
+      spawnReqId: string;
+      deployments: DeploymentInfo[];
+    }
+  | {
+      /**
+       * Record a rollback generation for a named deployment — a new
+       * generation pointing at the previous cask — and place it like a
+       * deploy. Answered with SPAWN_ACK.
+       */
+      t: 'ROLLBACK';
+      spawnReqId: string;
+      parentPortId: string;
+      name: string;
+    }
+  | {
+      /** Upload or fetch outcome for one cask hash. */
+      t: 'CASK_ACK';
+      hash: string;
+      ok: boolean;
+      error?: string;
+    }
+  | {
+      /** A peer's answer to `SHED_OFFER`. */
+      t: 'SHED_RESULT';
+      /** The node that made the offer, so the seed can relay the answer. */
+      toNode: string;
+      spawnReqId: string;
+      /** Port id of the accepted workload on the destination, else empty. */
+      childPortId: string;
+      ok: boolean;
+      error?: string;
     }
   | {
       t: 'WELCOME';
       nodeId: string;
       peers: PeerInfo[];
+      /** Cluster identity, so a joiner can verify it reached the right cluster. */
+      clusterId?: string;
     }
   | {
       t: 'PEER_UP';
@@ -263,17 +440,30 @@ export type ClusterMessage =
   | {
       t: 'HEARTBEAT';
       ts: number;
+      load?: NodeLoad;
+      /** Sender incarnation; the seed ignores beats from stale processes. */
+      incarnation?: number;
     }
   | {
       t: 'SPAWN';
       spawnReqId: string;
       parentPortId: string;
       config: SerializedSpawnConfig;
+      /**
+       * When set, the target must fetch this cask into its cache and spawn
+       * from the unpacked slot; `config.entry` is then relative to the slot.
+       */
+      caskHash?: string;
     }
   | {
       t: 'SPAWN_ACK';
       spawnReqId: string;
       childPortId: string;
+      /**
+       * On failure, whether the seed may route the spawn to another node.
+       * Overload rejections are retryable; creation errors are not.
+       */
+      retryable?: boolean;
       ok: boolean;
       error?: string;
     }
@@ -337,6 +527,17 @@ const enum MessageKind {
   REALM_EXIT = 8,
   TERMINATE = 9,
   PORT_MSG = 10,
+  JOIN_DENIED = 11,
+  SHED_OFFER = 12,
+  SHED_RESULT = 13,
+  CASK_PUT = 14,
+  CASK_GET = 15,
+  CASK_DATA = 16,
+  CASK_ACK = 17,
+  DEPLOY = 18,
+  DEPLOYMENTS_GET = 19,
+  DEPLOYMENTS = 20,
+  ROLLBACK = 21,
 }
 
 const enum DirectiveKind {
@@ -350,11 +551,20 @@ const enum DirectiveKind {
 interface WireLoad {
   cpu?: number;
   memory?: number;
+  loopIdle?: number;
+  pendingSpecs?: number;
+  activeWorkloads?: number;
+  draining?: boolean;
+  capacityCores?: number;
+  capacityMemory?: number;
 }
 
 interface WirePeer {
   nodeId?: string;
   load?: WireLoad;
+  incarnation?: number;
+  endpoint?: string;
+  certHash?: string;
 }
 
 interface WireDirective {
@@ -395,6 +605,17 @@ interface WireEnvelope {
   kind: number;
   nodeId?: string;
   load?: WireLoad;
+  token?: string;
+  clusterId?: string;
+  observer?: boolean;
+  incarnation?: number;
+  endpoint?: string;
+  certHash?: string;
+  retryable?: boolean;
+  caskHash?: string;
+  last?: boolean;
+  deployName?: string;
+  deployments?: WireDeployment[];
   peers: WirePeer[];
   peer?: WirePeer;
   ts?: number;
@@ -416,10 +637,19 @@ interface WireEnvelope {
 const LoadMessage = defineMessage<WireLoad>({
   cpu: { number: 1, type: 'double', optional: true },
   memory: { number: 2, type: 'double', optional: true },
+  loopIdle: { number: 3, type: 'double', optional: true },
+  pendingSpecs: { number: 4, type: 'double', optional: true },
+  activeWorkloads: { number: 5, type: 'double', optional: true },
+  draining: { number: 6, type: 'bool', optional: true },
+  capacityCores: { number: 7, type: 'double', optional: true },
+  capacityMemory: { number: 8, type: 'double', optional: true },
 });
 const PeerMessage = defineMessage<WirePeer>({
   nodeId: { number: 1, type: 'string', optional: true },
   load: { number: 2, type: LoadMessage, optional: true },
+  incarnation: { number: 3, type: 'double', optional: true },
+  endpoint: { number: 4, type: 'string', optional: true },
+  certHash: { number: 5, type: 'string', optional: true },
 });
 const DirectiveMessage = defineMessage<WireDirective>({
   kind: { number: 1, type: 'enum' },
@@ -450,6 +680,22 @@ const SpawnConfigMessage = defineMessage<WireSpawnConfig>({
   rules: { number: 3, type: RuleMessage, repeated: true },
   bootstrapData: { number: 4, type: BootstrapDataMessage, optional: true },
 });
+interface WireDeployment {
+  name: string;
+  generation: number;
+  caskHash: string;
+  entry: string;
+  state: string;
+  createdAt: number;
+}
+const DeploymentMessage = defineMessage<WireDeployment>({
+  name: { number: 1, type: 'string' },
+  generation: { number: 2, type: 'double' },
+  caskHash: { number: 3, type: 'string' },
+  entry: { number: 4, type: 'string' },
+  state: { number: 5, type: 'string' },
+  createdAt: { number: 6, type: 'double' },
+});
 const EnvelopeMessage = defineMessage<WireEnvelope>({
   kind: { number: 1, type: 'enum' },
   nodeId: { number: 2, type: 'string', optional: true },
@@ -469,8 +715,62 @@ const EnvelopeMessage = defineMessage<WireEnvelope>({
   toPort: { number: 16, type: 'string', optional: true },
   payload: { number: 17, type: 'bytes', repeated: true },
   seq: { number: 18, type: 'uint64', optional: true },
-  payloadFormat: { number: 19, type: 'uint32', optional: true },
+  token: { number: 19, type: 'string', optional: true },
+  clusterId: { number: 20, type: 'string', optional: true },
+  observer: { number: 21, type: 'bool', optional: true },
+  incarnation: { number: 22, type: 'double', optional: true },
+  endpoint: { number: 23, type: 'string', optional: true },
+  certHash: { number: 24, type: 'string', optional: true },
+  retryable: { number: 25, type: 'bool', optional: true },
+  caskHash: { number: 26, type: 'string', optional: true },
+  last: { number: 27, type: 'bool', optional: true },
+  deployName: { number: 28, type: 'string', optional: true },
+  deployments: { number: 29, type: DeploymentMessage, repeated: true },
+  // Both sides of the merge claimed 19. This branch had already spent 19-29
+  // across eleven tested fields, so payloadFormat moves rather than they do.
+  // Field numbers are wire identity: safe to renumber only because both ends
+  // of a cluster ship as the same binary.
+  payloadFormat: { number: 30, type: 'uint32', optional: true },
 });
+
+function parseCaskHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw protocolError('cask hash must be 64 lowercase hex characters');
+  }
+  return value;
+}
+
+function encodeDeployment(record: DeploymentInfo): WireDeployment {
+  if (record.state !== 'active' && record.state !== 'superseded') {
+    throw protocolError('deployment state must be active or superseded');
+  }
+  return {
+    name: parseNodeId(record.name),
+    generation: record.generation,
+    caskHash: parseCaskHash(record.caskHash),
+    entry: record.entry,
+    state: record.state,
+    createdAt: record.createdAt,
+  };
+}
+
+function decodeDeployment(value: WireDeployment): DeploymentInfo {
+  if (value.state !== 'active' && value.state !== 'superseded') {
+    throw protocolError('deployment state must be active or superseded');
+  }
+  const generation = value.generation;
+  if (!Number.isFinite(generation) || generation < 1) {
+    throw protocolError('deployment generation must be a positive number');
+  }
+  return {
+    name: parseNodeId(value.name),
+    generation,
+    caskHash: parseCaskHash(value.caskHash),
+    entry: value.entry,
+    state: value.state,
+    createdAt: value.createdAt,
+  };
+}
 
 function stringArray(value: unknown, key: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
@@ -614,9 +914,46 @@ function requiredWireString(value: string | undefined, key: string): string {
   return value;
 }
 
+function parseIncarnation(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    throw protocolError('incarnation must be a non-negative finite number');
+  }
+  return value;
+}
+
+function parseEndpoint(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512) {
+    throw protocolError('endpoint must be a non-empty string of at most 512 characters');
+  }
+  if (!value.startsWith('https://')) {
+    throw protocolError('endpoint must be an https:// URL');
+  }
+  return value;
+}
+
+function parseCertHash(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw protocolError('certHash must be 64 lowercase hex characters');
+  }
+  return value;
+}
+
+function parseToken(value: unknown): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+    throw protocolError('token must be a non-empty string of at most 256 characters');
+  }
+  return value;
+}
+
 function encodePeer(value: PeerInfo): WirePeer {
   const peer = parsePeer(value, 'peer');
-  return { nodeId: peer.nodeId, load: peer.load };
+  return {
+    nodeId: peer.nodeId,
+    load: peer.load,
+    ...(peer.incarnation !== undefined ? { incarnation: peer.incarnation } : {}),
+    ...(peer.endpoint !== undefined ? { endpoint: peer.endpoint } : {}),
+    ...(peer.certHash !== undefined ? { certHash: peer.certHash } : {}),
+  };
 }
 
 function decodePeer(value: WirePeer, key: string): PeerInfo {
@@ -624,13 +961,70 @@ function decodePeer(value: WirePeer, key: string): PeerInfo {
 }
 
 function toWire(msg: ClusterMessage): WireEnvelope {
-  const base = { peers: [] as WirePeer[], payload: [] as Uint8Array[] };
+  const base = {
+    peers: [] as WirePeer[],
+    payload: [] as Uint8Array[],
+    deployments: [] as WireDeployment[],
+  };
   switch (msg.t) {
     case 'HELLO':
       return {
         kind: MessageKind.HELLO,
         nodeId: parseNodeId(msg.nodeId),
         load: parseLoad(msg.load),
+        ...(msg.token !== undefined ? { token: parseToken(msg.token) } : {}),
+        ...(msg.observer === true ? { observer: true } : {}),
+        ...(msg.incarnation !== undefined
+          ? { incarnation: parseIncarnation(msg.incarnation) }
+          : {}),
+        ...(msg.endpoint !== undefined ? { endpoint: parseEndpoint(msg.endpoint) } : {}),
+        ...(msg.certHash !== undefined ? { certHash: parseCertHash(msg.certHash) } : {}),
+        ...(msg.clusterId !== undefined ? { clusterId: parseNodeId(msg.clusterId) } : {}),
+        ...base,
+      };
+    case 'JOIN_DENIED':
+      return {
+        kind: MessageKind.JOIN_DENIED,
+        error: requiredWireString(msg.reason, 'reason'),
+        ...base,
+      };
+    case 'SHED_OFFER':
+      return {
+        kind: MessageKind.SHED_OFFER,
+        nodeId: parseNodeId(msg.toNode),
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        config: encodeSpawnConfig(msg.config),
+        ...base,
+      };
+    case 'CASK_PUT':
+    case 'CASK_DATA':
+      return {
+        kind: msg.t === 'CASK_PUT' ? MessageKind.CASK_PUT : MessageKind.CASK_DATA,
+        caskHash: parseCaskHash(msg.hash),
+        seq: encodeSequence(msg.seq, 'seq', true),
+        ...(msg.last ? { last: true } : {}),
+        ...base,
+        payload: [msg.chunk],
+      };
+    case 'CASK_GET':
+      return { kind: MessageKind.CASK_GET, caskHash: parseCaskHash(msg.hash), ...base };
+    case 'CASK_ACK':
+      return {
+        kind: MessageKind.CASK_ACK,
+        caskHash: parseCaskHash(msg.hash),
+        ok: msg.ok,
+        ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...base,
+      };
+    case 'SHED_RESULT':
+      return {
+        kind: MessageKind.SHED_RESULT,
+        nodeId: parseNodeId(msg.toNode),
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
+        ok: msg.ok,
+        ...(msg.error === undefined ? {} : { error: msg.error }),
         ...base,
       };
     case 'WELCOME':
@@ -638,6 +1032,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         kind: MessageKind.WELCOME,
         nodeId: parseNodeId(msg.nodeId),
         peers: parsePeers(msg.peers).map(encodePeer),
+        ...(msg.clusterId !== undefined ? { clusterId: parseNodeId(msg.clusterId) } : {}),
         payload: [],
       };
     case 'PEER_UP':
@@ -648,6 +1043,10 @@ function toWire(msg: ClusterMessage): WireEnvelope {
       return {
         kind: MessageKind.HEARTBEAT,
         ts: requireFiniteNumber({ ts: msg.ts }, 'ts'),
+        ...(msg.load !== undefined ? { load: parseLoad(msg.load) } : {}),
+        ...(msg.incarnation !== undefined
+          ? { incarnation: parseIncarnation(msg.incarnation) }
+          : {}),
         ...base,
       };
     case 'SPAWN':
@@ -656,6 +1055,38 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
         parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
         config: encodeSpawnConfig(msg.config),
+        ...(msg.caskHash === undefined ? {} : { caskHash: parseCaskHash(msg.caskHash) }),
+        ...base,
+      };
+    case 'DEPLOY':
+      return {
+        kind: MessageKind.DEPLOY,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        deployName: parseNodeId(msg.name),
+        caskHash: parseCaskHash(msg.hash),
+        ...base,
+      };
+    case 'DEPLOYMENTS_GET':
+      return {
+        kind: MessageKind.DEPLOYMENTS_GET,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        ...(msg.name === undefined ? {} : { deployName: parseNodeId(msg.name) }),
+        ...base,
+      };
+    case 'DEPLOYMENTS':
+      return {
+        kind: MessageKind.DEPLOYMENTS,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        ...base,
+        deployments: msg.deployments.map(encodeDeployment),
+      };
+    case 'ROLLBACK':
+      return {
+        kind: MessageKind.ROLLBACK,
+        spawnReqId: parseHandleId(msg.spawnReqId, 'spawnReqId'),
+        parentPortId: parseClusterId(msg.parentPortId, 'parentPortId'),
+        deployName: parseNodeId(msg.name),
         ...base,
       };
     case 'SPAWN_ACK':
@@ -665,6 +1096,7 @@ function toWire(msg: ClusterMessage): WireEnvelope {
         childPortId: msg.childPortId === '' ? '' : parseClusterId(msg.childPortId, 'childPortId'),
         ok: msg.ok,
         ...(msg.error === undefined ? {} : { error: msg.error }),
+        ...(msg.retryable === true ? { retryable: true } : {}),
         ...base,
       };
     case 'REALM_EXIT':
@@ -711,7 +1143,9 @@ function toWire(msg: ClusterMessage): WireEnvelope {
  * @internal
  */
 export function encode(msg: ClusterMessage): Uint8Array {
-  return EnvelopeMessage.encode(toWire(msg));
+  // Repeated fields must always be arrays on the wire object; defaulting them
+  // here keeps every toWire case from having to remember each new one.
+  return EnvelopeMessage.encode({ peers: [], payload: [], deployments: [], ...toWire(msg) });
 }
 
 /**
@@ -736,12 +1170,73 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         t: 'HELLO',
         nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
         load: parseLoad(value.load),
+        ...(value.token !== undefined ? { token: parseToken(value.token) } : {}),
+        ...(value.observer === true ? { observer: true } : {}),
+        ...(value.incarnation !== undefined
+          ? { incarnation: parseIncarnation(value.incarnation) }
+          : {}),
+        ...(value.endpoint !== undefined ? { endpoint: parseEndpoint(value.endpoint) } : {}),
+        ...(value.certHash !== undefined ? { certHash: parseCertHash(value.certHash) } : {}),
+        ...(value.clusterId !== undefined ? { clusterId: parseNodeId(value.clusterId) } : {}),
       };
+    case MessageKind.JOIN_DENIED:
+      return {
+        t: 'JOIN_DENIED',
+        reason: requiredWireString(value.error, 'reason'),
+      };
+    case MessageKind.SHED_OFFER:
+      if (value.config === undefined) throw protocolError('config is missing');
+      return {
+        t: 'SHED_OFFER',
+        toNode: parseNodeId(requiredWireString(value.nodeId, 'toNode')),
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        config: decodeSpawnConfig(value.config),
+      };
+    case MessageKind.CASK_PUT:
+    case MessageKind.CASK_DATA: {
+      const chunks = value.payload ?? [];
+      if (chunks.length !== 1) throw protocolError('cask chunk must carry exactly one payload');
+      return {
+        t: value.kind === MessageKind.CASK_PUT ? 'CASK_PUT' : 'CASK_DATA',
+        hash: parseCaskHash(value.caskHash),
+        seq: decodeSequence(value.seq, 'seq', true),
+        chunk: chunks[0]!,
+        last: value.last === true,
+      };
+    }
+    case MessageKind.CASK_GET:
+      return { t: 'CASK_GET', hash: parseCaskHash(value.caskHash) };
+    case MessageKind.CASK_ACK:
+      if (value.ok === undefined) throw protocolError('ok must be a boolean');
+      return {
+        t: 'CASK_ACK',
+        hash: parseCaskHash(value.caskHash),
+        ok: value.ok,
+        ...(value.error === undefined ? {} : { error: value.error }),
+      };
+    case MessageKind.SHED_RESULT: {
+      const shedChildPortId = requiredWireString(value.childPortId, 'childPortId');
+      if (value.ok === undefined) throw protocolError('ok must be a boolean');
+      return {
+        t: 'SHED_RESULT',
+        toNode: parseNodeId(requiredWireString(value.nodeId, 'toNode')),
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        childPortId:
+          shedChildPortId === '' ? '' : parseClusterId(shedChildPortId, 'childPortId'),
+        ok: value.ok,
+        ...(value.error === undefined ? {} : { error: value.error }),
+      };
+    }
     case MessageKind.WELCOME:
       return {
         t: 'WELCOME',
         nodeId: parseNodeId(requiredWireString(value.nodeId, 'nodeId')),
         peers: value.peers.map((peer, index) => decodePeer(peer, `peer ${index}`)),
+        ...(value.clusterId !== undefined ? { clusterId: parseNodeId(value.clusterId) } : {}),
       };
     case MessageKind.PEER_UP:
       if (value.peer === undefined) throw protocolError('peer is missing');
@@ -753,7 +1248,14 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
       };
     case MessageKind.HEARTBEAT:
       if (value.ts === undefined) throw protocolError('ts must be a finite number');
-      return { t: 'HEARTBEAT', ts: requireFiniteNumber({ ts: value.ts }, 'ts') };
+      return {
+        t: 'HEARTBEAT',
+        ts: requireFiniteNumber({ ts: value.ts }, 'ts'),
+        ...(value.load !== undefined ? { load: parseLoad(value.load) } : {}),
+        ...(value.incarnation !== undefined
+          ? { incarnation: parseIncarnation(value.incarnation) }
+          : {}),
+      };
     case MessageKind.SPAWN:
       if (value.config === undefined) throw protocolError('config is missing');
       return {
@@ -764,6 +1266,40 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
           'parentPortId',
         ),
         config: decodeSpawnConfig(value.config),
+        ...(value.caskHash === undefined ? {} : { caskHash: parseCaskHash(value.caskHash) }),
+      };
+    case MessageKind.DEPLOY:
+      return {
+        t: 'DEPLOY',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        name: parseNodeId(requiredWireString(value.deployName, 'name')),
+        hash: parseCaskHash(value.caskHash),
+      };
+    case MessageKind.DEPLOYMENTS_GET:
+      return {
+        t: 'DEPLOYMENTS_GET',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        ...(value.deployName === undefined ? {} : { name: parseNodeId(value.deployName) }),
+      };
+    case MessageKind.DEPLOYMENTS:
+      return {
+        t: 'DEPLOYMENTS',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        deployments: (value.deployments ?? []).map(decodeDeployment),
+      };
+    case MessageKind.ROLLBACK:
+      return {
+        t: 'ROLLBACK',
+        spawnReqId: parseHandleId(requiredWireString(value.spawnReqId, 'spawnReqId'), 'spawnReqId'),
+        parentPortId: parseClusterId(
+          requiredWireString(value.parentPortId, 'parentPortId'),
+          'parentPortId',
+        ),
+        name: parseNodeId(requiredWireString(value.deployName, 'name')),
       };
     case MessageKind.SPAWN_ACK: {
       const childPortId = requiredWireString(value.childPortId, 'childPortId');
@@ -774,6 +1310,7 @@ export function decode(bytes: Uint8Array | ArrayBuffer): ClusterMessage {
         childPortId: childPortId === '' ? '' : parseClusterId(childPortId, 'childPortId'),
         ok: value.ok,
         ...(value.error === undefined ? {} : { error: value.error }),
+        ...(value.retryable === true ? { retryable: true } : {}),
       };
     }
     case MessageKind.REALM_EXIT:
@@ -862,10 +1399,41 @@ function parseLoad(value: unknown): NodeLoad {
   const memory = requireFiniteNumber(value, 'memory');
   if (cpu < 0 || cpu > 1) throw protocolError('load.cpu must be in [0, 1]');
   if (memory < 0) throw protocolError('load.memory must be non-negative');
-  return {
-    cpu,
-    memory,
-  };
+  if (value.loopIdle === undefined) {
+    return { cpu, memory, ...parseQueueCounts(value) };
+  }
+  const loopIdle = requireFiniteNumber(value, 'loopIdle');
+  if (loopIdle < 0 || loopIdle > 1) throw protocolError('load.loopIdle must be in [0, 1]');
+  return { cpu, memory, loopIdle, ...parseQueueCounts(value) };
+}
+
+function parseQueueCounts(value: Record<string, unknown>): {
+  pendingSpecs?: number;
+  activeWorkloads?: number;
+  draining?: boolean;
+  capacityCores?: number;
+  capacityMemory?: number;
+} {
+  const counts: {
+    pendingSpecs?: number;
+    activeWorkloads?: number;
+    draining?: boolean;
+    capacityCores?: number;
+    capacityMemory?: number;
+  } = {};
+  for (const key of ['pendingSpecs', 'activeWorkloads', 'capacityCores', 'capacityMemory'] as const) {
+    const raw = value[key];
+    if (raw === undefined) continue;
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0) {
+      throw protocolError(`load.${key} must be a non-negative finite number`);
+    }
+    counts[key] = raw;
+  }
+  if (value.draining !== undefined) {
+    if (typeof value.draining !== 'boolean') throw protocolError('load.draining must be a boolean');
+    if (value.draining) counts.draining = true;
+  }
+  return counts;
 }
 function parsePeer(value: unknown, key: string): PeerInfo {
   if (!isRecord(value)) throw protocolError(`${key} must be an object`);
@@ -873,6 +1441,11 @@ function parsePeer(value: unknown, key: string): PeerInfo {
     return {
       nodeId: parseNodeId(requireString(value, 'nodeId')),
       load: parseLoad(value.load),
+      ...(value.incarnation !== undefined
+        ? { incarnation: parseIncarnation(value.incarnation) }
+        : {}),
+      ...(value.endpoint !== undefined ? { endpoint: parseEndpoint(value.endpoint) } : {}),
+      ...(value.certHash !== undefined ? { certHash: parseCertHash(value.certHash) } : {}),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

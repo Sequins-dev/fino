@@ -55,6 +55,8 @@
 import type { ClusterTransport } from './transport.ts';
 import {
   type ClusterMessage,
+  type DeploymentInfo,
+  type NodeLoad,
   type SerializedSpawnConfig,
   type PeerInfo,
   encode,
@@ -130,14 +132,57 @@ function assertDecodablePayload(message: {
 import {
   closeScheduledRealm,
   createScheduledRealm,
+  dropShedWorkload,
   registerReactorWake,
+  resubmitShedWorkload,
   scheduledRealmRecv,
   scheduledRealmSend,
+  shedComplete,
+  shedRecvFromParent,
+  shedSendToParent,
+  shedWorkloadConfig,
+  shedWorkloadWakeFd,
   takeScheduledRealmStatus,
 } from 'internal:scheduler-native';
+import type { PeerMesh } from './webtransport-transport.ts';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { RealmPort, type RealmLink } from 'internal:realm/transport-port';
 import { env } from 'internal:process';
+import { DiskFileSystem } from 'fino:file';
+import {
+  caskSha256Hex,
+  concatCaskChunks,
+  unpackCask,
+  type UnpackedCask,
+} from './cask.ts';
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+/**
+ * Resolve a cask-relative entry path, refusing anything that escapes the cask.
+ *
+ * A workload names its children's entries, and a workload is untrusted code.
+ * Absolute paths and `..` segments are rejected outright rather than
+ * normalised: a containment check on a normalised path is easy to write
+ * subtly wrong, and no legitimate entry inside a cask needs either.
+ */
+export function caskRelativeEntry(caskDir: string, entry: string): string {
+  if (entry.startsWith('/')) {
+    throw new Error(`spawn entry must be relative to the cask, got absolute "${entry}"`);
+  }
+  const segments = entry.split('/');
+  if (segments.some((segment) => segment === '..')) {
+    throw new Error(`spawn entry must not escape the cask, got "${entry}"`);
+  }
+  return `${caskDir}/${entry}`;
+}
+
+/** Per-workload cap on spawned children; a runaway must not take the node. */
+function workloadSpawnQuota(): number {
+  const configured = Number(env.FINO_WORKLOAD_SPAWN_QUOTA);
+  return Number.isFinite(configured) && configured > 0 ? configured : 64;
+}
 const HEARTBEAT_MS = 2500;
 function heartbeatIntervalMs(): number {
   const configured = Number(env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS);
@@ -149,6 +194,8 @@ function heartbeatIntervalMs(): number {
 interface RealmRelay {
   childPortId: string;
   parentPortId: string;
+  /** Cask backing this realm, when it was spawned from one. */
+  caskHash?: string;
   realmHandle: number;
   wakeReadFd: number;
   completionFd: number;
@@ -157,7 +204,26 @@ interface RealmRelay {
   cancel?: () => void;
   pendingSends: Promise<void>[];
   lastPortSeq: number;
+  /**
+   * Highest sequence number sent to the parent *through the seed*.
+   *
+   * The seed holds a realm's exit until it has routed that realm's last port
+   * message, which it can only do for frames it actually saw. Once a direct
+   * session carries some of them, gating on `lastPortSeq` would wait forever
+   * for frames that were never going to arrive.
+   */
+  lastRelayedSeq: number;
   lastCallError?: string;
+  /** Children this workload has spawned, for the per-workload quota. */
+  spawnedChildren: number;
+  /**
+   * The import rules this workload itself was granted.
+   *
+   * A child inherits them verbatim. Taking rules from the spawn request would
+   * let a workload grant its children capabilities it was denied, which is the
+   * narrowing rule the realm layer already enforces locally.
+   */
+  spawnRules: unknown[];
 }
 type PortMessage = Extract<ClusterMessage, { t: 'PORT_MSG' }>;
 type RealmExitMessage = Extract<ClusterMessage, { t: 'REALM_EXIT' }>;
@@ -289,9 +355,316 @@ export class ClusterClient {
    * const client = new ClusterClient(transport, 'worker-1');
    * ```
    */
-  constructor(transport: ClusterTransport, nodeId: string) {
+  constructor(
+    transport: ClusterTransport,
+    nodeId: string,
+    options: {
+      loadSampler?: () => NodeLoad;
+      incarnation?: number;
+      mesh?: PeerMesh;
+      admission?: () => { accept: true } | { accept: false; reason: string };
+    } = {},
+  ) {
     this.nodeId = nodeId;
     this.#transport = transport;
+    this.#loadSampler = options.loadSampler ?? null;
+    this.#incarnation = options.incarnation;
+    this.#mesh = options.mesh ?? null;
+    this.#mesh?.on((from, msg) => this.#handle(from, msg));
+    this.#admissionCheck = options.admission ?? null;
+  }
+  /**
+   * Admission control consulted before creating a routed realm. A rejection
+   * is reported to the seed as a retryable SPAWN_ACK so the spawn moves to a
+   * less pressured node instead of failing.
+   *
+   * @internal
+   */
+  #admissionCheck: (() => { accept: true } | { accept: false; reason: string }) | null;
+  /** In-flight shed offers keyed by request id. @internal */
+  #pendingOffers = new Map<
+    string,
+    { resolve: (result: { accepted: boolean; reason?: string }) => void }
+  >();
+  /**
+   * Deploy a named application from an uploaded cask and resolve with the
+   * child port id once the target node has fetched the artifact and created
+   * the realm — the `--wait` semantic.
+   *
+   * @internal
+   */
+  deployRemote(name: string, caskHash: string, parentPortId: string): Promise<string> {
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
+    return new Promise((resolve, reject) => {
+      this.#pendingSpawns.set(spawnReqId, { resolve, reject });
+      this.#transport.send('__seed__', {
+        t: 'DEPLOY',
+        spawnReqId,
+        parentPortId,
+        name,
+        hash: caskHash,
+      });
+    });
+  }
+
+  /** `Date.now()` of the last fetch per cask hash — the GC grace input. @internal */
+  #caskFetchedAt = new Map<string, number>();
+
+  /**
+   * Cask hashes this node must not garbage-collect: everything backing a
+   * realm currently relayed here, plus anything fetched within `graceMs`.
+   * Everything else is re-fetchable from the control plane by content hash,
+   * which is what makes cache GC a purely local decision.
+   *
+   * @internal
+   */
+  caskKeepSet(graceMs: number, now = Date.now()): Set<string> {
+    const keep = new Set<string>();
+    for (const relay of this.#relays.values()) {
+      if (relay.caskHash !== undefined) keep.add(relay.caskHash);
+    }
+    for (const [hash, at] of this.#caskFetchedAt) {
+      if (now - at < graceMs) keep.add(hash);
+      else this.#caskFetchedAt.delete(hash);
+    }
+    return keep;
+  }
+
+  /** Deployment-history queries in flight, keyed by request id. @internal */
+  #pendingDeploymentsGets = new Map<string, (records: DeploymentInfo[]) => void>();
+
+  /** Fetch deployment history from the seed; `name` narrows to one app. @internal */
+  listDeployments(name?: string): Promise<DeploymentInfo[]> {
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
+    return new Promise((resolve) => {
+      this.#pendingDeploymentsGets.set(spawnReqId, resolve);
+      this.#transport.send('__seed__', {
+        t: 'DEPLOYMENTS_GET',
+        spawnReqId,
+        ...(name === undefined ? {} : { name }),
+      });
+    });
+  }
+
+  /**
+   * Roll a named deployment back one generation and resolve with the child
+   * port id once the previous cask is running again.
+   *
+   * @internal
+   */
+  rollbackRemote(name: string, parentPortId: string): Promise<string> {
+    const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
+    return new Promise((resolve, reject) => {
+      this.#pendingSpawns.set(spawnReqId, { resolve, reject });
+      this.#transport.send('__seed__', { t: 'ROLLBACK', spawnReqId, parentPortId, name });
+    });
+  }
+
+  /** Cask uploads awaiting the seed's verification ack, keyed by hash. @internal */
+  #pendingCaskUploads = new Map<string, { resolve: () => void; reject: (err: Error) => void }>();
+  /** Cask downloads in flight, keyed by hash. @internal */
+  #pendingCaskFetches = new Map<
+    string,
+    { chunks: Uint8Array[]; resolve: (bytes: Uint8Array) => void; reject: (err: Error) => void }
+  >();
+
+  /**
+   * Upload a packed cask to the control plane and resolve with its hash once
+   * the seed has verified and stored it. The seed checks the bytes against
+   * the hash before storing, so a successful upload means the artifact is
+   * durably fetchable by that identity.
+   *
+   * @internal
+   */
+  async uploadCask(path: string): Promise<string> {
+    const bytes = await new DiskFileSystem().readFile(path);
+    const hash = await caskSha256Hex(bytes);
+    const CHUNK = 256 * 1024;
+    const done = new Promise<void>((resolve, reject) => {
+      this.#pendingCaskUploads.set(hash, { resolve, reject });
+    });
+    for (let offset = 0, seq = 0; offset < bytes.length || seq === 0; offset += CHUNK, seq++) {
+      this.#transport.send('__seed__', {
+        t: 'CASK_PUT',
+        hash,
+        seq,
+        chunk: bytes.subarray(offset, Math.min(offset + CHUNK, bytes.length)),
+        last: offset + CHUNK >= bytes.length,
+      });
+    }
+    await done;
+    return hash;
+  }
+
+  /**
+   * Fetch a cask from the control plane by hash and unpack it into this
+   * node's content-addressed cache. The bytes are re-verified locally before
+   * unpacking — the transport is trusted for delivery, never for content.
+   *
+   * @internal
+   */
+  async fetchCask(hash: string, cacheDir: string): Promise<UnpackedCask> {
+    const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+      this.#pendingCaskFetches.set(hash, { chunks: [], resolve, reject });
+      this.#transport.send('__seed__', { t: 'CASK_GET', hash });
+    });
+    const tmp = `${cacheDir}/.fetch-${hash}-${Math.random().toString(36).slice(2, 8)}.cask`;
+    const fs = new DiskFileSystem();
+    try {
+      await fs.stat(cacheDir);
+    } catch {
+      await fs.mkdir(cacheDir);
+    }
+    await fs.writeFile(tmp, bytes);
+    try {
+      const slot = await unpackCask(tmp, cacheDir, { expectedHash: hash });
+      this.#caskFetchedAt.set(hash, Date.now());
+      return slot;
+    } finally {
+      await fs.unlink(tmp).catch(() => {});
+    }
+  }
+
+  /** Proxies for workloads shed away from this node, keyed by parent port. @internal */
+  #shedProxies = new Map<
+    string,
+    { shedHandle: number; remotePortId: string | null; cancel?: () => void }
+  >();
+
+  /**
+   * Offer a shed spec to a peer and relay the parent's port to it on
+   * acceptance. Resolves with the peer's answer; a refusal leaves the spec
+   * for the caller to resubmit.
+   *
+   * @internal
+   */
+  offerShed(
+    toNodeId: string,
+    shedHandle: number,
+    workloadId: number,
+  ): Promise<{ accepted: boolean; reason?: string }> {
+    const spawnReqId = `${this.nodeId}-o-${this.#localHandle++}`;
+    const parentPortId = `${this.nodeId}/p-shed-${workloadId}`;
+    const config = shedWorkloadConfig(shedHandle);
+    const offer: ClusterMessage = {
+      t: 'SHED_OFFER',
+      toNode: toNodeId,
+      spawnReqId,
+      parentPortId,
+      config: {
+        entry: config.entry,
+        root: config.root,
+        rules: JSON.parse(config.rules) as unknown[],
+        ...(config.bootstrapData === null
+          ? {}
+          : { bootstrapData: JSON.parse(config.bootstrapData) as unknown }),
+      },
+    };
+    return new Promise((resolve) => {
+      this.#pendingOffers.set(spawnReqId, {
+        resolve: (result) => {
+          if (result.accepted) {
+            this.#shedProxies.set(parentPortId, { shedHandle, remotePortId: null });
+            this.#startShedProxy(parentPortId, shedHandle);
+          }
+          resolve(result);
+        },
+      });
+      if (this.#mesh?.send(toNodeId, offer) !== true) this.#transport.send(toNodeId, offer);
+    });
+  }
+
+  /**
+   * Pump the local port of a shed workload to and from its new host, so the
+   * parent keeps using the port it already holds.
+   *
+   * @internal
+   */
+  #startShedProxy(parentPortId: string, shedHandle: number): void {
+    const wakeFd = shedWorkloadWakeFd(shedHandle);
+    if (wakeFd < 0) return;
+    let stopped = false;
+    const proxy = this.#shedProxies.get(parentPortId);
+    if (proxy !== undefined) {
+      proxy.cancel = () => {
+        stopped = true;
+        removeRead(wakeFd);
+      };
+    }
+    const pump = (): void => {
+      if (stopped) return;
+      void readable(wakeFd).then(() => {
+        if (stopped) return;
+        const target = this.#shedProxies.get(parentPortId);
+        for (const [parts] of shedRecvFromParent(shedHandle)) {
+          if (target?.remotePortId == null) continue;
+          this.sendPortMsg(parentPortId, target.remotePortId, parts);
+        }
+        pump();
+      });
+    };
+    pump();
+  }
+  /**
+   * Direct peer sessions. When a session to the destination exists, realm
+   * traffic goes straight there and never touches the seed; otherwise the
+   * seed relays as before.
+   *
+   * @internal
+   */
+  #mesh: PeerMesh | null;
+  /** Incarnation echoed in every heartbeat so the seed can fence stale processes. @internal */
+  #incarnation: number | undefined;
+  /**
+   * Fresh load sample attached to every HEARTBEAT so the seed's placement
+   * view tracks reality instead of the value advertised once at HELLO.
+   *
+   * @internal
+   */
+  #loadSampler: (() => NodeLoad) | null;
+  /**
+   * Cluster identity from WELCOME, or null before admission (or when the
+   * seed predates cluster identities).
+   */
+  clusterId: string | null = null;
+  /** Settlers for `ready()` waiters. @internal */
+  #readyWaiters: Array<{ resolve: () => void; reject: (err: Error) => void }> = [];
+  /** 'pending' until WELCOME or JOIN_DENIED arrives. @internal */
+  #admission: 'pending' | 'admitted' | { denied: string } = 'pending';
+  /**
+   * Resolve once the seed has admitted this node (WELCOME), or reject when
+   * admission is denied or `timeoutMs` elapses first.
+   */
+  ready(timeoutMs = 10_000): Promise<void> {
+    if (this.#admission === 'admitted') return Promise.resolve();
+    if (typeof this.#admission === 'object') {
+      return Promise.reject(new Error(`cluster join denied: ${this.#admission.denied}`));
+    }
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error('timed out waiting for cluster admission'));
+      }, timeoutMs);
+      this.#readyWaiters.push({
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (err) => {
+          clearTimeout(timer);
+          reject(err);
+        },
+      });
+    });
+  }
+  /** Settle admission state and any `ready()` waiters. @internal */
+  #settleAdmission(outcome: 'admitted' | { denied: string }): void {
+    if (this.#admission !== 'pending') return;
+    this.#admission = outcome;
+    const waiters = this.#readyWaiters.splice(0);
+    for (const waiter of waiters) {
+      if (outcome === 'admitted') waiter.resolve();
+      else waiter.reject(new Error(`cluster join denied: ${outcome.denied}`));
+    }
   }
   /**
    * Snapshot of peers currently known to this client.
@@ -308,6 +681,21 @@ export class ClusterClient {
    */
   get peers(): PeerInfo[] {
     return [...this.#peers.values()];
+  }
+  /**
+   * Open a direct session to a peer the control plane just introduced.
+   *
+   * Nothing used to call this, which made the peer mesh dead code in a running
+   * cluster: both sides could advertise an endpoint and still send every frame
+   * through the seed, because no one ever dialed. `PeerMesh.dial` decides for
+   * itself whether this node is the one that should dial (the smaller node ID
+   * connects, so a pair opens one session, not two) and returns false rather
+   * than throwing when it should not or cannot — a peer that will not accept
+   * is not an error, it just means the seed keeps relaying for that pair.
+   */
+  #dialPeer(peer: PeerInfo): void {
+    if (this.#mesh === null || peer.endpoint === undefined) return;
+    void this.#mesh.dial(peer);
   }
   /**
    * Register a parent-side port for inbound `PORT_MSG` delivery.
@@ -385,14 +773,19 @@ export class ClusterClient {
     const targetNodeId = nodeIdFromId(toPort);
     const seq = (this.#outboundPortSequences.get(fromPort) ?? 0) + 1;
     this.#outboundPortSequences.set(fromPort, seq);
-    this.#transport.send(targetNodeId, {
+    const msg: ClusterMessage = {
       t: 'PORT_MSG',
       fromPort,
       toPort,
       payload: parts,
       seq,
       payloadFormat: PayloadFormat.V8StructuredClone,
-    });
+    };
+    // Per-port sequencing is assigned before the path is chosen, so a pair
+    // that gains a direct session mid-stream stays correctly ordered at the
+    // receiver even though earlier frames arrived via the seed.
+    if (this.#mesh?.send(targetNodeId, msg) === true) return;
+    this.#transport.send(targetNodeId, msg);
   }
   /**
    * Spawn a realm on a remote node by sending SPAWN through the seed.
@@ -408,7 +801,73 @@ export class ClusterClient {
    * await client.spawnRemote('n/p-parent', { entry: 'main.ts', root: '.', rules: [] });
    * ```
    */
-  spawnRemote(parentPortId: string, config: SerializedSpawnConfig): Promise<string> {
+  /**
+   * Spawn a realm on behalf of a workload running on this node.
+   *
+   * The capability is deliberately mediated rather than handed over. A
+   * workload has no cluster client of its own — module state is per isolate —
+   * and giving it one would also give it the node's identity. Instead it asks
+   * its host, and the host supplies the three things the workload must not
+   * choose for itself:
+   *
+   * - **Parentage.** The child is spawned with the workload's own port as its
+   *   parent, so it lands under the workload in the ownership tree and dies
+   *   with it. This is what makes the tree structured rather than flat.
+   * - **The cask.** The parent's artifact hash is propagated and the entry is
+   *   resolved against that cask on the target, so a workload cannot name a
+   *   path outside the code it was deployed as.
+   * - **A quota.** Unbounded self-spawning is a denial of service against
+   *   whichever node the workload happens to sit on.
+   *
+   * Import rules come from the parent's own spawn config, never from the
+   * request: a child cannot be granted what its parent was denied.
+   */
+  async #handleWorkloadSpawn(relay: RealmRelay, request: Record<string, unknown>): Promise<void> {
+    const id = request.id;
+    const reply = (result: Record<string, unknown>): void => {
+      if (!relay.closed) {
+        this.#sendToRealm(relay.realmHandle, EnvelopeKind.ClusterSpawnResult, { id, ...result });
+      }
+    };
+    try {
+      const entry = request.entry;
+      if (typeof entry !== 'string' || entry === '') {
+        throw new Error('spawn requires an entry path relative to the cask');
+      }
+      if (relay.caskHash === undefined) {
+        // Without a cask there is no root to constrain the entry against, so
+        // there is no safe way to honour the request.
+        throw new Error('only workloads deployed from a cask may spawn realms');
+      }
+      const quota = workloadSpawnQuota();
+      if (relay.spawnedChildren >= quota) {
+        throw new Error(`workload spawn quota of ${quota} reached`);
+      }
+      relay.spawnedChildren++;
+      const childPortId = await this.spawnRemote(
+        relay.childPortId,
+        {
+          entry,
+          root: '',
+          rules: relay.spawnRules,
+          ...(request.bootstrapData === undefined
+            ? {}
+            : { bootstrapData: request.bootstrapData }),
+        },
+        relay.caskHash,
+      );
+      reply({ childPortId });
+    } catch (error) {
+      relay.spawnedChildren = Math.max(0, relay.spawnedChildren - 1);
+      reply({ error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  spawnRemote(
+    parentPortId: string,
+    config: SerializedSpawnConfig,
+    caskHash?: string,
+  ): Promise<string> {
     const spawnReqId = `${this.nodeId}-${this.#localHandle++}`;
     return new Promise<string>((resolve, reject) => {
       this.#pendingSpawns.set(spawnReqId, {
@@ -420,6 +879,7 @@ export class ClusterClient {
         spawnReqId,
         parentPortId,
         config,
+        ...(caskHash === undefined ? {} : { caskHash }),
       });
     });
   }
@@ -440,9 +900,12 @@ export class ClusterClient {
   start(): void {
     this.#transport.on((from, msg) => this.#handle(from, msg));
     this.#heartbeatTimer = setInterval(() => {
+      const load = this.#loadSampler?.();
       this.#transport.send('__seed__', {
         t: 'HEARTBEAT',
         ts: Date.now(),
+        ...(load !== undefined ? { load } : {}),
+        ...(this.#incarnation !== undefined ? { incarnation: this.#incarnation } : {}),
       });
     }, heartbeatIntervalMs());
   }
@@ -464,6 +927,14 @@ export class ClusterClient {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
+    for (const upload of this.#pendingCaskUploads.values()) {
+      upload.reject(new Error('cluster client stopped'));
+    }
+    this.#pendingCaskUploads.clear();
+    for (const fetch of this.#pendingCaskFetches.values()) {
+      fetch.reject(new Error('cluster client stopped'));
+    }
+    this.#pendingCaskFetches.clear();
     for (const relay of this.#relays.values()) {
       if (!relay.closed) this.#sendToRealm(relay.realmHandle, EnvelopeKind.Terminate, null);
       relay.cancel?.();
@@ -502,11 +973,79 @@ export class ClusterClient {
   #handle(from: string, msg: ClusterMessage): void {
     switch (msg.t) {
       case 'WELCOME': {
-        for (const p of msg.peers) this.#peers.set(p.nodeId, p);
+        for (const p of msg.peers) {
+          this.#peers.set(p.nodeId, p);
+          this.#dialPeer(p);
+        }
+        this.clusterId = msg.clusterId ?? null;
+        this.#settleAdmission('admitted');
+        break;
+      }
+      case 'JOIN_DENIED': {
+        this.#settleAdmission({ denied: msg.reason });
+        break;
+      }
+      case 'SHED_OFFER': {
+        void this.#handleShedOffer(from, msg);
+        break;
+      }
+      case 'DEPLOYMENTS': {
+        const pending = this.#pendingDeploymentsGets.get(msg.spawnReqId);
+        if (pending !== undefined) {
+          this.#pendingDeploymentsGets.delete(msg.spawnReqId);
+          pending(msg.deployments);
+        }
+        break;
+      }
+      case 'CASK_ACK': {
+        const upload = this.#pendingCaskUploads.get(msg.hash);
+        if (upload !== undefined) {
+          this.#pendingCaskUploads.delete(msg.hash);
+          if (msg.ok) upload.resolve();
+          else upload.reject(new Error(msg.error ?? 'cask upload refused'));
+          break;
+        }
+        const fetch = this.#pendingCaskFetches.get(msg.hash);
+        if (fetch !== undefined && !msg.ok) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.reject(new Error(msg.error ?? 'cask fetch refused'));
+        }
+        break;
+      }
+      case 'CASK_DATA': {
+        const fetch = this.#pendingCaskFetches.get(msg.hash);
+        if (fetch === undefined) break;
+        if (msg.seq !== fetch.chunks.length) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.reject(new Error(`cask fetch: out-of-order chunk ${msg.seq}`));
+          break;
+        }
+        fetch.chunks.push(msg.chunk);
+        if (msg.last) {
+          this.#pendingCaskFetches.delete(msg.hash);
+          fetch.resolve(concatCaskChunks(fetch.chunks));
+        }
+        break;
+      }
+      case 'SHED_RESULT': {
+        const pending = this.#pendingOffers.get(msg.spawnReqId);
+        this.#pendingOffers.delete(msg.spawnReqId);
+        if (pending === undefined) break;
+        if (msg.ok) {
+          // Point the proxy at the accepted workload before reporting
+          // success, so the first forwarded message has somewhere to go.
+          for (const proxy of this.#shedProxies.values()) {
+            if (proxy.remotePortId === null) proxy.remotePortId = msg.childPortId;
+          }
+          pending.resolve({ accepted: true });
+        } else {
+          pending.resolve({ accepted: false, ...(msg.error === undefined ? {} : { reason: msg.error }) });
+        }
         break;
       }
       case 'PEER_UP': {
         this.#peers.set(msg.peer.nodeId, msg.peer);
+        this.#dialPeer(msg.peer);
         break;
       }
       case 'PEER_DOWN': {
@@ -590,6 +1129,13 @@ export class ClusterClient {
         break;
       }
       default:
+        // The seed-directed kinds (HELLO, HEARTBEAT, DEPLOY, CASK_PUT, …) never
+        // travel this way. One arriving here means it was routed to the wrong
+        // node, and dropping it silently is how a hung balancer looked like a
+        // deadlock rather than a missing case.
+        console.error(
+          `fino:cluster client has no handler for ${msg.t} from ${from} — message dropped`,
+        );
         break;
     }
   }
@@ -664,6 +1210,48 @@ export class ClusterClient {
    *
    * @internal
    */
+  /**
+   * Accept or refuse a peer's shed offer. Acceptance runs the same admission
+   * check as a routed spawn, so an overloaded node never becomes the dumping
+   * ground for a neighbour's queue.
+   *
+   * @internal
+   */
+  async #handleShedOffer(
+    from: string,
+    msg: Extract<ClusterMessage, { t: 'SHED_OFFER' }>,
+  ): Promise<void> {
+    const verdict = this.#admissionCheck?.();
+    const reply = (ok: boolean, childPortId: string, error?: string): void => {
+      const result: ClusterMessage = {
+        t: 'SHED_RESULT',
+        toNode: from,
+        spawnReqId: msg.spawnReqId,
+        childPortId,
+        ok,
+        ...(error === undefined ? {} : { error }),
+      };
+      if (this.#mesh?.send(from, result) !== true) this.#transport.send(from, result);
+    };
+    if (verdict !== undefined && verdict.accept === false) {
+      reply(false, '', verdict.reason);
+      return;
+    }
+    try {
+      await this.#handleSpawn(
+        {
+          t: 'SPAWN',
+          spawnReqId: msg.spawnReqId,
+          parentPortId: msg.parentPortId,
+          config: msg.config,
+        },
+        (childPortId) => reply(true, childPortId),
+      );
+    } catch (err) {
+      reply(false, '', err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async #handleSpawn(
     msg: Extract<
       ClusterMessage,
@@ -671,15 +1259,44 @@ export class ClusterClient {
         t: 'SPAWN';
       }
     >,
+    ack?: (childPortId: string) => void,
   ): Promise<void> {
+    const verdict = this.#admissionCheck?.();
+    if (verdict !== undefined && verdict.accept === false) {
+      this.#transport.send('__seed__', {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId: '',
+        ok: false,
+        error: verdict.reason,
+        retryable: true,
+      });
+      return;
+    }
+    let config = msg.config;
+    let caskHash: string | undefined;
+    if (msg.caskHash !== undefined) {
+      caskHash = msg.caskHash;
+      // Deployment spawn: materialize the artifact before the realm exists.
+      // fetchCask is a cache no-op when this node already holds the hash.
+      const cacheDir = env.FINO_CASK_CACHE_DIR ?? `/tmp/fino-cask-cache-${this.nodeId}`;
+      const slot = await this.fetchCask(msg.caskHash, cacheDir);
+      // A workload spawning a sibling names its entry relative to the cask it
+      // came from; the manifest entry is the default for a deployment root.
+      // The path is resolved here, on the target, so the requester never gets
+      // to name a host path — see caskRelativeEntry.
+      const entry =
+        config.entry === '' ? slot.entryPath : caskRelativeEntry(slot.dir, config.entry);
+      config = { ...config, entry, root: slot.dir };
+    }
     const childPortId = `${this.nodeId}/${this.#localHandle++}`;
     const scheduled = createScheduledRealm(
-      msg.config.root ?? '',
-      msg.config.entry,
-      msg.config.rules,
+      config.root ?? '',
+      config.entry,
+      config.rules,
       false,
       undefined,
-      msg.config.bootstrapData,
+      config.bootstrapData,
       false,
     );
     registerReactorWake(scheduled.owner, scheduled.wakeFd);
@@ -693,15 +1310,24 @@ export class ClusterClient {
       finalized: false,
       pendingSends: [],
       lastPortSeq: 0,
+      lastRelayedSeq: 0,
+      spawnedChildren: 0,
+      spawnRules: config.rules,
+      ...(caskHash === undefined ? {} : { caskHash }),
     };
     this.#relays.set(childPortId, relay);
-    // Send SPAWN_ACK so the parent's ClusterPort gets the childPortId
-    this.#transport.send('__seed__', {
-      t: 'SPAWN_ACK',
-      spawnReqId: msg.spawnReqId,
-      childPortId,
-      ok: true,
-    });
+    // Acknowledge so the requester learns the childPortId. A routed spawn
+    // answers the seed; a shed offer answers the offering peer directly.
+    if (ack !== undefined) {
+      ack(childPortId);
+    } else {
+      this.#transport.send('__seed__', {
+        t: 'SPAWN_ACK',
+        spawnReqId: msg.spawnReqId,
+        childPortId,
+        ok: true,
+      });
+    }
     // Forward scheduled-port messages to the parent via PORT_MSG.
     this.#runRelayLoop(relay);
   }
@@ -735,22 +1361,26 @@ export class ClusterClient {
           ? {
               t: 'REALM_EXIT',
               realmId: relay.childPortId,
-              lastPortSeq: relay.lastPortSeq,
+              lastPortSeq: relay.lastRelayedSeq,
               error: stepError,
             }
           : relay.lastCallError !== undefined
             ? {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
-                lastPortSeq: relay.lastPortSeq,
+                lastPortSeq: relay.lastRelayedSeq,
                 error: relay.lastCallError,
               }
             : {
                 t: 'REALM_EXIT',
                 realmId: relay.childPortId,
-                lastPortSeq: relay.lastPortSeq,
+                lastPortSeq: relay.lastRelayedSeq,
               };
       const pending = relay.pendingSends.splice(0);
+      // Frames that went direct are only ordered ahead of this exit if they
+      // have reached the wire, so wait for the session to drain too.
+      const parentNodeId = nodeIdFromId(relay.parentPortId);
+      if (this.#mesh !== null) pending.push(this.#mesh.flush(parentNodeId));
       if (!notify) return;
       Promise.allSettled(pending)
         .then(() => {
@@ -800,6 +1430,18 @@ export class ClusterClient {
         // The envelope is readable on its own, so classifying a frame no longer
         // costs a deserialize of the payload it describes.
         const envelope = decodeEnvelope(header);
+        // A workload asking its host to spawn on its behalf. The request stops
+        // here rather than travelling to the parent: the capability belongs to
+        // the node hosting the workload, which is the only party that knows
+        // the workload's cask root and can enforce it. It carries its own
+        // envelope kind so this stays a header read.
+        if (envelope.kind === EnvelopeKind.ClusterSpawnRequest) {
+          try {
+            const request = (deserialize as (b: Uint8Array) => unknown)(mainBuf);
+            if (isRecord(request)) void this.#handleWorkloadSpawn(relay, request);
+          } catch {}
+          continue;
+        }
         if (envelope.kind === EnvelopeKind.Terminate) {
           finalize();
           return;
@@ -816,13 +1458,20 @@ export class ClusterClient {
         // transfers) behind the envelope header, so the receiving node can
         // classify the frame without decoding the payload either.
         const seq = ++relay.lastPortSeq;
-        const sent = this.#transport.send('__seed__', {
+        const msg: ClusterMessage = {
           t: 'PORT_MSG',
           fromPort: relay.childPortId,
           toPort: relay.parentPortId,
           payload: [header ?? encodeEnvelope(messageEnvelope()), ...parts],
           seq,
-        });
+        };
+        // The child-to-parent direction is half of every realm conversation.
+        // Sending it unconditionally to the seed left the seed carrying that
+        // half no matter how well the mesh worked.
+        const parentNodeId = nodeIdFromId(relay.parentPortId);
+        if (this.#mesh?.send(parentNodeId, msg) === true) continue;
+        relay.lastRelayedSeq = seq;
+        const sent = this.#transport.send('__seed__', msg);
         if (sent instanceof Promise) relay.pendingSends.push(sent);
       } catch (err: unknown) {
         console.error(`fino:cluster relay drain error: ${err}`);

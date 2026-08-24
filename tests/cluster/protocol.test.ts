@@ -27,6 +27,49 @@ describe('ClusterMessage encode/decode', () => {
       t.equal(got.load.cpu, .5);
     }
   });
+  it('HEARTBEAT round-trips with and without a load sample', (t) => {
+    const bare = roundTrip({ t: 'HEARTBEAT', ts: 42 });
+    t.equal(bare.t, 'HEARTBEAT');
+    if (bare.t === 'HEARTBEAT') {
+      t.equal(bare.ts, 42);
+      t.equal(bare.load, undefined, 'load stays absent when not sent');
+    }
+    const loaded = roundTrip({
+      t: 'HEARTBEAT',
+      ts: 43,
+      load: { cpu: 0.25, memory: 2048, loopIdle: 0.75 },
+    });
+    if (loaded.t === 'HEARTBEAT') {
+      t.equal(loaded.load?.cpu, 0.25, 'cpu survives the heartbeat');
+      t.equal(loaded.load?.memory, 2048, 'memory survives the heartbeat');
+      t.equal(loaded.load?.loopIdle, 0.75, 'loopIdle survives the heartbeat');
+    }
+    t.throws(
+      () => encode({ t: 'HEARTBEAT', ts: 1, load: { cpu: 0, memory: 0, loopIdle: 2 } }),
+      /loopIdle must be in/,
+      'out-of-range loopIdle is rejected',
+    );
+    // Capacity fields ride the same load message. A real round-trip, not
+    // loopback injection: the codec is the part a missing wire number breaks.
+    const withCapacity = roundTrip({
+      t: 'HEARTBEAT',
+      ts: 44,
+      load: { cpu: 0.5, memory: 4096, capacityCores: 8, capacityMemory: 137438953472 },
+    });
+    if (withCapacity.t === 'HEARTBEAT') {
+      t.equal(withCapacity.load?.capacityCores, 8, 'capacityCores survives the heartbeat');
+      t.equal(
+        withCapacity.load?.capacityMemory,
+        137438953472,
+        'capacityMemory survives the heartbeat',
+      );
+    }
+    t.throws(
+      () => encode({ t: 'HEARTBEAT', ts: 1, load: { cpu: 0, memory: 0, capacityCores: -1 } }),
+      /capacityCores must be a non-negative/,
+      'negative capacity is rejected',
+    );
+  });
   it('WELCOME round-trips with peer list', (t) => {
     const msg: ClusterMessage = {
       t: 'WELCOME',
@@ -222,6 +265,157 @@ describe('nodeIdFromId helper', () => {
   });
   it('returns the whole string if no slash', (t) => {
     t.equal(nodeIdFromId('nodeA'), 'nodeA');
+  });
+});
+
+describe('cask transfer messages', () => {
+  it('round-trips chunks, gets, and acks', (t) => {
+    const hash = 'ab'.repeat(32);
+    const chunk = decode(
+      encode({ t: 'CASK_PUT', hash, seq: 3, chunk: new Uint8Array([1, 2, 3]), last: false }),
+    );
+    if (chunk.t !== 'CASK_PUT') throw new Error('wrong kind');
+    t.equal(chunk.hash, hash, 'hash survives');
+    t.equal(chunk.seq, 3, 'sequence survives');
+    t.deepEqual(Array.from(chunk.chunk), [1, 2, 3], 'bytes survive');
+    t.equal(chunk.last, false, 'not last');
+
+    const data = decode(
+      encode({ t: 'CASK_DATA', hash, seq: 9, chunk: new Uint8Array([7]), last: true }),
+    );
+    if (data.t !== 'CASK_DATA') throw new Error('wrong kind');
+    t.equal(data.last, true, 'last flag survives');
+
+    const get = decode(encode({ t: 'CASK_GET', hash }));
+    t.equal(get.t, 'CASK_GET', 'get round-trips');
+
+    const ack = decode(encode({ t: 'CASK_ACK', hash, ok: false, error: 'unknown cask' }));
+    if (ack.t !== 'CASK_ACK') throw new Error('wrong kind');
+    t.equal(ack.error, 'unknown cask', 'error survives');
+
+    t.throws(
+      () => encode({ t: 'CASK_GET', hash: 'nope' }),
+      /64 lowercase hex/,
+      'malformed hashes are refused at encode',
+    );
+  });
+});
+
+describe('shed handoff messages', () => {
+  it('round-trips SHED_OFFER and SHED_RESULT through the real codec', (t) => {
+    // The ids below mirror exactly what the client mints: dash-joined request
+    // ids (bare handles) and slash-joined port ids. The distinction matters —
+    // a slash in a request id fails encode inside the transport's async send,
+    // where the rejection is swallowed and the message silently never leaves
+    // the node. Loopback tests bypass encode, so only this test guards it.
+    const offer = decode(
+      encode({
+        t: 'SHED_OFFER',
+        toNode: 'node-b',
+        spawnReqId: 'node-a-o-7',
+        parentPortId: 'node-a/p-shed-42',
+        config: { entry: 'main.ts', root: '/app', rules: [] },
+      }),
+    );
+    if (offer.t !== 'SHED_OFFER') throw new Error('wrong kind');
+    t.equal(offer.toNode, 'node-b', 'the destination the seed relays by survives');
+    t.equal(offer.spawnReqId, 'node-a-o-7', 'request id survives');
+    t.equal(offer.parentPortId, 'node-a/p-shed-42', 'port id survives');
+    t.equal(offer.config.entry, 'main.ts', 'config survives');
+
+    const accept = decode(
+      encode({
+        t: 'SHED_RESULT',
+        toNode: 'node-a',
+        spawnReqId: 'node-a-o-7',
+        childPortId: 'node-b/9',
+        ok: true,
+      }),
+    );
+    if (accept.t !== 'SHED_RESULT') throw new Error('wrong kind');
+    t.equal(accept.childPortId, 'node-b/9', 'accepted port survives');
+
+    const refuse = decode(
+      encode({
+        t: 'SHED_RESULT',
+        toNode: 'node-a',
+        spawnReqId: 'node-a-o-7',
+        childPortId: '',
+        ok: false,
+        error: 'overloaded',
+      }),
+    );
+    if (refuse.t !== 'SHED_RESULT') throw new Error('wrong kind');
+    t.equal(refuse.error, 'overloaded', 'refusal reason survives');
+
+    t.throws(
+      () =>
+        encode({
+          t: 'SHED_OFFER',
+          toNode: 'node-b',
+          spawnReqId: 'node-a/o-7',
+          parentPortId: 'node-a/p-1',
+          config: { entry: 'm', root: '', rules: [] },
+        }),
+      /malformed/,
+      'slash-joined request ids are refused at encode — the bug this guards',
+    );
+  });
+
+  it('round-trips DEPLOY and a cask-carrying SPAWN', (t) => {
+    const hash = 'ab'.repeat(32);
+    const deploy = decode(
+      encode({ t: 'DEPLOY', spawnReqId: 'cli-1-0', parentPortId: 'cli-1/p-d-1', name: 'web', hash }),
+    );
+    if (deploy.t !== 'DEPLOY') throw new Error('wrong kind');
+    t.equal(deploy.name, 'web', 'name survives');
+    t.equal(deploy.hash, hash, 'hash survives');
+
+    const spawn = decode(
+      encode({
+        t: 'SPAWN',
+        spawnReqId: 'cli-1-0',
+        parentPortId: 'cli-1/p-d-1',
+        config: { entry: 'main.ts', root: '', rules: [] },
+        caskHash: hash,
+      }),
+    );
+    if (spawn.t !== 'SPAWN') throw new Error('wrong kind');
+    t.equal(spawn.caskHash, hash, 'the cask identity rides the spawn');
+  });
+});
+
+describe('deployment query and rollback messages', () => {
+  it('round-trips DEPLOYMENTS_GET, DEPLOYMENTS, and ROLLBACK', (t) => {
+    const hash = 'cd'.repeat(32);
+    const get = decode(encode({ t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-2-0', name: 'web' }));
+    if (get.t !== 'DEPLOYMENTS_GET') throw new Error('wrong kind');
+    t.equal(get.name, 'web', 'name filter survives');
+
+    const bare = decode(encode({ t: 'DEPLOYMENTS_GET', spawnReqId: 'cli-2-1' }));
+    if (bare.t !== 'DEPLOYMENTS_GET') throw new Error('wrong kind');
+    t.equal(bare.name, undefined, 'name is optional');
+
+    const listed = decode(
+      encode({
+        t: 'DEPLOYMENTS',
+        spawnReqId: 'cli-2-0',
+        deployments: [
+          { name: 'web', generation: 2, caskHash: hash, entry: 'main.ts', state: 'active', createdAt: 1 },
+          { name: 'web', generation: 1, caskHash: hash, entry: 'main.ts', state: 'superseded', createdAt: 0 },
+        ],
+      }),
+    );
+    if (listed.t !== 'DEPLOYMENTS') throw new Error('wrong kind');
+    t.equal(listed.deployments.length, 2, 'history survives');
+    t.equal(listed.deployments[0]!.generation, 2, 'generations survive');
+    t.equal(listed.deployments[1]!.state, 'superseded', 'states survive');
+
+    const rollback = decode(
+      encode({ t: 'ROLLBACK', spawnReqId: 'cli-2-2', parentPortId: 'cli-2/p-r-1', name: 'web' }),
+    );
+    if (rollback.t !== 'ROLLBACK') throw new Error('wrong kind');
+    t.equal(rollback.name, 'web', 'rollback target survives');
   });
 });
 

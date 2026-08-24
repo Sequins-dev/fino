@@ -55,6 +55,17 @@ export const EnvelopeKind = {
   SinkEnd: 12,
   /** Abort of a child-to-parent write stream. Payload describes the error. */
   SinkError: 13,
+  /**
+   * A workload asking its host node to spawn a realm on its behalf.
+   *
+   * Carries its own kind rather than a sentinel key inside the payload so
+   * classifying a frame stays a header read. The request never reaches the
+   * workload's parent: the capability belongs to the node hosting it, which
+   * is the only party that knows its cask root and can enforce it.
+   */
+  ClusterSpawnRequest: 14,
+  /** The host's answer: the child's port ID, or why it was refused. */
+  ClusterSpawnResult: 15,
 } as const;
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];
