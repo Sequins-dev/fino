@@ -136,11 +136,9 @@ describe('Reactor-pooled Realm basics', () => {
     );
   });
   it('runs CPU-bound realms in parallel when the pool has threads to spare', async (t) => {
-    // The pool used to size itself from `navigator.hardwareConcurrency`, which
-    // this runtime does not define, so it silently ran one thread and no realm
-    // ever executed in parallel. The default is one thread again, but now
-    // deliberately, so scale the pool out in a child process and assert the
-    // observable consequence: realms burning CPU must overlap.
+    // Scale the pool explicitly in a child process and assert the observable
+    // consequence: realms burning CPU must overlap. The fixture waits for every
+    // isolate to finish bootstrap before starting its execution timer.
     const processors = onlineProcessors();
     if (processors < 2) {
       t.ok(true, `single-processor host (${processors}); parallelism is not observable`);
