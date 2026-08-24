@@ -110,6 +110,27 @@ describe('Reactor-pooled Realm basics', () => {
       'every concurrent sibling resolved its own timer and port traffic',
     );
   });
+  it('exits an isolate before switching realms on one reactor thread', async (t) => {
+    // SharedIsolate::lock rejects entering while another isolate is current.
+    // Pinning the pool to one worker and making several realms park on timers
+    // therefore exercises every exit/enter handoff instead of letting each
+    // realm remain resident on a different worker.
+    const fixture = new URL('./fixtures/single-thread-switch.ts', import.meta.url).pathname;
+    const childEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(env)) {
+      if (value !== undefined) childEnv[key] = value as string;
+    }
+    childEnv.FINO_REACTOR_THREADS = '1';
+    const child = new Process(execPath, ['run', fixture], { env: childEnv });
+    child.stdin.close();
+    const [stdout, stderr, result] = await Promise.all([
+      readAll(child.stdout),
+      readAll(child.stderr),
+      child.wait(),
+    ]);
+    t.equal(result.code, 0, `single-thread fixture exits cleanly${stderr ? `: ${stderr}` : ''}`);
+    t.ok(stdout.includes('switches=12'), `fixture completed every switch (got ${stdout.trim()})`);
+  });
   it('runs CPU-bound realms in parallel when the pool has threads to spare', async (t) => {
     // The pool used to size itself from `navigator.hardwareConcurrency`, which
     // this runtime does not define, so it silently ran one thread and no realm

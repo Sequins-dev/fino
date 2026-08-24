@@ -517,7 +517,14 @@ fn activate(workload: &mut Workload) -> ActiveWorkload {
 }
 
 fn deactivate(workload: &mut Workload, active: ActiveWorkload) {
-    workload.async_state = crate::async_rt::swap_state(active.saved_async_state);
+    let ActiveWorkload {
+        saved_async_state,
+        locker,
+    } = active;
+    workload.async_state = crate::async_rt::swap_state(saved_async_state);
+    // Locker::drop exits the isolate before releasing V8's Locker. Keep that
+    // boundary explicit: once this returns, the workload may cross threads.
+    drop(locker);
 }
 
 fn service_scheduled_sync_call(scope: &mut v8::PinScope, state: &Rc<RefCell<FinoState>>) -> bool {
