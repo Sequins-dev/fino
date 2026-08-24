@@ -31,12 +31,11 @@
  *
  * @internal
  */
-import { os } from 'internal:process';
+import { finalizeSandboxExec, os } from 'internal:process';
 import { libc, errno, cstr, buildCStringArray, setCloexec } from './ffi.ts';
-import { encodeFrame, readFrame, writeEncodedFrame, writeFrame } from './frame.ts';
-import { installPreparedSeccomp, prepareSeccomp } from './seccomp.ts';
+import { encodeFrame, readFrame, writeFrame } from './frame.ts';
+import { prepareSeccomp } from './seccomp.ts';
 import { installLandlock } from './landlock.ts';
-import { installRlimits } from './rlimit.ts';
 import { resolveDelegatedRoot, createAndJoinCgroup } from './cgroup.ts';
 import { generateSeatbeltProfile } from './seatbelt.ts';
 import { planSeccomp } from './plan.ts';
@@ -230,14 +229,7 @@ export function runLauncher(fd: number): void {
       execArgv = [request.command, ...request.args];
     } else {
       if (sandbox.resources !== undefined) {
-        for (const limit of installRlimits(sandbox.resources)) {
-          installed.push({
-            category: 'resources',
-            mechanism: 'rlimit',
-            tier: 'rlimit',
-            detail: limit,
-          });
-        }
+        deferRlimits(sandbox.resources);
       }
       // Scope exec to the initial binary plus absolute-path allowlist entries
       // when the policy expresses an exec rule; otherwise allow any exec.
@@ -300,17 +292,18 @@ export function runLauncher(fd: number): void {
   } catch (err) {
     fail(fd, 'prepare-exec', err instanceof Error ? err.message : String(err));
   }
-  try {
-    if (deferredRlimits !== undefined) installRlimits(deferredRlimits);
-    writeEncodedFrame(fd, reportFrame);
-    // seccomp is the final policy step; nothing but execve runs after it.
-    installPreparedSeccomp(preparedSeccomp);
-  } catch (err) {
-    fail(fd, 'finalize-policy', err instanceof Error ? err.message : String(err), errno());
-  }
-  libc.symbols.execve(commandBuf, argvBuf, envpBuf);
-  // execve only returns on failure; the CLOEXEC fd is therefore still open.
-  void argvBufs;
-  void envpBufs;
-  fail(fd, 'execve', `execve('${execCommand}') failed`, errno());
+  finalizeSandboxExec(
+    fd,
+    reportFrame,
+    commandBuf,
+    argvBuf,
+    envpBuf,
+    deferredRlimits?.memoryBytes ?? 0,
+    deferredRlimits?.pids ?? 0,
+    preparedSeccomp?.prog,
+    preparedSeccomp?.filterBuf,
+    argvBufs,
+    envpBufs,
+  );
+  fail(fd, 'finalize-exec', `native exec of '${execCommand}' returned unexpectedly`, errno());
 }

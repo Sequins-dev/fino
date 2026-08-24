@@ -6,12 +6,12 @@ async function readText(path: string): Promise<string> {
   return decoder.decode(await fs.readFile(path));
 }
 describe('CI workflow', () => {
-  it('runs the complete suite once on Linux and once on macOS', async (t) => {
+  it('runs the complete parallel suite once on Linux and once on macOS', async (t) => {
     const workflow = await readText('.github/workflows/ci.yml');
     const fullRuns = workflow.match(
-      /run: FINO_REQUIRE_SQLITE=1 \.\/target\/debug\/fino test tests/g,
+      /run: FINO_REQUIRE_SQLITE=1 \.\/target\/debug\/fino test --parallel tests/g,
     );
-    t.equal(fullRuns?.length, 2, 'Linux and macOS each run the unsplit suite');
+    t.equal(fullRuns?.length, 2, 'Linux and macOS each run the complete parallel suite');
   });
 
   it('reuses the Linux build for linting', async (t) => {

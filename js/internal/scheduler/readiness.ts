@@ -38,7 +38,8 @@ import { currentProcessReadinessController } from './reactor.ts';
  * Pin the variable to 1 to get single-threaded behaviour back when isolating a
  * scheduling problem.
  */
-function configuredThreadCount(): number {
+/** Return the process reactor thread count selected from the environment and host. @internal */
+export function configuredReactorThreadCount(): number {
   const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
   if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
   return onlineProcessors();
@@ -62,7 +63,7 @@ export async function runReactorPool(
   }
 
   const controlFd = startReactorPool();
-  const threadCount = Math.max(1, Math.floor(options.threads ?? configuredThreadCount()));
+  const threadCount = Math.max(1, Math.floor(options.threads ?? configuredReactorThreadCount()));
   const threads: number[] = [];
   for (let index = 0; index < threadCount; index++) threads.push(createReactorThread());
 

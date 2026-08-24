@@ -32,6 +32,7 @@ import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import { usesProcessReadiness } from 'internal:scheduler-native';
 import { encodeUtf8, decodeUtf8 } from '../encoding.ts';
+import { getRealmCwd } from 'internal:process/cwd';
 import { Path } from '../../file/path.ts';
 export { Pointer };
 export { encodeUtf8, decodeUtf8 };
@@ -620,9 +621,11 @@ export function readCStr(ptr: object, offset: number): string {
   return decodeUtf8(new Uint8Array(bytes));
 }
 /**
- * Coerce a `Path` or string to a plain string for FFI and diagnostics.
+ * Coerce a `Path` or string to an absolute filesystem path for FFI and
+ * diagnostics.
  *
- * Non-Path values are converted with `String`.
+ * Non-Path values are converted with `String`. Relative paths resolve from the
+ * calling Realm's working directory rather than the host process cwd.
  *
  * ```typescript no_run
  * import { _toStr } from 'internal:file/bindings';
@@ -632,12 +635,24 @@ export function readCStr(ptr: object, offset: number): string {
  * @internal
  */
 export function _toStr(p: Path | string): string {
+  const path = _toRawStr(p);
+  return path.startsWith('/') ? path : `${getRealmCwd()}/${path}`;
+}
+/**
+ * Coerce a `Path` or string without resolving a relative value.
+ *
+ * This is used for symlink contents, where a relative target is intentionally
+ * interpreted from the link's eventual directory instead of the current Realm.
+ *
+ * @internal
+ */
+export function _toRawStr(p: Path | string): string {
   return p instanceof Path ? p.toString() : String(p);
 }
 /**
- * Coerce a `Path` or string to a `Path` instance.
+ * Coerce a `Path` or string to an absolute `Path` instance.
  *
- * Existing `Path` objects are returned unchanged.
+ * Relative values resolve from the calling Realm's working directory.
  *
  * ```typescript no_run
  * import { _toPath } from 'internal:file/bindings';
@@ -647,7 +662,7 @@ export function _toStr(p: Path | string): string {
  * @internal
  */
 export function _toPath(p: Path | string): Path {
-  return p instanceof Path ? p : new Path(p);
+  return new Path(_toStr(p));
 }
 /**
  * Join a directory path and child name.

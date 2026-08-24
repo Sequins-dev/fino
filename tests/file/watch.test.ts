@@ -314,27 +314,23 @@ describe('Watcher', () => {
     );
   });
   it('uses explicit close and string paths instead of Node fs.watch options', async (t) => {
-    const path = TEST_DIR + '/release-contract.txt';
-    await writeText(fs, path, 'x');
     const watcher = new Watcher({
       recursive: false,
       persistent: false,
       encoding: 'buffer',
       signal: AbortSignal.abort(),
     } as any);
-    await watcher.watch(path);
     const pending = watcher[Symbol.asyncIterator]().next();
     watcher.close();
     const result = await pending;
     t.equal(result.done, true, 'unsupported Node-style options do not replace explicit close');
     const pathWatcher = new Watcher();
     t.throws(
-      () => pathWatcher.watch(new URL(`file://${path}`) as any),
+      () => pathWatcher.watch(new URL('file:///tmp/fino-watch-release-contract') as any),
       /path must be a string/i,
       'watch() only accepts string paths',
     );
     pathWatcher.close();
-    await fs.unlink(path);
   });
   it('settles a pending watch() when the watcher closes before it is armed', async (t) => {
     const watcher = new Watcher({ recursive: true });

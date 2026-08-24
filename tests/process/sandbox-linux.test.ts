@@ -88,7 +88,7 @@ async function writeWideInterpFixture(path: string): Promise<void> {
   await fs.writeFile(path, fixture);
   await fs.chmod(path, 0o755);
 }
-describe('Landlock execute scoping', () => {
+describe('Landlock execute scoping', { exclusive: true }, () => {
   it('denies exec of a non-initial binary under allowExec: false, or fails closed', async (t) => {
     if (os !== 'linux') return;
     const make = (): Process =>

@@ -241,7 +241,7 @@ async function rawH3RequestOutcome(
   clientSession.close();
   return outcome;
 }
-describe('HTTP/3 (h3 ALPN)', () => {
+describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
   it('WebTransport H3 constants and framing helpers match draft-15', (t) => {
     t.equal(SETTINGS_WT_ENABLED, 746385408, 'WT setting id');
     t.equal(SETTINGS_ENABLE_CONNECT_PROTOCOL, 8, 'extended CONNECT setting id');

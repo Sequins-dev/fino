@@ -1016,7 +1016,7 @@ async function readUntil(
     if (done()) break;
   }
 }
-describe('H2 server — multiplexing and connection reuse', () => {
+describe('H2 server — multiplexing and connection reuse', { exclusive: true }, () => {
   it('completes a fast stream while another response body is blocked', async (t) => {
     if (!h2Available) return;
     let releaseSlow: (() => void) | null = null;
@@ -1386,7 +1386,7 @@ describe('H2 server — multiplexing and connection reuse', () => {
     }
   });
 });
-describe('H2 server — robustness', () => {
+describe('H2 server — robustness', { exclusive: true }, () => {
   it('accepts a DATA frame exactly at the default 16 KiB max frame size', async (t) => {
     if (!h2Available) return;
     let captured = 0;
@@ -2586,7 +2586,7 @@ describe('H2 server — robustness', () => {
     await server.close();
   });
 });
-describe('H2 server — cleanup', () => {
+describe('H2 server — cleanup', { exclusive: true }, () => {
   it('does not leave runtime loop handles alive after closed H2 sessions', async (t) => {
     if (!h2Available) return;
     const baseline = loop._activeHandleCounts();

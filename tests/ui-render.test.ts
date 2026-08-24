@@ -105,11 +105,7 @@ describe('fino:ui/portable', () => {
     );
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    t.throws(
-      () => toPortable(h('div', { cyclic })),
-      /must not be cyclic/,
-      'cycles are rejected',
-    );
+    t.throws(() => toPortable(h('div', { cyclic })), /must not be cyclic/, 'cycles are rejected');
     try {
       toPortable(h('div', { data: { nested: [1, () => {}] } }));
       t.ok(false, 'expected a rejection');
@@ -144,7 +140,7 @@ describe('fino:ui/portable', () => {
   });
 });
 
-describe('fino:ui/realm', () => {
+describe('fino:ui/realm', { exclusive: true }, () => {
   it('renders a component in a realm and completes on exit', async (t) => {
     const tree = await renderRealm(fixture('ui-realm-page.tsx'), {
       props: { title: 'Hello' },
@@ -191,7 +187,11 @@ describe('fino:ui/realm', () => {
       ['<main>Fino / One</main>', '<main>Fino / Two</main>'],
       'shared props reach every render',
     );
-    t.deepEqual(await renderRealmAll(fixture('ui-realm-page.tsx'), { items: [] }), [], 'empty batch');
+    t.deepEqual(
+      await renderRealmAll(fixture('ui-realm-page.tsx'), { items: [] }),
+      [],
+      'empty batch',
+    );
   });
 
   it('reports a component failure instead of hanging', async (t) => {

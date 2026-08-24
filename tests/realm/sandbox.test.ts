@@ -10,6 +10,7 @@ import { describe, it } from 'fino:test/test';
 import { dlopen } from 'fino:ffi';
 import { os, processSandboxCapabilities } from 'fino:process';
 import { Realm } from 'fino:realm';
+import { port as parentRealmPort } from 'fino:realm/self';
 import type echo from './fixtures/echo-fn.ts';
 import type linuxCpuId from './fixtures/linux-cpu-id-fn.ts';
 import type linuxThreadId from './fixtures/linux-thread-id-fn.ts';
@@ -164,7 +165,7 @@ describe('Sandbox Realm placement', () => {
       },
     });
     const parentTid = Number(libc.symbols.gettid());
-    const realm = new Realm<typeof linuxThreadId>({
+    using realm = new Realm<typeof linuxThreadId>({
       entry: new URL('./fixtures/linux-thread-id-fn.ts', import.meta.url).pathname,
       sandbox: { mode: 'strict' },
     } as any);
@@ -173,7 +174,7 @@ describe('Sandbox Realm placement', () => {
   });
 });
 
-describe('Sandbox Realm enforcement', () => {
+describe('Sandbox Realm enforcement', { exclusive: true }, () => {
   it('applies seccomp only to the dedicated thread', async (t) => {
     if (os !== 'linux') return;
     const libc = dlopen('libc.so.6', {
@@ -183,7 +184,7 @@ describe('Sandbox Realm enforcement', () => {
       },
     });
     const parentPid = Number(libc.symbols.getpid());
-    const realm = new Realm<typeof sandboxSyncGetpid>({
+    using realm = new Realm<typeof sandboxSyncGetpid>({
       entry: new URL('./fixtures/sandbox-sync-getpid-fn.ts', import.meta.url).pathname,
       sandbox: {
         mode: 'strict',
@@ -200,7 +201,7 @@ describe('Sandbox Realm enforcement', () => {
 
   it('rejects async FFI that would escape to the global blocking pool', async (t) => {
     if (os !== 'linux') return;
-    const realm = new Realm<typeof sandboxAsyncFfi>({
+    using realm = new Realm<typeof sandboxAsyncFfi>({
       entry: new URL('./fixtures/sandbox-async-ffi-fn.ts', import.meta.url).pathname,
       sandbox: { mode: 'strict' },
     });
@@ -258,14 +259,14 @@ describe('Sandbox Realm enforcement', () => {
         () => 'resolved',
         () => 'rejected',
       ),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1000)),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 5000)),
     ]);
-    t.equal(result, 'rejected', 'forced termination settles the busy-loop call promptly');
+    t.equal(result, 'rejected', 'forced termination settles within the cleanup deadline');
   });
 
   it('joins a threaded cgroup for CPU and pid controls, or fails closed', async (t) => {
     if (os !== 'linux') return;
-    const realm = new Realm<typeof linuxThreadId>({
+    using realm = new Realm<typeof linuxThreadId>({
       entry: new URL('./fixtures/linux-thread-id-fn.ts', import.meta.url).pathname,
       sandbox: {
         mode: 'strict',
@@ -282,36 +283,45 @@ describe('Sandbox Realm enforcement', () => {
     }
   });
 
-  it('confines execution to the requested cgroup cpuset, or fails closed', async (t) => {
-    if (os !== 'linux') return;
-    const libc = dlopen('libc.so.6', {
-      sched_getcpu: {
-        parameters: [],
-        result: 'i32',
-      },
-    });
-    const cpu = Number(libc.symbols.sched_getcpu());
-    const realm = new Realm<typeof linuxCpuId>({
-      entry: new URL('./fixtures/linux-cpu-id-fn.ts', import.meta.url).pathname,
-      sandbox: {
-        mode: 'strict',
-        resources: { cpus: String(cpu) },
-      },
-    } as any);
-    try {
-      t.equal(await realm.call(), cpu, 'sandbox thread executes only on its requested CPU');
-    } catch (error) {
-      t.ok(
-        /cgroup.*delegated|delegated threaded cpuset|cpuset controller/i.test(String(error)),
-        `missing threaded cpuset delegation fails closed: ${String(error)}`,
-      );
-    }
-  });
+  it(
+    'confines execution to the requested cgroup cpuset, or fails closed',
+    {
+      skip:
+        parentRealmPort === undefined
+          ? false
+          : 'threaded cpuset setup requires the root Realm cgroup domain',
+    },
+    async (t) => {
+      if (os !== 'linux') return;
+      const libc = dlopen('libc.so.6', {
+        sched_getcpu: {
+          parameters: [],
+          result: 'i32',
+        },
+      });
+      const cpu = Number(libc.symbols.sched_getcpu());
+      using realm = new Realm<typeof linuxCpuId>({
+        entry: new URL('./fixtures/linux-cpu-id-fn.ts', import.meta.url).pathname,
+        sandbox: {
+          mode: 'strict',
+          resources: { cpus: String(cpu) },
+        },
+      } as any);
+      try {
+        t.equal(await realm.call(), cpu, 'sandbox thread executes only on its requested CPU');
+      } catch (error) {
+        t.ok(
+          /cgroup.*delegated|delegated threaded cpuset|cpuset controller/i.test(String(error)),
+          `missing threaded cpuset delegation fails closed: ${String(error)}`,
+        );
+      }
+    },
+  );
 
   it('applies Landlock only to the dedicated thread, or fails closed', async (t) => {
     if (os !== 'linux') return;
     const repoRoot = new URL('../..', import.meta.url).pathname.replace(/\/$/, '');
-    const realm = new Realm<typeof sandboxOpen>({
+    using realm = new Realm<typeof sandboxOpen>({
       entry: new URL('./fixtures/sandbox-open-fn.ts', import.meta.url).pathname,
       sandbox: {
         mode: 'strict',

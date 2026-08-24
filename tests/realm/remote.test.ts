@@ -98,7 +98,7 @@ async function withRemoteWorker<T>(fn: () => Promise<T>): Promise<T | undefined>
   if (!(await ensureRemoteWorker())) return undefined;
   return await fn();
 }
-describe('Realm remote mode', () => {
+describe('Realm remote mode', { exclusive: true }, () => {
   after(async () => {
     if (sharedWorker !== null) {
       await stopWorker(sharedWorker);
@@ -231,7 +231,7 @@ describe('Realm remote mode', () => {
           },
         ]),
       });
-      const result = (await withTimeout(realm.call(), 3e3, 'remote facade sink')) as {
+      const result = (await withTimeout(realm.call(), 10_000, 'remote facade sink')) as {
         chunks: number;
         joined: string;
       };

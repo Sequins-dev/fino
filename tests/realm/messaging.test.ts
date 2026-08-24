@@ -19,7 +19,7 @@ async function readFirstMessage(realm: Realm, timeoutMs = 5e3): Promise<unknown>
     realm.port.start();
   });
 }
-describe('Realm messaging', () => {
+describe('Realm messaging', { exclusive: true }, () => {
   it('parent and child can exchange messages via realm.port', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/messaging-echo.ts', import.meta.url).pathname,

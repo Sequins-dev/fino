@@ -83,7 +83,7 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
     }
   }
 }
-describe('fino:cluster public WebTransport integration', () => {
+describe('fino:cluster public WebTransport integration', { exclusive: true }, () => {
   it('rejects ws:// cluster seeds', async (t) => {
     await t.rejects(
       () =>

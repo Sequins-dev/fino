@@ -21,7 +21,9 @@ import {
   processSandboxCapabilities,
 } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import { Realm } from 'fino:realm';
 import * as loop from 'internal:runtime/loop';
+import type realmCwd from './fixtures/realm-cwd-fn.ts';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const childEnv = Object.fromEntries(
@@ -117,12 +119,52 @@ describe('Process APIs', () => {
     t.ok(dir.length > 0, 'cwd is non-empty');
     t.ok(dir.startsWith('/'), 'cwd is absolute');
   });
-  it('chdir() changes and restores working directory', (t) => {
+  it('chdir() changes and restores the Realm working directory', async (t) => {
     const original = cwd();
-    chdir('/tmp');
-    t.ok(cwd().endsWith('tmp'), `cwd after chdir('/tmp') ends with tmp`);
-    chdir(original);
+    const tempDirectory = await fs.realpath('/tmp');
+    const relativeFile = `fino-realm-cwd-${pid}`;
+    const absoluteFile = `${tempDirectory}/${relativeFile}`;
+    try {
+      chdir('/tmp');
+      t.equal(cwd(), tempDirectory, `chdir() stores the canonical Realm path`);
+      await fs.writeFile(relativeFile, encodeUtf8('realm relative path'));
+      t.equal(
+        decodeUtf8(await fs.readFile(absoluteFile)),
+        'realm relative path',
+        'relative filesystem paths use the Realm cwd',
+      );
+      const proc = new Process('/bin/pwd', []);
+      proc.stdin.close();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of proc.stdout) chunks.push(chunk);
+      for await (const _ of proc.stderr) {
+      }
+      t.equal((await proc.wait()).code, 0, 'child process inherits the Realm cwd');
+      t.equal(
+        joinChunks(chunks).trim(),
+        tempDirectory,
+        'child process starts in the canonical Realm cwd',
+      );
+    } finally {
+      chdir(original);
+      try {
+        await fs.unlink(absoluteFile);
+      } catch (_) {}
+    }
     t.equal(cwd(), original);
+  });
+  it('keeps chdir() isolated between Realms', async (t) => {
+    const original = cwd();
+    const tempDirectory = await fs.realpath('/tmp');
+    const realm = new Realm<typeof realmCwd>({
+      entry: new URL('./fixtures/realm-cwd-fn.ts', import.meta.url).pathname,
+    });
+    t.equal(await realm.call('/tmp'), tempDirectory, 'child Realm changes its own cwd');
+    t.equal(cwd(), original, 'parent Realm cwd is unchanged');
+  });
+  it('rejects nonexistent and non-directory cwd targets', (t) => {
+    t.throws(() => chdir(`/tmp/fino-missing-cwd-${pid}`), /chdir/);
+    t.throws(() => chdir(execPath), /chdir/);
   });
   it('internal:process cannot be imported from user code', async (t) => {
     const script = `/tmp/fino-internal-process-check-${pid}.ts`;
@@ -149,7 +191,7 @@ describe('Process APIs', () => {
     }
   });
 });
-describe('Process class', () => {
+describe('Process class', { exclusive: true }, () => {
   it('reports sandbox backend capabilities without spawning', (t) => {
     const capabilities = processSandboxCapabilities();
     t.equal(capabilities.platform, os, 'capabilities use the current platform');

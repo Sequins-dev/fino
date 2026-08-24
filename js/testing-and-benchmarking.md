@@ -51,8 +51,26 @@ or use `describe` with `it` and lifecycle hooks.
 The runner provides TAP-13 output, `--filter` name matching, skip reasons,
 `before`/`after`/`beforeEach`/`afterEach` hooks, and captured stdout/stderr for
 failures. It is not a Node `node:test` compatibility layer, so `only`, `todo`,
-per-test timeouts, concurrent test scheduling, assertion-object subtests, and
-pluggable reporters are not included.
+per-test timeouts, assertion-object subtests, and pluggable reporters are not
+included. Serial runs execute groups sequentially; `--parallel` may overlap
+top-level groups from different file Realms while preserving their TAP output
+order and serial semantics within each file.
+
+Use `fino test --parallel` to run each matched file in an isolated Realm. A
+rolling window retains at most the configured concurrency of file Realms;
+finishing one file admits the next in discovery order. The default admission
+limit is ten top-level groups per reactor thread, and `FINO_TEST_CONCURRENCY`
+sets an explicit positive-integer limit. At most one group per file Realm
+executes at a time. Structured group results are buffered and merged into one
+deterministic top-level TAP stream. The aggregate plan is emitted at the end,
+after every rolling registration is known. Failure details follow the final
+summary, and process-level stdout/stderr is suppressed so raw Realm or child
+process writes cannot interleave with TAP.
+
+Groups that exercise process-global state or strict scheduling deadlines can
+use `{ exclusive: true }`. The parallel runner drains active work before the
+containing top-level group starts, runs it alone, and resumes ordinary bounded
+admission as soon as it settles.
 
 ## Running Tests
 

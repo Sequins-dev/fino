@@ -1,12 +1,14 @@
 /**
  * fino:process - process information and child process spawning.
  *
- * This module combines two concerns: static process metadata (pid, cwd, argv,
- * env, etc.) and the `Process` class for spawning child processes with piped
- * stdio. The static metadata comes from `internal:process`, which is a Rust
+ * This module combines two concerns: process metadata (pid, Realm-local cwd,
+ * argv, env, etc.) and the `Process` class for spawning child processes with
+ * piped stdio. Static host metadata comes from `internal:process`, which is a Rust
  * synthetic module injected at compile time with values that would be awkward
  * to retrieve from JS (e.g. `execPath` needs the Rust binary's own path, and
  * `env` needs to snapshot the environ at startup).
+ * Each Realm initializes its own working directory from the host and may
+ * change it independently; spawned children explicitly inherit that value.
  *
  * The child-process APIs are POSIX-oriented. They use `posix_spawnp(3)`,
  * `pipe(2)`, `kill(2)`, and `waitpid(2)` semantics, with macOS and Linux
@@ -99,6 +101,7 @@ import { seccompAvailable } from './internal/security/sandbox/seccomp.ts';
 import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
+import { getRealmCwd, setRealmCwd } from 'internal:process/cwd';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
 import { topic, Topic } from './context/topic.ts';
@@ -552,14 +555,6 @@ const lib = dlopen(LIBC, {
     parameters: ['i32'],
     result: 'void',
   },
-  getcwd: {
-    parameters: ['buffer', 'usize'],
-    result: 'pointer',
-  },
-  chdir: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
   kill: {
     parameters: ['i32', 'i32'],
     result: 'i32',
@@ -832,18 +827,16 @@ export function exit(code: number = 0): never {
  * @returns {string}
  */
 export function cwd(): string {
-  const buf = new ArrayBuffer(4096);
-  const result = lib.symbols.getcwd(buf, 4096);
-  if (result === null) throw new Error('getcwd failed');
-  const bytes = new Uint8Array(buf);
-  const end = bytes.indexOf(0);
-  return decodeUtf8(bytes.subarray(0, end === -1 ? bytes.byteLength : end));
+  return getRealmCwd();
 }
 /**
  * Change the current working directory. Throws on failure.
  *
- * The change affects the whole current process and therefore all realms in the
- * process that consult process cwd. Use absolute paths for predictable results.
+ * The change belongs to the current Realm. Other Realms in the same process
+ * retain their own working directories, and child processes spawned without an
+ * explicit `cwd` inherit this Realm's value. Relative paths are resolved from
+ * the current Realm directory. The target must resolve to an existing readable
+ * directory.
  *
  * ```ts no_run
  * import { chdir, cwd } from 'fino:process';
@@ -855,8 +848,7 @@ export function cwd(): string {
  * @param {string} path
  */
 export function chdir(path: string): void {
-  const ret = Number(lib.symbols.chdir(cstr(path)));
-  if (ret !== 0) throw new Error(`chdir('${path}') failed`);
+  setRealmCwd(path);
 }
 /**
  * Send a signal to a process. Throws if the syscall fails.
@@ -1652,8 +1644,9 @@ export class Process {
    *
    * The command should be an executable path accepted by `posix_spawnp(3)`.
    * Arguments exclude `argv[0]`; the constructor prepends `command`. `opts.env`
-   * replaces the inherited environment snapshot, and `opts.cwd` is applied by
-   * libc spawn file actions when supported by the platform.
+   * replaces the inherited environment snapshot. `opts.cwd` is applied by
+   * libc spawn file actions when supported by the platform; when omitted, the
+   * child inherits the calling Realm's current working directory.
    *
    * Standard input, output, and error are always exposed as pipes on the
    * returned object. This constructor does not interpret Node-style `shell`,
@@ -1671,7 +1664,10 @@ export class Process {
    * @param {{ cwd?: string, env?: object }} [opts] Optional cwd and environment.
    */
   constructor(command: string, cmdArgs: string[], opts?: ProcessOptions) {
-    if (opts == null) opts = {};
+    opts = {
+      ...opts,
+      cwd: opts?.cwd ?? cwd(),
+    };
     if (cmdArgs == null) cmdArgs = [];
     if (opts.sandbox?.mode === 'strict') {
       validateSandboxOptions(opts.sandbox);

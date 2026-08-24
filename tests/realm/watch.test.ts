@@ -53,7 +53,7 @@ function entryCode(counterPath: string, extra = ''): string {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
-describe('Realm watch mode', () => {
+describe('Realm watch mode', { exclusive: true }, () => {
   before(async () => {
     await fs.mkdir(TEST_DIR);
   });

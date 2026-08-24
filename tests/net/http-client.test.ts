@@ -51,7 +51,7 @@ function withTimeout<T>(promise: Promise<T>, message: string, timeoutMs = 1e3): 
   });
   return Promise.race([promise, guard]).finally(() => timer.cancel());
 }
-describe('HttpClient over HTTP/1.1', () => {
+describe('HttpClient over HTTP/1.1', { exclusive: true }, () => {
   it('request() returns rich response metadata and body helpers', async (t) => {
     const server = serveHttp({ port: 0 }, async (request) => {
       const body = JSON.stringify({
@@ -270,7 +270,7 @@ describe('HttpClient over HTTP/1.1', () => {
     }
   });
 });
-describe('HttpClient protocol sessions', () => {
+describe('HttpClient protocol sessions', { exclusive: true }, () => {
   it(
     'streams H2 responses before EOF and can discard one without closing the connection',
     { skip: skipH2 },

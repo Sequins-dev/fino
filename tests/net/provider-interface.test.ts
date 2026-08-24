@@ -296,7 +296,7 @@ describe('internal:net/provider conformance — simulated implementation', () =>
     await t.rejects(() => net.connect(loopback(6553)), /No simulated listener bound/);
   });
 });
-describe('internal:net/provider conformance — OS socket adapter', () => {
+describe('internal:net/provider conformance — OS socket adapter', { exclusive: true }, () => {
   it('streams listen/connect, expose stable addresses, split, and close', async (t) => {
     const net = new OsNetworkProvider();
     const listener = net.listen(osLoopback(0));

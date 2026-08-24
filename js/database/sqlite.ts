@@ -55,6 +55,7 @@
 import { Pointer } from 'fino:ffi';
 import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
+import { registerShutdownHook } from 'internal:shutdown';
 import {
   sqliteAvailable,
   requireSqlite,
@@ -687,6 +688,8 @@ export class Statement {
  * Open connections with `Database.open()`. The connection owns a native
  * `sqlite3*` pointer and a per-connection VFS registration; call `close()` when
  * finished. Close finalizes any statements that were not explicitly finalized.
+ * A Realm shutdown hook closes a connection that was not closed explicitly so
+ * its process-global SQLite VFS registration cannot outlive the Realm.
  * Methods throw after the connection has been closed.
  *
  * ```ts no_run
@@ -752,6 +755,8 @@ export class Database {
    * @internal
    */
   #opQueue: Promise<unknown> = Promise.resolve();
+  /** Removes this connection's fallback close operation from Realm shutdown. @internal */
+  #shutdownRegistration: { dispose(): void } | null;
   /**
    * Wrap an already-open `sqlite3*` handle and its VFS registration. Private:
    * connections are only created through `Database.open()`, which performs the
@@ -763,6 +768,7 @@ export class Database {
     this.#ptr = ptr;
     this.#vfs = vfs;
     this.#safeIntegers = safeIntegers;
+    this.#shutdownRegistration = registerShutdownHook(() => this.close());
   }
   /**
    * Internal sqlite3 pointer for statement helpers.
@@ -789,7 +795,8 @@ export class Database {
    *
    * By default, the database opens read-write and is created if missing.
    * `{ readonly: true }` opens read-only. Each connection registers a private
-   * Fino VFS name so file operations go through the chosen filesystem provider.
+   * Fino VFS name so file operations go through the chosen filesystem provider,
+   * and a Realm shutdown hook unregisters it if the connection is leaked.
    * Throws when SQLite is unavailable, open fails, or VFS registration fails.
    *
    * ```ts no_run
@@ -1115,7 +1122,8 @@ export class Database {
    *
    * Calling `close()` more than once is allowed. The close runs after any
    * in-flight queued operations, and any statements created by this connection
-   * are finalized before the native database handle is closed.
+   * are finalized before the native database handle is closed. Explicit close
+   * also removes the fallback Realm shutdown hook.
    *
    * ```ts no_run
    * import { Database } from 'fino:database/sqlite';
@@ -1127,6 +1135,8 @@ export class Database {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#shutdownRegistration?.dispose();
+    this.#shutdownRegistration = null;
     await this._serialize(async () => {
       for (const stmt of Array.from(this.#statements)) stmt.finalize();
       this.#statements.clear();
