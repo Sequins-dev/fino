@@ -79,7 +79,26 @@ median. Every run returned all 16 values. This is directional local evidence,
 not a statistical CI threshold; it measures the complete public lifecycle
 rather than an isolated native setup function.
 
-### L2. Measure and tune pool sizing
+### L2. Bound local admission and cancellation
+
+Deferred initialization lets submissions arrive faster than reactors can
+bootstrap them. That is the intended throughput improvement, but the current
+process queue has no admission bound and every pending scheduled Realm already
+owns channels and several pipe descriptors. A large enough local burst can
+therefore move the bottleneck from serialized V8 setup to unbounded memory and
+descriptor retention without involving a cluster at all.
+
+Define a TypeScript-owned admission policy with a small native mechanism for
+an atomic bounded submit. The observable outcome must be explicit: immediate
+rejection, caller-selected waiting, or another documented backpressure mode.
+Do not silently drop a Realm or create a parent handle that can never settle.
+
+Cover cancellation and shutdown while work is still pending, direct descriptor
+counts across rejection and initialization failure, and the ability to accept
+new work after pressure clears. Distributed tail shedding is not required to
+prove any of these local invariants.
+
+### L3. Measure and tune pool sizing
 
 Keep this separate from L1. The current pool starts a configured number of
 threads based on online processors. The alternative from #27 starts small and
@@ -99,7 +118,7 @@ warm pool with bounded growth. Preserve `FINO_REACTOR_THREADS` as a diagnostic
 override. Core reservation is part of this decision and should not arrive as an
 unrelated scheduler constant.
 
-### L3. Fairness and runaway containment
+### L4. Fairness and runaway containment
 
 Review queue locking, priority decay, preemption, and automatic watchdogs as one
 local hardening slice. A mutex-to-`RwLock` rewrite is justified only if profiles
@@ -111,7 +130,7 @@ resident Realm, synchronous runaway code, top-level evaluation, force during
 initialization, shutdown during pending work, and recovery of usable reactor
 capacity after a forced stop.
 
-### L4. Local observability
+### L5. Local observability
 
 Add stable measurements only when a local policy consumes them or an operator
 can act on them. Candidate signals are queue delay, active and pending counts,
@@ -129,6 +148,17 @@ one-second concurrency assertions also fail when another worktree saturates the
 host compiling V8, then pass independently when contention clears. Those tests
 need a deliberate policy for performance assertions in shared development and
 CI environments.
+
+### Independent local memory track
+
+[PR #42](https://github.com/Sequins-dev/fino/pull/42) is also single-node work:
+pointer compression and isolate groups directly affect how many Realm isolates
+one process can host. It is independent of queue policy and should stay out of
+the scheduler iterations above. Because it overlaps the native isolate and
+scheduler boundaries changed by L1, rebase it after L1 and require an explicit
+per-Realm memory and handoff benchmark in addition to its correctness tests.
+Its V8 upgrade, build changes, isolate wrapper, and SharedArrayBuffer behavior
+should be reviewed as one runtime-substrate change, not as clustering support.
 
 ## The future portability boundary
 
