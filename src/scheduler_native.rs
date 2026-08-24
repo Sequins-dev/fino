@@ -635,7 +635,8 @@ fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, St
         }
     }
 
-    if let Some(on_done) = workload.state.borrow().on_done_fn.clone() {
+    let on_done = workload.state.borrow().on_done_fn.clone();
+    if let Some(on_done) = on_done {
         let tc = &mut v8::TryCatch::new(tc);
         v8::Local::new(tc, &on_done)
             .call(tc, receiver, &[])

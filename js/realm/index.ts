@@ -81,6 +81,7 @@ import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { registerShutdownHook } from '../internal/shutdown.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
+import { createChildCoverageContext, type CoverageRealmContext } from 'internal:coverage';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
@@ -244,6 +245,7 @@ interface RealmBootstrapData {
     endpoint?: string;
   };
   sandbox?: ProcessSandboxOptions;
+  coverage?: CoverageRealmContext;
 }
 function currentRealmBootstrapData(): RealmBootstrapData | undefined {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -255,9 +257,20 @@ function currentRealmBootstrapData(): RealmBootstrapData | undefined {
     return undefined;
   }
 }
+function realmKind(opts: RealmOptions): 'remote' | 'sandbox' | 'process' | 'scheduled' {
+  if (opts.remote) return 'remote';
+  if (opts.sandbox !== undefined) return 'sandbox';
+  if (opts.process) return 'process';
+  return 'scheduled';
+}
 function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined {
   const data: RealmBootstrapData = {};
+  const kind = realmKind(opts);
   if (opts.sandbox !== undefined) data.sandbox = opts.sandbox;
+  if (kind !== 'remote') {
+    const coverage = createChildCoverageContext(kind, opts.entry ?? null);
+    if (coverage !== undefined) data.coverage = coverage;
+  }
   const endpointOption = opts.otlpEndpoint;
   if (endpointOption === false) return Object.keys(data).length === 0 ? undefined : data;
   if (opts.sandbox !== undefined && endpointOption === undefined) return data;
@@ -2595,14 +2608,19 @@ export class Realm<F extends RealmFn = RealmFn> {
   }
 
   /** Create one movable isolate and await its scalar completion signal. @internal */
-  #startScheduledRealm(opts: RealmOptions, rules: ImportRule[], reloading = false): Promise<void> {
+  #startScheduledRealm(
+    opts: RealmOptions,
+    rules: ImportRule[],
+    reloading = false,
+    bootstrapData = realmBootstrapData(opts),
+  ): Promise<void> {
     const scheduled = createScheduledRealm(
       opts.root ?? '',
       opts.entry,
       normaliseRules(rules),
       opts.watch ?? false,
       opts.data,
-      realmBootstrapData(opts),
+      bootstrapData,
       opts.repl ?? false,
     );
     this.#handle = scheduled.handle;
@@ -2703,9 +2721,6 @@ export class Realm<F extends RealmFn = RealmFn> {
     }
     const serializedRules = rules.length > 0 ? serialiseRules(rules) : '[]';
     const serializedData = serializeRealmData(opts.data);
-    const bootstrapData = realmBootstrapData(opts);
-    const serializedBootstrapData =
-      bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData);
     if (opts.remote && serializedData !== undefined) {
       throw new Error('fino:realm — data is not supported with remote: true');
     }
@@ -2725,6 +2740,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       const portId = `${cluster.nodeId}/p-${_nextPortHandle++}`;
       const clusterPort = new ClusterPort(portId, cluster);
       this.port = clusterPort;
+      const bootstrapData = realmBootstrapData(opts);
       const config = {
         entry: opts.entry,
         root: opts.root ?? '',
@@ -2737,25 +2753,27 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (opts.sandbox !== undefined) {
       this.#kind = 'sandbox';
+      const bootstrapData = realmBootstrapData(opts);
       const handle = createSandboxContext(
         opts.root ?? '',
         opts.entry,
         serializedRules,
         serializedData,
-        serializedBootstrapData,
+        bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData),
       ) as number;
       this.#handle = handle;
       const wakeReadFd = getSandboxPortWakeReadFd(handle) as number;
       this.port = createSandboxPort(wakeReadFd, handle);
     } else if (opts.process) {
       this.#kind = 'process';
+      const bootstrapData = realmBootstrapData(opts);
       const handle = createProcessContext(
         opts.root ?? '',
         opts.entry,
         serializedRules,
         watch,
         serializedData,
-        serializedBootstrapData,
+        bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData),
       ) as number;
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
@@ -2767,11 +2785,12 @@ export class Realm<F extends RealmFn = RealmFn> {
         );
       }
       this.#kind = 'scheduled';
+      const bootstrapData = realmBootstrapData(opts);
       this.#handle = -1;
       this.port = undefined as unknown as RealmPort;
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
-      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules);
+      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules, false, bootstrapData);
       this.#scheduledShutdownRegistration = registerShutdownHook(() => this.terminate());
       void this.#scheduledCompletion.then(
         () => this.#disposeScheduledShutdownRegistration(),

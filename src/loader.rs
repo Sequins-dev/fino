@@ -139,6 +139,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),
     source_builtin!("fino:commands/test", "commands/test"),
+    source_builtin!("fino:commands/coverage", "commands/coverage"),
     source_builtin!("fino:commands/bench", "commands/bench"),
     source_builtin!("fino:commands/load", "commands/load"),
     source_builtin!("fino:commands/run", "commands/run"),
@@ -152,6 +153,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/repl", "commands/repl"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
+    source_builtin!("internal:commands/coverage", "commands/coverage"),
     source_builtin!("internal:commands/bench", "commands/bench"),
     source_builtin!("internal:commands/load", "commands/load"),
     source_builtin!("internal:commands/run", "commands/run"),
@@ -173,6 +175,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:package_manager", "internal/package_manager"),
     source_builtin!("internal:repl-handler", "internal/repl/handler"),
     source_builtin!("internal:commands/repl", "commands/repl"),
+    source_builtin!("internal:coverage", "internal/coverage"),
+    source_builtin!("internal:coverage/model", "internal/coverage/model"),
     // internal: globals (web spec globals)
     source_builtin!("internal:globals/encoding", "globals/encoding"),
     source_builtin!("internal:globals/console", "globals/console"),
@@ -866,6 +870,7 @@ pub fn loader_hooks_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s,
         "registerInitMeta",
         "registerTranspile",
         "getPackageMap",
+        "getSourceMap",
         "lookupOriginalPosition",
         "allowInternalForTests",
     ]
@@ -895,6 +900,7 @@ fn loader_hooks_eval<'a>(
     set_fn!("registerInitMeta", register_init_meta);
     set_fn!("registerTranspile", register_transpile);
     set_fn!("getPackageMap", get_package_map);
+    set_fn!("getSourceMap", get_source_map);
     set_fn!("lookupOriginalPosition", lookup_original_position);
     set_fn!("allowInternalForTests", allow_internal_for_tests);
 
@@ -952,6 +958,35 @@ fn get_package_map(
                 rv.set(v8::null(scope).into());
             }
         }
+        None => rv.set(v8::null(scope).into()),
+    }
+}
+
+/// Return the loader-cached source map JSON for a compiled resource.
+///
+/// Consumers own decoding and position lookup; the loader only exposes data it
+/// already retains for stack-trace mapping.
+fn get_source_map(
+    scope: &mut v8::HandleScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let resource = args
+        .get(0)
+        .to_string(scope)
+        .map(|value| value.to_rust_string_lossy(scope));
+    let json = resource.and_then(|resource| {
+        get_state(scope)
+            .borrow()
+            .source_maps
+            .get(&resource)
+            .map(|cache| cache.map.to_json_string())
+    });
+    match json {
+        Some(json) => match v8::String::new(scope, &json) {
+            Some(value) => rv.set(value.into()),
+            None => rv.set(v8::null(scope).into()),
+        },
         None => rv.set(v8::null(scope).into()),
     }
 }

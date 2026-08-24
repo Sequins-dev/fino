@@ -3,6 +3,8 @@
 This map tracks every public `fino:*` builtin registered in `src/loader.rs`.
 Benchmark paths mirror the corresponding `js/` source path where one exists.
 Synthetic Rust-backed builtins use a top-level benchmark file.
+Internal support modules such as `internal:coverage/model` are excluded from
+this public-builtin table and are exercised by their owning command workflows.
 
 | Builtin specifier | Benchmark coverage |
 | --- | --- |
@@ -11,6 +13,7 @@ Synthetic Rust-backed builtins use a top-level benchmark file.
 | `fino:commands/run` | not yet benchmarked |
 | `fino:commands/repl` | not yet benchmarked |
 | `fino:commands/test` | not yet benchmarked |
+| `fino:commands/coverage` | not yet benchmarked |
 | `fino:commands/bench` | not yet benchmarked |
 | `fino:commands/load` | not yet benchmarked |
 | `fino:commands/task` | not yet benchmarked |

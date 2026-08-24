@@ -1,8 +1,9 @@
 //! `internal:inspector` — generic V8 inspector binding.
 //!
 //! Exposes the Chrome DevTools Protocol over a per-realm inspector session.
-//! The REPL is the primary consumer; future debugger/profiler features share
-//! the same session via the raw `dispatch` / `onMessage` interface.
+//! The REPL and TypeScript coverage client share the same session through the
+//! raw `dispatch` / `onMessage` interface. Protocol-specific policy stays in
+//! the TypeScript consumers.
 //!
 //! JS exports:
 //! - `dispatch(json: string): void` — send a CDP message to the session.
