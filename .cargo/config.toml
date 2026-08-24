@@ -5,9 +5,11 @@
 V8_FROM_SOURCE = { value = "1", force = true }
 # The sandbox is deliberately disabled: one sandbox per isolate group would
 # require group-local ArrayBuffer allocators, preventing Fino's existing
-# SharedArrayBuffer backing stores from crossing realm boundaries. Temporal was
-# not exposed on V8 13.9, so keep it disabled while retaining the full Intl API.
-GN_ARGS = { value = "is_debug=false v8_enable_pointer_compression=true v8_enable_pointer_compression_shared_cage=false v8_enable_sandbox=false v8_enable_temporal_support=false enable_rust=false enable_rust_cxx=false use_glib=false", force = true }
+# SharedArrayBuffer backing stores from crossing realm boundaries. Keep code in
+# an external executable cage: Apple Silicon cannot add JIT permissions to the
+# non-executable pointer cage used by multi-cage builds. Temporal was not
+# exposed on V8 13.9, so keep it disabled while retaining the full Intl API.
+GN_ARGS = { value = "is_debug=false v8_enable_pointer_compression=true v8_enable_pointer_compression_shared_cage=false v8_enable_external_code_space=true v8_enable_sandbox=false v8_enable_temporal_support=false enable_rust=false enable_rust_cxx=false use_glib=false", force = true }
 # The compiler wrapper exposes Chromium Clang's builtin headers to bindgen and
 # redirects rusty_v8's isolate-allocation symbol to Fino's IsolateGroup shim.
 SCCACHE = { value = "scripts/v8-compiler-wrapper.sh", relative = true, force = true }

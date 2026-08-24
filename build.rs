@@ -33,6 +33,7 @@ fn main() {
         .define("V8_COMPRESS_POINTERS", None)
         .define("V8_31BIT_SMIS_ON_64BIT_ARCH", None)
         .define("V8_COMPRESS_POINTERS_IN_MULTIPLE_CAGES", None)
+        .define("V8_EXTERNAL_CODE_SPACE", None)
         // V8 headers intentionally leave many virtual/interface parameters
         // unnamed by use. Keep profiler shim builds quiet without disabling
         // broader diagnostics for our C++ source.
