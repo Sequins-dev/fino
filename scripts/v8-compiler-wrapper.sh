@@ -7,15 +7,25 @@ set -eu
 compiler="${1:-}"
 case "$compiler" in
   *clang | *clang++ )
-    resource_dir="$($compiler -print-resource-dir)"
-    builtin_headers="$resource_dir/include"
-    include_link="${CARGO_MANIFEST_DIR}/fino-clang-include"
+    # Bindgen parses with libclang, which may come from a different LLVM
+    # installation than Chromium's compiler. Its resource headers must match
+    # that libclang: mixing Chromium Clang 23 headers with Homebrew libclang 22
+    # leaves libc++'s fixed-width integer using-declarations unresolved.
+    bindgen_clang="$compiler"
+    if [ -n "${LIBCLANG_PATH:-}" ]; then
+      libclang_clang="$(dirname "$LIBCLANG_PATH")/bin/clang"
+      if [ -x "$libclang_clang" ]; then
+        bindgen_clang="$libclang_clang"
+      fi
+    fi
+    resource_dir="$($bindgen_clang -print-resource-dir)"
+    resource_link="${CARGO_MANIFEST_DIR}/fino-clang-resource"
     # Ninja starts many compiler wrappers concurrently. macOS ln can report
     # EEXIST when another wrapper creates this link between its lookup and
     # replacement; accept that race only when the winner installed our target.
-    if ! ln -sfn "$builtin_headers" "$include_link" 2>/dev/null; then
-      [ "$(readlink "$include_link" 2>/dev/null || true)" = \
-        "$builtin_headers" ] || exit 1
+    if ! ln -sfn "$resource_dir" "$resource_link" 2>/dev/null; then
+      [ "$(readlink "$resource_link" 2>/dev/null || true)" = \
+        "$resource_dir" ] || exit 1
     fi
     ;;
 esac

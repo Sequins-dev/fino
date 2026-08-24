@@ -15,6 +15,6 @@ GN_ARGS = { value = "is_debug=false v8_enable_pointer_compression=true v8_enable
 SCCACHE = { value = "scripts/v8-compiler-wrapper.sh", relative = true, force = true }
 NINJA = { value = "scripts/v8-ninja-wrapper.sh", relative = true, force = true }
 # The Chromium Clang download contains builtin headers but no libclang shared
-# library. The wrapper exposes those headers at this stable, crate-relative
-# path for rusty_v8's bindgen step.
-BINDGEN_EXTRA_CLANG_ARGS = "-isystemfino-clang-include"
+# library. The wrapper exposes the resource directory matching the libclang
+# selected by bindgen at this stable, crate-relative path.
+BINDGEN_EXTRA_CLANG_ARGS = "-resource-dir=fino-clang-resource"
