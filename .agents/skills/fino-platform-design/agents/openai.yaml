@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Platform Design"
+  short_description: "Design reusable and reliable Fino systems"
+  default_prompt: "Use $fino-platform-design to review this Fino subsystem design for reusable layering, explicit contracts, and reliable Realm behavior."

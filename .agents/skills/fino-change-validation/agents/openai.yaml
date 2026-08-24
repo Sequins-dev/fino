@@ -1,0 +1,4 @@
+interface:
+  display_name: "Fino Change Validation"
+  short_description: "Select proportional checks for Fino changes"
+  default_prompt: "Use $fino-change-validation to select and run the checks required for this Fino change."

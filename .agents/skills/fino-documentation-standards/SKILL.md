@@ -7,6 +7,8 @@ description: Ensure Fino JavaScript documentation comments are complete and mark
 
 Use this skill whenever JS module docs or generated-doc-visible symbols may change. Documentation should explain the contract in markdown prose, not rely on JSDoc tag blocks to carry meaning.
 
+Authored guides live in `js/**/*.md`. Public TypeScript API docs come from markdown-first `/** */` comments, while synthetic Rust-backed public APIs are declared in `runtime-builtins.d.ts`.
+
 Project documentation is intentionally more complete than a symbol reference.
 Top-level public module comments should read like compact design notes: a new
 user should understand when to reach for the module, what mental model it uses,
@@ -54,6 +56,19 @@ module intentionally stops.
 3. Pair docs with tests when behavior changed.
    - Use `$fino-test-coverage-gaps` if changed docs describe new behavior, edge cases, or failure modes that should be tested.
 
+4. Run the applicable documentation checks.
+
+   ```sh
+   ./target/release/fino doc build --format html --types runtime-builtins.d.ts js
+   ./target/release/fino doc test js
+   ./target/release/fino doc show <symbol>
+   ./target/release/fino doc search <query>
+   ./target/release/fino test tests/docs/doc.test.ts
+   ./target/release/fino test tests/docs/map.test.ts
+   ```
+
+   Generated `docs/` output is ignored. Update `js/documentation.md` whenever a guide is added, removed, or moved. If the release binary is unavailable and documentation behavior is not release-specific, use the current project binary and report the substitution.
+
 ## Review Checklist
 
 - Module comment exists and gives enough context for a new maintainer.
@@ -62,3 +77,4 @@ module intentionally stops.
 - Spec-backed modules link authoritative references.
 - Defaults, failure cases, `null` cases, security caveats, and lifecycle requirements are documented.
 - `fino doc search` and `fino doc show` were used for touched public symbols, or the final response explains why not.
+- Added, removed, and moved guides remain represented in `js/documentation.md`.

@@ -53,6 +53,15 @@ complete.
      regression test may first fail because it exposes non-conformance, but the
      implementation must then be fixed so the test asserts the conforming
      result.
+   - Use the gated external suites when they cover the changed behavior:
+
+     ```sh
+     FINO_SPEC_TESTS=1 ./target/debug/fino test tests/integration/wpt.test.ts
+     FINO_SPEC_TESTS=1 ./target/debug/fino test tests/integration/h2spec.test.ts
+     FINO_SPEC_TESTS=1 ./target/debug/fino test tests/integration/autobahn-websocket.test.ts
+     ```
+
+     Read each suite's preflight comments before running it. Missing harnesses are expected to fail when spec testing is explicitly enabled. Use `FINO_WPT_CATEGORY` and `FINO_WPT_PATH` to narrow WPT runs. The read-only scheduled coverage summary is `./target/release/fino tests/integration/fixtures/wpt/coverage-summary.ts`.
 
 7. Report deviations precisely.
    - Do not call behavior spec-conformant when it is only compatible with common practice.
