@@ -11,5 +11,6 @@ if (port === undefined) {
 port.onmessage = (ev) => {
   port!.postMessage(`echo:${ev.data as string}`);
 };
+port.postMessage('ready');
 // Keep alive until terminated — this TLA never resolves
 await new Promise<void>(() => {});

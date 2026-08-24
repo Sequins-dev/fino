@@ -211,6 +211,24 @@ describe('Sandbox Realm enforcement', () => {
     );
   });
 
+  it('force-cleans a sandbox while it is still initializing', async (t) => {
+    if (os !== 'linux') return;
+    const realm = new Realm<typeof sandboxBusyLoop>({
+      entry: new URL('./fixtures/sandbox-busy-loop-fn.ts', import.meta.url).pathname,
+      sandbox: { mode: 'strict' },
+    });
+    const call = realm.call();
+    realm.terminate({ force: true });
+    const result = await Promise.race([
+      call.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1000)),
+    ]);
+    t.equal(result, 'rejected', 'an early force request settles the call promptly');
+  });
+
   it('keeps peer Realms responsive and force-cleans a non-yielding sandbox', async (t) => {
     if (os !== 'linux') return;
     const realm = new Realm<typeof sandboxBusyLoop>({

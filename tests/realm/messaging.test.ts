@@ -25,15 +25,23 @@ describe('Realm messaging', () => {
       entry: new URL('./fixtures/messaging-echo.ts', import.meta.url).pathname,
     });
     const responses: string[] = [];
+    let markReady!: () => void;
+    let markComplete!: () => void;
+    const ready = new Promise<void>((resolve) => (markReady = resolve));
+    const complete = new Promise<void>((resolve) => (markComplete = resolve));
     realm.port.onmessage = (ev) => {
+      if (ev.data === 'ready') {
+        markReady();
+        return;
+      }
       responses.push(ev.data as string);
+      if (responses.length === 2) markComplete();
     };
     const p = realm.run();
-    // Give child time to set up its onmessage handler
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    await ready;
     realm.port.postMessage('hello');
     realm.port.postMessage('world');
-    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    await complete;
     t.equal(responses.length, 2, 'received both responses');
     t.equal(responses[0], 'echo:hello', 'first response correct');
     t.equal(responses[1], 'echo:world', 'second response correct');
