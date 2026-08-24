@@ -21,6 +21,7 @@ import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 import type asyncFn from './fixtures/async-fn.ts';
+import type busyLoop from './fixtures/sandbox-busy-loop-fn.ts';
 
 describe('Reactor scheduler native surface', () => {
   it('does not expose retired compatibility operations', (t) => {
@@ -90,6 +91,30 @@ describe('Reactor-pooled Realm basics', () => {
       [2, 4, 6],
       'all sibling realm timers resolve independently',
     );
+  });
+  it('initializes a burst of pooled realms exactly once under claim contention', async (t) => {
+    const entry = new URL('./fixtures/echo-fn.ts', import.meta.url).pathname;
+    const realms = Array.from({ length: 16 }, () => new Realm<typeof echoFn>({ entry }));
+    const results = await Promise.all(realms.map((realm, index) => realm.call(`burst-${index}`)));
+    t.deepEqual(
+      results,
+      realms.map((_, index) => `burst-${index}`),
+      'every claimed realm initialized once and answered once',
+    );
+  });
+  it('force-cleans a pooled realm while it is still initializing', async (t) => {
+    const entry = new URL('./fixtures/sandbox-busy-loop-fn.ts', import.meta.url).pathname;
+    const realm = new Realm<typeof busyLoop>({ entry });
+    const call = realm.call();
+    realm.terminate({ force: true });
+    const result = await Promise.race([
+      call.then(
+        () => 'resolved',
+        () => 'rejected',
+      ),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1000)),
+    ]);
+    t.equal(result, 'rejected', 'an early force request settles the call promptly');
   });
   it('keeps readiness watches distinct when realms recycle descriptor numbers', async (t) => {
     // Each realm's pipes are closed when it settles, so the OS hands the same
