@@ -46,16 +46,25 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ca-certificates \
-            clang \
             cmake \
+            curl \
             g++ \
             git \
-            libclang-dev \
             libsqlite3-dev \
             make \
             perl \
             pkg-config \
             python3
+
+      - name: Install LLVM 21 for bindgen
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-21 libclang-21-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
 
       - name: Run Rust lint
         run: cargo clippy
@@ -94,18 +103,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ca-certificates \
-            clang \
             cmake \
             curl \
             g++ \
             git \
-            libclang-dev \
             libsqlite3-dev \
             make \
             perl \
             pkg-config \
             python3 \
             xz-utils
+
+      - name: Install LLVM 21 for bindgen
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-21 libclang-21-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
 
       - name: Install current protocol dependencies
         uses: ./.github/actions/install-linux-protocol-deps
