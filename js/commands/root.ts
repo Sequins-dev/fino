@@ -43,10 +43,11 @@ import taskCommand from './task.ts';
  * The root `fino` CLI command.
  *
  * A `Task` named `fino` whose children are the built-in subcommands. The root
- * itself declares two options that apply to direct script execution:
+ * itself declares three options that apply to direct script execution:
  * `--watch` re-runs the script whenever any imported file changes, and
  * `--otlp-endpoint` enables OpenTelemetry export to the given OTLP/HTTP
- * collector endpoint.
+ * collector endpoint. `--profile` writes one process-wide Realm CPU profile to
+ * `profile.pb`.
  *
  * When parsing does not match a subcommand, the root's own run function takes
  * over: with a `script` positional it delegates to the `run` command, and with
@@ -78,6 +79,11 @@ const command = new Task({
         flags: '--watch',
         type: 'boolean',
         description: 'Re-run the script whenever any imported file changes',
+      },
+      {
+        flags: '--profile',
+        type: 'boolean',
+        description: 'Write a process-wide Realm CPU profile to profile.pb',
       },
     ],
     positionals: [

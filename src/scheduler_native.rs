@@ -773,6 +773,10 @@ fn drop_workload(mut workload: Workload) {
     workload.isolate.cancel_terminate_execution();
     let active = activate(&mut workload);
     retire_owner(workload.owner);
+    crate::profiler::finish_realm_profile(&mut workload.state.borrow_mut());
+    if let Some(pointer) = workload.state.borrow_mut().cpu_profiler.take() {
+        unsafe { crate::profiler::dispose_profiler(pointer) };
+    }
     workload.state.borrow_mut().loop_step_fn = None;
     workload.state.borrow_mut().on_done_fn = None;
     workload.state.borrow_mut().sync_call_fn = None;

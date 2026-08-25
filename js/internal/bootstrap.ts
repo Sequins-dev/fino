@@ -67,7 +67,11 @@ import { drainMicrotasks, runLoop } from 'internal:async-context';
 import { setSchedulerPollingRequired, usesProcessReadiness } from 'internal:scheduler-native';
 import { EnvelopeKind } from 'internal:realm/envelope';
 import { wakeFd } from 'internal:async-runtime';
+import { registerRealmProfiling } from 'internal:process-profiler';
 import { env } from '../process.ts';
+// A no-op unless the main Realm opened a process profile. Registration starts
+// this Realm's isolate-local recording before its entry module is imported.
+registerRealmProfiling();
 // Register the async-runtime wake pipe with kqueue so background FFI threads
 // can interrupt the event loop sleep immediately. Does not affect alive().
 registerWakeSource(wakeFd);

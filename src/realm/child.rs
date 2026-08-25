@@ -220,10 +220,16 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         if bootstrap_module.get_status() == v8::ModuleStatus::Errored {
             let exc = bootstrap_module.get_exception();
-            return Err(exc
+            let error = exc
                 .to_string(scope)
                 .map(|s| s.to_rust_string_lossy(scope))
-                .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string()));
+                .unwrap_or_else(|| "Unknown error in internal/bootstrap.mjs".to_string());
+            let state_rc = get_state(scope);
+            crate::profiler::finish_realm_profile(&mut state_rc.borrow_mut());
+            if let Some(pointer) = state_rc.borrow_mut().cpu_profiler.take() {
+                unsafe { crate::profiler::dispose_profiler(pointer) };
+            }
+            return Err(error);
         }
 
         state_rc = get_state(scope);
@@ -329,6 +335,8 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
             v8::Local::new(scope, &f).call(scope, undef, &[]);
             pump_and_checkpoint(scope);
         }
+
+        crate::profiler::finish_realm_profile(&mut state_rc.borrow_mut());
 
         if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
             unsafe { crate::profiler::dispose_profiler(ptr) };

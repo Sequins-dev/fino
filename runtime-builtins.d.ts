@@ -463,7 +463,10 @@ declare module 'fino:ffi' {
    * Point.set(point, 'y', -3);
    * ```
    */
-  export function structType(fields: readonly StructField[], options?: { size?: number; align?: number }): StructType;
+  export function structType(
+    fields: readonly StructField[],
+    options?: { size?: number; align?: number },
+  ): StructType;
   /**
    * Open a dynamic library and bind the requested symbols.
    *
@@ -482,7 +485,10 @@ declare module 'fino:ffi' {
    * console.log(libc.symbols.strlen(input));
    * ```
    */
-  export function dlopen<TSymbols extends NativeSymbolMap = NativeSymbolMap>(path: string | null, symbols: TSymbols): DynamicLibrary<TSymbols>;
+  export function dlopen<TSymbols extends NativeSymbolMap = NativeSymbolMap>(
+    path: string | null,
+    symbols: TSymbols,
+  ): DynamicLibrary<TSymbols>;
 }
 
 /**
@@ -501,6 +507,20 @@ declare module 'fino:profiler' {
    * Stop collecting a named CPU profile and return its serialized bytes.
    */
   export function stopProfiling(name?: string): Uint8Array;
+}
+
+/**
+ * internal:process-profiler — process-wide Realm CPU profile coordination.
+ *
+ * @internal
+ */
+declare module 'internal:process-profiler' {
+  /** Begin a process profile and register the calling Realm. */
+  export function beginProcessProfiling(): void;
+  /** Register the calling Realm when a process profile is active. */
+  export function registerRealmProfiling(): void;
+  /** Finalize the calling Realm and encode the completed process profile. */
+  export function finishProcessProfiling(): Uint8Array;
 }
 
 /**
@@ -580,11 +600,17 @@ declare module 'internal:loader-hooks' {
   /**
    * Look up an original source position for generated code.
    */
-  export function lookupOriginalPosition(source: string, line: number, column: number): OriginalPosition | null;
+  export function lookupOriginalPosition(
+    source: string,
+    line: number,
+    column: number,
+  ): OriginalPosition | null;
   /**
    * Register the JavaScript resolver used by the Rust loader.
    */
-  export function registerResolve(fn: (specifier: string, referrerDir: string | null, root: string) => string): void;
+  export function registerResolve(
+    fn: (specifier: string, referrerDir: string | null, root: string) => string,
+  ): void;
   /**
    * Register the import.meta initializer used by the Rust loader.
    */
@@ -598,7 +624,9 @@ declare module 'internal:loader-hooks' {
   /**
    * Register the TypeScript transpiler used for local source modules.
    */
-  export function registerTranspile(fn: (path: string, source: string) => { code: string; map?: string }): void;
+  export function registerTranspile(
+    fn: (path: string, source: string) => { code: string; map?: string },
+  ): void;
   /**
    * Return the current package-map JSON, if one was supplied by the host.
    */
@@ -714,7 +742,10 @@ declare module 'internal:runtime/loop-backend' {
   /**
    * Wait for native loop events.
    */
-  export function wait(raw: object, timeout: number): Array<{ ident: number; filter: number; flags: number; fflags?: number; res?: number }>;
+  export function wait(
+    raw: object,
+    timeout: number,
+  ): Array<{ ident: number; filter: number; flags: number; fflags?: number; res?: number }>;
 }
 
 /**
@@ -1026,7 +1057,8 @@ declare global {
       index: number,
       value: number | bigint,
       timeout?: number,
-    ): { async: false; value: 'ok' | 'not-equal' | 'timed-out' }
+    ):
+      | { async: false; value: 'ok' | 'not-equal' | 'timed-out' }
       | { async: true; value: Promise<'ok' | 'timed-out'> };
   }
 }

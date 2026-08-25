@@ -341,6 +341,10 @@ pub struct FinoState {
     /// Raw pointer to the V8 CpuProfiler, created lazily on first startProfiling
     /// call. Disposed before isolate teardown.
     pub cpu_profiler: Option<*mut std::ffi::c_void>,
+    /// Automatic process-profile registration for this Realm. This owns a
+    /// separate V8 profiler so the public `fino:profiler` recordings retain
+    /// their existing named-profile semantics.
+    pub process_profile: Option<crate::profiler::RealmProfileRegistration>,
 
     // ---------------------------------------------------------------------------
     // Child Realm management
@@ -469,6 +473,7 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
+            process_profile: None,
             entry_path: None,
             terminated: false,
             reload_requested: false,
@@ -535,6 +540,7 @@ impl FinoState {
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
+            process_profile: None,
             entry_path,
             terminated: false,
             reload_requested: false,

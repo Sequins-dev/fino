@@ -9,6 +9,68 @@ import * as loop from 'internal:runtime/loop';
 import rootCommand from 'internal:commands/root';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)\b`;
+
+interface ProtobufField {
+  number: number;
+  value: number | Uint8Array;
+}
+
+function readVarint(bytes: Uint8Array, offset: { value: number }): number {
+  let value = 0;
+  let shift = 0;
+  while (offset.value < bytes.byteLength) {
+    const byte = bytes[offset.value++];
+    value += (byte & 0x7f) * 2 ** shift;
+    if ((byte & 0x80) === 0) return value;
+    shift += 7;
+  }
+  throw new Error('truncated protobuf varint');
+}
+
+function protobufFields(bytes: Uint8Array): ProtobufField[] {
+  const fields: ProtobufField[] = [];
+  const offset = { value: 0 };
+  while (offset.value < bytes.byteLength) {
+    const tag = readVarint(bytes, offset);
+    const number = Math.floor(tag / 8);
+    const wireType = tag & 7;
+    if (wireType === 0) {
+      fields.push({ number, value: readVarint(bytes, offset) });
+      continue;
+    }
+    if (wireType === 2) {
+      const length = readVarint(bytes, offset);
+      const end = offset.value + length;
+      if (end > bytes.byteLength) throw new Error('truncated protobuf field');
+      fields.push({ number, value: bytes.slice(offset.value, end) });
+      offset.value = end;
+      continue;
+    }
+    throw new Error(`unsupported protobuf wire type ${wireType}`);
+  }
+  return fields;
+}
+
+function pprofThreadLabels(bytes: Uint8Array): string[] {
+  const fields = protobufFields(bytes);
+  const strings = fields
+    .filter((field) => field.number === 6)
+    .map((field) => decodeUtf8(field.value as Uint8Array));
+  const labels: string[] = [];
+  for (const sample of fields.filter((field) => field.number === 2)) {
+    for (const label of protobufFields(sample.value as Uint8Array).filter(
+      (field) => field.number === 3,
+    )) {
+      const labelFields = protobufFields(label.value as Uint8Array);
+      const key = labelFields.find((field) => field.number === 1)?.value;
+      const value = labelFields.find((field) => field.number === 2)?.value;
+      if (typeof key === 'number' && strings[key] === 'thread' && typeof value === 'number') {
+        labels.push(strings[value]);
+      }
+    }
+  }
+  return labels;
+}
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);
@@ -200,6 +262,97 @@ describe('CLI commands', () => {
     t.equal(result.code, 0, 'script exits successfully');
     t.equal(stderr, '', 'script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
+  });
+  it('writes one thread-labeled pprof for every in-process Realm', async (t) => {
+    await withTempProject(
+      {
+        'entry.ts': [
+          "import { Realm } from 'fino:realm';",
+          "import { startProfiling, stopProfiling } from 'fino:profiler';",
+          "import { cwd } from 'fino:process';",
+          'function spin(ms: number) {',
+          '  const end = Date.now() + ms;',
+          '  let value = 0;',
+          '  while (Date.now() < end) value += Math.sqrt(value + 1);',
+          '  return value;',
+          '}',
+          "startProfiling('manual');",
+          'spin(30);',
+          "console.log('manual-profile:' + stopProfiling('manual').byteLength);",
+          'await Promise.all([',
+          '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
+          '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
+          ']);',
+          'spin(20);',
+          '',
+        ].join('\n'),
+        'child.ts': [
+          'const end = Date.now() + 40;',
+          'let value = 0;',
+          'while (Date.now() < end) value += Math.sqrt(value + 1);',
+          'console.log(`child-profile-work:${value > 0}`);',
+          '',
+        ].join('\n'),
+        'error.ts': [
+          'const end = Date.now() + 20;',
+          'while (Date.now() < end) Math.sqrt(Date.now());',
+          "throw new Error('profiled failure');",
+          '',
+        ].join('\n'),
+      },
+      async (dir, fs) => {
+        const explicit = await runCli(['run', '--profile', 'entry.ts'], { cwd: dir });
+        t.equal(explicit.result.code, 0, 'profiled run exits successfully');
+        t.equal(explicit.stderr, '', 'profiled run does not write stderr');
+        t.ok(explicit.stdout.includes('manual-profile:'), 'public profiler remains usable');
+
+        const profilePath = `${dir}/profile.pb`;
+        const profile = await new DiskFileSystem().readFile(profilePath);
+        const labels = pprofThreadLabels(profile);
+        const uniqueLabels = new Set(labels);
+        t.ok(labels.length > 0, 'pprof samples carry thread labels');
+        t.ok(uniqueLabels.size >= 3, 'concurrent Realms keep distinct thread values');
+        t.ok(
+          [...uniqueLabels].every((label) => label.startsWith('realm-')),
+          'thread values use unique Realm identities',
+        );
+        t.ok(
+          [...uniqueLabels].some((label) => label.includes('entry.ts')),
+          'application Realm appears in the profile',
+        );
+        t.ok(
+          [...uniqueLabels].some((label) => label.includes('child.ts')),
+          'nested Realm appears in the profile',
+        );
+
+        await fs.unlink(profilePath);
+        const shorthand = await runCli(['--profile', 'entry.ts'], { cwd: dir });
+        t.equal(shorthand.result.code, 0, 'root shorthand profile exits successfully');
+        t.ok((await new DiskFileSystem().readFile(profilePath)).byteLength > 0);
+
+        await fs.unlink(profilePath);
+        const failed = await runCli(['run', '--profile', 'error.ts'], { cwd: dir });
+        t.equal(failed.result.code, 1, 'entry failure remains a failed run');
+        t.ok(failed.stderr.includes('profiled failure'), 'entry failure is still reported');
+        t.ok(
+          pprofThreadLabels(await new DiskFileSystem().readFile(profilePath)).some((label) =>
+            label.includes('error.ts'),
+          ),
+          'a failed Realm finalizes into the process profile',
+        );
+
+        await fs.unlink(profilePath);
+        const trailing = await runCli(['run', 'entry.ts', '--profile'], { cwd: dir });
+        t.equal(trailing.result.code, 0, 'trailing script flag exits successfully');
+        let trailingProfileExists = true;
+        try {
+          await new DiskFileSystem().lstat(profilePath);
+        } catch {
+          trailingProfileExists = false;
+        }
+        t.equal(trailingProfileExists, false, 'a flag after the script belongs to the script');
+      },
+    );
   });
   it('keeps the root runtime alive until Atomics.waitAsync settles', async (t) => {
     const { stdout, stderr, result } = await runCli([
