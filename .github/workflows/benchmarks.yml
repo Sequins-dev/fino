@@ -20,8 +20,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
+      - name: Cache Cargo and V8 build
         uses: ./.github/actions/cache-cargo-deps
+        with:
+          profile: release
 
       - name: Install native dependencies
         run: |

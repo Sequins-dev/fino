@@ -1,5 +1,11 @@
-name: Cache Cargo dependencies
-description: Cache Cargo registry and Git dependency downloads without storing build outputs
+name: Cache Cargo and V8 build inputs
+description: Cache Cargo downloads and reusable rusty_v8 GN/Ninja source-build outputs
+
+inputs:
+  profile:
+    description: Cargo target profile directory whose V8 outputs should be cached
+    required: false
+    default: debug
 
 runs:
   using: composite
@@ -13,3 +19,11 @@ runs:
         key: cargo-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/Cargo.lock') }}
         restore-keys: |
           cargo-deps-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Restore V8 source build cache
+      uses: actions/cache@v4
+      with:
+        path: |
+          target/${{ inputs.profile }}/gn_out
+          target/${{ inputs.profile }}/ninja_gn_binaries
+        key: rusty-v8-source-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
