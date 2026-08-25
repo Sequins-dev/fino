@@ -1,5 +1,10 @@
 import { describe, it } from 'fino:test/test';
-import { createCoverageProtocol, type CoverageProtocolRequest } from 'internal:coverage';
+import {
+  acceptRealmCoverage,
+  createCoverageProtocol,
+  type CoverageProtocolRequest,
+} from 'internal:coverage';
+import type { CoverageRealmContext } from 'internal:coverage/model';
 
 interface Call {
   method: string;
@@ -7,6 +12,32 @@ interface Call {
 }
 
 describe('coverage inspector protocol', () => {
+  it('rejects a child shard for a different parent-issued Realm id', async (t) => {
+    const metric = { covered: 0, total: 0, percent: 0 };
+    const expected: CoverageRealmContext = {
+      run: { outputPath: '', shardDir: '', root: '', runId: 'run', ownerPid: 1 },
+      realm: {
+        id: 'realm-1.0',
+        parentId: 'realm-1',
+        kind: 'scheduled',
+        entry: null,
+        status: 'missing',
+        totals: { lines: metric, functions: metric, branches: metric },
+      },
+      toolVersion: 'test',
+    };
+    await t.rejects(
+      () =>
+        acceptRealmCoverage(expected, {
+          realm: { ...expected.realm, id: '../another-realm' },
+          files: [],
+          warnings: [],
+        }),
+      /different realm/,
+      'the child cannot select another shard path',
+    );
+  });
+
   it('uses precise block coverage and fetches only filesystem sources', (t) => {
     const calls: Call[] = [];
     const request: CoverageProtocolRequest = (method, params) => {

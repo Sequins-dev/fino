@@ -87,7 +87,8 @@ The channel covers:
 - facade scalar, read-stream, write-stream, and returned-handle traffic;
 - application messages;
 - initial realm data and lifecycle events;
-- console and telemetry output in deterministic mode.
+- console and telemetry output in deterministic mode;
+- child coverage submissions when native V8 coverage is active.
 
 Strict simulation rejects host-backed imports not supplied through the import
 map, nested realms that could escape the root channel, portable recordings with
@@ -99,8 +100,8 @@ separate security boundary.
 
 1. Put serialization, transfer, routing, and readiness in one `TransportPort`.
 2. Integrate lazy tee branches at its serialized boundary.
-3. Route all facade traffic, bootstrap, lifecycle, console, and telemetry
-   through channel envelopes.
+3. Route all facade traffic, bootstrap, lifecycle, console, telemetry, and
+   coverage submission through channel envelopes.
 4. Make journals projections and cassettes storage-tee buffers.
 5. Attach replay and seeded faults as channel routes, before live facade routes.
 6. Delete `RealmSession`, facade bind wrappers, the capability gate, legacy

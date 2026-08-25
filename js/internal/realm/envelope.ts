@@ -65,6 +65,8 @@ export const EnvelopeKind = {
   Telemetry: 17,
   /** Realm spawn and entry lifecycle information. */
   Lifecycle: 18,
+  /** Normalized V8 coverage submitted by a child to its owning realm. */
+  Coverage: 19,
 } as const;
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];

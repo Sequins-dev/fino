@@ -84,7 +84,11 @@ import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { registerShutdownHook } from '../internal/shutdown.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
-import { createChildCoverageContext, type CoverageRealmContext } from 'internal:coverage';
+import {
+  acceptRealmCoverage,
+  createChildCoverageContext,
+  type CoverageRealmContext,
+} from 'internal:coverage';
 import { UnboundedChannel } from '../internal/stream.ts';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
@@ -2143,6 +2147,8 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @internal
    */
   #activeChildPort: TransportPort | null = null;
+  /** Parent-owned writes triggered by child runtime envelopes. @internal */
+  #channelWork: Promise<void> = Promise.resolve();
 
   /** Configure the integrated channel before facades bind or delivery starts. @internal */
   #configurePort(port: TransportPort, opts: RealmOptions): void {
@@ -2158,6 +2164,14 @@ export class Realm<F extends RealmFn = RealmFn> {
   ): void {
     if (this.#observers.length > 0) port._pauseMessages();
     const bootstrap = realmBootstrapData(opts);
+    const coverage = bootstrap?.coverage;
+    if (coverage !== undefined) {
+      port._addControlHandler((envelope, value) => {
+        if (envelope.kind !== EnvelopeKind.Coverage) return false;
+        this.#channelWork = this.#channelWork.then(() => acceptRealmCoverage(coverage, value));
+        return true;
+      });
+    }
     const portable =
       opts.sim !== undefined || this.#observers.some((observer) => observer.portable === true);
     if (portable) port._requirePortable();
@@ -2267,6 +2281,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         status = takeScheduledRealmStatus(scheduled.handle);
       } while (status.kind === 'pending');
       port._drain();
+      await this.#channelWork;
       removeRead(scheduled.completionFd);
       port.close();
       closeScheduledRealm(scheduled.handle);
@@ -2548,7 +2563,9 @@ export class Realm<F extends RealmFn = RealmFn> {
         resolve,
         reject,
       );
-    });
+    })
+      .then(() => this.#channelWork)
+      .finally(() => (this.#activeChildPort ?? this.port).close());
     return this.#processCompletion;
   }
   /**
@@ -2557,7 +2574,8 @@ export class Realm<F extends RealmFn = RealmFn> {
    * The call starts the realm, sends a Call envelope, and resolves
    * with the returned value. It rejects if the realm exits before returning, if
    * the child serializes a call error, or if the remote cluster reports exit.
-   * The port is closed after the first response for non-streaming calls.
+   * Local ports remain open through child shutdown so final lifecycle and
+   * runtime-output envelopes can drain after the call result.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
@@ -2590,7 +2608,6 @@ export class Realm<F extends RealmFn = RealmFn> {
           if (settled) return true;
           settled = true;
           stop();
-          port.close();
           _resolveCallResponse(envelope.kind, value, resolve, reject);
           return true;
         });
@@ -2669,7 +2686,6 @@ export class Realm<F extends RealmFn = RealmFn> {
             return false;
           }
           stop();
-          port.close();
           _resolveCallResponse(envelope.kind, value, resolve, reject);
           return true;
         });

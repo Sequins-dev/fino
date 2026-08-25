@@ -738,7 +738,13 @@ if (_childEntry) {
         }
       }
       try {
-        await finishRealmCoverage();
+        await finishRealmCoverage(
+          _childPort === undefined
+            ? undefined
+            : (shard) => {
+                _childPort._postControl(EnvelopeKind.Coverage, 0, shard);
+              },
+        );
       } catch (err) {
         if (!_entryFailed) {
           try {

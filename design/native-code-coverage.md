@@ -225,8 +225,9 @@ The test command enables the run before it imports any test modules. Existing
 CLI bootstrap modules have already executed by then, but they are runtime code
 and excluded from application totals. Any local Realm created while the run is
 active receives a coverage context in the existing runtime bootstrap-data
-payload and starts its Isolate-local collector from the shared TypeScript
-bootstrap before its user entry module is evaluated.
+payload carried by its `Bootstrap` envelope and starts its Isolate-local
+collector from the shared TypeScript bootstrap before its user entry module is
+evaluated.
 
 Finalization cannot live solely at the end of `js/commands/test.ts`. The
 scheduler bootstrap currently runs shutdown hooks after the selected command
@@ -256,12 +257,11 @@ coordinator in each participating Isolate owns:
 There is no coverage-specific native coordinator, `FinoState` field, Realm
 launch argument, process-global, or synthetic coverage binding. `fino:realm`
 allocates child ids in TypeScript, writes the missing shard synchronously, and
-adds the complete coverage context to its existing JSON bootstrap metadata.
-Scheduled, sandbox, and process launchers already transport that opaque
-metadata, including across process boundaries. The child TypeScript bootstrap
-adopts it before importing user code. Remote Realms are not part of the initial
-coverage run because their filesystem is not necessarily shared with the
-artifact owner.
+sends the complete coverage context in the existing `Bootstrap` channel
+envelope. Scheduled, sandbox, and process Realms all consume that envelope
+before importing user code. Remote Realms are not part of the initial coverage
+run because their artifact owner is not necessarily reachable from the local
+test process.
 
 The only new native interface is generic loader introspection:
 `internal:loader-hooks.getSourceMap(resource)` serializes the parsed source map
@@ -269,12 +269,13 @@ already cached for that resource. The loader does not decode mappings on behalf
 of coverage. Inspector dispatch remains the pre-existing generic transport,
 and the runtime version is ordinary `internal:process` metadata.
 
-Each Realm atomically replaces its TypeScript-written crash placeholder in a
-run-specific temporary shard directory from TypeScript. This works for
-in-process and process Realms without adding coverage messages to the user
-Realm protocol.
-The owning test process is the only final artifact writer, so individual Realms
-never race to overwrite the canonical JSON path.
+Each child Realm normalizes its own V8 snapshot, then sends the shard back in a
+`Coverage` control envelope. The parent validates the Realm id and atomically
+replaces the TypeScript-written crash placeholder. Control envelopes are not
+dispatched as user `message` events, but they do pass through the same observed
+transport stream as every other cross-Realm value. The owning test process is
+therefore the only coverage writer, so individual Realms never need artifact
+filesystem access and never race to overwrite the canonical JSON path.
 
 ### Realm identity
 
@@ -552,10 +553,10 @@ unexpected protocol limitation.
   `fino test --coverage[=<path>]`.
 - Allocate Realm ids, parent ids, and pre-bootstrap crash placeholders in
   TypeScript.
-- Propagate coverage configuration through the existing opaque Realm bootstrap
-  metadata used by scheduled, process, and sandbox Realm creation.
-- Start collectors before child bootstrap evaluation and submit shards before
-  Isolate disposal.
+- Propagate coverage configuration through the existing Realm `Bootstrap`
+  envelope used by scheduled, process, and sandbox Realm creation.
+- Start collectors before child bootstrap evaluation and submit normalized
+  shards through the Realm channel before Isolate disposal.
 - Finalize after scheduler shutdown hooks while preserving the original test
   result.
 

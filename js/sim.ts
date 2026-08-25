@@ -726,6 +726,7 @@ export async function simulate(options: SimulateOptions): Promise<SimReport> {
     },
   });
   const result = await realm.call(...(options.args ?? []));
+  await realm.run();
   manifest.modules = await hashModules(journal.modulePaths());
   replay?.verifyModules(manifest.modules);
   replay?.assertComplete();
