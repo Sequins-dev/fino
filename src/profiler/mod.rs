@@ -6,7 +6,12 @@
 
 mod pprof;
 
-use std::ffi::{CStr, c_char, c_int, c_void};
+use std::{
+    collections::HashMap,
+    ffi::{CStr, c_char, c_int, c_void},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use ::v8;
 
@@ -25,10 +30,16 @@ unsafe extern "C" {
         title: *const v8::String,
         record_samples: bool,
     ) -> c_int;
+    fn v8__CpuProfiler__StartWithId(
+        profiler: *mut c_void,
+        title: *const v8::String,
+        record_samples: bool,
+    ) -> u32;
     fn v8__CpuProfiler__StopProfiling(
         profiler: *mut c_void,
         title: *const v8::String,
     ) -> *const c_void;
+    fn v8__CpuProfiler__StopById(profiler: *mut c_void, id: u32) -> *const c_void;
 
     fn v8__CpuProfile__Delete(profile: *const c_void);
     fn v8__CpuProfile__GetSamplesCount(profile: *const c_void) -> c_int;
@@ -54,6 +65,287 @@ unsafe extern "C" {
 /// isolate is destroyed.
 pub unsafe fn dispose_profiler(ptr: *mut c_void) {
     unsafe { v8__CpuProfiler__Dispose(ptr) };
+}
+
+// ---------------------------------------------------------------------------
+// Process-wide profiling session
+// ---------------------------------------------------------------------------
+
+static PROCESS_PROFILE: OnceLock<Mutex<Option<Arc<ProcessProfileSession>>>> = OnceLock::new();
+
+fn process_profile_slot() -> &'static Mutex<Option<Arc<ProcessProfileSession>>> {
+    PROCESS_PROFILE.get_or_init(|| Mutex::new(None))
+}
+
+struct ProcessProfileSession {
+    started_at_nanos: i64,
+    started: Instant,
+    inner: Mutex<ProcessProfileSessionInner>,
+}
+
+struct ProcessProfileSessionInner {
+    accepting: bool,
+    active_realms: usize,
+    next_realm_id: u64,
+    accumulator: Option<ProfileAccumulator>,
+}
+
+impl ProcessProfileSession {
+    fn new() -> Self {
+        Self {
+            started_at_nanos: unix_time_nanos(),
+            started: Instant::now(),
+            inner: Mutex::new(ProcessProfileSessionInner {
+                accepting: true,
+                active_realms: 0,
+                next_realm_id: 1,
+                accumulator: Some(ProfileAccumulator::new()),
+            }),
+        }
+    }
+
+    fn register(&self, name: &str) -> Option<String> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.accepting {
+            return None;
+        }
+        let id = inner.next_realm_id;
+        inner.next_realm_id += 1;
+        inner.active_realms += 1;
+        Some(format!("realm-{id}: {name}"))
+    }
+
+    fn merge(&self, profile: *const c_void, thread: &str) {
+        let mut inner = self.inner.lock().unwrap();
+        if let Some(accumulator) = inner.accumulator.as_mut() {
+            accumulator.merge_profile(profile, Some(thread));
+        }
+        inner.active_realms = inner.active_realms.saturating_sub(1);
+    }
+
+    fn abandon(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.active_realms = inner.active_realms.saturating_sub(1);
+    }
+
+    fn close(&self) {
+        self.inner.lock().unwrap().accepting = false;
+    }
+
+    fn encode(&self) -> Result<Vec<u8>, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.active_realms != 0 {
+            return Err(format!(
+                "cannot finish process profile while {} Realm profile(s) are active",
+                inner.active_realms
+            ));
+        }
+        let accumulator = inner
+            .accumulator
+            .take()
+            .ok_or_else(|| "process profile has already been encoded".to_string())?;
+        let duration_nanos = self.started.elapsed().as_nanos().min(i64::MAX as u128) as i64;
+        Ok(accumulator.encode(self.started_at_nanos, duration_nanos))
+    }
+}
+
+/// Per-Realm registration for an automatic process profile.
+///
+/// The V8 profiler remains isolate-owned. Only its final snapshot is traversed
+/// into the shared Rust accumulator, on the Realm's owning isolate thread.
+pub(crate) struct RealmProfileRegistration {
+    session: Arc<ProcessProfileSession>,
+    profiler: *mut c_void,
+    profiler_id: u32,
+    thread: String,
+    completed: bool,
+}
+
+impl Drop for RealmProfileRegistration {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.session.abandon();
+        }
+    }
+}
+
+/// Stop and merge the automatic profile attached to a Realm, if present.
+///
+/// This must run while the Realm isolate is entered. It is intentionally
+/// separate from `cpu_profiler`, which backs the public TypeScript API.
+pub(crate) fn finish_realm_profile(state: &mut crate::state::FinoState) {
+    let Some(mut registration) = state.process_profile.take() else {
+        return;
+    };
+    let profile =
+        unsafe { v8__CpuProfiler__StopById(registration.profiler, registration.profiler_id) };
+    if profile.is_null() {
+        registration.session.abandon();
+    } else {
+        registration.session.merge(profile, &registration.thread);
+        unsafe { v8__CpuProfile__Delete(profile) };
+    }
+    registration.completed = true;
+    unsafe { v8__CpuProfiler__Dispose(registration.profiler) };
+}
+
+fn realm_profile_name(state: &crate::state::FinoState) -> String {
+    state
+        .entry_path
+        .as_deref()
+        .filter(|entry| !entry.is_empty())
+        .unwrap_or("main")
+        .to_string()
+}
+
+fn start_realm_profile(scope: &mut v8::HandleScope) -> Result<(), String> {
+    let session = process_profile_slot().lock().unwrap().clone();
+    let Some(session) = session else {
+        return Ok(());
+    };
+    let state_rc = get_state(scope);
+    if state_rc.borrow().process_profile.is_some() {
+        return Ok(());
+    }
+    let name = realm_profile_name(&state_rc.borrow());
+    let Some(thread) = session.register(&name) else {
+        return Ok(());
+    };
+
+    let isolate: *mut v8::Isolate = scope.as_mut();
+    let profiler = unsafe { v8__CpuProfiler__New(isolate) };
+    if profiler.is_null() {
+        session.abandon();
+        return Err("failed to create process CpuProfiler".to_string());
+    }
+    unsafe { v8__CpuProfiler__SetSamplingInterval(profiler, 1000) };
+    let Some(title) = v8::String::new(scope, &thread) else {
+        unsafe { v8__CpuProfiler__Dispose(profiler) };
+        session.abandon();
+        return Err("failed to allocate process profile title".to_string());
+    };
+    let profiler_id = unsafe { v8__CpuProfiler__StartWithId(profiler, &*title, true) };
+    if profiler_id == 0 {
+        unsafe { v8__CpuProfiler__Dispose(profiler) };
+        session.abandon();
+        return Err("failed to start process CpuProfiler".to_string());
+    }
+
+    state_rc.borrow_mut().process_profile = Some(RealmProfileRegistration {
+        session,
+        profiler,
+        profiler_id,
+        thread,
+        completed: false,
+    });
+    Ok(())
+}
+
+fn throw_error(scope: &mut v8::HandleScope, message: &str) {
+    let message = v8::String::new(scope, message).unwrap();
+    let exception = v8::Exception::error(scope, message);
+    scope.throw_exception(exception);
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic module: internal:process-profiler
+// ---------------------------------------------------------------------------
+
+pub fn create_process_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "beginProcessProfiling",
+        "registerRealmProfiling",
+        "finishProcessProfiling",
+    ]
+    .iter()
+    .map(|name| v8::String::new(scope, name).unwrap())
+    .collect();
+    let module_name = v8::String::new(scope, "internal:process-profiler").unwrap();
+    v8::Module::create_synthetic_module(scope, module_name, &export_names, process_eval_steps)
+}
+
+fn process_eval_steps<'a>(
+    context: v8::Local<'a, v8::Context>,
+    module: v8::Local<'a, v8::Module>,
+) -> Option<v8::Local<'a, v8::Value>> {
+    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    macro_rules! set_fn {
+        ($name:expr, $callback:expr) => {{
+            let template = v8::FunctionTemplate::new(scope, $callback);
+            let function = template.get_function(scope)?;
+            let key = v8::String::new(scope, $name)?;
+            module.set_synthetic_module_export(scope, key, function.into())?;
+        }};
+    }
+    set_fn!("beginProcessProfiling", begin_process_profiling);
+    set_fn!("registerRealmProfiling", register_realm_profiling);
+    set_fn!("finishProcessProfiling", finish_process_profiling);
+    Some(v8::undefined(scope).into())
+}
+
+fn begin_process_profiling(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let session = Arc::new(ProcessProfileSession::new());
+    {
+        let mut slot = process_profile_slot().lock().unwrap();
+        if slot.is_some() {
+            throw_error(scope, "process profiling has already started");
+            return;
+        }
+        *slot = Some(Arc::clone(&session));
+    }
+    if let Err(error) = start_realm_profile(scope) {
+        process_profile_slot().lock().unwrap().take();
+        session.close();
+        throw_error(scope, &error);
+    }
+}
+
+fn register_realm_profiling(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if let Err(error) = start_realm_profile(scope) {
+        throw_error(scope, &error);
+    }
+}
+
+fn finish_process_profiling(
+    scope: &mut v8::HandleScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let session = {
+        let mut slot = process_profile_slot().lock().unwrap();
+        let Some(session) = slot.take() else {
+            throw_error(scope, "process profiling has not started");
+            return;
+        };
+        session.close();
+        session
+    };
+
+    let state_rc = get_state(scope);
+    finish_realm_profile(&mut state_rc.borrow_mut());
+    let bytes = match session.encode() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            // Keep the closed session available for a later retry after the
+            // remaining Realm teardown hooks have merged their snapshots.
+            *process_profile_slot().lock().unwrap() = Some(session);
+            throw_error(scope, &error);
+            return;
+        }
+    };
+    let len = bytes.len();
+    let store = v8::ArrayBuffer::new_backing_store_from_vec(bytes);
+    let buffer = v8::ArrayBuffer::with_backing_store(scope, &store.make_shared());
+    let array = v8::Uint8Array::new(scope, buffer, 0, len).unwrap();
+    rv.set(array.into());
 }
 
 // ---------------------------------------------------------------------------
@@ -183,148 +475,198 @@ fn stop_profiling(
 // ---------------------------------------------------------------------------
 
 fn convert_to_pprof(profile: *const c_void) -> Vec<u8> {
-    use pprof::{Function, Line, Location, ProfileEncoder, Sample, ValueType};
-    use std::collections::HashMap;
-
-    let mut enc = ProfileEncoder::new();
-
-    // Pre-intern the value type strings.
-    let samples_idx = enc.strings.intern("samples");
-    let count_idx = enc.strings.intern("count");
-    let wall_idx = enc.strings.intern("wall");
-    let us_idx = enc.strings.intern("microseconds");
-
-    enc.value_types.push(ValueType {
-        r#type: samples_idx,
-        unit: count_idx,
-    });
-    enc.value_types.push(ValueType {
-        r#type: wall_idx,
-        unit: us_idx,
-    });
-
     let start_time = unsafe { v8__CpuProfile__GetStartTime(profile) };
     let end_time = unsafe { v8__CpuProfile__GetEndTime(profile) };
-    let sample_count = unsafe { v8__CpuProfile__GetSamplesCount(profile) } as usize;
-
-    let duration_us = end_time - start_time;
-    let duration_ns = duration_us * 1000;
+    let duration_nanos = (end_time - start_time).max(0).saturating_mul(1000);
 
     // V8 timestamps are monotonic µs (not unix epoch). Anchor to wall clock:
     // time_nanos = now_ns - duration_ns gives the approximate profile start time.
-    let now_ns = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0);
-    enc.time_nanos = now_ns - duration_ns;
-    enc.duration_nanos = duration_ns;
-    enc.period_type = ValueType {
-        r#type: wall_idx,
-        unit: us_idx,
-    };
-    enc.period = 1000; // default 1ms sampling interval
+    let mut accumulator = ProfileAccumulator::new();
+    accumulator.merge_profile(profile, None);
+    accumulator.encode(
+        unix_time_nanos().saturating_sub(duration_nanos),
+        duration_nanos,
+    )
+}
 
-    // Dedup maps: (name_idx, filename_idx, start_line) → function_id
-    //             (function_id, line) → location_id
-    let mut function_map: HashMap<(u64, u64, i64), u64> = HashMap::new();
-    let mut location_map: HashMap<(u64, i64), u64> = HashMap::new();
+/// Shared semantic profile representation. V8 snapshots are traversed into
+/// this structure without producing intermediate protobuf shards.
+struct ProfileAccumulator {
+    encoder: pprof::ProfileEncoder,
+    function_map: HashMap<(u64, u64, i64), u64>,
+    location_map: HashMap<(u64, i64), u64>,
+    sample_map: HashMap<(u64, Vec<u64>), [i64; 2]>,
+    thread_key: Option<u64>,
+    wall_type: u64,
+    microseconds_unit: u64,
+}
 
-    let mut get_or_create_function =
-        |enc: &mut ProfileEncoder, name: &str, filename: &str, start_line: i64| -> u64 {
-            let name_idx = enc.strings.intern(name);
-            let file_idx = enc.strings.intern(filename);
-            let key = (name_idx, file_idx, start_line);
-            if let Some(&id) = function_map.get(&key) {
-                return id;
-            }
-            let id = (enc.functions.len() as u64) + 1;
-            enc.functions.push(Function {
-                id,
-                name: name_idx,
-                system_name: name_idx,
-                filename: file_idx,
-                start_line,
-            });
-            function_map.insert(key, id);
-            id
-        };
-
-    let mut get_or_create_location =
-        |enc: &mut ProfileEncoder, function_id: u64, line: i64| -> u64 {
-            let key = (function_id, line);
-            if let Some(&id) = location_map.get(&key) {
-                return id;
-            }
-            let id = (enc.locations.len() as u64) + 1;
-            enc.locations.push(Location {
-                id,
-                lines: vec![Line { function_id, line }],
-            });
-            location_map.insert(key, id);
-            id
-        };
-
-    for i in 0..sample_count {
-        let node = unsafe { v8__CpuProfile__GetSample(profile, i as c_int) };
-        let ts = unsafe { v8__CpuProfile__GetSampleTimestamp(profile, i as c_int) };
-        let wall_us = if i + 1 < sample_count {
-            unsafe { v8__CpuProfile__GetSampleTimestamp(profile, (i + 1) as c_int) - ts }
-        } else {
-            end_time - ts
-        }
-        .max(0);
-
-        // Walk leaf → root via GetParent(), skipping the synthetic root node.
-        let mut location_ids = Vec::new();
-        let mut current = node;
-        loop {
-            if current.is_null() {
-                break;
-            }
-            let parent = unsafe { v8__CpuProfileNode__GetParent(current) };
-            // Skip the root node (it has no parent).
-            if parent.is_null() {
-                break;
-            }
-
-            let name = unsafe {
-                let ptr = v8__CpuProfileNode__GetFunctionNameStr(current);
-                if ptr.is_null() {
-                    ""
-                } else {
-                    CStr::from_ptr(ptr).to_str().unwrap_or("")
-                }
-            };
-            let filename = unsafe {
-                let ptr = v8__CpuProfileNode__GetScriptResourceNameStr(current);
-                if ptr.is_null() {
-                    ""
-                } else {
-                    CStr::from_ptr(ptr).to_str().unwrap_or("")
-                }
-            };
-            let line = unsafe { v8__CpuProfileNode__GetLineNumber(current) } as i64;
-
-            // Use display name "(anonymous)" for anonymous functions.
-            let display_name = if name.is_empty() { "(anonymous)" } else { name };
-
-            let fn_id = get_or_create_function(&mut enc, display_name, filename, line);
-            let loc_id = get_or_create_location(&mut enc, fn_id, line);
-            location_ids.push(loc_id);
-
-            current = parent;
-        }
-
-        // Only emit non-empty samples (some samples hit the root directly).
-        if !location_ids.is_empty() {
-            enc.samples.push(Sample {
-                location_ids,
-                values: vec![1, wall_us],
-            });
+impl ProfileAccumulator {
+    fn new() -> Self {
+        use pprof::{ProfileEncoder, ValueType};
+        let mut encoder = ProfileEncoder::new();
+        let samples = encoder.strings.intern("samples");
+        let count = encoder.strings.intern("count");
+        let wall = encoder.strings.intern("wall");
+        let microseconds = encoder.strings.intern("microseconds");
+        encoder.value_types.push(ValueType {
+            r#type: samples,
+            unit: count,
+        });
+        encoder.value_types.push(ValueType {
+            r#type: wall,
+            unit: microseconds,
+        });
+        Self {
+            encoder,
+            function_map: HashMap::new(),
+            location_map: HashMap::new(),
+            sample_map: HashMap::new(),
+            thread_key: None,
+            wall_type: wall,
+            microseconds_unit: microseconds,
         }
     }
 
-    enc.encode()
+    fn function(&mut self, name: &str, filename: &str, start_line: i64) -> u64 {
+        use pprof::Function;
+        let name = self.encoder.strings.intern(name);
+        let filename = self.encoder.strings.intern(filename);
+        let key = (name, filename, start_line);
+        if let Some(id) = self.function_map.get(&key) {
+            return *id;
+        }
+        let id = self.encoder.functions.len() as u64 + 1;
+        self.encoder.functions.push(Function {
+            id,
+            name,
+            system_name: name,
+            filename,
+            start_line,
+        });
+        self.function_map.insert(key, id);
+        id
+    }
+
+    fn location(&mut self, function_id: u64, line: i64) -> u64 {
+        use pprof::{Line, Location};
+        let key = (function_id, line);
+        if let Some(id) = self.location_map.get(&key) {
+            return *id;
+        }
+        let id = self.encoder.locations.len() as u64 + 1;
+        self.encoder.locations.push(Location {
+            id,
+            lines: vec![Line { function_id, line }],
+        });
+        self.location_map.insert(key, id);
+        id
+    }
+
+    fn merge_profile(&mut self, profile: *const c_void, thread: Option<&str>) {
+        use pprof::Sample;
+        let sample_count = unsafe { v8__CpuProfile__GetSamplesCount(profile) } as usize;
+        let end_time = unsafe { v8__CpuProfile__GetEndTime(profile) };
+        if thread.is_some() && self.thread_key.is_none() {
+            self.thread_key = Some(self.encoder.strings.intern("thread"));
+        }
+        let thread = thread.map(|value| self.encoder.strings.intern(value));
+        for index in 0..sample_count {
+            let node = unsafe { v8__CpuProfile__GetSample(profile, index as c_int) };
+            let timestamp = unsafe { v8__CpuProfile__GetSampleTimestamp(profile, index as c_int) };
+            let wall_us = if index + 1 < sample_count {
+                unsafe {
+                    v8__CpuProfile__GetSampleTimestamp(profile, (index + 1) as c_int) - timestamp
+                }
+            } else {
+                end_time - timestamp
+            }
+            .max(0);
+
+            // Walk leaf to root, excluding V8's synthetic root node.
+            let mut location_ids = Vec::new();
+            let mut current = node;
+            loop {
+                if current.is_null() {
+                    break;
+                }
+                let parent = unsafe { v8__CpuProfileNode__GetParent(current) };
+                if parent.is_null() {
+                    break;
+                }
+
+                let name = unsafe {
+                    let pointer = v8__CpuProfileNode__GetFunctionNameStr(current);
+                    if pointer.is_null() {
+                        ""
+                    } else {
+                        CStr::from_ptr(pointer).to_str().unwrap_or("")
+                    }
+                };
+                let filename = unsafe {
+                    let pointer = v8__CpuProfileNode__GetScriptResourceNameStr(current);
+                    if pointer.is_null() {
+                        ""
+                    } else {
+                        CStr::from_ptr(pointer).to_str().unwrap_or("")
+                    }
+                };
+                let line = unsafe { v8__CpuProfileNode__GetLineNumber(current) } as i64;
+                let display_name = if name.is_empty() { "(anonymous)" } else { name };
+                let function_id = self.function(display_name, filename, line);
+                location_ids.push(self.location(function_id, line));
+                current = parent;
+            }
+
+            if !location_ids.is_empty() {
+                if let Some(thread) = thread {
+                    let values = self
+                        .sample_map
+                        .entry((thread, location_ids))
+                        .or_insert([0, 0]);
+                    values[0] += 1;
+                    values[1] += wall_us;
+                } else {
+                    self.encoder.samples.push(Sample {
+                        location_ids,
+                        values: vec![1, wall_us],
+                        labels: Vec::new(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn encode(mut self, time_nanos: i64, duration_nanos: i64) -> Vec<u8> {
+        use pprof::{Label, Sample};
+        let mut samples: Vec<_> = self.sample_map.drain().collect();
+        samples.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        for ((thread, location_ids), values) in samples {
+            self.encoder.samples.push(Sample {
+                location_ids,
+                values: values.to_vec(),
+                labels: vec![Label {
+                    key: self.thread_key.unwrap(),
+                    str: thread,
+                }],
+            });
+        }
+        self.encoder.time_nanos = time_nanos;
+        self.encoder.duration_nanos = duration_nanos;
+        self.encoder.period_type = pprof::ValueType {
+            r#type: self.wall_type,
+            unit: self.microseconds_unit,
+        };
+        self.encoder.period = 1000;
+        self.encoder.encode()
+    }
+}
+
+fn unix_time_nanos() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos().min(i64::MAX as u128) as i64)
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------------------
@@ -351,5 +693,26 @@ fn get_title(
         Some(OwnedTitle(v8::Global::new(scope, s)))
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProcessProfileSession;
+
+    #[test]
+    fn process_session_waits_for_every_realm_registration() {
+        let session = ProcessProfileSession::new();
+        let first = session.register("entry.ts").unwrap();
+        let second = session.register("entry.ts").unwrap();
+        assert_ne!(first, second);
+
+        session.close();
+        assert!(session.register("late.ts").is_none());
+        assert!(session.encode().unwrap_err().contains("2 Realm profile(s)"));
+
+        session.abandon();
+        session.abandon();
+        assert!(!session.encode().unwrap().is_empty());
     }
 }

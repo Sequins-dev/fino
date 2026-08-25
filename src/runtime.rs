@@ -279,7 +279,9 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             pump_and_checkpoint(scope);
         }
 
-        // Dispose the CPU profiler if it was created.
+        crate::profiler::finish_realm_profile(&mut state_rc.borrow_mut());
+
+        // Dispose the public CPU profiler if it was created.
         if let Some(ptr) = state_rc.borrow_mut().cpu_profiler.take() {
             unsafe { crate::profiler::dispose_profiler(ptr) };
         }

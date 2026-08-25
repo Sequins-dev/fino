@@ -113,6 +113,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         BuiltinKind::Synthetic(inspector_module::create_module),
     ),
     (
+        "internal:process-profiler",
+        BuiltinKind::Synthetic(profiler::create_process_module),
+    ),
+    (
         "internal:format/typescript",
         BuiltinKind::Synthetic(typescript_format::create_module),
     ),

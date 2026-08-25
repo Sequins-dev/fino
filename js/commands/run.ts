@@ -9,7 +9,10 @@
  * orchestrator (`internal:orchestrator`), which runs it as a supervised
  * app-workload child realm.
  *
- * With `--otlp-endpoint` or the `OTEL_EXPORTER_OTLP_ENDPOINT` environment
+ * With `--profile`, the executable records every in-process Realm into one
+ * `profile.pb` pprof file, using the recognized `thread` sample label to keep
+ * Realm stacks distinct. With `--otlp-endpoint` or the
+ * `OTEL_EXPORTER_OTLP_ENDPOINT` environment
  * variable, the endpoint travels to the child as realm bootstrap metadata so
  * the child installs its own CLI OpenTelemetry providers around the entry
  * import. With `--watch`, the script instead runs in a watched `Realm` that
@@ -79,6 +82,7 @@ function normalizeScriptSpecifier(script: string): string {
 interface RunInput {
   script?: unknown;
   watch?: unknown;
+  profile?: unknown;
   'otlp-endpoint'?: unknown;
 }
 /**
@@ -151,12 +155,13 @@ async function runScriptTask(input: RunInput): Promise<unknown> {
 /**
  * The `run` command task, exported as the module default.
  *
- * The command requires a script positional and supports `--watch` plus
- * `--otlp-endpoint`. Option parsing stops after the script positional, so any
- * later tokens — flags included — are collected as `args` for the script
- * rather than parsed as run options. Runtime behavior is delegated to the
- * same private script runner the root shortcut uses, so root-level and
- * subcommand script execution stay consistent.
+ * The command requires a script positional and supports `--watch`, `--profile`,
+ * and `--otlp-endpoint`. `--profile` writes the process-wide Realm CPU profile
+ * to `profile.pb` after the run settles. Option parsing stops after the script
+ * positional, so any later tokens — flags included — are collected as `args`
+ * for the script rather than parsed as run options. Runtime behavior is
+ * delegated to the same private script runner the root shortcut uses, so
+ * root-level and subcommand script execution stay consistent.
  *
  * ```ts no_run
  * import run from 'fino:commands/run';
@@ -182,6 +187,11 @@ const command = new Task({
         flags: '--watch',
         type: 'boolean',
         description: 'Re-run the script whenever any imported file changes',
+      },
+      {
+        flags: '--profile',
+        type: 'boolean',
+        description: 'Write a process-wide Realm CPU profile to profile.pb',
       },
     ],
     positionals: [

@@ -1,5 +1,7 @@
 //! pprof protobuf encoder — port of DataDog/pprof-format (MIT).
 //!
+//! Schema: <https://github.com/google/pprof/blob/main/proto/profile.proto>
+//!
 //! Only two wire types are used (sufficient for the pprof schema):
 //!   - wire type 0: varint (i64, u64, bool)
 //!   - wire type 2: length-delimited (submessages, packed repeated, strings)
@@ -107,12 +109,34 @@ impl Function {
 pub struct Sample {
     pub location_ids: Vec<u64>,
     pub values: Vec<i64>,
+    pub labels: Vec<Label>,
 }
 
 impl Sample {
     fn encode(&self, buf: &mut Vec<u8>) {
         encode_packed_u64(buf, 1, &self.location_ids);
         encode_packed_i64(buf, 2, &self.values);
+        for label in &self.labels {
+            let mut inner = Vec::new();
+            label.encode(&mut inner);
+            encode_length_delimited(buf, 3, &inner);
+        }
+    }
+}
+
+/// A string-valued pprof sample label.
+///
+/// The schema also permits numeric labels, but CPU Realm profiles only need
+/// the string form used by pprof's recognized `thread` tag.
+pub struct Label {
+    pub key: u64,
+    pub str: u64,
+}
+
+impl Label {
+    fn encode(&self, buf: &mut Vec<u8>) {
+        encode_varint_field(buf, 1, self.key);
+        encode_varint_field(buf, 2, self.str);
     }
 }
 
@@ -200,5 +224,27 @@ impl ProfileEncoder {
         encode_sint64_field(&mut buf, 12, self.period);
 
         buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Label, Sample};
+
+    #[test]
+    fn sample_encodes_string_labels_from_the_pprof_schema() {
+        let sample = Sample {
+            location_ids: vec![1],
+            values: vec![1, 2],
+            labels: vec![Label { key: 5, str: 6 }],
+        };
+        let mut bytes = Vec::new();
+        sample.encode(&mut bytes);
+        assert_eq!(
+            bytes,
+            vec![
+                0x0a, 0x01, 0x01, 0x12, 0x02, 0x01, 0x02, 0x1a, 0x04, 0x08, 0x05, 0x10, 0x06
+            ]
+        );
     }
 }
