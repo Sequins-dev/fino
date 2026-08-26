@@ -192,6 +192,53 @@ describe('Process APIs', () => {
   });
 });
 describe('Process class', { exclusive: true }, () => {
+  it("does not leak another Process instance's stdio into spawned children", async (t) => {
+    const countOpenFds = async (): Promise<number> => {
+      const proc = new Process(execPath, [
+        new URL('./fixtures/open-fd-count.ts', import.meta.url).pathname,
+      ]);
+      proc.stdin.close();
+      const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
+      const [result] = await Promise.all([
+        proc.wait(),
+        (async () => {
+          for await (const chunk of proc.stdout) stdout.push(chunk);
+        })(),
+        (async () => {
+          for await (const chunk of proc.stderr) stderr.push(chunk);
+        })(),
+      ]);
+      t.equal(result.code, 0, `fd probe exits successfully: ${joinChunks(stderr)}`);
+      return Number(joinChunks(stdout).trim());
+    };
+
+    const baseline = await countOpenFds();
+    const keepers = Array.from({ length: 8 }, () => new Process('/bin/sleep', ['30']));
+    for (const keeper of keepers) keeper.stdin.close();
+    try {
+      const withKeepers = await countOpenFds();
+      t.ok(
+        withKeepers <= baseline + 2,
+        `child inherited no unrelated stdio descriptors: baseline=${baseline}, actual=${withKeepers}`,
+      );
+    } finally {
+      for (const keeper of keepers) keeper.kill();
+      await Promise.all(
+        keepers.flatMap((keeper) => [
+          keeper.wait(),
+          (async () => {
+            for await (const _ of keeper.stdout) {
+            }
+          })(),
+          (async () => {
+            for await (const _ of keeper.stderr) {
+            }
+          })(),
+        ]),
+      );
+    }
+  });
   it('reports sandbox backend capabilities without spawning', (t) => {
     const capabilities = processSandboxCapabilities();
     t.equal(capabilities.platform, os, 'capabilities use the current platform');

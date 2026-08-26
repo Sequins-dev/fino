@@ -27,15 +27,18 @@
  *
  * ## Pipe lifecycle
  *
- * Three `pipe(2)` calls create six file descriptors before spawning:
+ * Three close-on-exec pipes create six file descriptors before spawning:
  *
  *   stdin:  [stdinR  -> child stdin,  stdinW  -> parent Writer]
  *   stdout: [stdoutR -> parent Reader, stdoutW -> child stdout]
  *   stderr: [stderrR -> parent Reader, stderrW -> child stderr]
  *
- * `posix_spawn_file_actions_*` wires the child-side fds before exec. The
- * parent-side fds are set to O_NONBLOCK so they can be used with the event
- * loop.
+ * `posix_spawn_file_actions_*` wires the child-side fds before exec. Linux
+ * creates the descriptors atomically with `pipe2(O_CLOEXEC)`; macOS combines
+ * close-on-exec descriptors with `POSIX_SPAWN_CLOEXEC_DEFAULT`. This prevents
+ * concurrent spawns in other Realms from retaining an unrelated child's pipe
+ * writer and delaying EOF. The parent-side fds are set to `O_NONBLOCK` for the
+ * event loop.
  *
  *
  * ## buildCStringArray and GC lifetime
@@ -534,7 +537,10 @@ const isLinux = os === 'linux';
 // fcntl(2) constants
 const F_GETFL = isLinux ? 3 : 3;
 const F_SETFL = 4;
+const F_SETFD = 2;
+const FD_CLOEXEC = 1;
 const O_NONBLOCK = isLinux ? 2048 : 4;
+const O_CLOEXEC = 0x80000;
 // Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
 const SYS_PIDFD_OPEN = 434n;
 // Default signal for kill (also exported in signal constants below)
@@ -624,6 +630,14 @@ const lib = dlopen(LIBC, {
     result: 'i32',
   },
 });
+const pipe2Lib = isLinux
+  ? dlopen(LIBC, {
+      pipe2: {
+        parameters: ['buffer', 'i32'],
+        result: 'i32',
+      },
+    })
+  : null;
 const spawnChdirLib = (() => {
   try {
     return dlopen(LIBC, {
@@ -636,6 +650,15 @@ const spawnChdirLib = (() => {
     return null;
   }
 })();
+const spawnInheritLib =
+  os === 'darwin'
+    ? dlopen(LIBC, {
+        posix_spawn_file_actions_addinherit_np: {
+          parameters: ['buffer', 'i32'],
+          result: 'i32',
+        },
+      })
+    : null;
 const RUSAGE_SELF = 0;
 let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------
@@ -697,6 +720,7 @@ const POSIX_SPAWN_ATTR_BYTES = 512;
 const SIGSET_BYTES = 128;
 const POSIX_SPAWN_SETSIGDEF = 0x0004;
 const POSIX_SPAWN_SETSIGMASK = 0x0008;
+const POSIX_SPAWN_CLOEXEC_DEFAULT = 0x4000;
 function addSpawnAction(rc: number, action: string): void {
   if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
 }
@@ -714,6 +738,22 @@ function addSignalToSet(set: ArrayBuffer, signo: number): void {
   if (byteOffset >= set.byteLength) return;
   const bytes = new Uint8Array(set);
   bytes[byteOffset] |= 1 << (bit & 7);
+}
+function createProcessPipe(buf: ArrayBuffer, label: string): void {
+  const rc = Number(
+    pipe2Lib === null ? lib.symbols.pipe(buf) : pipe2Lib.symbols.pipe2(buf, O_CLOEXEC),
+  );
+  if (rc < 0) throw new Error(`pipe() failed for ${label}`);
+  if (pipe2Lib !== null) return;
+  const [readFd, writeFd] = readPipeFds(buf);
+  if (
+    Number(lib.symbols.fcntl(readFd, F_SETFD, FD_CLOEXEC)) < 0 ||
+    Number(lib.symbols.fcntl(writeFd, F_SETFD, FD_CLOEXEC)) < 0
+  ) {
+    lib.symbols.close(readFd);
+    lib.symbols.close(writeFd);
+    throw new Error(`fcntl(FD_CLOEXEC) failed for ${label}`);
+  }
 }
 function currentRssBytes(): number {
   const buf = new ArrayBuffer(256);
@@ -1730,21 +1770,25 @@ export class Process {
     const stdinBuf = new ArrayBuffer(8);
     const stdoutBuf = new ArrayBuffer(8);
     const stderrBuf = new ArrayBuffer(8);
-    if (Number(lib.symbols.pipe(stdinBuf)) < 0) throw new Error('pipe() failed for stdin');
-    if (Number(lib.symbols.pipe(stdoutBuf)) < 0) {
+    createProcessPipe(stdinBuf, 'stdin');
+    try {
+      createProcessPipe(stdoutBuf, 'stdout');
+    } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
       lib.symbols.close(stdinR);
       lib.symbols.close(stdinW);
-      throw new Error('pipe() failed for stdout');
+      throw error;
     }
-    if (Number(lib.symbols.pipe(stderrBuf)) < 0) {
+    try {
+      createProcessPipe(stderrBuf, 'stderr');
+    } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
       const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
       lib.symbols.close(stdinR);
       lib.symbols.close(stdinW);
       lib.symbols.close(stdoutR);
       lib.symbols.close(stdoutW);
-      throw new Error('pipe() failed for stderr');
+      throw error;
     }
     const [stdinR, stdinW] = readPipeFds(stdinBuf);
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
@@ -1784,7 +1828,9 @@ export class Process {
         Number(
           lib.symbols.posix_spawnattr_setflags(
             attrs,
-            POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK,
+            POSIX_SPAWN_SETSIGDEF |
+              POSIX_SPAWN_SETSIGMASK |
+              (os === 'darwin' ? POSIX_SPAWN_CLOEXEC_DEFAULT : 0),
           ),
         ),
         'posix_spawnattr_setflags',
@@ -1816,6 +1862,14 @@ export class Process {
         Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
         'posix_spawn_file_actions_addclose(parent stderr)',
       );
+      if (spawnInheritLib !== null) {
+        for (const fd of _inheritFds ?? []) {
+          addSpawnAction(
+            Number(spawnInheritLib.symbols.posix_spawn_file_actions_addinherit_np(actions, fd)),
+            `posix_spawn_file_actions_addinherit_np(${fd})`,
+          );
+        }
+      }
       if (cwdBuf !== null) {
         if (spawnChdirLib === null) {
           throw new Error(
@@ -1861,7 +1915,6 @@ export class Process {
     // Keep CString buffers definitely live until after posix_spawnp returns.
     void argvBufs;
     void envpBufs;
-    void _inheritFds;
     return { pid: childPid, stdinFd: stdinW, stdoutFd: stdoutR, stderrFd: stderrR };
   }
   /**
