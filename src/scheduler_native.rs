@@ -1912,8 +1912,7 @@ fn take_reactor_events(
 
 /// Tear down the process reactor pool.
 ///
-/// Every reactor thread must already have been stopped: the pool is dropped
-/// here, and its parked realms disposed on this thread. Validation happens
+/// Every reactor thread must already have been stopped. Validation happens
 /// before any mutation so a refused close leaves the pool exactly as it was.
 fn stop_reactor_pool(
     scope: &mut v8::PinScope,
@@ -1949,14 +1948,22 @@ fn stop_reactor_pool(
         return;
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
-    for item in parked.into_values() {
-        match item.workload {
-            PoolWorkload::Live(workload) => drop_workload(workload.0),
-            PoolWorkload::Pending(pending) => {
-                retire_owner(item.owner);
-                drop(pending);
+    // This callback runs while the root isolate is entered. A parked workload
+    // owns a different SharedIsolate whose Locker therefore cannot be acquired
+    // on this thread; dispose the stopped pool's isolates on a clean thread.
+    let disposal = std::thread::spawn(move || {
+        for item in parked.into_values() {
+            match item.workload {
+                PoolWorkload::Live(workload) => drop_workload(workload.0),
+                PoolWorkload::Pending(pending) => {
+                    retire_owner(item.owner);
+                    drop(pending);
+                }
             }
         }
+    });
+    if disposal.join().is_err() {
+        throw_error(scope, "stopReactorPool: parked Realm disposal failed");
     }
 }
 
