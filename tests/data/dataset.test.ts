@@ -216,12 +216,14 @@ describe('DataLoader', () => {
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+    // The first two batches outlast both cold Realm constructions, guaranteeing
+    // overlap without a rendezvous that assumes which queued Realm starts first.
+    // Later batches complete immediately so the test pays the delay only once.
     const source = Dataset.from(
-      [0, 1, 2, 3].map((value) => ({
+      [5_000, 5_000, 0, 0].map((delayMs, value) => ({
         value,
-        delayMs: 0,
+        delayMs,
         stats,
-        ...(value < 2 ? { minimumActive: 2 } : {}),
       })),
     );
     const loader = new DataLoader<typeof source extends Dataset<infer T> ? T : never, number[]>(

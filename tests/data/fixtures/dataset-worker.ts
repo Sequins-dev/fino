@@ -2,7 +2,6 @@ type ParallelValue = {
   value: number;
   delayMs: number;
   stats: SharedArrayBuffer;
-  minimumActive?: number;
   fail?: boolean;
 };
 
@@ -57,14 +56,6 @@ export default async function collate(
   const active = Atomics.add(stats, 0, 1) + 1;
   recordMaximum(stats, active);
   try {
-    const deadline = Date.now() + 15_000;
-    while (
-      parallel[0]!.minimumActive !== undefined &&
-      Atomics.load(stats, 0) < parallel[0]!.minimumActive
-    ) {
-      if (Date.now() >= deadline) throw new Error('dataset worker concurrency barrier timed out');
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
     await new Promise((resolve) => setTimeout(resolve, parallel[0]!.delayMs));
     if (parallel[0]!.fail) throw new Error(`worker-${parallel[0]!.value} failed`);
     return parallel.map((value) => value.value * 10);

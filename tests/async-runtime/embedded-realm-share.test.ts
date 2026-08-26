@@ -6,7 +6,6 @@ import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import { dlopen } from 'fino:ffi';
 import { os } from 'fino:process';
-import * as loop from 'internal:runtime/loop';
 import type asyncFfiChild from './fixtures/async-ffi-child.ts';
 const ENTRY = new URL('./fixtures/async-ffi-child.ts', import.meta.url).pathname;
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -20,8 +19,11 @@ function recordMaximum(stats: Int32Array, value: number): void {
 async function waitForActive(stats: Int32Array, count: number): Promise<void> {
   const deadline = Date.now() + 15_000;
   while (Atomics.load(stats, 0) < count) {
-    if (Date.now() >= deadline) throw new Error('async FFI worker activation timed out');
-    await loop.timeout(5);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('async FFI worker activation timed out');
+    const current = Atomics.load(stats, 0);
+    const waiter = Atomics.waitAsync(stats, 0, current, remaining);
+    if (waiter.async) await waiter.value;
   }
 }
 describe('reactor-pooled Realm async execution', () => {
@@ -46,6 +48,7 @@ describe('reactor-pooled Realm async execution', () => {
     await waitForActive(stats, 1);
     const active = Atomics.add(stats, 0, 1) + 1;
     recordMaximum(stats, active);
+    Atomics.notify(stats, 0);
     const parent = libAsync.symbols.usleep(sleepUs).finally(() => Atomics.sub(stats, 0, 1));
     const [childPid] = await Promise.all([child, parent]);
     t.ok(typeof childPid === 'number' && childPid > 0, 'child returned valid pid');
