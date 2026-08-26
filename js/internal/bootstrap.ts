@@ -633,7 +633,8 @@ if (_childEntry) {
     _entryListenersReady = true;
     _childPort?._resumeMessages();
   }
-  _loadChildEntry().then(
+  const _childEntryPromise = _loadChildEntry();
+  _childEntryPromise.then(
     function _onChildEntryDone(mod: { default?: unknown }) {
       _releaseEarlyMessages();
       // A default-exported Task (branded via Symbol.for('fino.task')) exposes
@@ -753,6 +754,7 @@ if (_childEntry) {
           } catch {}
         }
       }
+      _childPort?._postControl(EnvelopeKind.Lifecycle, 0, { phase: 'exit' });
       _shutdownDone = true;
     })();
   }
@@ -805,7 +807,13 @@ if (_childEntry) {
   // _watcherRef / _watchPollRef that _childIsDone() uses for teardown.
   if (_watchMode) {
     void (async function _watchLoop() {
-      const { Watcher } = (await import('fino:file/watch')) as {
+      const watcherModule = import('fino:file/watch');
+      try {
+        await _childEntryPromise;
+      } catch {
+        return;
+      }
+      const { Watcher } = (await watcherModule) as {
         Watcher: new () => {
           watch(p: string): Promise<void>;
           close(): void;

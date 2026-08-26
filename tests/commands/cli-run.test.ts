@@ -38,6 +38,17 @@ describe('CLI commands: run', () => {
     t.equal(stderr, '', 'script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
   });
+  it('terminates and awaits an abandoned process Realm during command shutdown', async (t) => {
+    const fixture = new URL('../fixtures/abandoned-process-realm.ts', import.meta.url).pathname;
+    const started = performance.now();
+    const { stderr, result } = await runCli([fixture]);
+    const elapsed = performance.now() - started;
+    t.equal(result.code, 0, `command exits successfully${stderr ? `: ${stderr}` : ''}`);
+    t.ok(
+      elapsed < 15_000,
+      `shutdown did not wait for the child watchdog (${elapsed.toFixed(0)}ms)`,
+    );
+  });
   it('writes one thread-labeled pprof for every in-process Realm', async (t) => {
     await withTempProject(
       {

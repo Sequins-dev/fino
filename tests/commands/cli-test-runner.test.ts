@@ -458,7 +458,7 @@ describe('CLI commands: test', () => {
           "import { DiskFileSystem } from 'fino:file';",
           "import { registerShutdownHook } from 'internal:shutdown';",
           'const fs = new DiskFileSystem();',
-          'setTimeout(() => {}, 3_000);',
+          'setTimeout(() => {}, 30_000);',
           `registerShutdownHook(() => fs.writeFile(${JSON.stringify(marker)}, new Uint8Array([1])));`,
           "test('reports before its Realm exits', (t) => t.ok(true));",
           '',
@@ -473,7 +473,7 @@ describe('CLI commands: test', () => {
       );
       t.equal(result.code, 0, 'the delayed test Realm exits successfully');
       t.equal(stderr, '', 'the delayed exit does not report a lifecycle error');
-      t.ok(performance.now() - started < 2_000, 'the ambient timer does not retain the Realm');
+      t.ok(performance.now() - started < 10_000, 'the ambient timer does not retain the Realm');
       t.ok(await fs.lstat(marker), 'shutdown hooks finish before the Realm exits');
     });
   });

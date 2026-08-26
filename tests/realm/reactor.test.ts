@@ -143,7 +143,7 @@ describe('Reactor-pooled Realm basics', () => {
     // both sleep on a timer and answer over their port exercise every routed
     // filter, and any aliasing strands one of them forever.
     const entry = new URL('./fixtures/async-fn.ts', import.meta.url).pathname;
-    for (let round = 0; round < 6; round++) {
+    for (let round = 0; round < 12; round++) {
       const realm = new Realm<typeof asyncFn>({ entry });
       t.equal(await realm.call(round), round * 2, `sequential realm ${round} answered`);
     }

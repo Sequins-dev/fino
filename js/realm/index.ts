@@ -2011,26 +2011,14 @@ export class Realm<F extends RealmFn = RealmFn> {
    * ```
    */
   port!: TransportPort;
-  /** Completion driven by the process scheduler for a scheduled realm. @internal */
-  #scheduledCompletion: Promise<void> | null = null;
-  /**
-   * Memoised exit promise for a process realm.
-   *
-   * `run()` and `call()` both need to observe the child exiting, but a realm can
-   * hold only one readiness watch per descriptor — two independent waiters on
-   * the completion pipe would displace each other and one would never settle.
-   *
-   * @internal
-   */
-  #processCompletion: Promise<void> | null = null;
+  /** Shared completion for callers, calls, and runtime-owned shutdown. @internal */
+  #completion: Promise<void> | null = null;
   /** Construction data retained only while a scheduled watch realm may reload. @internal */
   #scheduledOpts: RealmOptions | null = null;
   /** Import rules rebound to a replacement scheduled watch port. @internal */
   #scheduledRules: ImportRule[] = [];
   /** Removes this realm from its owning workload's shutdown stack. @internal */
-  #scheduledShutdownRegistration: { dispose(): void } | null = null;
-  /** Calls whose response still owns this realm during shutdown. @internal */
-  #activeCalls = 0;
+  #shutdownRegistration: { dispose(): void } | null = null;
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   /**
    * Private property `#spawnPromise` used by `Realm`.
@@ -2149,6 +2137,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   #activeChildPort: TransportPort | null = null;
   /** Parent-owned writes triggered by child runtime envelopes. @internal */
   #channelWork: Promise<void> = Promise.resolve();
+  /** Calls whose channel response still owns this realm during shutdown. @internal */
+  #activeCalls = 0;
 
   /** Configure the integrated channel before facades bind or delivery starts. @internal */
   #configurePort(port: TransportPort, opts: RealmOptions): void {
@@ -2278,9 +2268,9 @@ export class Realm<F extends RealmFn = RealmFn> {
       let status: ReturnType<typeof takeScheduledRealmStatus>;
       do {
         await readable(scheduled.completionFd);
+        port._drain();
         status = takeScheduledRealmStatus(scheduled.handle);
       } while (status.kind === 'pending');
-      port._drain();
       await this.#channelWork;
       removeRead(scheduled.completionFd);
       port.close();
@@ -2296,10 +2286,28 @@ export class Realm<F extends RealmFn = RealmFn> {
       }
     })();
   }
+  /** Own the child until it exits, including when its creator abandons it. @internal */
+  #ownLifetime(): void {
+    const completion = this.run();
+    this.#shutdownRegistration = registerShutdownHook(() => {
+      // An in-flight call owns the realm until its response crosses the
+      // channel. With no caller left to receive work, force-clean the child.
+      if (this.#activeCalls === 0) this.terminate({ force: true });
+      // A cluster peer owns remote execution. Its termination request is
+      // best-effort; waiting for an unreachable peer would prevent local
+      // shutdown from completing.
+      if (this.#kind !== 'remote') return completion.catch(() => {});
+    });
+    void completion.then(
+      () => this.#disposeShutdownRegistration(),
+      () => this.#disposeShutdownRegistration(),
+    );
+  }
+
   /** Stop retaining this realm in its owning workload's shutdown stack. @internal */
-  #disposeScheduledShutdownRegistration(): void {
-    this.#scheduledShutdownRegistration?.dispose();
-    this.#scheduledShutdownRegistration = null;
+  #disposeShutdownRegistration(): void {
+    this.#shutdownRegistration?.dispose();
+    this.#shutdownRegistration = null;
   }
 
   /**
@@ -2424,16 +2432,9 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = -1;
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
-      this.#scheduledCompletion = this.#startScheduledRealm(opts, rules);
-      this.#scheduledShutdownRegistration = registerShutdownHook(() => {
-        if (this.#activeCalls === 0) this.terminate({ force: true });
-        return this.#scheduledCompletion!.catch(() => {});
-      });
-      void this.#scheduledCompletion.then(
-        () => this.#disposeScheduledShutdownRegistration(),
-        () => this.#disposeScheduledShutdownRegistration(),
-      );
+      this.#completion = this.#startScheduledRealm(opts, rules);
     }
+    this.#ownLifetime();
     // Bind any Facade overrides so the parent-side RPC dispatcher is wired up.
     if (rules.length > 0) {
       const port = this.port;
@@ -2501,8 +2502,12 @@ export class Realm<F extends RealmFn = RealmFn> {
    * Run the child realm to completion.
    *
    * The returned promise resolves when the child exits cleanly and rejects when
-   * the child reports a runtime error. Watch-mode realms keep the promise
-   * pending across reloads until `terminate()` stops watching.
+   * the child reports a runtime error. Repeated calls return the same promise.
+   * Watch-mode realms keep it pending across reloads until `terminate()` stops
+   * watching. During command shutdown the runtime force-terminates and awaits
+   * abandoned local Realms; an in-flight call retains its Realm until the
+   * channel response settles. Remote termination is best-effort because a
+   * disconnected cluster peer cannot be allowed to block local process exit.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
@@ -2512,13 +2517,11 @@ export class Realm<F extends RealmFn = RealmFn> {
    * ```
    */
   run(): Promise<void> {
-    if (this.#kind === 'scheduled') {
-      return this.#scheduledCompletion!;
-    }
+    if (this.#completion !== null) return this.#completion;
     if (this.#kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
       const cluster = getCluster()!;
-      return (this.#spawnPromise ?? Promise.resolve('')).then(
+      this.#completion = (this.#spawnPromise ?? Promise.resolve('')).then(
         (childPortId: string) =>
           new Promise<void>((resolve, reject) => {
             // A remote realm's lifecycle is entirely cluster transport events.
@@ -2528,8 +2531,10 @@ export class Realm<F extends RealmFn = RealmFn> {
             });
           }),
       );
+    } else {
+      this.#completion = this.#threadExit();
     }
-    return this.#threadExit();
+    return this.#completion;
   }
   /**
    * Await a process or sandbox realm's exit, watching its completion pipe once.
@@ -2543,7 +2548,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   #threadExit(): Promise<void> {
     const self = this;
     const kind = this.#kind === 'sandbox' ? 'sandbox' : 'process';
-    this.#processCompletion ??= new Promise<void>((resolve, reject) => {
+    return new Promise<void>((resolve, reject) => {
       void _awaitThreadChild(
         {
           handle: self.#handle,
@@ -2566,7 +2571,6 @@ export class Realm<F extends RealmFn = RealmFn> {
     })
       .then(() => this.#channelWork)
       .finally(() => (this.#activeChildPort ?? this.port).close());
-    return this.#processCompletion;
   }
   /**
    * Call the child Realm's default-exported function with `args`.
@@ -2613,7 +2617,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         });
         port.start();
         port._postControl(EnvelopeKind.Call, 0, { args });
-        void this.#scheduledCompletion!.then(
+        void this.run().then(
           () => {
             if (settled) return;
             settled = true;
@@ -2628,17 +2632,22 @@ export class Realm<F extends RealmFn = RealmFn> {
       });
     } else if (kind === 'remote') {
       const clusterPort = this.port as ClusterPort;
-      const cluster = getCluster()!;
       base = (this.#spawnPromise ?? Promise.resolve('')).then(
-        (childPortId: string) =>
+        () =>
           new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
             let settled = false;
-            cluster.onRealmExit(childPortId, (error?: string) => {
-              if (settled) return;
-              settled = true;
-              if (error) reject(new Error(error));
-              else reject(new Error('Realm exited before returning a call result'));
-            });
+            void this.run().then(
+              () => {
+                if (settled) return;
+                settled = true;
+                reject(new Error('Realm exited before returning a call result'));
+              },
+              (error) => {
+                if (settled) return;
+                settled = true;
+                reject(error);
+              },
+            );
             const handler = (ev: unknown) => {
               if (settled) return;
               settled = true;
@@ -2673,7 +2682,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       );
     } else {
       base = new Promise<Awaited<ReturnType<F>>>((resolve, reject) => {
-        void this.#threadExit().then(
+        void this.run().then(
           () => reject(new Error('Realm exited before returning a call result')),
           reject,
         );
@@ -2743,7 +2752,6 @@ export class Realm<F extends RealmFn = RealmFn> {
   ): void {
     this.#watchTerminated = true;
     if (this.#kind === 'scheduled') {
-      this.#disposeScheduledShutdownRegistration();
       this.port._postControl(EnvelopeKind.Terminate, 0, null);
       // A realm spinning in synchronous JavaScript never returns to its loop to
       // observe the request above, and holds its reactor thread until it does.

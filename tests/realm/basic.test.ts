@@ -24,6 +24,15 @@ describe('Realm lifecycle', () => {
       ),
       'child lifecycle crossed the observed channel',
     );
+    t.ok(
+      frames.some(
+        (frame) =>
+          frame.capture === 'snapshot' &&
+          frame.kind === EnvelopeKind.Lifecycle &&
+          (frame.value as { phase?: unknown }).phase === 'exit',
+      ),
+      'run drains the ordered channel exit',
+    );
   });
   it('uses the thread reactor directly for parent and child realms', async (t) => {
     const realm = new Realm<typeof loopFdFn>({
