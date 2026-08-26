@@ -178,7 +178,10 @@ export interface HistoryStrategy {
  * const { strategy, history } = signalHistoryStrategy(appendOnlyHistoryStrategy());
  * history.subscribe((h) => console.log('history entries:', h.size));
  *
- * const bot = agent({ model: anthropic({ model: 'claude-sonnet-4-6' }), history: strategy });
+ * const bot = agent({
+ *   model: anthropic({ model: 'claude-sonnet-4-6' }),
+ *   history: () => strategy,
+ * });
  * await bot.generate('hello');
  * ```
  */
@@ -1030,7 +1033,10 @@ function lastSafeSplitIndex(
  * import { anthropic } from 'fino:ai/model';
  *
  * const strategy = appendOnlyHistoryStrategy();
- * const bot = agent({ model: anthropic({ model: 'claude-sonnet-4-6' }), history: strategy });
+ * const bot = agent({
+ *   model: anthropic({ model: 'claude-sonnet-4-6' }),
+ *   history: () => strategy,
+ * });
  * await bot.generate('hello');
  * console.log(strategy.history.render()); // full transcript so far
  * ```
@@ -1108,7 +1114,9 @@ export interface SummarizingHistoryStrategyOptions {
  * const model = anthropic({ model: 'claude-sonnet-4-6' });
  * const bot = agent({
  *   model,
- *   history: summarizingHistoryStrategy({ model, triggerTokens: 60000, keepRecent: 10 }),
+ *   history: (history) => summarizingHistoryStrategy({
+ *     model, triggerTokens: 60000, keepRecent: 10, history,
+ *   }),
  * });
  * ```
  */
@@ -1252,8 +1260,9 @@ export interface SelectiveSummaryHistoryStrategyOptions {
  * const model = anthropic({ model: 'claude-sonnet-4-6' });
  * const bot = agent({
  *   model,
- *   history: selectiveSummaryHistoryStrategy({
+ *   history: (history) => selectiveSummaryHistoryStrategy({
  *     model,
+ *     history,
  *     summaryPrompt: 'Condense the older conversation into key facts and decisions.',
  *     selector: (history) => history.refs().slice(0, -5).map((entry) => entry.id),
  *   }),

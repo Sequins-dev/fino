@@ -715,6 +715,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ai/skill", "ai/skill"),
     source_builtin!("fino:ai/eval", "ai/eval"),
     source_builtin!("fino:ai/mcp", "ai/mcp"),
+    source_builtin!("fino:ai/acp", "ai/acp"),
     source_builtin!("internal:ai/shared", "ai/shared"),
     source_builtin!("internal:ai/runtime", "ai/runtime-internal"),
     source_builtin!("internal:ai/model/anthropic", "ai/model/anthropic"),

@@ -1,5 +1,11 @@
 import { describe, it } from 'fino:test/test';
-import { InMemorySessionStore, Session, SqliteSessionStore, session } from 'fino:ai/session';
+import {
+  InMemorySessionStore,
+  Session,
+  SessionConflictError,
+  SqliteSessionStore,
+  session,
+} from 'fino:ai/session';
 import type { RunState } from 'fino:ai/session';
 import { agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
@@ -146,6 +152,55 @@ async function assertRevisionOnlyCheckpoint(
   t.ok(loadedHistory!.render().length > 0, 'history revision contains messages');
 }
 describe('Session', () => {
+  it('rejects concurrent turns racing on the same durable thread', async (t) => {
+    let started = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model: Model = {
+      name: 'thread-race',
+      dimensions: 0,
+      stream(request: GenerateRequest): ModelStream {
+        async function* generate() {
+          started++;
+          if (started === 2) release();
+          await bothStarted;
+          const rendered = JSON.stringify(request.messages);
+          yield* endTurn(rendered.includes('alpha') ? 'alpha answer' : 'beta answer');
+        }
+        return new ModelStreamImpl(generate());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    const store = new InMemorySessionStore();
+    const definition = agent({ model });
+    const alpha = session({ store, agent: definition, threadId: 'shared-thread' });
+    const beta = session({ store, agent: definition, threadId: 'shared-thread' });
+    const outcomes = await Promise.allSettled([
+      alpha.start('alpha', { runId: 'alpha-run' }),
+      beta.start('beta', { runId: 'beta-run' }),
+    ]);
+    const winnerIndex = outcomes.findIndex((outcome) => outcome.status === 'fulfilled');
+    const loserIndex = outcomes.findIndex((outcome) => outcome.status === 'rejected');
+    t.ok(winnerIndex >= 0);
+    t.ok(loserIndex >= 0);
+    t.ok((outcomes[loserIndex] as PromiseRejectedResult).reason instanceof SessionConflictError);
+    const winnerRunId = winnerIndex === 0 ? 'alpha-run' : 'beta-run';
+    const loserRunId = loserIndex === 0 ? 'alpha-run' : 'beta-run';
+    t.ok(await store.loadRun(winnerRunId));
+    t.equal(await store.loadRun(loserRunId), null);
+    const thread = await store.loadThread('shared-thread');
+    const history = await store.loadHistory(thread!.historyRevisionId!);
+    const rendered = JSON.stringify(history!.render());
+    t.ok(rendered.includes(winnerIndex === 0 ? 'alpha' : 'beta'));
+    t.ok(!rendered.includes(loserIndex === 0 ? 'alpha' : 'beta'));
+  });
   it('memory recall receives input text and hydrates working/recalled context into the model request', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
@@ -370,6 +425,7 @@ describe('Session', () => {
           updatedAt: Date.now(),
         },
         history: crashedHistory,
+        expectedThreadRevisionId: null,
       });
       const resumeAgent = agent({
         model: scriptModel([endTurn('resumed!')]),
@@ -980,8 +1036,8 @@ describe('Session.fork', () => {
     const store = await SqliteSessionStore.open(path);
     try {
       let compacted = false;
-      const compactStrategy: HistoryStrategy = {
-        history: new MessageHistory(),
+      const createCompactStrategy = (initial?: MessageHistory): HistoryStrategy => ({
+        history: initial ?? new MessageHistory(),
         async onAppend(message) {
           this.history = await this.history.append(message);
           const refs = this.history.refs();
@@ -1006,7 +1062,7 @@ describe('Session.fork', () => {
             messages: this.history.render(),
           };
         },
-      };
+      });
       const forkMsgs: ModelMessage[][] = [];
       const forkModel: Model = {
         name: 'fork-model',
@@ -1044,7 +1100,7 @@ describe('Session.fork', () => {
         store,
         agent: agent({
           model: forkModel,
-          history: compactStrategy,
+          history: createCompactStrategy,
         }),
       });
       const r1 = await parentSess.start('compactable context');
@@ -1109,11 +1165,13 @@ describe('SessionStore', () => {
         run,
         thread,
         history,
+        expectedThreadRevisionId: null,
       });
       await sqlite.commitSession({
         run,
         thread,
         history,
+        expectedThreadRevisionId: null,
       });
       for (const store of [memory, sqlite]) {
         const loadedRun = await store.loadRun(run.runId);
@@ -1177,6 +1235,7 @@ describe('SessionStore', () => {
               updatedAt: 1,
             },
             history,
+            expectedThreadRevisionId: null,
           }),
         /points at history revision/,
         'mismatched thread revision rejects before commit',
@@ -1186,6 +1245,93 @@ describe('SessionStore', () => {
       t.equal(await store.loadHistory(history.revisionId), null, 'history graph was not persisted');
     } finally {
       await store.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('stores reject a stale thread-head commit without writing the losing run', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const sqlite = await SqliteSessionStore.open(path);
+    const stores = [new InMemorySessionStore(), sqlite];
+    try {
+      for (const store of stores) {
+        let base = new MessageHistory();
+        base = await base.append({ role: 'user', content: 'base' });
+        const initialRun: RunState = {
+          runId: `initial-${crypto.randomUUID()}`,
+          threadId: 'conflict-thread',
+          status: 'done',
+          stepIndex: 1,
+          usage: { inputTokens: 1, outputTokens: 1 },
+          scratch: {},
+          historyRevisionId: base.revisionId,
+        };
+        await store.commitSession({
+          run: initialRun,
+          thread: {
+            threadId: initialRun.threadId,
+            historyRevisionId: base.revisionId,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          history: base,
+          expectedThreadRevisionId: null,
+        });
+        const winner = await base.append({ role: 'assistant', content: 'winner' });
+        const loser = await base.append({ role: 'assistant', content: 'loser' });
+        const winnerRun: RunState = {
+          ...initialRun,
+          runId: `winner-${crypto.randomUUID()}`,
+          historyRevisionId: winner.revisionId,
+        };
+        await store.commitSession({
+          run: winnerRun,
+          thread: {
+            threadId: winnerRun.threadId,
+            historyRevisionId: winner.revisionId,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          history: winner,
+          expectedThreadRevisionId: base.revisionId,
+          baseRevisionId: base.revisionId,
+        });
+        const loserRun: RunState = {
+          ...initialRun,
+          runId: `loser-${crypto.randomUUID()}`,
+          historyRevisionId: loser.revisionId,
+        };
+        let conflict: unknown;
+        try {
+          await store.commitSession({
+            run: loserRun,
+            thread: {
+              threadId: loserRun.threadId,
+              historyRevisionId: loser.revisionId,
+              createdAt: 1,
+              updatedAt: 2,
+            },
+            history: loser,
+            expectedThreadRevisionId: base.revisionId,
+            baseRevisionId: base.revisionId,
+          });
+        } catch (error) {
+          conflict = error;
+        }
+        t.ok(conflict instanceof SessionConflictError);
+        t.equal(
+          (await store.loadThread(initialRun.threadId))?.historyRevisionId,
+          winner.revisionId,
+        );
+        t.equal(await store.loadRun(loserRun.runId), null);
+      }
+    } finally {
+      await sqlite.close();
       try {
         await fs.unlink(path);
       } catch {}

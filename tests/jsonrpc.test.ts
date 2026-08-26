@@ -8,6 +8,7 @@ import {
   INTERNAL_ERROR,
   PARSE_ERROR,
   INVALID_PARAMS,
+  INVALID_REQUEST,
 } from 'fino:jsonrpc';
 import type { Transport } from 'fino:jsonrpc';
 // ---------------------------------------------------------------------------
@@ -131,6 +132,32 @@ describe('fino:jsonrpc — JsonRpcService', () => {
     t.ok(parsed.error, 'response has error field');
     t.equal(parsed.error.code, METHOD_NOT_FOUND, 'code is METHOD_NOT_FOUND');
     t.equal(parsed.id, 5, 'id echoed back');
+  });
+  it('treats a null id as a request and returns a response', async (t) => {
+    const response = await new JsonRpcService().handle(
+      JSON.stringify({ jsonrpc: '2.0', method: 'unknown', id: null }),
+    );
+    const parsed = JSON.parse(response!);
+    t.equal(parsed.error.code, METHOD_NOT_FOUND);
+    t.equal(parsed.id, null);
+  });
+  it('rejects malformed JSON-RPC envelope fields', async (t) => {
+    const response = await new JsonRpcService().handle(
+      JSON.stringify({ jsonrpc: '1.0', method: 'ping', id: {} }),
+    );
+    const parsed = JSON.parse(response!);
+    t.equal(parsed.error.code, INVALID_REQUEST);
+    t.equal(parsed.id, null);
+  });
+  it('rejects primitive params while preserving the request id', async (t) => {
+    const service = new JsonRpcService();
+    service.method('ping').handle(() => 'pong');
+    const response = await service.handle(
+      JSON.stringify({ jsonrpc: '2.0', method: 'ping', params: 'invalid', id: 7 }),
+    );
+    const parsed = JSON.parse(response!);
+    t.equal(parsed.error.code, INVALID_PARAMS);
+    t.equal(parsed.id, 7);
   });
   it('handle() returns PARSE_ERROR for invalid JSON', async (t) => {
     const svc = new JsonRpcService();
@@ -396,11 +423,15 @@ describe('fino:jsonrpc — JsonRpcPeer', () => {
     svc.method('echo').handle((params) => params);
     new JsonRpcPeer(tb, svc);
     const results = await Promise.all([
-      client.call('echo', 'first'),
-      client.call('echo', 'second'),
-      client.call('echo', 'third'),
+      client.call('echo', { value: 'first' }),
+      client.call('echo', { value: 'second' }),
+      client.call('echo', { value: 'third' }),
     ]);
-    t.deepEqual(results, ['first', 'second', 'third'], 'all results in correct order');
+    t.deepEqual(
+      results,
+      [{ value: 'first' }, { value: 'second' }, { value: 'third' }],
+      'all results in correct order',
+    );
     await client.close();
   });
   it('handlers can be async', async (t) => {
@@ -455,6 +486,21 @@ describe('fino:jsonrpc — JsonRpcPeer', () => {
     t.equal(fromB, 'hello from B: world', 'A got response from B');
     t.equal(fromA, 'hello from A: world', 'B got response from A');
     await peerA.close();
+  });
+  it('normal transport EOF rejects pending calls', async (t) => {
+    const [clientTransport, remoteTransport] = loopbackPair();
+    const client = new JsonRpcPeer(clientTransport);
+    const pending = client.call('never-answered');
+    await remoteTransport.close();
+    await t.rejects(() => pending, /Connection closed/);
+    await client.done;
+  });
+  it('call() and notify() reject after close', async (t) => {
+    const [transport] = loopbackPair();
+    const peer = new JsonRpcPeer(transport);
+    await peer.close();
+    await t.rejects(() => peer.call('late'), /Connection closed/);
+    await t.rejects(() => peer.notify('late'), /Connection closed/);
   });
 });
 describe('fino:jsonrpc — JsonRpcError', () => {

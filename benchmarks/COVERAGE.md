@@ -146,6 +146,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:ai/harness` | not yet benchmarked |
 | `fino:ai/runtime` | not yet benchmarked |
 | `fino:ai/agent` | not yet benchmarked |
+| `fino:ai/acp` | not yet benchmarked |
 | `fino:ai/memory` | not yet benchmarked |
 | `fino:ai/session` | not yet benchmarked |
 | `fino:ai/workflow` | not yet benchmarked |

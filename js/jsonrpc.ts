@@ -26,10 +26,11 @@
  * ## Current coverage
  *
  * The implementation targets the single-message request, response, error, and
- * notification flow from JSON-RPC 2.0. Batch requests are not implemented, and
- * callers that require strict preflight validation of every JSON-RPC envelope
- * field should validate before dispatch. Methods named with the reserved
- * `rpc.` prefix are not blocked by the registry.
+ * notification flow from JSON-RPC 2.0. Batch requests are not implemented.
+ * Single-message envelopes require `jsonrpc: "2.0"`, a string method, a
+ * string/number/null request id when present, and structured params when
+ * present. Methods named with the reserved `rpc.` prefix are not blocked by
+ * the registry.
  *
  * ```ts no_run
  * import { JsonRpcService, JsonRpcServer } from 'fino:jsonrpc';
@@ -360,7 +361,9 @@ export class JsonRpcService {
       });
     }
     const m = msg as Record<string, unknown>;
-    if (typeof m.method !== 'string') {
+    const invalidId =
+      'id' in m && m.id !== null && typeof m.id !== 'string' && typeof m.id !== 'number';
+    if (m.jsonrpc !== '2.0' || typeof m.method !== 'string' || invalidId) {
       return JSON.stringify({
         jsonrpc: '2.0',
         error: {
@@ -371,9 +374,20 @@ export class JsonRpcService {
       });
     }
     const id = 'id' in m ? (m.id as number | string | null) : undefined;
+    if ('params' in m && m.params !== undefined && (!m.params || typeof m.params !== 'object')) {
+      if (id === undefined) return null;
+      return JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: INVALID_PARAMS,
+          message: 'Invalid params',
+        },
+        id,
+      });
+    }
     const entry = this.#methods.get(m.method);
     if (!entry) {
-      if (id != null) {
+      if (id !== undefined) {
         return JSON.stringify({
           jsonrpc: '2.0',
           error: {
@@ -388,7 +402,7 @@ export class JsonRpcService {
     if (entry.meta.params !== undefined) {
       const check = compile(entry.meta.params).safeParse(m.params);
       if (!check.success) {
-        if (id == null) return null;
+        if (id === undefined) return null;
         return JSON.stringify({
           jsonrpc: '2.0',
           error: {
@@ -497,6 +511,10 @@ export class JsonRpcPeer {
   #idSeq = 0;
   #closed = false;
   #readLoop: Promise<void>;
+  #rejectPending(error: JsonRpcError): void {
+    for (const pending of this.#pending.values()) pending.reject(error);
+    this.#pending.clear();
+  }
   /**
    * Create a peer over `transport`.
    *
@@ -516,6 +534,7 @@ export class JsonRpcPeer {
     this.#readLoop = this.#startLoop();
   }
   async #startLoop(): Promise<void> {
+    let closeError = new JsonRpcError('Connection closed', INTERNAL_ERROR);
     try {
       for await (const raw of this.#transport.receive()) {
         if (this.#closed) break;
@@ -523,9 +542,19 @@ export class JsonRpcPeer {
         try {
           msg = JSON.parse(raw);
         } catch {
+          if (this.#service) {
+            const response = await this.#service.handle(raw, this.#signal);
+            if (response !== null) await this.#transport.send(response);
+          }
           continue;
         }
-        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+          if (this.#service) {
+            const response = await this.#service.handle(raw, this.#signal);
+            if (response !== null) await this.#transport.send(response);
+          }
+          continue;
+        }
         const m = msg as Record<string, unknown>;
         if (('result' in m || 'error' in m) && 'id' in m) {
           const id = m.id as number;
@@ -552,10 +581,13 @@ export class JsonRpcPeer {
           });
         }
       }
-    } catch {
-      const err = new JsonRpcError('Connection closed', INTERNAL_ERROR);
-      for (const p of this.#pending.values()) p.reject(err);
-      this.#pending.clear();
+    } catch (error) {
+      closeError =
+        error instanceof JsonRpcError
+          ? error
+          : new JsonRpcError((error as Error)?.message ?? 'Connection closed', INTERNAL_ERROR);
+    } finally {
+      this.#rejectPending(closeError);
     }
   }
   /**
@@ -565,6 +597,7 @@ export class JsonRpcPeer {
    * JSON-RPC responses become `JsonRpcError` instances.
    */
   call(method: string, params?: unknown): Promise<unknown> {
+    if (this.#closed) return Promise.reject(new JsonRpcError('Connection closed', INTERNAL_ERROR));
     const id = ++this.#idSeq;
     const body: Record<string, unknown> = {
       jsonrpc: '2.0',
@@ -577,7 +610,10 @@ export class JsonRpcPeer {
         resolve,
         reject,
       });
-      Promise.resolve(this.#transport.send(JSON.stringify(body))).catch(reject);
+      Promise.resolve(this.#transport.send(JSON.stringify(body))).catch((error) => {
+        this.#pending.delete(id);
+        reject(error);
+      });
     });
   }
   /**
@@ -587,6 +623,7 @@ export class JsonRpcPeer {
    * handler failures are not reported to this peer.
    */
   async notify(method: string, params?: unknown): Promise<void> {
+    if (this.#closed) throw new JsonRpcError('Connection closed', INTERNAL_ERROR);
     const body: Record<string, unknown> = {
       jsonrpc: '2.0',
       method,
@@ -606,7 +643,9 @@ export class JsonRpcPeer {
    * Mark the peer closed and close the underlying transport.
    */
   async close(): Promise<void> {
+    if (this.#closed) return;
     this.#closed = true;
+    this.#rejectPending(new JsonRpcError('Connection closed', INTERNAL_ERROR));
     await this.#transport.close();
   }
 }

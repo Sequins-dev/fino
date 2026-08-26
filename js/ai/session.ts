@@ -209,6 +209,34 @@ export interface ThreadState {
   updatedAt: number;
 }
 /**
+ * Raised when a durable thread advances after a caller read its head.
+ *
+ * The failed commit writes nothing. Callers may reload and retry, reject the
+ * overlapping turn, or explicitly fork from the revision they originally read.
+ */
+export class SessionConflictError extends Error {
+  /** Thread whose optimistic concurrency check failed. */
+  threadId: string;
+  /** Revision the caller expected, or `null` for a new thread. */
+  expectedRevisionId: string | null;
+  /** Revision currently stored, or `null` when the thread does not exist. */
+  actualRevisionId: string | null;
+  /** Create a typed thread-head conflict. */
+  constructor(
+    threadId: string,
+    expectedRevisionId: string | null,
+    actualRevisionId: string | null,
+  ) {
+    super(
+      `Thread ${threadId} changed from ${expectedRevisionId ?? '<new>'} to ${actualRevisionId ?? '<new>'}`,
+    );
+    this.name = 'SessionConflictError';
+    this.threadId = threadId;
+    this.expectedRevisionId = expectedRevisionId;
+    this.actualRevisionId = actualRevisionId;
+  }
+}
+/**
  * Durable session boundary for runs, threads, and immutable history graphs.
  *
  * Implement this interface to back sessions with custom storage;
@@ -216,8 +244,10 @@ export interface ThreadState {
  * implementations. The contract that matters most is `commitSession()`: it
  * must persist the history delta, the run checkpoint, and the thread head as
  * one atomic unit, because a partially applied commit would leave a run
- * pointing at a revision that does not exist. History entries and revisions
- * are content-immutable, so their writes may be insert-if-absent.
+ * pointing at a revision that does not exist. It must also compare
+ * `expectedThreadRevisionId` with the stored thread head and reject a mismatch
+ * without writing. History entries and revisions are content-immutable, so
+ * their writes may be insert-if-absent.
  *
  * ```ts no_run
  * import { SqliteSessionStore, type SessionStore } from 'fino:ai/session';
@@ -256,13 +286,16 @@ export interface SessionStore {
    * Atomically persist one checkpoint: the history entries and revisions
    * added since `baseRevisionId` (all of them when it is omitted), the run
    * checkpoint, and the thread head. Implementations should reject commits
-   * whose run or thread revision pointers disagree with
-   * `history.revisionId`, as the built-in stores do.
+   * whose run or thread revision pointers disagree with `history.revisionId`,
+   * or whose `expectedThreadRevisionId` no longer matches the stored thread
+   * head, as the built-in stores do.
    */
   commitSession(args: {
     run: RunState;
     thread: ThreadState;
     history: MessageHistory;
+    /** Thread head observed before this commit; `null` means no thread existed. */
+    expectedThreadRevisionId: string | null;
     baseRevisionId?: string;
   }): Promise<void>;
 }
@@ -578,9 +611,18 @@ export class InMemorySessionStore implements SessionStore {
     run: RunState;
     thread: ThreadState;
     history: MessageHistory;
+    expectedThreadRevisionId: string | null;
     baseRevisionId?: string;
   }): Promise<void> {
     validateCommit(args);
+    const actualRevisionId = this.#threads.get(args.thread.threadId)?.historyRevisionId ?? null;
+    if (actualRevisionId !== args.expectedThreadRevisionId) {
+      throw new SessionConflictError(
+        args.thread.threadId,
+        args.expectedThreadRevisionId,
+        actualRevisionId,
+      );
+    }
     const delta = args.history.changesSince(args.baseRevisionId);
     for (const entry of delta.entries) {
       if (!this.#entries.has(entry.id))
@@ -805,10 +847,28 @@ export class SqliteSessionStore implements SessionStore {
     run: RunState;
     thread: ThreadState;
     history: MessageHistory;
+    expectedThreadRevisionId: string | null;
     baseRevisionId?: string;
   }): Promise<void> {
     validateCommit(args);
     await this.#db.transaction(async () => {
+      const currentStmt = this.#db.prepare(
+        sql`SELECT history_revision_id FROM threads WHERE thread_id = ${args.thread.threadId}`,
+      );
+      let actualRevisionId: string | null;
+      try {
+        const row = await currentStmt.get();
+        actualRevisionId = row ? ((row.history_revision_id as string | null) ?? null) : null;
+      } finally {
+        currentStmt.finalize();
+      }
+      if (actualRevisionId !== args.expectedThreadRevisionId) {
+        throw new SessionConflictError(
+          args.thread.threadId,
+          args.expectedThreadRevisionId,
+          actualRevisionId,
+        );
+      }
       const delta = args.history.changesSince(args.baseRevisionId);
       for (const entry of delta.entries) await this.#saveEntry(entry);
       for (const revision of delta.revisions) await this.#saveRevision(revision);
@@ -1238,7 +1298,7 @@ export class Session {
       scratch: {},
     };
     this.#setState(state);
-    return this.#drive(state, signal, history, messages, baseRevisionId);
+    return this.#drive(state, signal, history, messages, baseRevisionId, thread);
   }
   /**
    * Resume the current suspended run with external input.
@@ -1277,6 +1337,7 @@ export class Session {
     }
     const history = await driveHistoryFromState(this.#state, this.#opts.store);
     const baseRevisionId = history.revisionId;
+    const thread = await this.#loadExpectedThread(baseRevisionId);
     const state: RunState = {
       ...this.#state,
       status: 'running',
@@ -1293,6 +1354,7 @@ export class Session {
       history,
       [...history.render(), injected],
       baseRevisionId,
+      thread,
     );
   }
   /**
@@ -1371,6 +1433,7 @@ export class Session {
     }
     const history = await driveHistoryFromState(this.#state, this.#opts.store);
     const baseRevisionId = history.revisionId;
+    const thread = await this.#loadExpectedThread(baseRevisionId);
     const state: RunState = {
       ...this.#state,
       status: 'running',
@@ -1386,18 +1449,24 @@ export class Session {
           approved: false,
           reason: decision.reason ?? 'not approved',
         };
-    const approval = await this.#opts.agent.approveTool(
-      {
-        messages: history.render(),
-        stepIndex: state.stepIndex,
-        usage: state.usage,
-        cost: state.cost,
-        history,
-        signal,
-      },
-      request,
-      approvalValue,
-    );
+    const execution = this.#opts.agent.createSession({ history });
+    let approval: StepResult;
+    try {
+      approval = await execution.approveTool(
+        {
+          messages: history.render(),
+          stepIndex: state.stepIndex,
+          usage: state.usage,
+          cost: state.cost,
+          history,
+          signal,
+        },
+        request,
+        approvalValue,
+      );
+    } finally {
+      execution.close();
+    }
     const approvedHistory = approval.state.history ?? history;
     const approvedState: RunState = {
       ...state,
@@ -1407,14 +1476,19 @@ export class Session {
       historyRevisionId: approvedHistory.revisionId,
     };
     this.#setState(approvedState);
-    const thread = await this.#commit(approvedState, approvedHistory, baseRevisionId);
+    const committedThread = await this.#commit(
+      approvedState,
+      approvedHistory,
+      baseRevisionId,
+      thread,
+    );
     return this.#drive(
       approvedState,
       signal,
       approvedHistory,
       approvedHistory.render(),
       approvedHistory.revisionId,
-      thread,
+      committedThread,
     );
   }
   /**
@@ -1514,7 +1588,8 @@ export class Session {
       ? await this.#opts.store.loadHistory(state.historyRevisionId)
       : null;
     if (history) {
-      await this.#commit(state, history, state.historyRevisionId);
+      const thread = await this.#loadExpectedThread(state.historyRevisionId);
+      await this.#commit(state, history, state.historyRevisionId, thread);
     }
   }
   async #drive(
@@ -1546,112 +1621,117 @@ export class Session {
               ? { historyRevisionId: initialThread.historyRevisionId }
               : {}),
           }
-        : await this.#loadThread();
-      while (true) {
-        runCtxValue.stepIndex = state.stepIndex;
-        if (stepsThisCall++ >= MAX_DRIVE_STEPS) {
-          state = {
-            ...state,
-            status: 'error',
-            error: { message: 'Session exceeded maximum step count' },
-          };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          throw new Error('Session exceeded maximum step count');
-        }
-        const hState: AgentState = {
-          messages: pendingMessages ?? history.render(),
-          stepIndex: state.stepIndex,
-          usage: state.usage,
-          cost: state.cost,
-          history,
-          signal,
-        };
-        let r: StepResult;
-        try {
-          r = await this.#opts.agent.step(hState);
-        } catch (err) {
-          const e = err as Error;
-          if (e.name === 'AbortError') {
+        : await this.#loadExpectedThread(state.historyRevisionId);
+      const execution = this.#opts.agent.createSession({ history });
+      try {
+        while (true) {
+          runCtxValue.stepIndex = state.stepIndex;
+          if (stepsThisCall++ >= MAX_DRIVE_STEPS) {
             state = {
               ...state,
-              status: 'cancelled',
+              status: 'error',
+              error: { message: 'Session exceeded maximum step count' },
+            };
+            this.#setState(state);
+            await this.#commit(state, history, baseRevisionId, thread);
+            throw new Error('Session exceeded maximum step count');
+          }
+          const hState: AgentState = {
+            messages: pendingMessages ?? history.render(),
+            stepIndex: state.stepIndex,
+            usage: state.usage,
+            cost: state.cost,
+            history,
+            signal,
+          };
+          let r: StepResult;
+          try {
+            r = await execution.step(hState);
+          } catch (err) {
+            const e = err as Error;
+            if (e.name === 'AbortError') {
+              state = {
+                ...state,
+                status: 'cancelled',
+              };
+              this.#setState(state);
+              await this.#commit(state, history, baseRevisionId, thread);
+              throw err;
+            }
+            state = {
+              ...state,
+              status: 'error',
+              error: {
+                message: e.message,
+                stack: e.stack,
+              },
             };
             this.#setState(state);
             await this.#commit(state, history, baseRevisionId, thread);
             throw err;
           }
+          const prevLen = history.render().length;
+          history = r.state.history ?? history;
+          pendingMessages = undefined;
           state = {
             ...state,
-            status: 'error',
-            error: {
-              message: e.message,
-              stack: e.stack,
-            },
+            stepIndex: r.state.stepIndex,
+            usage: r.state.usage,
+            cost: r.state.cost,
+            historyRevisionId: history.revisionId,
           };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          throw err;
-        }
-        const prevLen = history.render().length;
-        history = r.state.history ?? history;
-        pendingMessages = undefined;
-        state = {
-          ...state,
-          stepIndex: r.state.stepIndex,
-          usage: r.state.usage,
-          cost: r.state.cost,
-          historyRevisionId: history.revisionId,
-        };
-        if (this.#opts.memory) {
-          const newMsgs = history.render().slice(prevLen);
-          for (const msg of newMsgs) {
-            await this.#opts.memory.append({
-              role: msg.role,
-              content: msg.content,
-            });
+          if (this.#opts.memory) {
+            const newMsgs = history.render().slice(prevLen);
+            for (const msg of newMsgs) {
+              await this.#opts.memory.append({
+                role: msg.role,
+                content: msg.content,
+              });
+            }
           }
-        }
-        this.#setState(state);
-        thread = await this.#commit(state, history, baseRevisionId, thread);
-        baseRevisionId = history.revisionId;
-        this.#opts.onCheckpoint?.(state);
-        if (r.suspend) {
-          const token = newId();
-          state = {
-            ...state,
-            status: 'suspended',
-            suspendedOn: {
-              token,
-              reason: r.suspend.message,
-              payload: r.suspend.payload,
-            },
-          };
           this.#setState(state);
           thread = await this.#commit(state, history, baseRevisionId, thread);
           baseRevisionId = history.revisionId;
-          return {
-            runId: state.runId,
-            status: 'suspended',
-            state,
-          };
+          this.#opts.onCheckpoint?.(state);
+          if (r.suspend) {
+            const token = newId();
+            state = {
+              ...state,
+              status: 'suspended',
+              suspendedOn: {
+                token,
+                reason: r.suspend.message,
+                payload: r.suspend.payload,
+              },
+            };
+            this.#setState(state);
+            thread = await this.#commit(state, history, baseRevisionId, thread);
+            baseRevisionId = history.revisionId;
+            return {
+              runId: state.runId,
+              status: 'suspended',
+              state,
+            };
+          }
+          if (r.done) {
+            const text = extractText(history.render());
+            state = {
+              ...state,
+              status: 'done',
+              result: text,
+            };
+            this.#setState(state);
+            await this.#commit(state, history, baseRevisionId, thread);
+            return {
+              runId: state.runId,
+              status: 'done',
+              state,
+              text,
+            };
+          }
         }
-        if (r.done) {
-          const text = extractText(history.render());
-          state = {
-            ...state,
-            status: 'done',
-            result: text,
-          };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          return {
-            runId: state.runId,
-            status: 'done',
-            state,
-            text,
-          };
-        }
+      } finally {
+        execution.close();
       }
     });
   }
@@ -1669,6 +1749,15 @@ export class Session {
       createdAt: now,
       updatedAt: now,
     };
+  }
+  async #loadExpectedThread(expectedRevisionId?: string): Promise<ThreadState> {
+    const thread = await this.#loadThread();
+    const expected = expectedRevisionId ?? null;
+    const actual = thread.historyRevisionId ?? null;
+    if (actual !== expected) {
+      throw new SessionConflictError(thread.threadId, expected, actual);
+    }
+    return thread;
   }
   async #commit(
     state: RunState,
@@ -1692,7 +1781,8 @@ export class Session {
       run: nextState,
       thread: nextThread,
       history,
-      baseRevisionId,
+      expectedThreadRevisionId: thread?.historyRevisionId ?? null,
+      ...(baseRevisionId !== undefined ? { baseRevisionId } : {}),
     });
     return nextThread;
   }

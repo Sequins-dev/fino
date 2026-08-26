@@ -1,12 +1,12 @@
 /**
  * internal:ai/runtime — implementation of the agent model loop.
  *
- * This module contains the mutable runtime behind `fino:ai/agent`: model
+ * This module contains the mutable runtime behind one `fino:ai/agent` session: model
  * request assembly, tool execution, structured-output capture and repair,
  * guardrail checks, fallback/retry behavior, telemetry, and stream plumbing.
- * Public application code should import `Agent` from `fino:ai/agent` and
- * integration helpers from `fino:ai/runtime` instead of constructing
- * `AgentRuntime` directly.
+ * Public application code should import the reusable `Agent` definition from
+ * `fino:ai/agent` and integration helpers from `fino:ai/runtime` instead of
+ * constructing or sharing `AgentRuntime` directly.
  *
  * ## Loop shape
  *
@@ -346,6 +346,14 @@ export interface ToolApprovalRequest {
    */
   sideEffects?: boolean;
 }
+/** Host callback that resolves an approval-required tool without suspending the run. */
+export type ToolApprovalHandler = (
+  request: ToolApprovalRequest,
+  context: {
+    /** Signal for the active agent turn. */
+    signal: AbortSignal;
+  },
+) => unknown | Promise<unknown>;
 /**
  * Agent-level streaming event.
  *
@@ -394,12 +402,18 @@ export type AgentEvent =
       stepIndex: number;
       id: string;
       name: string;
+      /** Parsed arguments supplied by the model. */
+      args: unknown;
+      /** Whether execution is waiting for the host approval callback. */
+      awaitingApproval?: boolean;
     }
   | {
       type: 'tool_result';
       stepIndex: number;
       id: string;
       name: string;
+      /** Tool output after Fino result normalization. */
+      result: string | ContentPart[];
       isError?: boolean;
     }
   | {
@@ -650,6 +664,14 @@ export interface AgentRuntimeOptions {
    */
   tools?: Tool[];
   /**
+   * Inline host approval callback for tools marked `requiresApproval`.
+   *
+   * When omitted, the existing durable-session behavior suspends the run.
+   * Return `true` or `{ approved: true }` to execute; any other result records
+   * a rejected tool result and lets the model continue.
+   */
+  requestToolApproval?: ToolApprovalHandler;
+  /**
    * Skill registry. Registers its `load_skill` loader tool and, once the model
    * loads a skill, augments later steps with that skill's instructions and
    * tools.
@@ -735,6 +757,9 @@ function newRunId(): string {
 }
 async function* asyncOf<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) yield item;
+}
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 /**
  * Stream handle returned by `Agent.stream()`.
@@ -1016,6 +1041,7 @@ export class AgentRuntime {
   #captureContent: boolean;
   #tools: Map<string, Tool>;
   #baseToolDefs: ToolDefinition[];
+  #requestToolApproval?: ToolApprovalHandler;
   #stopWhen: StopCondition[];
   #toolChoice?:
     | 'auto'
@@ -1060,6 +1086,7 @@ export class AgentRuntime {
     this.#agentName = opts.name;
     this.#captureContent = opts.captureContent ?? false;
     this.#skills = opts.skills;
+    this.#requestToolApproval = opts.requestToolApproval;
     this.#retry = opts.retry;
     this.#fallback = opts.fallback ?? [];
     this.#guardrails = opts.guardrails;
@@ -1634,8 +1661,10 @@ export class AgentRuntime {
           stepIndex: state.stepIndex,
           id: part.id,
           name: part.name,
+          args: part.args,
+          ...(t.requiresApproval ? { awaitingApproval: true } : {}),
         });
-        if (t.requiresApproval) {
+        if (t.requiresApproval && !this.#requestToolApproval) {
           throw new SuspendSignal(`Approval required for tool: ${part.name}`, {
             type: 'tool_approval',
             toolCallId: part.id,
@@ -1644,6 +1673,39 @@ export class AgentRuntime {
             risk: t.risk,
             sideEffects: t.sideEffects,
           });
+        }
+        if (t.requiresApproval) {
+          const request: ToolApprovalRequest = {
+            type: 'tool_approval',
+            toolCallId: part.id,
+            toolName: part.name,
+            args: part.args,
+            risk: t.risk,
+            sideEffects: t.sideEffects,
+          };
+          const approval = await this.#requestToolApproval!(request, { signal: sig });
+          const approved = approval === true || (isRecord(approval) && approval.approved === true);
+          if (!approved) {
+            const reason =
+              isRecord(approval) && typeof approval.reason === 'string'
+                ? approval.reason
+                : 'not approved';
+            const result = {
+              content: `Tool call rejected: ${reason}`,
+              isError: true as const,
+            };
+            toolSpan.setAttribute('error.type', 'ToolRejectedError');
+            toolSpan.end({ status: { code: 'ERROR' } });
+            onEvent?.({
+              type: 'tool_result',
+              stepIndex: state.stepIndex,
+              id: part.id,
+              name: part.name,
+              result: result.content,
+              isError: true,
+            });
+            return { part, result };
+          }
         }
         const ctx: ToolRunContext = {
           signal: sig,
@@ -1684,6 +1746,7 @@ export class AgentRuntime {
             stepIndex: state.stepIndex,
             id: part.id,
             name: part.name,
+            result: result.content,
             ...(result.isError ? { isError: true } : {}),
           });
           return {

@@ -180,12 +180,13 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
   return {
     async send(message: string): Promise<void> {
       await proc.stdin.write(enc.encode(message + '\n'));
+      await proc.stdin.flush();
     },
     receive(): AsyncIterable<string> {
       return splitLines(proc.stdout);
     },
     async close(): Promise<void> {
-      proc.stdin.close();
+      await proc.stdin.close();
     },
   };
 }
