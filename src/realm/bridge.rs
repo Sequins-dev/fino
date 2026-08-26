@@ -128,7 +128,7 @@ fn get_realm_bootstrap_data(
 
 /// Stores the JSON user-data string received through the realm channel.
 fn set_realm_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -145,7 +145,7 @@ fn set_realm_data(
 
 /// Stores runtime bootstrap metadata received through the realm channel.
 fn set_realm_bootstrap_data(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
