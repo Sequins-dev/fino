@@ -69,7 +69,7 @@ struct FinoSerializer;
 impl v8::ValueSerializerImpl for FinoSerializer {
     fn throw_data_clone_error<'s>(
         &self,
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         message: v8::Local<'s, v8::String>,
     ) {
         let exc = v8::Exception::error(scope, message);
@@ -78,7 +78,7 @@ impl v8::ValueSerializerImpl for FinoSerializer {
 
     fn get_shared_array_buffer_id<'s>(
         &self,
-        _scope: &mut v8::HandleScope<'s>,
+        _scope: &mut v8::PinScope<'s, '_>,
         sab: v8::Local<'s, v8::SharedArrayBuffer>,
     ) -> Option<u32> {
         let bs = sab.get_backing_store();
@@ -101,7 +101,7 @@ struct FinoDeserializer;
 impl v8::ValueDeserializerImpl for FinoDeserializer {
     fn get_shared_array_buffer_from_id<'s>(
         &self,
-        scope: &mut v8::HandleScope<'s>,
+        scope: &mut v8::PinScope<'s, '_>,
         id: u32,
     ) -> Option<v8::Local<'s, v8::SharedArrayBuffer>> {
         let reg = sab_registry().lock().unwrap();
@@ -114,7 +114,7 @@ impl v8::ValueDeserializerImpl for FinoDeserializer {
 // Synthetic module
 // ---------------------------------------------------------------------------
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> =
         ["serialize", "deserialize", "detachArrayBuffer"]
             .iter()
@@ -129,7 +129,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -148,7 +148,7 @@ fn eval_steps<'a>(
 }
 
 fn native_detach_array_buffer(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -167,7 +167,7 @@ fn native_detach_array_buffer(
 // ---------------------------------------------------------------------------
 
 /// Copy raw bytes from a Uint8Array argument into a `Vec<u8>`.
-fn u8a_to_vec(scope: &mut v8::HandleScope, u8a: v8::Local<v8::Uint8Array>) -> Vec<u8> {
+fn u8a_to_vec(scope: &mut v8::PinScope, u8a: v8::Local<v8::Uint8Array>) -> Vec<u8> {
     let Some(ab) = u8a.buffer(scope) else {
         return Vec::new();
     };
@@ -184,7 +184,7 @@ fn u8a_to_vec(scope: &mut v8::HandleScope, u8a: v8::Local<v8::Uint8Array>) -> Ve
 
 /// Wrap a `Vec<u8>` in a freshly-allocated `Uint8Array`.
 fn vec_to_u8a<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     bytes: &[u8],
 ) -> Option<v8::Local<'s, v8::Uint8Array>> {
     let len = bytes.len();
@@ -207,7 +207,7 @@ fn vec_to_u8a<'s>(
 // ---------------------------------------------------------------------------
 
 fn native_serialize(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -302,7 +302,7 @@ fn native_serialize(
 // ---------------------------------------------------------------------------
 
 fn native_deserialize(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {

@@ -7,6 +7,7 @@ product-level overview, start with [README.md](./README.md).
 
 - Rust toolchain
 - Supported UNIX-like environment
+- C++ toolchain, Python 3, and libclang (used by the source-built V8 archive)
 - Release build for most CLI verification and benchmarks
 
 ## Build

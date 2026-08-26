@@ -10,6 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     g++ \
     git \
+    libclang-dev \
     libsqlite3-dev \
     make \
     perl \

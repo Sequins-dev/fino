@@ -130,7 +130,7 @@ pub fn create_transit_pair() -> Result<(u32, u32, RawFd, RawFd), String> {
 // Module: internal:transit-port
 // ---------------------------------------------------------------------------
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> =
         ["createTransitChannel", "transitSend", "transitRecv"]
             .iter()
@@ -144,7 +144,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
             let tmpl = v8::FunctionTemplate::new(scope, $cb);
@@ -164,7 +164,7 @@ fn eval_steps<'a>(
 // ---------------------------------------------------------------------------
 
 fn native_create_transit_channel(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -199,7 +199,7 @@ fn native_create_transit_channel(
 // ---------------------------------------------------------------------------
 
 fn native_transit_send(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -279,7 +279,7 @@ fn native_transit_send(
 // ---------------------------------------------------------------------------
 
 fn native_transit_recv(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -317,7 +317,7 @@ fn native_transit_recv(
 // ---------------------------------------------------------------------------
 
 pub fn build_message_array<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     messages: Vec<ThreadMessage>,
 ) -> v8::Local<'s, v8::Array> {
     let outer = v8::Array::new(scope, messages.len() as i32);
@@ -373,7 +373,7 @@ pub fn build_message_array<'s>(
 }
 
 fn copy_bytes_to_u8a<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     bytes: &[u8],
 ) -> Option<v8::Local<'s, v8::Uint8Array>> {
     let len = bytes.len();

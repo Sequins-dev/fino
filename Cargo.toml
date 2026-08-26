@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-v8 = "139.0.0"
+v8 = { version = "=152.2.0", features = ["v8_enable_pointer_compression"] }
 libc = "0.2"
 libffi = "5.1.0"
 libloading = "0.8"

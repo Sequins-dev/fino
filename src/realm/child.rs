@@ -90,7 +90,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     params = params.array_buffer_allocator(crate::runtime::shared_allocator().clone());
 
     let t = timing_enabled().then(Instant::now);
-    let isolate = &mut v8::Isolate::new(params);
+    let isolate = &mut crate::v8_isolate_group::new_isolate(params);
     if let Some(slot) = &config.isolate_handle
         && let Ok(mut slot) = slot.lock()
     {
@@ -118,10 +118,15 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
     isolate.set_host_initialize_import_meta_object_callback(loader::init_import_meta_callback);
 
-    let isolate_scope = &mut v8::HandleScope::new(isolate);
+    v8::scope!(let isolate_scope, isolate);
     let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
-    let context = v8::Context::new(isolate_scope, Default::default());
-    context.set_microtask_queue(&root_queue);
+    let context = v8::Context::new(
+        isolate_scope,
+        v8::ContextOptions {
+            microtask_queue: Some((&*root_queue as *const v8::MicrotaskQueue).cast_mut()),
+            ..Default::default()
+        },
+    );
 
     let bootstrap_module_global: v8::Global<v8::Module>;
     let state_rc: Rc<RefCell<FinoState>>;
@@ -148,7 +153,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
         );
         state.sandboxed_thread = config.sandboxed_thread;
         state.sandbox_cgroup_path = config.sandbox_cgroup_path;
-        context.set_slot(Rc::new(RefCell::new(state)));
+        scope.set_slot(Rc::new(RefCell::new(state)));
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
@@ -158,7 +163,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         let t = timing_enabled().then(Instant::now);
         let bootstrap_module = {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             loader::register_source_map_from_json(tc, "internal/bootstrap.mjs", bootstrap_map);
             match loader::compile_source_module(
                 tc,
@@ -185,7 +190,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         let t = timing_enabled().then(Instant::now);
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             if bootstrap_module
                 .instantiate_module(tc, loader::resolve_module_callback)
                 .is_none()
@@ -204,7 +209,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 
         let t = timing_enabled().then(Instant::now);
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             if bootstrap_module.evaluate(tc).is_none() {
                 return Err(catch_message(tc)
                     .unwrap_or_else(|| "Failed to evaluate internal/bootstrap.mjs".to_string()));
@@ -289,7 +294,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
                     let result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
                         let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        let tc = &mut v8::TryCatch::new(scope);
+                        v8::tc_scope!(tc, scope);
                         let f = v8::Local::new(tc, &fn_ref);
                         match f.call(tc, undef, &[]) {
                             Some(r) => Ok(v8::Global::new(tc, r)),
@@ -385,7 +390,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
 /// the realm's progress signal: V8 foreground tasks and Rust-side resolutions
 /// enqueue microtasks without the TypeScript step ever seeing them, so a realm
 /// is only quiescent when this reports `false` too.
-pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) -> bool {
+pub fn pump_and_checkpoint(scope: &mut v8::PinScope) -> bool {
     let platform = v8::V8::get_current_platform();
     let mut worked = false;
     while v8::Platform::pump_message_loop(&platform, scope, false) {
@@ -411,7 +416,9 @@ pub fn pump_and_checkpoint(scope: &mut v8::HandleScope) -> bool {
     worked
 }
 
-pub fn catch_message(tc: &mut v8::TryCatch<v8::HandleScope>) -> Option<String> {
+pub fn catch_message(
+    tc: &mut v8::PinnedRef<'_, v8::TryCatch<'_, '_, v8::HandleScope<'_>>>,
+) -> Option<String> {
     if !tc.has_caught() {
         return None;
     }

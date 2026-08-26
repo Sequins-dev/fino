@@ -5,7 +5,7 @@ use crate::state::get_state;
 /// Build the `internal:process` synthetic module.
 ///
 /// Exports: `os`, `arch`, `args`, `env`, `execPath`, `version`.
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> =
         ["os", "arch", "args", "env", "execPath", "version"]
             .iter()
@@ -20,7 +20,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     let os: &str = if cfg!(target_os = "macos") {
         "darwin"
@@ -83,7 +83,7 @@ fn eval_steps<'a>(
 }
 
 fn set_export<'a>(
-    scope: &mut v8::HandleScope<'a>,
+    scope: &mut v8::PinScope<'a, '_>,
     module: v8::Local<'a, v8::Module>,
     name: &str,
     value: v8::Local<'a, v8::Value>,

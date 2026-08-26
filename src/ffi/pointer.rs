@@ -15,7 +15,7 @@ use ::v8;
 
 /// Convert a raw C pointer to an 8-byte JS `ArrayBuffer` containing the
 /// address as a little-endian `u64`. Null pointers become JS `null`.
-pub fn into_js<'s>(scope: &mut v8::HandleScope<'s>, ptr: *mut c_void) -> v8::Local<'s, v8::Value> {
+pub fn into_js<'s>(scope: &mut v8::PinScope<'s, '_>, ptr: *mut c_void) -> v8::Local<'s, v8::Value> {
     if ptr.is_null() {
         return v8::null(scope).into();
     }
@@ -38,7 +38,7 @@ pub fn into_js<'s>(scope: &mut v8::HandleScope<'s>, ptr: *mut c_void) -> v8::Loc
 ///   - An `ArrayBufferView` into an ≥8-byte buffer (offset applied)
 ///
 /// Returns `None` and throws a `TypeError` for any other value.
-pub fn from_js(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> Option<*mut c_void> {
+pub fn from_js(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Option<*mut c_void> {
     if val.is_null_or_undefined() {
         return Some(std::ptr::null_mut());
     }
@@ -76,7 +76,7 @@ pub fn from_js(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> Option
 // Pointer namespace object
 // ---------------------------------------------------------------------------
 
-pub fn namespace<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Object> {
+pub fn namespace<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Object> {
     let obj = v8::Object::new(scope);
 
     macro_rules! set_method {
@@ -170,7 +170,7 @@ unsafe extern "C" fn view_deleter(
 /// detach). Structured clone copies the bytes; transfer detaches and triggers
 /// release.
 fn ptr_view(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -245,7 +245,7 @@ fn ptr_view(
 /// `Pointer.copyFrom(ptr, len)` — copy `len` bytes from the address in `ptr`
 /// into a new `Uint8Array` and return it.
 fn copy_from(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -276,7 +276,7 @@ fn copy_from(
 
 /// `Pointer.copyTo(ptr, src)` — copy bytes from `src` (Uint8Array or
 /// ArrayBuffer) into the C buffer at the address stored in `ptr`.
-fn copy_to(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
+fn copy_to(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some(ptr) = from_js(scope, args.get(0)) else {
         return;
     };
@@ -307,7 +307,7 @@ fn copy_to(scope: &mut v8::HandleScope, args: v8::FunctionCallbackArguments, _rv
 /// `Pointer.copyFromInto(dest, ptr, len?)` — copy bytes from the address in
 /// `ptr` into an existing ArrayBuffer or ArrayBufferView.
 fn copy_from_into(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -366,7 +366,7 @@ fn copy_from_into(
 // ---------------------------------------------------------------------------
 
 fn ptr_null(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -374,7 +374,7 @@ fn ptr_null(
 }
 
 fn ptr_addr(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -398,7 +398,7 @@ fn ptr_addr(
 }
 
 fn ptr_offset(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -418,11 +418,7 @@ fn ptr_offset(
 /// directly into `arena` at `byteOffset` without allocating a new buffer.
 /// Returns `undefined`. Use this when the caller owns a reusable arena and
 /// wants zero per-call allocation.
-fn ptr_of(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    mut rv: v8::ReturnValue,
-) {
+fn ptr_of(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue) {
     // Extract the backing-store address of source.
     let src_val: v8::Local<v8::Value> = args.get(0);
     let src_ptr: u64 = if let Ok(ab) = v8::Local::<v8::ArrayBuffer>::try_from(src_val) {
@@ -482,7 +478,7 @@ fn ptr_of(
 macro_rules! read_int {
     ($name:ident, $ty:ty, $conv:expr) => {
         fn $name(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinScope,
             args: v8::FunctionCallbackArguments,
             mut rv: v8::ReturnValue,
         ) {
@@ -529,7 +525,7 @@ read_int!(read_f64, f64, |scope, v: f64| v8::Number::new(scope, v)
     .into());
 
 fn read_pointer(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -547,7 +543,7 @@ fn read_pointer(
 macro_rules! write_int {
     ($name:ident, $ty:ty) => {
         fn $name(
-            scope: &mut v8::HandleScope,
+            scope: &mut v8::PinScope,
             args: v8::FunctionCallbackArguments,
             _rv: v8::ReturnValue,
         ) {
@@ -569,11 +565,7 @@ write_int!(write_i32, i32);
 write_int!(write_u64, u64);
 write_int!(write_i64, i64);
 
-fn write_f32(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
+fn write_f32(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
         return;
     };
@@ -581,11 +573,7 @@ fn write_f32(
     unsafe { std::ptr::write_unaligned(ptr.add(off) as *mut f32, v) };
 }
 
-fn write_f64(
-    scope: &mut v8::HandleScope,
-    args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
-) {
+fn write_f64(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue) {
     let Some((ptr, off)) = ptr_and_offset(scope, &args) else {
         return;
     };
@@ -594,7 +582,7 @@ fn write_f64(
 }
 
 fn write_pointer(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -612,7 +600,7 @@ fn write_pointer(
 // ---------------------------------------------------------------------------
 
 fn ptr_and_offset(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
 ) -> Option<(*mut u8, usize)> {
     let ptr = from_js(scope, args.get(0))? as *mut u8;
@@ -620,14 +608,14 @@ fn ptr_and_offset(
     Some((ptr, off))
 }
 
-fn val_to_i128(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> i128 {
+fn val_to_i128(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> i128 {
     if let Ok(bi) = v8::Local::<v8::BigInt>::try_from(val) {
         return bi.i64_value().0 as i128;
     }
     val.number_value(scope).unwrap_or(0.0) as i128
 }
 
-fn throw_type_error(scope: &mut v8::HandleScope, msg: &str) {
+fn throw_type_error(scope: &mut v8::PinScope, msg: &str) {
     if let Some(msg_str) = v8::String::new(scope, msg) {
         let exc = v8::Exception::type_error(scope, msg_str);
         scope.throw_exception(exc);

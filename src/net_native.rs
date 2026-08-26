@@ -5,7 +5,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use ::v8;
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["networkInterfaces"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
@@ -18,7 +18,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     let tmpl = v8::FunctionTemplate::new(scope, network_interfaces);
     let func = tmpl.get_function(scope)?;
     let key = v8::String::new(scope, "networkInterfaces")?;
@@ -42,7 +42,7 @@ struct NativeInterface {
 }
 
 fn network_interfaces(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -140,7 +140,7 @@ fn sockaddr_to_native(ptr: *const libc::sockaddr) -> Option<NativeAddress> {
 }
 
 fn interfaces_to_js<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     interfaces: Vec<NativeInterface>,
 ) -> v8::Local<'s, v8::Array> {
     let out = v8::Array::new(scope, interfaces.len() as i32);
@@ -172,7 +172,7 @@ fn interfaces_to_js<'s>(
 }
 
 fn addresses_to_js<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     addresses: Vec<NativeAddress>,
 ) -> v8::Local<'s, v8::Array> {
     let out = v8::Array::new(scope, addresses.len() as i32);
@@ -189,26 +189,26 @@ fn addresses_to_js<'s>(
     out
 }
 
-fn set_string(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, value: &str) {
+fn set_string(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, key: &str, value: &str) {
     let key = v8::String::new(scope, key).unwrap();
     let value = v8::String::new(scope, value).unwrap();
     obj.set(scope, key.into(), value.into());
 }
 
-fn set_u32(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, value: u32) {
+fn set_u32(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, key: &str, value: u32) {
     let key = v8::String::new(scope, key).unwrap();
     let value = v8::Integer::new_from_unsigned(scope, value);
     obj.set(scope, key.into(), value.into());
 }
 
-fn set_bool(scope: &mut v8::HandleScope, obj: v8::Local<v8::Object>, key: &str, value: bool) {
+fn set_bool(scope: &mut v8::PinScope, obj: v8::Local<v8::Object>, key: &str, value: bool) {
     let key = v8::String::new(scope, key).unwrap();
     let value = v8::Boolean::new(scope, value);
     obj.set(scope, key.into(), value.into());
 }
 
 fn set_value(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     obj: v8::Local<v8::Object>,
     key: &str,
     value: v8::Local<v8::Value>,

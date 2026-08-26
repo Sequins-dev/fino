@@ -22,7 +22,7 @@ use crate::state::get_state;
 // ---------------------------------------------------------------------------
 
 unsafe extern "C" {
-    fn v8__CpuProfiler__New(isolate: *mut v8::Isolate) -> *mut c_void;
+    fn v8__CpuProfiler__New(isolate: v8::UnsafeRawIsolatePtr) -> *mut c_void;
     fn v8__CpuProfiler__Dispose(profiler: *mut c_void);
     fn v8__CpuProfiler__SetSamplingInterval(profiler: *mut c_void, us: c_int);
     fn v8__CpuProfiler__StartProfiling(
@@ -352,7 +352,7 @@ fn finish_process_profiling(
 // Synthetic module: fino:profiler
 // ---------------------------------------------------------------------------
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["startProfiling", "stopProfiling"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
@@ -366,7 +366,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -388,7 +388,7 @@ fn eval_steps<'a>(
 // ---------------------------------------------------------------------------
 
 fn start_profiling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -404,7 +404,7 @@ fn start_profiling(
     {
         let mut st = state_rc.borrow_mut();
         if st.cpu_profiler.is_none() {
-            let isolate: *mut v8::Isolate = scope.as_mut();
+            let isolate = unsafe { scope.as_raw_isolate_ptr() };
             let profiler = unsafe { v8__CpuProfiler__New(isolate) };
             if profiler.is_null() {
                 let msg =
@@ -429,7 +429,7 @@ fn start_profiling(
 // ---------------------------------------------------------------------------
 
 fn stop_profiling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -677,13 +677,13 @@ fn unix_time_nanos() -> i64 {
 struct OwnedTitle(v8::Global<v8::String>);
 
 impl OwnedTitle {
-    fn as_local<'s>(&self, scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::String> {
+    fn as_local<'s>(&self, scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::String> {
         v8::Local::new(scope, &self.0)
     }
 }
 
 fn get_title(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
     index: i32,
 ) -> Option<OwnedTitle> {

@@ -69,14 +69,19 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
 
     // isolate_scope is a bare HandleScope<()>; we re-enter context via
     // ContextScope on each loop iteration.
-    let isolate_scope = &mut v8::HandleScope::new(isolate);
+    v8::scope!(let isolate_scope, isolate);
 
     // Create root microtask queue.
     let root_queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
 
     // Create context and assign the root queue to it.
-    let context = v8::Context::new(isolate_scope, Default::default());
-    context.set_microtask_queue(&root_queue);
+    let context = v8::Context::new(
+        isolate_scope,
+        v8::ContextOptions {
+            microtask_queue: Some((&*root_queue as *const v8::MicrotaskQueue).cast_mut()),
+            ..Default::default()
+        },
+    );
 
     // Keep a Global for the main module so it survives across ContextScope
     // block boundaries (v8::Local lifetimes are tied to the scope they were
@@ -102,7 +107,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             crate::state::default_import_rules(),
         );
 
-        context.set_slot(Rc::new(RefCell::new(state)));
+        scope.set_slot(Rc::new(RefCell::new(state)));
         // Initialize the CPED with an empty JS Array — this becomes the live
         // async context frame. Must happen before any JS code runs.
         let initial_frame = v8::Array::new(scope, 0);
@@ -113,7 +118,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         let main_map = include_str!(concat!(env!("OUT_DIR"), "/js/internal/main.mjs.map"));
 
         let main_module = {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             loader::register_source_map_from_json(tc, "internal:main", main_map);
             match loader::compile_source_module(tc, main_src, "internal:main", Some(main_map)) {
                 Some(m) => m,
@@ -132,7 +137,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
 
         // Instantiate.
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             if main_module
                 .instantiate_module(tc, loader::resolve_module_callback)
                 .is_none()
@@ -146,7 +151,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
         // Evaluate.  V8 defers the module body to the microtask queue; the actual
         // module code runs during the first perform_checkpoint below.
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             if main_module.evaluate(tc).is_none() {
                 let msg = catch_message(tc)
                     .unwrap_or_else(|| "Failed to evaluate internal/main.mjs".to_string());
@@ -223,7 +228,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                     // Call fn() and capture result/exception as globals so TryCatch can drop.
                     let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
                         let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        let tc = &mut v8::TryCatch::new(scope);
+                        v8::tc_scope!(tc, scope);
                         let fn_local = v8::Local::new(tc, &fn_ref);
                         match fn_local.call(tc, undef, &[]) {
                             Some(result) => Ok(v8::Global::new(tc, result)),

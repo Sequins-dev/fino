@@ -38,7 +38,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
+      - name: Cache Cargo and V8 build
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install build dependencies
@@ -46,8 +46,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ca-certificates \
-            clang \
             cmake \
+            curl \
             g++ \
             git \
             libsqlite3-dev \
@@ -55,6 +55,16 @@ jobs:
             perl \
             pkg-config \
             python3
+
+      - name: Install LLVM 21 for bindgen
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-21 libclang-21-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
 
       - name: Run Rust lint
         run: cargo clippy
@@ -85,7 +95,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
+      - name: Cache Cargo and V8 build
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
@@ -93,7 +103,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             ca-certificates \
-            clang \
             cmake \
             curl \
             g++ \
@@ -104,6 +113,16 @@ jobs:
             pkg-config \
             python3 \
             xz-utils
+
+      - name: Install LLVM 21 for bindgen
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-21 libclang-21-dev
+          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
 
       - name: Install current protocol dependencies
         uses: ./.github/actions/install-linux-protocol-deps
@@ -135,11 +154,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Cargo dependencies
+      - name: Cache Cargo and V8 build
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
-        run: brew install gnutls libnghttp2 libnghttp3 libngtcp2 openssl@3 sqlite
+        run: |
+          brew install gnutls libnghttp2 libnghttp3 libngtcp2 llvm openssl@3 sqlite
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Build
         run: cargo build
@@ -156,6 +177,7 @@ jobs:
   linux-tests:
     name: Linux Tests
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 30
     needs: linux-build
     env:
       FINO_REQUIRE_H2: "1"

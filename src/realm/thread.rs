@@ -21,7 +21,7 @@ use crate::state::get_state;
 use crate::state::{ImportRule, ProcessEnv};
 
 /// Copy a `Uint8Array` argument into an owned byte vector.
-pub fn copy_u8a(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
+pub fn copy_u8a(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
     let array = v8::Local::<v8::Uint8Array>::try_from(value).ok()?;
     let buffer = array.buffer(scope)?;
     let data = buffer.data()?;
@@ -246,7 +246,9 @@ pub fn spawn_sandbox_realm(config: SpawnConfig) -> Result<ThreadRealmHandle, Str
 ///   channel and returns them as an Array of Uint8Arrays.
 /// - `getWakeReadFd(): number` — returns the own wake-pipe read fd (or -1 if
 ///   this is not a cross-isolate realm), for registration with `loop.readable()`.
-pub fn create_thread_port_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_thread_port_module<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = ["nativeSend", "nativeRecv", "getWakeReadFd"]
         .iter()
         .map(|n| v8::String::new(scope, n).unwrap())
@@ -260,7 +262,7 @@ fn thread_port_eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
 
     macro_rules! set_fn {
         ($name:expr, $cb:expr) => {{
@@ -286,7 +288,7 @@ fn thread_port_eval_steps<'a>(
 /// the partner's wake pipe. The header is carried separately so a receiver can
 /// classify a message without deserializing the payload it describes.
 fn native_send(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -378,7 +380,7 @@ fn native_send(
 /// and transfer-store bytes at `[1..]`. Also drains wake bytes from the read
 /// pipe so the next `loop.readable()` arms cleanly.
 fn native_recv(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -414,7 +416,7 @@ fn native_recv(
 /// Returns the own wake-pipe read fd (≥ 0) for use with `loop.readable()`,
 /// or -1 if this context does not have a cross-isolate transport.
 fn native_get_wake_read_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -429,7 +431,7 @@ fn native_get_wake_read_fd(
 
 /// Extract `[[handle: number, wakeReadFd: number], ...]` from a JS value.
 pub(crate) fn extract_port_infos(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     val: v8::Local<v8::Value>,
 ) -> Vec<TransferredPortInfo> {
     let Ok(arr) = v8::Local::<v8::Array>::try_from(val) else {

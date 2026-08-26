@@ -29,7 +29,7 @@ struct Workload {
     context: v8::Global<v8::Context>,
     state: Rc<RefCell<FinoState>>,
     _module: v8::Global<v8::Module>,
-    isolate: v8::OwnedIsolate,
+    isolate: v8::SharedIsolate,
     async_state: Option<crate::async_rt::IsolateAsyncState>,
     scheduled: Option<Arc<ScheduledRealmState>>,
     port_fds: Option<(RawFd, RawFd)>,
@@ -107,7 +107,7 @@ impl Drop for PendingWorkload {
 
 struct ActiveWorkload {
     saved_async_state: Option<crate::async_rt::IsolateAsyncState>,
-    _locker: crate::v8_threading::IsolateLocker,
+    locker: v8::Locker<'static>,
 }
 
 thread_local! {
@@ -126,7 +126,7 @@ fn next_handle() -> u64 {
 }
 
 /// Read a handle argument. Handles exceed `u32`, so they cross as `f64`.
-fn handle_arg(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> u64 {
+fn handle_arg(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> u64 {
     let raw = value.number_value(scope).unwrap_or(0.0);
     if raw.is_finite() && raw >= 0.0 {
         raw as u64
@@ -135,7 +135,7 @@ fn handle_arg(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> u64 {
     }
 }
 
-fn handle_value<'s>(scope: &mut v8::HandleScope<'s>, handle: u64) -> v8::Local<'s, v8::Value> {
+fn handle_value<'s>(scope: &mut v8::PinScope<'s, '_>, handle: u64) -> v8::Local<'s, v8::Value> {
     v8::Number::new(scope, handle as f64).into()
 }
 
@@ -403,13 +403,13 @@ fn mailbox() -> &'static Mailbox {
     MAILBOX.get_or_init(Mailbox::new)
 }
 
-fn throw_error(scope: &mut v8::HandleScope, message: &str) {
+fn throw_error(scope: &mut v8::PinScope, message: &str) {
     let message = v8::String::new(scope, message).unwrap();
     let exception = v8::Exception::error(scope, message);
     scope.throw_exception(exception);
 }
 
-fn js_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String {
+fn js_string(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> String {
     value
         .to_string(scope)
         .map(|value| value.to_rust_string_lossy(scope))
@@ -417,7 +417,7 @@ fn js_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> String
 }
 
 fn current_workload_owner(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -426,7 +426,7 @@ fn current_workload_owner(
 }
 
 fn uses_process_readiness(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -435,7 +435,7 @@ fn uses_process_readiness(
 }
 
 fn set_scheduler_polling_required(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -471,7 +471,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     crate::runtime::init_v8();
     let params = v8::CreateParams::default()
         .array_buffer_allocator(crate::runtime::shared_allocator().clone());
-    let mut isolate = v8::Isolate::new(params);
+    let mut isolate = crate::v8_isolate_group::new_isolate(params);
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     isolate.set_allow_atomics_wait(true);
     isolate.set_host_import_module_dynamically_callback(loader::dynamic_import_callback);
@@ -497,10 +497,15 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
         {
             return Err("scheduled Realm was force-terminated during initialization".to_string());
         }
-        let isolate_scope = &mut v8::HandleScope::new(&mut isolate);
+        v8::scope!(let isolate_scope, &mut isolate);
         let queue = v8::MicrotaskQueue::new(isolate_scope, v8::MicrotasksPolicy::Explicit);
-        let context = v8::Context::new(isolate_scope, Default::default());
-        context.set_microtask_queue(&queue);
+        let context = v8::Context::new(
+            isolate_scope,
+            v8::ContextOptions {
+                microtask_queue: Some((&*queue as *const v8::MicrotaskQueue).cast_mut()),
+                ..Default::default()
+            },
+        );
         let scope = &mut v8::ContextScope::new(isolate_scope, context);
         let mut state = FinoState::new_child(
             process_env,
@@ -521,13 +526,13 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
         );
         state.scheduler_workload_owner = owner;
         state.uses_process_readiness = true;
-        context.set_slot(Rc::new(RefCell::new(state)));
+        scope.set_slot(Rc::new(RefCell::new(state)));
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
 
         let source = "import 'internal:bootstrap';";
         let module = {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             loader::compile_source_module(tc, source, "internal:scheduled-realm", None).ok_or_else(
                 || {
                     crate::realm::child::catch_message(tc)
@@ -537,7 +542,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
         };
         loader::register_as_builtin(scope, module, "internal:scheduled-realm");
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             module
                 .instantiate_module(tc, loader::resolve_module_callback)
                 .ok_or_else(|| {
@@ -546,7 +551,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
                 })?;
         }
         {
-            let tc = &mut v8::TryCatch::new(scope);
+            v8::tc_scope!(tc, scope);
             module.evaluate(tc).ok_or_else(|| {
                 crate::realm::child::catch_message(tc)
                     .unwrap_or_else(|| "failed to evaluate scheduled realm".to_string())
@@ -586,9 +591,21 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
             return Err(error);
         }
     };
-    unsafe {
-        isolate.exit();
-    }
+    // SAFETY: all state attached to scheduled-realm isolates is transferred
+    // with the workload and only accessed while its Locker is held.
+    let isolate = match unsafe { isolate.try_into_shared() } {
+        Ok(isolate) => isolate,
+        Err(error) => {
+            drop(async_state);
+            if let Some((wake_read, partner_write)) = port_fds {
+                unsafe {
+                    libc::close(wake_read);
+                    libc::close(partner_write);
+                }
+            }
+            return Err(format!("failed to share scheduled realm isolate: {error}"));
+        }
+    };
     Ok(Workload {
         owner,
         context,
@@ -602,28 +619,31 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
 }
 
 fn activate(workload: &mut Workload) -> ActiveWorkload {
-    let locker = crate::v8_threading::IsolateLocker::new(&mut workload.isolate);
-    unsafe {
-        workload.isolate.enter();
-    }
+    let locker = workload.isolate.lock();
+    // SAFETY: Locker owns an Arc to the isolate's stable inner allocation.
+    // ActiveWorkload is always dropped before its containing Workload, so
+    // extending this outer borrow does not permit the SharedIsolate owner to
+    // disappear while the guard is live.
+    let locker = unsafe { std::mem::transmute::<v8::Locker<'_>, v8::Locker<'static>>(locker) };
     let saved_async_state = crate::async_rt::swap_state(workload.async_state.take());
     ActiveWorkload {
         saved_async_state,
-        _locker: locker,
+        locker,
     }
 }
 
 fn deactivate(workload: &mut Workload, active: ActiveWorkload) {
-    workload.async_state = crate::async_rt::swap_state(active.saved_async_state);
-    unsafe {
-        workload.isolate.exit();
-    }
+    let ActiveWorkload {
+        saved_async_state,
+        locker,
+    } = active;
+    workload.async_state = crate::async_rt::swap_state(saved_async_state);
+    // Locker::drop exits the isolate before releasing V8's Locker. Keep that
+    // boundary explicit: once this returns, the workload may cross threads.
+    drop(locker);
 }
 
-fn service_scheduled_sync_call(
-    scope: &mut v8::HandleScope,
-    state: &Rc<RefCell<FinoState>>,
-) -> bool {
+fn service_scheduled_sync_call(scope: &mut v8::PinScope, state: &Rc<RefCell<FinoState>>) -> bool {
     let (maybe_fn, maybe_resolver) = {
         let mut state = state.borrow_mut();
         (state.sync_call_fn.take(), state.sync_call_resolver.take())
@@ -633,7 +653,7 @@ fn service_scheduled_sync_call(
     };
     let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
         let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-        let tc = &mut v8::TryCatch::new(scope);
+        v8::tc_scope!(tc, scope);
         let function = v8::Local::new(tc, &fn_ref);
         match function.call(tc, receiver, &[]) {
             Some(result) => Ok(v8::Global::new(tc, result)),
@@ -684,10 +704,14 @@ enum Slice {
 /// deliberately rare: exiting an isolate and entering another costs a Locker
 /// round trip, so a realm that still has completable work keeps the thread
 /// unless `shared` reports a strictly higher-priority realm waiting.
-fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, String> {
+fn drive_slice(
+    workload: &mut Workload,
+    active: &mut ActiveWorkload,
+    shared: &PoolShared,
+) -> Result<Slice, String> {
     let owner = workload.owner;
     let context_global = workload.context.clone();
-    let isolate_scope = &mut v8::HandleScope::new(&mut workload.isolate);
+    v8::scope!(let isolate_scope, &mut *active.locker);
     let context = v8::Local::new(isolate_scope, &context_global);
     let scope = &mut v8::ContextScope::new(isolate_scope, context);
     crate::realm::child::pump_and_checkpoint(scope);
@@ -698,7 +722,7 @@ fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, St
         return Ok(Slice::Quiescent { polling: true });
     };
     let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-    let tc = &mut v8::TryCatch::new(scope);
+    v8::tc_scope!(tc, scope);
     loop {
         let step = v8::Local::new(tc, &loop_step_fn)
             .call(tc, receiver, &[])
@@ -742,7 +766,7 @@ fn drive_slice(workload: &mut Workload, shared: &PoolShared) -> Result<Slice, St
 
     let on_done = workload.state.borrow().on_done_fn.clone();
     if let Some(on_done) = on_done {
-        let tc = &mut v8::TryCatch::new(tc);
+        v8::tc_scope!(tc, tc);
         v8::Local::new(tc, &on_done)
             .call(tc, receiver, &[])
             .ok_or_else(|| {
@@ -770,7 +794,10 @@ fn retire_owner(owner: u32) {
 fn drop_workload(mut workload: Workload) {
     // Clear any pending interrupt before entering the isolate for teardown, so
     // a forced termination cannot unwind the disposal path itself.
-    workload.isolate.cancel_terminate_execution();
+    workload
+        .isolate
+        .thread_safe_handle()
+        .cancel_terminate_execution();
     let active = activate(&mut workload);
     retire_owner(workload.owner);
     crate::profiler::finish_realm_profile(&mut workload.state.borrow_mut());
@@ -782,11 +809,6 @@ fn drop_workload(mut workload: Workload) {
     workload.state.borrow_mut().sync_call_fn = None;
     workload.state.borrow_mut().sync_call_resolver = None;
     deactivate(&mut workload, active);
-    // OwnedIsolate requires itself to be current during Drop. The Locker must
-    // already be gone because its destructor reads isolate-owned thread state.
-    unsafe {
-        workload.isolate.enter();
-    }
     if let Some((wake_read, partner_write)) = workload.port_fds.take() {
         unsafe {
             libc::close(wake_read);
@@ -1271,7 +1293,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
 
         let mut resident = current.take().expect("reactor worker claimed no workload");
         let owner = resident.item.owner;
-        let outcome = drive_slice(resident.item.live_mut(), &shared);
+        let outcome = drive_slice(resident.item.live_mut(), &mut resident.active, &shared);
         let (result, event) = match outcome {
             Ok(Slice::Preempted) => {
                 // The realm still has work it could complete immediately, so it
@@ -1349,7 +1371,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
 }
 
 fn create_workload(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1421,7 +1443,7 @@ fn create_workload(
 }
 
 fn create_scheduled_realm(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1581,7 +1603,7 @@ fn create_scheduled_realm(
     rv.set(result.into());
 }
 
-fn optional_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<String> {
+fn optional_string(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<String> {
     if value.is_null_or_undefined() {
         None
     } else if value.is_string() {
@@ -1593,7 +1615,7 @@ fn optional_string(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> 
     }
 }
 
-fn copy_uint8_array(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
+fn copy_uint8_array(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
     let array = v8::Local::<v8::Uint8Array>::try_from(value).ok()?;
     let buffer = array.buffer(scope)?;
     let data = buffer.data()?;
@@ -1609,7 +1631,7 @@ fn copy_uint8_array(scope: &mut v8::HandleScope, value: v8::Local<v8::Value>) ->
 }
 
 fn scheduled_realm_send(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1654,7 +1676,7 @@ fn scheduled_realm_send(
 }
 
 fn scheduled_realm_recv(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1676,7 +1698,7 @@ fn scheduled_realm_recv(
 }
 
 fn take_scheduled_realm_status(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1717,7 +1739,7 @@ fn take_scheduled_realm_status(
 /// JavaScript, because such a realm never returns to the loop to observe the
 /// request. This unwinds it, freeing the reactor thread it was holding.
 fn force_scheduled_realm(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1732,7 +1754,7 @@ fn force_scheduled_realm(
 }
 
 fn close_scheduled_realm(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1754,7 +1776,7 @@ fn close_scheduled_realm(
 /// queues removes a generality that never existed — creating a second queue
 /// used to silently replace the pool that realms were already submitting to.
 fn start_reactor_pool(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1773,7 +1795,7 @@ fn start_reactor_pool(
 }
 
 /// Resolve the process reactor pool, or throw when it is not running.
-fn require_pool(scope: &mut v8::HandleScope, caller: &str) -> Option<Arc<PoolShared>> {
+fn require_pool(scope: &mut v8::PinScope, caller: &str) -> Option<Arc<PoolShared>> {
     let pool = process_pool().lock().unwrap().clone();
     if pool.is_none() {
         throw_error(scope, &format!("{caller}: process reactor is not running"));
@@ -1782,7 +1804,7 @@ fn require_pool(scope: &mut v8::HandleScope, caller: &str) -> Option<Arc<PoolSha
 }
 
 fn create_reactor_thread(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1808,7 +1830,7 @@ fn create_reactor_thread(
 }
 
 fn close_reactor_thread(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1825,7 +1847,7 @@ fn close_reactor_thread(
 }
 
 fn signal_reactor_owner(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1841,7 +1863,7 @@ fn signal_reactor_owner(
 }
 
 fn take_reactor_events(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -1894,7 +1916,7 @@ fn take_reactor_events(
 /// here, and its parked realms disposed on this thread. Validation happens
 /// before any mutation so a refused close leaves the pool exactly as it was.
 fn stop_reactor_pool(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1939,7 +1961,7 @@ fn stop_reactor_pool(
 }
 
 fn readiness_change_from_args(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: &v8::FunctionCallbackArguments,
 ) -> ReadinessChange {
     ReadinessChange {
@@ -1956,7 +1978,7 @@ fn readiness_change_from_args(
 }
 
 fn register_process_readiness(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1966,7 +1988,7 @@ fn register_process_readiness(
 }
 
 fn register_reactor_wake(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -1980,7 +2002,7 @@ fn register_reactor_wake(
 }
 
 fn take_readiness_changes(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -2014,7 +2036,7 @@ fn take_readiness_changes(
 }
 
 fn route_process_readiness(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -2048,7 +2070,7 @@ fn route_process_readiness(
 /// so a drain costs one allocation regardless of how many completions it
 /// carries, and no encoding at all.
 fn take_shared_loop_events(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
@@ -2085,14 +2107,14 @@ fn take_shared_loop_events(
 }
 
 fn process_readiness_control_fd(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     rv.set(v8::Integer::new(scope, mailbox().wake.read).into());
 }
 
-pub fn create_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let names = [
         "currentWorkloadOwner",
         "usesProcessReadiness",
@@ -2129,7 +2151,7 @@ fn eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     macro_rules! set_fn {
         ($name:literal, $function:path) => {{
             let function = v8::FunctionTemplate::new(scope, $function).get_function(scope)?;

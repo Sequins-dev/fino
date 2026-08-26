@@ -254,7 +254,7 @@ pub struct FinoState {
     // Microtask queue
     // ---------------------------------------------------------------------------
     /// The context's single microtask queue.
-    pub root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+    pub root_queue: v8::MicrotaskQueueHandle,
 
     // ---------------------------------------------------------------------------
     // Per-Realm import rule list
@@ -447,7 +447,7 @@ impl FinoState {
     pub fn new_root(
         process_env: ProcessEnv,
         package_map_json: Option<String>,
-        root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+        root_queue: v8::MicrotaskQueueHandle,
         import_rules: Vec<ImportRule>,
     ) -> Self {
         Self {
@@ -503,7 +503,7 @@ impl FinoState {
     pub fn new_child(
         process_env: ProcessEnv,
         package_map_json: Option<String>,
-        root_queue: v8::UniqueRef<v8::MicrotaskQueue>,
+        root_queue: v8::MicrotaskQueueHandle,
         import_rules: Vec<ImportRule>,
         entry_path: Option<String>,
         port: Option<v8::Global<v8::Value>>,
@@ -564,16 +564,15 @@ impl FinoState {
     }
 }
 
-/// Retrieve the state `Rc` from the current V8 context's slot.
+/// Retrieve the state `Rc` from the current V8 isolate's slot.
 ///
 /// # Panics
-/// Panics if called outside a scope that has a context with an initialised
-/// `FinoState`.
-pub fn get_state(scope: &mut v8::HandleScope) -> Rc<RefCell<FinoState>> {
+/// Panics if called before the isolate's `FinoState` has been initialised.
+pub fn get_state(scope: &mut v8::PinScope) -> Rc<RefCell<FinoState>> {
     scope
-        .get_current_context()
-        .get_slot::<RefCell<FinoState>>()
-        .expect("FinoState not initialised in context slot")
+        .get_slot::<Rc<RefCell<FinoState>>>()
+        .expect("FinoState not initialised in isolate slot")
+        .clone()
 }
 
 /// Get a raw pointer to the root microtask queue.

@@ -118,7 +118,7 @@ pub fn unregister_callback(id: usize) {
 // ---------------------------------------------------------------------------
 
 /// Process all pending JS call requests. Returns true if any were handled.
-pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest>) -> bool {
+pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) -> bool {
     if requests.is_empty() {
         return false;
     }
@@ -148,7 +148,7 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
 
         let this: v8::Local<v8::Value> = v8::undefined(scope).into();
 
-        let tc = &mut v8::TryCatch::new(scope);
+        v8::tc_scope!(tc, scope);
         let call_result = func.call(tc, this, &js_args);
 
         if tc.has_caught() {
@@ -192,7 +192,7 @@ pub fn process_requests(scope: &mut v8::HandleScope, requests: Vec<JsCallRequest
 /// # Safety
 /// `args` must be the libffi callback argument array for `param_types`.
 pub unsafe fn invoke_registered_callback_sync_from_c_args(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     func_global: &v8::Global<v8::Function>,
     args: *const *const c_void,
     param_types: &[NativeType],
@@ -207,7 +207,7 @@ pub unsafe fn invoke_registered_callback_sync_from_c_args(
 }
 
 fn call_global_callback_sync(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     func_global: &v8::Global<v8::Function>,
     js_args: &[v8::Local<v8::Value>],
 ) -> Result<CallResult, String> {
@@ -216,12 +216,12 @@ fn call_global_callback_sync(
 }
 
 fn call_local_callback_sync(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     func: v8::Local<v8::Function>,
     js_args: &[v8::Local<v8::Value>],
 ) -> Result<CallResult, String> {
     let this: v8::Local<v8::Value> = v8::undefined(scope).into();
-    let tc = &mut v8::TryCatch::new(scope);
+    v8::tc_scope!(tc, scope);
     let call_result = func.call(tc, this, js_args);
 
     if tc.has_caught() {
@@ -250,7 +250,7 @@ fn fill_slot(
 }
 
 fn send_arg_to_v8<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     arg: &SendArg,
     ty: &NativeType,
 ) -> v8::Local<'s, v8::Value> {
@@ -263,7 +263,7 @@ fn send_arg_to_v8<'s>(
 }
 
 unsafe fn c_arg_to_v8<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     arg_ptr: *const c_void,
     ty: &NativeType,
 ) -> v8::Local<'s, v8::Value> {
@@ -331,7 +331,7 @@ unsafe fn c_arg_to_v8<'s>(
 }
 
 fn int_to_v8<'s>(
-    scope: &mut v8::HandleScope<'s>,
+    scope: &mut v8::PinScope<'s, '_>,
     n: i64,
     ty: &NativeType,
 ) -> v8::Local<'s, v8::Value> {
@@ -353,7 +353,7 @@ fn int_to_v8<'s>(
     }
 }
 
-fn local_to_call_result(scope: &mut v8::HandleScope, val: v8::Local<v8::Value>) -> CallResult {
+fn local_to_call_result(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> CallResult {
     if val.is_null_or_undefined() {
         return CallResult::Void;
     }
