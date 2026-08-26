@@ -49,7 +49,8 @@ export function forceScheduledRealm(handle: number): boolean;
 export function startReactorPool(): number;
 export function createReactorThread(): number;
 export function closeReactorThread(thread: number): void;
-export function signalReactorOwner(owner: number): void;
+/** Signal an active owner, returning false once that owner has retired. */
+export function signalReactorOwner(owner: number): boolean;
 export function takeReactorEvents(): Array<{
   kind: 'activated' | 'settled' | 'error';
   worker: number;

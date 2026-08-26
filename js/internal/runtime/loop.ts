@@ -252,6 +252,12 @@ function taskLocalId(token: number): number {
   const unsigned = token % TASK_TOKEN_BASE;
   return unsigned > 2147483647 ? unsigned - TASK_TOKEN_BASE : unsigned;
 }
+function hasTaskForLocalId(tasks: Iterable<number>, localId: number): boolean {
+  for (const token of tasks) {
+    if (taskLocalId(token) === localId) return true;
+  }
+  return false;
+}
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
@@ -702,7 +708,7 @@ export function removeProc(pid: number, forToken?: number): void {
   _procs.delete(token);
   if (_processReadiness) {
     registerProcessReadiness(pid, EVFILT_PROC!, EV_DELETE, 0, 0, token);
-  } else if (_removeProc) {
+  } else if (_removeProc && !hasTaskForLocalId(_procs.keys(), pid)) {
     _removeProc(rawBackend(), pid);
   }
 }
@@ -810,9 +816,13 @@ export function removeRead(fd: number, forToken?: number): void {
   _reads.delete(token);
   if (_processReadiness) {
     registerProcessReadiness(fd, EVFILT_READ, EV_DELETE, 0, 0, token);
-  } else if (!_reads.has(taskToken(fd)) && !_wakeSources.has(taskToken(fd))) {
-    // Only drop the kernel filter once no other owner is still waiting on this
-    // descriptor through the main realm's backend.
+  } else if (
+    !hasTaskForLocalId(_reads.keys(), fd) &&
+    !hasTaskForLocalId(_wakeSources.values(), fd)
+  ) {
+    // Controller registrations are owner-tagged, but the backend removes by
+    // bare descriptor. A retired Realm's delayed cleanup must not cancel a
+    // successor's watch after the OS recycles that descriptor.
     backend.removeRead(rawBackend(), fd);
   }
 }
@@ -834,7 +844,7 @@ export function removeWrite(fd: number, forToken?: number): void {
   _writes.delete(token);
   if (_processReadiness) {
     registerProcessReadiness(fd, EVFILT_WRITE, EV_DELETE, 0, 0, token);
-  } else if (!_writes.has(taskToken(fd))) {
+  } else if (!hasTaskForLocalId(_writes.keys(), fd)) {
     backend.removeWrite(rawBackend(), fd);
   }
 }
@@ -902,7 +912,7 @@ export function removeVnode(fd: number, forToken?: number): void {
   if (_processReadiness && EVFILT_VNODE !== null) {
     _cancelInstall(EVFILT_VNODE, token);
     registerProcessReadiness(fd, EVFILT_VNODE, EV_DELETE, 0, 0, token);
-  } else if (backend.removeVnode && !_vnodes.has(taskToken(fd))) {
+  } else if (backend.removeVnode && !hasTaskForLocalId(_vnodes.keys(), fd)) {
     backend.removeVnode(rawBackend(), fd);
   }
 }
@@ -972,7 +982,7 @@ export function removeSignal(signo: number, forToken?: number): void {
   if (_processReadiness && EVFILT_SIGNAL !== null) {
     _cancelInstall(EVFILT_SIGNAL, token);
     registerProcessReadiness(signo, EVFILT_SIGNAL, EV_DELETE, 0, 0, token);
-  } else if (backend.removeSignal && !_signals.has(taskToken(signo))) {
+  } else if (backend.removeSignal && !hasTaskForLocalId(_signals.keys(), signo)) {
     backend.removeSignal(rawBackend(), signo);
   }
 }

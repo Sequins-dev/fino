@@ -668,6 +668,11 @@ fn drive_slice(
 }
 
 fn retire_owner(owner: u32) {
+    // Make retirement visible before any of this workload's descriptors are
+    // closed. A queued kqueue completion can otherwise run after the OS has
+    // recycled an async wake fd and re-arm that descriptor for this old owner,
+    // replacing the successor owner's filter.
+    owner_pools().lock().unwrap().remove(&owner);
     let mut inner = mailbox().inner.lock().unwrap();
     inner.events.remove(&owner);
     let mut change = ReadinessChange::control(0.0, 0.0);
@@ -1056,8 +1061,6 @@ impl PoolShared {
         inner.residents.remove(&owner);
         inner.priorities.remove(&owner);
         inner.generations.remove(&owner);
-        drop(inner);
-        owner_pools().lock().unwrap().remove(&owner);
     }
 
     fn notify(&self, event: PoolEvent) {
@@ -1575,11 +1578,14 @@ fn scheduled_realm_recv(
         );
         return;
     };
+    // Clear the signal before draining the queue. A concurrent send after the
+    // drain then leaves its wake byte behind instead of having it consumed
+    // underneath the newly queued message.
+    crate::fdutil::drain(realm.parent_wake_read);
     let mut messages = Vec::new();
     while let Ok(message) = realm.rx.try_recv() {
         messages.push(message);
     }
-    crate::fdutil::drain(realm.parent_wake_read);
     rv.set(crate::realm::transit::build_message_array(scope, messages).into());
 }
 
@@ -1735,16 +1741,19 @@ fn close_reactor_thread(
 fn signal_reactor_owner(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
-    if let Some(pool) = owner_pools()
+    let pool = owner_pools()
         .lock()
         .unwrap()
         .get(&owner)
-        .and_then(Weak::upgrade)
-    {
+        .and_then(Weak::upgrade);
+    if let Some(pool) = pool {
         pool.signal(owner);
+        rv.set(v8::Boolean::new(scope, true).into());
+    } else {
+        rv.set(v8::Boolean::new(scope, false).into());
     }
 }
 
@@ -1798,8 +1807,7 @@ fn take_reactor_events(
 
 /// Tear down the process reactor pool.
 ///
-/// Every reactor thread must already have been stopped: the pool is dropped
-/// here, and its parked realms disposed on this thread. Validation happens
+/// Every reactor thread must already have been stopped. Validation happens
 /// before any mutation so a refused close leaves the pool exactly as it was.
 fn stop_reactor_pool(
     scope: &mut v8::PinScope,
@@ -1835,14 +1843,22 @@ fn stop_reactor_pool(
         return;
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
-    for item in parked.into_values() {
-        match item.workload {
-            PoolWorkload::Live(workload) => drop_workload(workload.0),
-            PoolWorkload::Pending(pending) => {
-                retire_owner(item.owner);
-                drop(pending);
+    // This callback runs while the root isolate is entered. A parked workload
+    // owns a different SharedIsolate whose Locker therefore cannot be acquired
+    // on this thread; dispose the stopped pool's isolates on a clean thread.
+    let disposal = std::thread::spawn(move || {
+        for item in parked.into_values() {
+            match item.workload {
+                PoolWorkload::Live(workload) => drop_workload(workload.0),
+                PoolWorkload::Pending(pending) => {
+                    retire_owner(item.owner);
+                    drop(pending);
+                }
             }
         }
+    });
+    if disposal.join().is_err() {
+        v8util::throw_error(scope, "stopReactorPool: parked Realm disposal failed");
     }
 }
 

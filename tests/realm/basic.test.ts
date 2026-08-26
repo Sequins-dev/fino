@@ -18,6 +18,21 @@ describe('Realm lifecycle', () => {
     });
     t.equal(await realm.call(), loopFd(), 'parent and child are peers on one backend');
   });
+  it('disposes ambient handles after a one-shot call completes', async (t) => {
+    const realm = Realm.fromSource<() => number>(`
+      export default function callOnce() {
+        setTimeout(() => {}, 30_000);
+        return 42;
+      }
+    `);
+    t.equal(await realm.call(), 42, 'call returns before the ambient timer');
+    const outcome = await Promise.race([
+      realm.run().then(() => 'done' as const),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1_000)),
+    ]);
+    if (outcome === 'timeout') realm.terminate({ force: true });
+    t.equal(outcome, 'done', 'completed call owns no remaining ambient loop work');
+  });
   it('realm.terminate() stops a long-running realm', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/long-running.ts', import.meta.url).pathname,

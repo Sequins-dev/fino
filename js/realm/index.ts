@@ -2635,9 +2635,12 @@ export class Realm<F extends RealmFn = RealmFn> {
       }
     }
     return (async () => {
-      await readable(scheduled.completionFd);
+      let status: ReturnType<typeof takeScheduledRealmStatus>;
+      do {
+        await readable(scheduled.completionFd);
+        status = takeScheduledRealmStatus(scheduled.handle);
+      } while (status.kind === 'pending');
       port._drain();
-      const status = takeScheduledRealmStatus(scheduled.handle);
       removeRead(scheduled.completionFd);
       port.close();
       closeScheduledRealm(scheduled.handle);

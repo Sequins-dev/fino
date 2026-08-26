@@ -260,25 +260,20 @@ fn native_transit_recv(
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as u32;
 
-    let (messages, wake_read_fd) = {
+    let messages = {
         let reg = registry().lock().unwrap();
         match reg.halves.get(&handle) {
             Some(half) => {
+                super::thread::consume_wake(half.wake_read_fd);
                 let mut msgs = Vec::new();
                 while let Ok(m) = half.rx.try_recv() {
                     msgs.push(m);
                 }
-                (msgs, Some(half.wake_read_fd))
+                msgs
             }
-            None => (Vec::new(), None),
+            None => Vec::new(),
         }
     };
-
-    if let Some(fd) = wake_read_fd {
-        let mut discard = [0u8; 256];
-        // SAFETY: discard is valid; fd is a valid non-blocking pipe read end.
-        unsafe { libc::read(fd, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
 
     rv.set(build_message_array(scope, messages).into());
 }

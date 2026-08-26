@@ -378,10 +378,11 @@ runtimeError.prepareStackTrace = function prepareStackTrace(
  *   completion signals it again.
  * - `> 0` — the realm did work and should be stepped again.
  *
- * `isDone` reports whether the caller's own work is complete, but a true
- * result alone does not stop the loop: the loop also keeps running while the
- * event loop still has live handles (pending timers, sockets, watchers,
- * Atomics waiters).
+ * `isDone` reports whether the caller's own work is complete. By default the
+ * loop still waits for live handles (pending timers, sockets, watchers, and
+ * Atomics waiters). `finishWhenDone` may declare that the completed operation
+ * owns the whole container, allowing isolate disposal to release ambient
+ * handles instead of letting them retain a one-shot execution indefinitely.
  *
  * ```ts no_run
  * import { driveLoop } from 'internal:bootstrap';
@@ -398,11 +399,16 @@ runtimeError.prepareStackTrace = function prepareStackTrace(
  *
  * @internal
  */
-export function driveLoop(isDone: () => boolean, onDone: () => void): void {
+export function driveLoop(
+  isDone: () => boolean,
+  onDone: () => void,
+  finishWhenDone: () => boolean = () => false,
+): void {
   const processScheduled = usesProcessReadiness();
   let emptyTicks = 0;
   function step(): number {
-    if (isDone() && !alive()) return -1;
+    const initiallyDone = isDone();
+    if (initiallyDone && (finishWhenDone() || !alive())) return -1;
     // A reactor-scheduled realm never blocks here: its readiness completions
     // are delivered by the main thread, which owns the only backend.
     const count = tick(processScheduled || emptyTicks < 3 ? 0 : 25);
@@ -416,7 +422,8 @@ export function driveLoop(isDone: () => boolean, onDone: () => void): void {
     // run that shutdown to completion. Without this second check a realm could
     // finish during a turn that dispatched no events and be parked forever,
     // because nothing would ever step it again to notice.
-    if (isDone() && !alive()) return -1;
+    const done = isDone();
+    if (done && (finishWhenDone() || !alive())) return -1;
     return count + delivered;
   }
   runLoop(step, onDone);
@@ -677,6 +684,11 @@ if (_childEntry) {
       return done;
     },
     function _childOnDone() {},
+    // A call-mode Realm is a one-shot execution container. Once its call,
+    // shutdown hooks, and coverage have completed, ambient handles cannot own
+    // the container indefinitely; disposing the isolate releases them. Script
+    // Realms retain ordinary event-loop liveness until explicitly terminated.
+    () => _callHandlerInstalled,
   );
   // ---------------------------------------------------------------------------
   // Watch mode — file-change reload loop

@@ -40,7 +40,6 @@ const EV_DELETE = 2;
 const TOKEN_BASE = 4294967296;
 
 interface Registration {
-  generation: number;
   owner: number;
   change: ReadinessChange;
   cancel(): void;
@@ -149,17 +148,16 @@ export class ProcessReadinessController {
       const owner = change.udata;
       const registration = `poll:${owner}`;
       const previous = this.#registrations.get(registration);
-      const generation = (previous?.generation ?? 0) + 1;
       previous?.cancel();
       const timer = loop.timeout(change.data);
-      this.#registrations.set(registration, {
-        generation,
+      const active: Registration = {
         owner,
         change,
         cancel: () => timer.cancel(),
-      });
+      };
+      this.#registrations.set(registration, active);
       void timer.then(() => {
-        if (this.#registrations.get(registration)?.generation !== generation) return;
+        if (this.#registrations.get(registration) !== active) return;
         this.#registrations.delete(registration);
         signalReactorOwner(owner);
       });
@@ -167,9 +165,12 @@ export class ProcessReadinessController {
     }
     if (change.schedulerWake === true) {
       const owner = change.udata;
-      const registration = `scheduler:${owner}`;
+      // The kernel keys a read filter by descriptor, so the controller must do
+      // the same. If the OS recycles a retired realm's wake fd, installing its
+      // successor then replaces the stale registration and prevents the old
+      // callback from re-arming over the new owner's filter.
+      const registration = `scheduler-fd:${change.ident}`;
       const previous = this.#registrations.get(registration);
-      const generation = (previous?.generation ?? 0) + 1;
       previous?.cancel();
       // Tag the wake fd with the owning realm's token for that descriptor, so
       // it cannot collide with a readiness watch this realm installs for some
@@ -177,15 +178,18 @@ export class ProcessReadinessController {
       const token = owner * TOKEN_BASE + (change.ident >>> 0);
       const arm = (): void => {
         const ready = loop.readable(change.ident, token);
-        this.#registrations.set(registration, {
-          generation,
+        const active: Registration = {
           owner,
           change,
           cancel: () => loop.removeRead(change.ident, token),
-        });
+        };
+        this.#registrations.set(registration, active);
         void ready.then(() => {
-          if (this.#registrations.get(registration)?.generation !== generation) return;
-          signalReactorOwner(owner);
+          if (this.#registrations.get(registration) !== active) return;
+          if (!signalReactorOwner(owner)) {
+            this.#registrations.delete(registration);
+            return;
+          }
           arm();
         });
       };
@@ -194,24 +198,23 @@ export class ProcessReadinessController {
     }
     const registration = this.#key(change);
     const previous = this.#registrations.get(registration);
-    const generation = (previous?.generation ?? 0) + 1;
     const owner = Math.floor(change.udata / TOKEN_BASE);
     previous?.cancel();
     this.#registrations.delete(registration);
     if ((change.flags & EV_DELETE) !== 0) return;
     if (change.filter === EVFILT_VNODE) {
       const cancel = () => loop.removeVnode(change.ident, change.udata);
-      this.#registrations.set(registration, {
-        generation,
+      const active: Registration = {
         owner,
         change,
         cancel,
-      });
+      };
+      this.#registrations.set(registration, active);
       loop.vnode(
         change.ident,
         change.fflags,
         (event) => {
-          if (this.#registrations.get(registration)?.generation !== generation) return;
+          if (this.#registrations.get(registration) !== active) return;
           route(owner, {
             ident: change.ident,
             filter: change.filter,
@@ -228,16 +231,16 @@ export class ProcessReadinessController {
     }
     if (change.filter === EVFILT_SIGNAL) {
       const cancel = () => loop.removeSignal(change.ident, change.udata);
-      this.#registrations.set(registration, {
-        generation,
+      const active: Registration = {
         owner,
         change,
         cancel,
-      });
+      };
+      this.#registrations.set(registration, active);
       loop.signal(
         change.ident,
         () => {
-          if (this.#registrations.get(registration)?.generation !== generation) return;
+          if (this.#registrations.get(registration) !== active) return;
           route(owner, {
             ident: change.ident,
             filter: change.filter,
@@ -270,14 +273,14 @@ export class ProcessReadinessController {
     } else {
       throw new Error(`unsupported process readiness filter: ${change.filter}`);
     }
-    this.#registrations.set(registration, {
-      generation,
+    const active: Registration = {
       owner,
       change,
       cancel,
-    });
+    };
+    this.#registrations.set(registration, active);
     void ready.then((available) => {
-      if (this.#registrations.get(registration)?.generation !== generation) return;
+      if (this.#registrations.get(registration) !== active) return;
       this.#registrations.delete(registration);
       route(owner, {
         ident: change.ident,
