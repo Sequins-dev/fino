@@ -19,9 +19,10 @@
  * completed file admits the next file Realm into the bounded live window.
  *
  * Parallel output remains TAP 13 and has the same top-level shape as serial
- * execution. A concurrent task channel buffers each group until every preceding
- * claim is ready, preventing output interleaving while preserving deterministic
- * registration order and enforcing the in-flight cap.
+ * execution. Completed groups emit atomically in completion order by default,
+ * preventing output interleaving without hiding progress behind an earlier
+ * long-running group. `--ordered` instead emits groups in deterministic
+ * registration order. Both modes enforce the same in-flight cap.
  *
  * Before importing anything the command calls `allowInternalForTests()`,
  * lifting the loader's `internal:*` import restriction so test files can
@@ -332,13 +333,16 @@ async function runParallelTests(
   files: ParallelTestFile[],
   options: Parameters<typeof runTestFile>[1],
   signal: AbortSignal,
+  ordered: boolean,
 ): Promise<void> {
   const started = performance.now();
   const capture = captureProcessOutput();
   const write = capture.writeStdoutLine;
   try {
     const concurrency = parallelTestConcurrency(configuredReactorThreadCount());
-    const channel = new ConcurrentTaskChannel<ParallelTestResult>(concurrency);
+    const channel = new ConcurrentTaskChannel<ParallelTestResult>(concurrency, {
+      outputOrder: ordered ? 'claim' : 'completion',
+    });
     write('TAP version 13');
     const output = (async () => {
       let total = 0;
@@ -529,9 +533,11 @@ async function expandArg(arg: string): Promise<string[]> {
  * controls when captured console output is printed (`failures` — the
  * default — `always`, or `never`), and `--durations` appends
  * `duration=<time>` metadata to every TAP result line. `--parallel` runs one
- * isolated Realm per file with up to two executing top-level groups per reactor
- * thread and one active group per Realm. A settled group releases its slot
- * immediately, while complete group results emit in registration order.
+ * isolated Realm per file with up to ten executing top-level groups per reactor
+ * thread by default and one active group per Realm. A settled group releases its slot
+ * immediately and emits as one atomic TAP block. Results emit in completion
+ * order by default; `--ordered` holds later results until all earlier registered
+ * groups have completed.
  * `--coverage` enables native V8 precise coverage and writes
  * `coverage/coverage.json`; use the unambiguous inline form
  * `--coverage=<path>` for another artifact location.
@@ -554,6 +560,9 @@ async function expandArg(arg: string): Promise<string[]> {
  * // Multiplex isolated test files across the process reactor pool.
  * await test.parse(['--parallel', 'tests/']);
  *
+ * // Keep parallel TAP groups in deterministic registration order.
+ * await test.parse(['--parallel', '--ordered', 'tests/']);
+ *
  * // Just the socket suites, showing console output even on success.
  * await test.parse(['--filter', 'socket', '--show-output', 'always', 'tests/net']);
  *
@@ -572,6 +581,7 @@ const command = new Task({
       'show-output'?: unknown;
       durations?: unknown;
       parallel?: unknown;
+      ordered?: unknown;
       coverage?: unknown;
     },
     ctx,
@@ -581,6 +591,7 @@ const command = new Task({
     const showOutput = typeof input['show-output'] === 'string' ? input['show-output'] : 'failures';
     const durations = input.durations === true;
     const parallel = input.parallel === true;
+    const ordered = input.ordered === true;
     const coveragePath = typeof input.coverage === 'string' ? input.coverage : undefined;
     if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
       throw new Error(
@@ -627,7 +638,7 @@ const command = new Task({
           specifier,
         });
       }
-      output = await runParallelTests(parallelFiles, runOptions, ctx.signal);
+      output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
     } else {
       for (const file of importFiles) await import(normalizeModuleSpecifier(file));
       const { run } = await import('fino:test/test');
@@ -643,6 +654,7 @@ const command = new Task({
         showOutput,
         durations,
         parallel,
+        ordered,
         coverage: coveragePath,
         output,
       };
@@ -672,6 +684,11 @@ const command = new Task({
         flags: '--parallel',
         type: 'boolean',
         description: 'Run test files in isolated concurrent Realms',
+      },
+      {
+        flags: '--ordered',
+        type: 'boolean',
+        description: 'Emit parallel test groups in deterministic registration order',
       },
       {
         flags: '--coverage',

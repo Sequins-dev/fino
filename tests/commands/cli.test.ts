@@ -1219,7 +1219,7 @@ describe('CLI commands', () => {
       },
     );
   });
-  it('merges concurrent file results into deterministic top-level TAP', async (t) => {
+  it('merges ordered concurrent file results into deterministic top-level TAP', async (t) => {
     await withTempProject({}, async (dir, fs) => {
       const source = (name: string, peer: string) =>
         [
@@ -1252,7 +1252,15 @@ describe('CLI commands', () => {
       await fs.writeFile(`${dir}/a.test.ts`, source('a', 'b') as never);
       await fs.writeFile(`${dir}/b.test.ts`, source('b', 'a') as never);
       const { stdout, stderr, result } = await runCli(
-        ['test', '--parallel', '--durations', '--show-output=always', 'a.test.ts', 'b.test.ts'],
+        [
+          'test',
+          '--parallel',
+          '--ordered',
+          '--durations',
+          '--show-output=always',
+          'a.test.ts',
+          'b.test.ts',
+        ],
         { cwd: dir, env: { FINO_REACTOR_THREADS: '1' } },
       );
       t.equal(result.code, 0, 'parallel files exit successfully on one multiplexing reactor');
@@ -1276,6 +1284,58 @@ describe('CLI commands', () => {
       );
       t.ok(stdout.includes('ok 3 - b group'), 'second file continues root numbering');
       t.ok(stdout.includes('    ok 1 - b waits for a'), 'nested numbering remains local');
+    });
+  });
+  it('emits parallel groups as each completes by default', async (t) => {
+    await withTempProject({}, async (dir, fs) => {
+      const marker = `${dir}/fast-finished`;
+      await fs.writeFile(
+        `${dir}/00-slow.test.ts`,
+        [
+          "import { test } from 'fino:test/test';",
+          "import { DiskFileSystem } from 'fino:file';",
+          "import * as loop from 'internal:runtime/loop';",
+          'const fs = new DiskFileSystem();',
+          "test('slow first claim', async (t) => {",
+          '  for (let attempt = 0; attempt < 200; attempt++) {',
+          `    try { await fs.lstat(${JSON.stringify(marker)}); break; } catch {}`,
+          '    await loop.timeout(5);',
+          '  }',
+          '  await loop.timeout(50);',
+          '  t.ok(true);',
+          '});',
+          '',
+        ].join('\n') as never,
+      );
+      await fs.writeFile(
+        `${dir}/01-fast.test.ts`,
+        [
+          "import { test } from 'fino:test/test';",
+          "import { DiskFileSystem } from 'fino:file';",
+          'const fs = new DiskFileSystem();',
+          "test('fast second claim', async (t) => {",
+          `  await fs.writeFile(${JSON.stringify(marker)}, new Uint8Array([1]));`,
+          '  t.ok(true);',
+          '});',
+          '',
+        ].join('\n') as never,
+      );
+      const { stdout, stderr, result } = await runCli(
+        ['test', '--parallel', '00-slow.test.ts', '01-fast.test.ts'],
+        {
+          cwd: dir,
+          env: { FINO_REACTOR_THREADS: '1', FINO_TEST_CONCURRENCY: '2' },
+        },
+      );
+      t.equal(result.code, 0, 'completion-order run exits successfully');
+      t.equal(stderr, '', 'completion-order run has no diagnostics');
+      t.ok(stdout.includes('\n1..2\n'), 'completion-order output retains the aggregate plan');
+      t.ok(
+        stdout.indexOf('ok 1 - fast second claim') < stdout.indexOf('ok 2 - slow first claim'),
+        'the later claim emits as soon as it completes',
+      );
+      t.ok(stdout.includes('ok 1 - fast second claim'), 'root numbering follows emission order');
+      t.ok(stdout.includes('ok 2 - slow first claim'), 'the delayed group emits afterward');
     });
   });
   it('suppresses raw and nested Realm output outside the TAP stream', async (t) => {
@@ -1364,7 +1424,7 @@ describe('CLI commands', () => {
       t.equal(stderr, '', 'rolling group admission has no diagnostics');
       t.ok(stdout.includes('\n1..3\n'), 'all groups contribute to the final plan');
       t.ok(
-        stdout.includes('ok 3 - uses the first available slot'),
+        /ok \d+ - uses the first available slot/.test(stdout),
         'the next group starts when either in-flight group releases a slot',
       );
     });
@@ -1557,7 +1617,7 @@ describe('CLI commands', () => {
       },
       async (dir) => {
         const { stdout, stderr, result } = await runCli(
-          ['test', '--parallel', 'missing.test.ts', 'pass.test.ts'],
+          ['test', '--parallel', '--ordered', 'missing.test.ts', 'pass.test.ts'],
           { cwd: dir, env: { FINO_REACTOR_THREADS: '1' } },
         );
         t.equal(result.code, 1, 'a failed parallel file exits nonzero');
@@ -1584,7 +1644,7 @@ describe('CLI commands', () => {
       },
       async (dir) => {
         const { stdout, stderr, result } = await runCli(
-          ['test', '--parallel', 'failure.test.ts', 'skip.test.ts'],
+          ['test', '--parallel', '--ordered', 'failure.test.ts', 'skip.test.ts'],
           { cwd: dir },
         );
         t.equal(result.code, 1, 'ordinary test failure exits nonzero');

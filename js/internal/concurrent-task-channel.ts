@@ -1,11 +1,12 @@
 /**
- * Claim-ordered asynchronous output with bounded task admission.
+ * Asynchronous completion output with bounded task admission.
  *
  * `claim()` immediately reserves the next position in the output sequence.
  * Calling `schedule()` on that resolver waits for its optional readiness
  * dependency and an execution slot. Settling a scheduled resolver releases its
- * slot immediately, while iteration yields values in claim order regardless of
- * completion order.
+ * slot immediately. Iteration yields values in completion order by default;
+ * callers may request claim order when reproducible output is more important
+ * than immediately exposing completed work.
  *
  * @internal
  */
@@ -40,6 +41,12 @@ type Entry<T> =
   | { state: 'fulfilled'; value: T }
   | { state: 'rejected'; reason: unknown };
 
+/** Output ordering policy for a concurrent task channel. @internal */
+export interface ConcurrentTaskChannelOptions {
+  /** Yield settled tasks immediately, or wait for earlier claims. */
+  outputOrder?: 'completion' | 'claim';
+}
+
 /**
  * An async sequence backed by a bounded number of scheduled tasks.
  *
@@ -51,26 +58,31 @@ type Entry<T> =
  * the full channel. A fulfilled or rejected
  * resolver frees its capacity slot even when an earlier position is still
  * pending, allowing execution to remain bounded without coupling it to output
- * ordering. Call `close()` after the final claim; iteration finishes once all
- * claimed positions have been scheduled, settled, and consumed.
+ * ordering. Results yield in completion order unless `outputOrder: 'claim'`
+ * is requested. Call `close()` after the final claim; iteration finishes once
+ * all claimed positions have been scheduled, settled, and consumed.
  *
  * @internal
  */
 export class ConcurrentTaskChannel<T> implements AsyncIterableIterator<T> {
   readonly #capacity: number;
+  readonly #outputOrder: 'completion' | 'claim';
   #active = 0;
   #claimed = 0;
   #nextOutput = 0;
+  #consumed = 0;
   #closed = false;
   readonly #entries = new Map<number, Entry<T>>();
+  readonly #settledOrder: number[] = [];
   readonly #scheduleWaiters: ScheduleWaiter[] = [];
   readonly #readWaiters: ReadWaiter<T>[] = [];
 
-  constructor(capacity: number) {
+  constructor(capacity: number, options: ConcurrentTaskChannelOptions = {}) {
     if (!Number.isSafeInteger(capacity) || capacity < 1) {
       throw new RangeError('ConcurrentTaskChannel capacity must be a positive integer');
     }
     this.#capacity = capacity;
+    this.#outputOrder = options.outputOrder ?? 'completion';
   }
 
   /** Maximum number of scheduled, unsettled tasks. */
@@ -135,6 +147,7 @@ export class ConcurrentTaskChannel<T> implements AsyncIterableIterator<T> {
       }
       settled = true;
       this.#entries.set(index, entry);
+      if (this.#outputOrder === 'completion') this.#settledOrder.push(index);
       this.#active -= current.weight;
       this.#drainSchedules();
       this.#drainReads();
@@ -192,18 +205,26 @@ export class ConcurrentTaskChannel<T> implements AsyncIterableIterator<T> {
 
   #drainReads(): void {
     while (this.#readWaiters.length > 0) {
-      const entry = this.#entries.get(this.#nextOutput);
+      const index = this.#outputOrder === 'claim' ? this.#nextOutput : this.#settledOrder.shift();
+      const entry = index === undefined ? undefined : this.#entries.get(index);
       if (entry?.state === 'fulfilled') {
-        this.#entries.delete(this.#nextOutput++);
+        this.#entries.delete(index!);
+        this.#consumed++;
+        if (this.#outputOrder === 'claim') this.#nextOutput++;
         this.#readWaiters.shift()!.resolve({ value: entry.value, done: false });
         continue;
       }
       if (entry?.state === 'rejected') {
-        this.#entries.delete(this.#nextOutput++);
+        this.#entries.delete(index!);
+        this.#consumed++;
+        if (this.#outputOrder === 'claim') this.#nextOutput++;
         this.#readWaiters.shift()!.reject(entry.reason);
         continue;
       }
-      if (this.#closed && this.#nextOutput === this.#claimed) {
+      if (index !== undefined && this.#outputOrder === 'completion') {
+        this.#settledOrder.unshift(index);
+      }
+      if (this.#closed && this.#consumed === this.#claimed) {
         this.#readWaiters.shift()!.resolve({ value: undefined, done: true });
         continue;
       }

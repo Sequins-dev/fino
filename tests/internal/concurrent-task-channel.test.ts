@@ -2,7 +2,7 @@ import { describe, it } from 'fino:test/test';
 import { ConcurrentTaskChannel } from 'internal:concurrent-task-channel';
 
 describe('ConcurrentTaskChannel', () => {
-  it('claims immediately, bounds scheduled tasks, and preserves output order', async (t) => {
+  it('claims immediately, bounds scheduled tasks, and emits completion order', async (t) => {
     const channel = new ConcurrentTaskChannel<string>(2);
     const first = channel.claim();
     const second = channel.claim();
@@ -29,8 +29,22 @@ describe('ConcurrentTaskChannel', () => {
 
     const values: string[] = [];
     for await (const value of channel) values.push(value);
-    t.deepEqual(values, ['first', 'second', 'third'], 'completion order does not reorder output');
+    t.deepEqual(values, ['second', 'third', 'first'], 'settled values emit immediately');
     t.equal(channel.active, 0, 'all capacity is released after settlement');
+  });
+
+  it('optionally preserves claim order', async (t) => {
+    const channel = new ConcurrentTaskChannel<string>(2, { outputOrder: 'claim' });
+    const first = channel.claim();
+    const second = channel.claim();
+    await Promise.all([first.schedule(), second.schedule()]);
+    second.resolve('second');
+    first.resolve('first');
+    channel.close();
+
+    const values: string[] = [];
+    for await (const value of channel) values.push(value);
+    t.deepEqual(values, ['first', 'second'], 'claim order waits for earlier positions');
   });
 
   it('schedules claimed positions after close and rejects later claims', async (t) => {
@@ -153,7 +167,7 @@ describe('ConcurrentTaskChannel', () => {
     channel.close();
     const values: string[] = [];
     for await (const value of channel) values.push(value);
-    t.deepEqual(values, ['first', 'second', 'third'], 'readiness does not change claim order');
+    t.deepEqual(values, ['second', 'third', 'first'], 'ready tasks emit as they complete');
   });
 
   it('requires scheduling before settlement and schedules only once', async (t) => {
