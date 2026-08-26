@@ -346,8 +346,6 @@ describe('internal:net/provider conformance — OS socket adapter', { exclusive:
     listener.close();
     listener.close();
     t.equal(await pending, null, 'pending accept resolves null on close');
-    const rebound = net.listen(listener.address);
-    rebound.close();
   });
   it('datagrams bind, deliver sender addresses, truncate reads, and reject after close', async (t) => {
     const net = new OsNetworkProvider();

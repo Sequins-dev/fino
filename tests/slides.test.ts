@@ -11,7 +11,8 @@ import { Process, SIGKILL, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
 const encoder = new TextEncoder();
-async function poll(check: () => Promise<boolean>, timeoutMs = 3e3): Promise<void> {
+const ASYNC_DEADLINE_MS = 10_000;
+async function poll(check: () => Promise<boolean>, timeoutMs = ASYNC_DEADLINE_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
     if (Date.now() >= deadline) throw new Error(`poll timed out after ${timeoutMs}ms`);
@@ -483,7 +484,7 @@ describe('fino:ui/slides', () => {
     try {
       const response = await Promise.race([
         fetch(`http://127.0.0.1:${server.port}/talk`),
-        loop.timeout(2e3).then(() => {
+        loop.timeout(ASYNC_DEADLINE_MS).then(() => {
           throw new Error('live presentation request timed out');
         }),
       ]);

@@ -16,7 +16,7 @@ if (!sqliteAvailable) {
 }
 
 function tempPath(): string {
-  return `/tmp/fino-jobs-test-${Math.floor(Math.random() * 1e9)}.db`;
+  return `/tmp/fino-durable-jobs-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 
 describe('fino:jobs durable tasks', () => {

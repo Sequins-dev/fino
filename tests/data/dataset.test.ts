@@ -216,13 +216,13 @@ describe('DataLoader', () => {
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-    // Each batch's work has to outlast the realm creation that precedes the
-    // next one, or the pool never has two workers live at once and the peak
-    // reads 1. Creating a realm blocks its creator while the child's bootstrap
-    // graph is compiled and evaluated, so these delays are sized against that
-    // rather than against the work itself.
     const source = Dataset.from(
-      [500, 500, 500, 500].map((delayMs, value) => ({ value, delayMs, stats })),
+      [0, 1, 2, 3].map((value) => ({
+        value,
+        delayMs: 0,
+        stats,
+        ...(value < 2 ? { minimumActive: 2 } : {}),
+      })),
     );
     const loader = new DataLoader<typeof source extends Dataset<infer T> ? T : never, number[]>(
       source,

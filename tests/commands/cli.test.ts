@@ -814,10 +814,12 @@ describe('CLI commands', () => {
           for await (const chunk of proc.stderr) stderrChunks.push(decodeUtf8(chunk));
         })();
         try {
-          await poll(() => stdoutChunks.join('').includes('watch value:1'), 3e3);
+          // A debug build may spend several seconds creating and compiling a
+          // fresh isolate group before the watched entrypoint first runs.
+          await poll(() => stdoutChunks.join('').includes('watch value:1'), 10e3);
           await loop.timeout(300);
           await fs.writeFile(dir + '/state.ts', 'export const value = 2;\n');
-          await poll(() => stdoutChunks.join('').includes('watch value:2'), 5e3);
+          await poll(() => stdoutChunks.join('').includes('watch value:2'), 10e3);
         } finally {
           proc.kill();
         }
@@ -873,7 +875,7 @@ describe('CLI commands', () => {
               stdoutChunks
                 .join('')
                 .includes('watch-export:http://collector.example:4318/watch/v1/traces'),
-            5e3,
+            10e3,
           );
         } finally {
           proc.kill();

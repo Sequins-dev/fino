@@ -242,17 +242,25 @@ describe('Sandbox Realm enforcement', { exclusive: true }, () => {
     const call = realm.call();
     const peerEntry = new URL('./fixtures/echo-fn.ts', import.meta.url).pathname;
     const peers = Array.from({ length: 4 }, () => new Realm<typeof echo>({ entry: peerEntry }));
+    // Fresh isolate groups can spend over a second instantiating their module
+    // graphs on an otherwise idle debug build. Keep the deadline bounded while
+    // leaving enough room to test scheduler responsiveness rather than cold
+    // isolate startup speed.
+    const peerDeadlineMs = 5_000;
     const peerStart = performance.now();
     const peerResult = await Promise.race([
       Promise.all(peers.map((peer, index) => peer.call(index))),
-      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 1000)),
+      new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), peerDeadlineMs)),
     ]);
     t.equal(
       JSON.stringify(peerResult),
       JSON.stringify([0, 1, 2, 3]),
       'regular workload peers complete while the CPU-capped sandbox is busy',
     );
-    t.ok(performance.now() - peerStart < 1000, 'peer latency remains bounded by the test deadline');
+    t.ok(
+      performance.now() - peerStart < peerDeadlineMs,
+      'peer latency remains bounded by the test deadline',
+    );
     realm.terminate({ force: true });
     const result = await Promise.race([
       call.then(
