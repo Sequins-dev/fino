@@ -6,8 +6,9 @@
  * record validation, TTL translation, sealed identifiers, and conditional
  * writes.
  *
- * Session data uses the supplied provider's value representation. It is suitable for
- * authentication identity and small request-scoped metadata, not as a
+ * Session data uses the supplied provider's value representation and must be
+ * structured-cloneable as well as supported by that provider. It is suitable
+ * for authentication identity and small request-scoped metadata, not as a
  * transactional application database. A distributed adapter must provide
  * atomic per-key conditional writes and read-after-write behavior to preserve
  * the security guarantees of invalidation and regeneration; eventual
@@ -34,6 +35,7 @@ import {
 } from 'fino:security/cookie';
 import { v4 as uuidv4 } from 'fino:uuid';
 import type { HttpContext, Producer } from 'fino:net/http/app';
+import { deepEqual } from 'internal:value/equal';
 /** Clock used for session timestamps and expiry checks. */
 export interface SessionClock {
   /** Return the current Unix timestamp in milliseconds. */
@@ -43,7 +45,7 @@ export interface SessionClock {
 export interface SessionRecord<T = Record<string, unknown>> {
   /** Opaque session identifier stored only inside the sealed browser cookie. */
   id: string;
-  /** JSON-serializable application data. */
+  /** Structured-cloneable application data accepted by the configured store. */
   data: T;
   /** Unix timestamp in milliseconds when this session was first created. */
   createdAt: number;
@@ -64,7 +66,7 @@ function assertRecord(record: SessionRecord<unknown>): void {
   }
 }
 function cloneRecord<T>(record: SessionRecord<T>): SessionRecord<T> {
-  return JSON.parse(JSON.stringify(record)) as SessionRecord<T>;
+  return structuredClone(record);
 }
 /** One cookie-sealing key accepted by server-session middleware. */
 export interface SessionKey {
@@ -246,7 +248,7 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
     if (snapshot !== null && options.rolling === true)
       initialRecord.expiresAt = now + options.ttlMs;
     const originalId = initialRecord.id;
-    const originalData = JSON.stringify(initialRecord.data);
+    const originalData = structuredClone(initialRecord.data);
     let invalidated = false;
     let regenerated = false;
     const session: Session<T> = {
@@ -275,8 +277,7 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
         jar.delete(cookie, deleteCookieOptions(options as SessionOptions<unknown>));
         return;
       }
-      const encodedData = JSON.stringify(session.data);
-      const dirty = encodedData !== originalData;
+      const dirty = !deepEqual(session.data, originalData);
       if (dirty) session.updatedAt = finishNow;
       if (options.rolling === true) session.expiresAt = finishNow + options.ttlMs;
       if (regenerated) await store.delete(originalId);

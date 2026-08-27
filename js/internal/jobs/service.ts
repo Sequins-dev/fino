@@ -50,7 +50,8 @@ import {
 } from './store.ts';
 import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
-import { Facade, Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
+import { createStoreFacade } from '../store/facade.ts';
 import type { Task } from '../../task.ts';
 import {
   loadWorkflowRun,
@@ -694,11 +695,7 @@ export class JobsService {
     const workflowStore = this.#workflowStore;
     const baseOverrides = opts.realm?.overrides;
     const createWorker = (): Realm => {
-      const facade = new Facade('fino:jobs/checkpoints', ['set', 'get', 'list', 'remove'])
-        .handle('set', (key, value) => workflowStore.set(key as string, value))
-        .handle('get', (key) => workflowStore.get(key as string))
-        .handle('list', (prefix) => workflowStore.list({ prefix: prefix as string | undefined }))
-        .handle('remove', (key) => workflowStore.delete(key as string));
+      const facade = createStoreFacade('fino:jobs/checkpoints', workflowStore);
       const rules: ImportRule[] = [
         ...(baseOverrides === undefined
           ? []

@@ -34,7 +34,9 @@ import { getDatabaseUrl } from 'app:config';
 const url = await getDatabaseUrl();
 ```
 
-The constructor declares the export names the child will see. `handle()` registers the parent-side implementation for each name. Calls are request/response: the child awaits the result, and errors thrown in the handler propagate back as rejected promises.
+The constructor can predeclare export names, and `handle()` also declares each
+registered name automatically. Calls are request/response: the child awaits the
+result, and errors thrown in the handler propagate back as rejected promises.
 
 ## Scalar handlers
 
@@ -142,6 +144,26 @@ const facade = Facade.from(service, { specifier: 'app:config' });
 ```
 
 Non-function properties and `constructor` are excluded. The original object is the handler receiver for every call.
+
+## Proxying a lazy service
+
+`Facade.proxy()` exposes an explicit method allowlist from a service resolved
+at call time. Use it when the service is initialized lazily or may be replaced,
+and keep the allowlist narrower than the full service API:
+
+```ts
+let service: ConfigService | undefined;
+const facade = Facade.proxy(
+  () => service ??= new ConfigService(),
+  {
+    specifier: 'app:config',
+    methods: ['get'],
+  },
+);
+```
+
+The resolver runs for every call and the resolved object remains the method
+receiver. Methods outside the allowlist are not exported to the child Realm.
 
 ## Wiring a facade into an import map
 

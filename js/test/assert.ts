@@ -78,6 +78,8 @@
  * await assert.rejects(async () => { throw new Error('oops'); }, /oops/);
  * ```
  */
+import { deepEqual as _deepEqual } from 'internal:value/equal';
+
 // ---------------------------------------------------------------------------
 // AssertionError
 // ---------------------------------------------------------------------------
@@ -283,115 +285,6 @@ function _fmt(v: unknown): string {
     }
   }
   return String(v);
-}
-function _isTypedArray(value: unknown): value is ArrayBufferView {
-  return ArrayBuffer.isView(value) && !(value instanceof DataView);
-}
-function _sameBytes(a: ArrayBufferView, b: ArrayBufferView): boolean {
-  if (a.constructor !== b.constructor || a.byteLength !== b.byteLength) return false;
-  const aBytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
-  const bBytes = new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
-  for (let i = 0; i < aBytes.length; i++) {
-    if (aBytes[i] !== bBytes[i]) return false;
-  }
-  return true;
-}
-function _hasComparedPair(seen: WeakMap<object, WeakSet<object>>, a: object, b: object): boolean {
-  const matches = seen.get(a);
-  if (matches?.has(b)) return true;
-  if (matches) {
-    matches.add(b);
-  } else {
-    const set = new WeakSet<object>();
-    set.add(b);
-    seen.set(a, set);
-  }
-  return false;
-}
-function _ownEnumerableKeys(value: object): Array<string | symbol> {
-  const keys: Array<string | symbol> = Object.keys(value);
-  for (const sym of Object.getOwnPropertySymbols(value)) {
-    if (Object.prototype.propertyIsEnumerable.call(value, sym)) keys.push(sym);
-  }
-  return keys;
-}
-function _mapEqual(
-  a: Map<unknown, unknown>,
-  b: Map<unknown, unknown>,
-  seen: WeakMap<object, WeakSet<object>>,
-): boolean {
-  if (a.size !== b.size) return false;
-  const matched = new Set<unknown>();
-  for (const [aKey, aValue] of a) {
-    let found = false;
-    for (const [bKey, bValue] of b) {
-      if (matched.has(bKey)) continue;
-      if (_deepEqual(aKey, bKey, seen) && _deepEqual(aValue, bValue, seen)) {
-        matched.add(bKey);
-        found = true;
-        break;
-      }
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-function _setEqual(
-  a: Set<unknown>,
-  b: Set<unknown>,
-  seen: WeakMap<object, WeakSet<object>>,
-): boolean {
-  if (a.size !== b.size) return false;
-  const matched = new Set<unknown>();
-  for (const aValue of a) {
-    let found = false;
-    for (const bValue of b) {
-      if (matched.has(bValue)) continue;
-      if (_deepEqual(aValue, bValue, seen)) {
-        matched.add(bValue);
-        found = true;
-        break;
-      }
-    }
-    if (!found) return false;
-  }
-  return true;
-}
-function _deepEqual(
-  a: unknown,
-  b: unknown,
-  seen: WeakMap<object, WeakSet<object>> = new WeakMap(),
-): boolean {
-  if (Object.is(a, b)) return true;
-  if (a === null || b === null) return false;
-  if (typeof a !== typeof b) return false;
-  if (!_isRecord(a) || !_isRecord(b)) return false;
-  if (_hasComparedPair(seen, a, b)) return true;
-  if (a instanceof Date || b instanceof Date) {
-    return a instanceof Date && b instanceof Date && Object.is(a.getTime(), b.getTime());
-  }
-  if (a instanceof RegExp || b instanceof RegExp) {
-    return (
-      a instanceof RegExp && b instanceof RegExp && a.source === b.source && a.flags === b.flags
-    );
-  }
-  if (a instanceof Map || b instanceof Map) {
-    return a instanceof Map && b instanceof Map && _mapEqual(a, b, seen);
-  }
-  if (a instanceof Set || b instanceof Set) {
-    return a instanceof Set && b instanceof Set && _setEqual(a, b, seen);
-  }
-  if (_isTypedArray(a) || _isTypedArray(b)) {
-    return _isTypedArray(a) && _isTypedArray(b) && _sameBytes(a, b);
-  }
-  const aKeys = _ownEnumerableKeys(a);
-  const bKeys = _ownEnumerableKeys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    if (!Object.prototype.hasOwnProperty.call(b, k)) return false;
-    if (!_deepEqual(a[k], b[k], seen)) return false;
-  }
-  return true;
 }
 /** Validate a thrown/rejected value against a check function or RegExp. */
 function _checkErr(err: unknown, check: Exclude<ErrorCheck, null>): boolean {

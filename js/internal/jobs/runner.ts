@@ -43,6 +43,7 @@ import { Task } from '../../task.ts';
 import { DurableTask } from '../../task/durable.ts';
 import type { WorkflowWait } from '../../workflow.ts';
 import type { Store } from '../../store.ts';
+import { storeFromFacade, type StoreFacadeModule } from '../store/facade.ts';
 
 /**
  * One job execution request delivered to a processor.
@@ -283,12 +284,12 @@ export async function dispatchJob(
  *
  * Durable checkpoints need a generic `Store`, which a worker realm cannot own
  * directly. The store is resolved lazily by importing the
- * `fino:jobs/checkpoints` facade the pool owner injects at spawn, and adapting
- * its `set`/`get`/`list`/`remove` calls to the generic store contract. The
- * import happens only the first time a durable task actually runs and is cached
- * thereafter, so plain-task-only workers never import the facade. If a durable
- * task runs in a realm where the facade was not injected, the failed import is
- * surfaced as a retryable error result explaining that the facade is missing.
+ * `fino:jobs/checkpoints` facade the pool owner injects at spawn, then passing
+ * that module through the shared remote-Store adapter. The import happens only
+ * the first time a durable task actually runs and is cached thereafter, so
+ * plain-task-only workers never import the facade. If a durable task runs in a
+ * realm where the facade was not injected, the failed import is surfaced as a
+ * retryable error result explaining that the facade is missing.
  *
  * ```ts no_run
  * // Inside a worker entry module:
@@ -305,33 +306,7 @@ export function taskWorker(root: Task): (call: JobsWireCall) => Promise<JobsWire
   let facadeStore: Promise<Store> | undefined;
   const resolveStore = (): Promise<Store> => {
     facadeStore ??= import('fino:jobs/checkpoints').then(
-      (mod) => {
-        const facade = mod as {
-          set(key: string, value: unknown): Promise<void>;
-          get(key: string): Promise<unknown>;
-          list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
-          remove(key: string): Promise<boolean>;
-        };
-        const create = (prefix: string): Store => ({
-          set: (key, value) => facade.set(`${prefix}${key}`, value),
-          async get<T = unknown>(key: string): Promise<T | null> {
-            return (await facade.get(`${prefix}${key}`)) as T | null;
-          },
-          async list<T = unknown>(options: { prefix?: string } = {}) {
-            const selected = `${prefix}${options.prefix ?? ''}`;
-            return (await facade.list(selected)).map((entry) => ({
-              key: entry.key.slice(prefix.length),
-              value: entry.value as T,
-            }));
-          },
-          delete: (key) => facade.remove(`${prefix}${key}`),
-          namespace(name) {
-            if (name.length === 0) throw new TypeError('Store namespace must not be empty');
-            return create(`${prefix}${encodeURIComponent(name)}/`);
-          },
-        });
-        return create('');
-      },
+      (mod) => storeFromFacade(mod as StoreFacadeModule),
       (err) => {
         throw new Error(
           `durable jobs need the fino:jobs/checkpoints facade in this worker realm: ${err instanceof Error ? err.message : String(err)}`,

@@ -12,11 +12,11 @@
  *
  * The facade groups three kinds of traffic. Ordinary control calls
  * (`push`, `schedule`, `get`, `cancel`, `waitFor`, ...) proxy straight onto the
- * live `JobsService`. Durable workflow checkpoints ride the `wf*` handlers,
- * which read and write the service's workflow store so run state survives a
- * crash. Inline processors — task handlers whose code lives inside a client
- * realm rather than a spawned worker — are bridged by an `InlineRelay`: the
- * service hands each due call to the relay, the client drains them through the
+ * live `JobsService`. Durable workflow checkpoints use the generic remote
+ * Store adapter under `fino:jobs/checkpoints`, so this control API does not
+ * duplicate key/value operations. Inline processors — task handlers whose code
+ * lives inside a client realm rather than a spawned worker — are bridged by an
+ * `InlineRelay`. The service hands each due call to the relay, the client drains it through the
  * `inlineCalls` async stream, runs the handler locally, and reports the outcome
  * back with `completeInline`.
  *
@@ -41,6 +41,7 @@
  */
 import { Facade } from '../../realm/index.ts';
 import { registerShutdownHook } from '../shutdown.ts';
+import { createStoreFacade } from '../store/facade.ts';
 import type { JobsService, JobProcessor } from './service.ts';
 import type { JobsWireCall, JobsWireResult } from './runner.ts';
 
@@ -184,8 +185,9 @@ const _relays: InlineRelay[] = [];
  * close over this module's lazily-opened `JobsService`, so a fresh facade should
  * be created per orchestrator process and layered onto each realm's import map
  * as a directive. Control handlers (`push`, `schedule`, `get`, `cancel`,
- * `waitFor`, and the rest) proxy directly to the service; `wf*` handlers proxy
- * durable workflow checkpoints to its workflow store; and the inline trio
+ * `waitFor`, and the rest) proxy directly to the service through the generic
+ * lazy facade proxy; the separate checkpoint facade uses the shared remote
+ * Store adapter; and the inline trio
  * (`registerInline`, `inlineCalls`, `completeInline`) bridges client-realm task
  * handlers through an `InlineRelay`.
  *
@@ -212,27 +214,22 @@ const _relays: InlineRelay[] = [];
  * @internal
  */
 export function createJobsControlFacade(): Facade {
-  return new Facade('fino:jobs/control', [
-    'open',
-    'push',
-    'schedule',
-    'unschedule',
-    'get',
-    'list',
-    'stats',
-    'schedules',
-    'cancel',
-    'retry',
-    'signal',
-    'waitFor',
-    'registerWorkers',
-    'registerInline',
-    'completeInline',
-    'wfSet',
-    'wfGet',
-    'wfEntries',
-    'wfDelete',
-  ])
+  return Facade.proxy(() => requireService(), {
+    specifier: 'fino:jobs/control',
+    methods: [
+      'push',
+      'schedule',
+      'unschedule',
+      'get',
+      'list',
+      'stats',
+      'schedules',
+      'cancel',
+      'retry',
+      'signal',
+      'waitFor',
+    ],
+  })
     .handle('open', async (opts) => {
       await ensureService(
         opts as {
@@ -241,23 +238,6 @@ export function createJobsControlFacade(): Facade {
       );
       return true;
     })
-    .handle('push', (task, input, opts) =>
-      requireService().push(task as string, input, opts as never),
-    )
-    .handle('schedule', (name, task, input, opts) =>
-      requireService().schedule(name as string, task as string, input, opts as never),
-    )
-    .handle('unschedule', (name) => requireService().unschedule(name as string))
-    .handle('get', (id) => requireService().get(id as string))
-    .handle('list', (filter) => requireService().list(filter as never))
-    .handle('stats', (queue) => requireService().stats(queue as string | undefined))
-    .handle('schedules', () => requireService().schedules())
-    .handle('cancel', (id) => requireService().cancel(id as string))
-    .handle('retry', (id) => requireService().retry(id as string))
-    .handle('signal', (id, name, payload) =>
-      requireService().signal(id as string, name as string, payload),
-    )
-    .handle('waitFor', (id, opts) => requireService().waitFor(id as string, opts as never))
     .handle('registerWorkers', async (opts) => {
       await requireService().workers(
         opts as {
@@ -276,12 +256,6 @@ export function createJobsControlFacade(): Facade {
     .handle('completeInline', (relayIndex, jobId, result) => {
       _relays[relayIndex as number]?.complete(jobId as string, result as JobsWireResult);
     })
-    .handle('wfSet', (key, value) => requireService().workflowStore.set(key as string, value))
-    .handle('wfGet', (key) => requireService().workflowStore.get(key as string))
-    .handle('wfEntries', (prefix) =>
-      requireService().workflowStore.list({ prefix: prefix as string | undefined }),
-    )
-    .handle('wfDelete', (key) => requireService().workflowStore.delete(key as string))
     .stream('inlineCalls', async function* inlineCalls(relayIndex) {
       const relay = _relays[relayIndex as number];
       if (relay === undefined) throw new Error('unknown inline processor');
@@ -289,4 +263,15 @@ export function createJobsControlFacade(): Facade {
         yield await relay.next();
       }
     });
+}
+
+/**
+ * Build the generic Store facade used by app and worker Realms for durable
+ * workflow checkpoints. The store resolves lazily after `open()` initializes
+ * the jobs service.
+ *
+ * @internal
+ */
+export function createJobsCheckpointFacade(): Facade {
+  return createStoreFacade('fino:jobs/checkpoints', () => requireService().workflowStore);
 }

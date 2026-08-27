@@ -317,6 +317,66 @@ describe('fino:net/http/app session middleware', () => {
     t.notEqual(staleBody.id, authenticated.id);
     t.equal(staleBody.user, null);
   });
+  it('clones and tracks structured session values without JSON serialization', async (t) => {
+    type RichSessionData = {
+      count?: bigint;
+      created?: Date;
+      bytes?: Uint8Array;
+      labels?: Map<string, number>;
+      cycle?: { name: string; self?: unknown };
+    };
+    const app = new App();
+    const stateful = app.value('cookies', cookies()).value(
+      'session',
+      sessions<RichSessionData>({
+        store: memoryStore({ namespace: 'structured-sessions' }),
+        keys: [primaryKey],
+        ttlMs: 1e3,
+      }),
+    );
+    stateful.post('/write').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      const cycle: RichSessionData['cycle'] = { name: 'root' };
+      cycle.self = cycle;
+      data.count = 9_007_199_254_740_993n;
+      data.created = new Date(1234);
+      data.bytes = new Uint8Array([1, 2, 3]);
+      data.labels = new Map([['first', 1]]);
+      data.cycle = cycle;
+      return new Response('written');
+    });
+    stateful.post('/mutate').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      data.bytes![1] = 8;
+      data.labels!.set('second', 2);
+      return new Response('mutated');
+    });
+    stateful.get('/read').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      t.equal(data.count, 9_007_199_254_740_993n, 'bigint survived');
+      t.equal(data.created?.getTime(), 1234, 'Date survived');
+      t.deepEqual([...data.bytes!], [1, 8, 3], 'typed-array mutation was detected');
+      t.deepEqual(
+        [...data.labels!],
+        [
+          ['first', 1],
+          ['second', 2],
+        ],
+        'Map mutation was detected',
+      );
+      t.equal(data.cycle?.self, data.cycle, 'cyclic identity survived cloning');
+      return new Response('read');
+    });
+    const written = await app.handle(new Request('https://example.test/write', { method: 'POST' }));
+    const pair = cookiePair(written);
+    await app.handle(
+      new Request('https://example.test/mutate', {
+        method: 'POST',
+        headers: { cookie: pair },
+      }),
+    );
+    await app.handle(new Request('https://example.test/read', { headers: { cookie: pair } }));
+  });
   it('raises SessionConflictError instead of overwriting a concurrent mutation', async (t) => {
     const store = memoryStore({ namespace: 'sessions' });
     const setup = makeApp(store);
