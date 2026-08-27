@@ -2,9 +2,10 @@
  * internal:bytes — explicit byte views, owned copies, concatenation, and equality.
  *
  * This module provides protocol-neutral binary primitives for runtime builtins.
- * Its names encode the ownership contract: `asByteView` may alias caller-owned
- * storage, while `copyBytes`, `copyArrayBuffer`, and `concatBytes` always return
- * independently owned storage. Callers remain responsible for domain-specific
+ * Its names encode the ownership contract: `asByteView` never copies and always
+ * aliases the caller's backing store, while `copyBytes` and `copyArrayBuffer`
+ * always return independently owned storage. `concatBytes` allocates only when
+ * multiple parts must be joined. Callers remain responsible for domain-specific
  * coercion, error messages, byte ordering, and resource policy.
  *
  * Concatenation accounts for the complete result before allocating it and can
@@ -48,9 +49,10 @@ function byteLimit(options?: ConcatBytesOptions): number {
  * Return a `Uint8Array` spanning exactly the bytes visible through `value`.
  *
  * An existing `Uint8Array` is returned unchanged. Other views preserve their
- * `byteOffset` and `byteLength`. The result aliases the input's backing storage;
- * mutations made through either owner are visible through the other. A view over
- * `SharedArrayBuffer` remains shared. Unsupported runtime values throw `TypeError`.
+ * `byteOffset` and `byteLength`. This operation never copies: the result aliases
+ * the input's backing storage, and mutations made through either owner are visible
+ * through the other. A view over `SharedArrayBuffer` remains shared. Unsupported
+ * runtime values throw `TypeError`.
  */
 export function asByteView(value: ByteSource): Uint8Array {
   if (value instanceof Uint8Array) return value;
@@ -84,13 +86,13 @@ export function copyArrayBuffer(value: Uint8Array): ArrayBuffer {
 }
 
 /**
- * Concatenate `parts` into a newly allocated, independently owned byte array.
+ * Concatenate `parts`, allocating only when multiple byte spans must be joined.
  *
  * The total is validated before allocation. When `options.maxBytes` is present,
  * a result larger than that limit throws `RangeError`; invalid limits and totals
- * outside JavaScript's safe-integer range also throw `RangeError`. Empty and
- * single-part inputs still return fresh storage so ownership never depends on
- * the number of parts.
+ * outside JavaScript's safe-integer range also throw `RangeError`. An empty input
+ * returns a new empty view. A single part is returned unchanged and remains
+ * caller-owned; use `copyBytes` when independent ownership is required.
  */
 export function concatBytes(
   parts: readonly Uint8Array[],
@@ -104,6 +106,7 @@ export function concatBytes(
     }
     total += part.byteLength;
   }
+  if (parts.length === 1) return parts[0]!;
 
   const result = new Uint8Array(total);
   let offset = 0;

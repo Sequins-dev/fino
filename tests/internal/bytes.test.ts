@@ -19,18 +19,21 @@ describe('internal byte primitives', () => {
 
     const dataView = new DataView(buffer, 2, 4);
     const dataBytes = asByteView(dataView);
+    t.equal(dataBytes.buffer, buffer, 'DataView conversion does not copy its backing store');
     t.deepEqual(dataBytes, new Uint8Array([10, 20, 30, 40]));
     dataBytes[1] = 99;
     t.equal(bytes[3], 99, 'view mutations reach the original buffer');
 
     const words = new Uint16Array(buffer, 2, 2);
     const wordBytes = asByteView(words);
+    t.equal(wordBytes.buffer, buffer, 'typed-array conversion does not copy its backing store');
     t.equal(wordBytes.byteOffset, 2);
     t.equal(wordBytes.byteLength, 4);
     wordBytes[2] = 77;
     t.equal(bytes[4], 77, 'typed-array views share the visible storage');
 
     const allBytes = asByteView(buffer);
+    t.equal(allBytes.buffer, buffer, 'ArrayBuffer conversion creates only a view');
     allBytes[0] = 5;
     t.equal(bytes[0], 5, 'ArrayBuffer views alias the complete buffer');
 
@@ -86,7 +89,7 @@ describe('internal byte primitives', () => {
     t.deepEqual(new Uint8Array(copied), new Uint8Array([20, 88]));
   });
 
-  it('concatenates into fresh storage for every part count', (t) => {
+  it('allocates concatenation storage only when parts must be joined', (t) => {
     const empty = concatBytes([]);
     const anotherEmpty = concatBytes([]);
     t.deepEqual(empty, new Uint8Array());
@@ -94,10 +97,9 @@ describe('internal byte primitives', () => {
 
     const only = new Uint8Array([1, 2]);
     const single = concatBytes([only]);
-    t.deepEqual(single, only);
-    t.notEqual(single, only, 'single-part concatenation owns its result');
+    t.equal(single, only, 'single-part concatenation preserves the existing view');
     single[0] = 9;
-    t.equal(only[0], 1);
+    t.equal(only[0], 9, 'single-part concatenation does not copy bytes');
 
     const multiple = concatBytes([
       new Uint8Array([1, 2]),
