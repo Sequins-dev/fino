@@ -198,7 +198,7 @@ fn realm_profile_name(state: &crate::state::FinoState) -> String {
         .to_string()
 }
 
-fn start_realm_profile(scope: &mut v8::HandleScope) -> Result<(), String> {
+fn start_realm_profile(scope: &mut v8::PinScope) -> Result<(), String> {
     let session = process_profile_slot().lock().unwrap().clone();
     let Some(session) = session else {
         return Ok(());
@@ -212,7 +212,7 @@ fn start_realm_profile(scope: &mut v8::HandleScope) -> Result<(), String> {
         return Ok(());
     };
 
-    let isolate: *mut v8::Isolate = scope.as_mut();
+    let isolate = unsafe { scope.as_raw_isolate_ptr() };
     let profiler = unsafe { v8__CpuProfiler__New(isolate) };
     if profiler.is_null() {
         session.abandon();
@@ -241,7 +241,7 @@ fn start_realm_profile(scope: &mut v8::HandleScope) -> Result<(), String> {
     Ok(())
 }
 
-fn throw_error(scope: &mut v8::HandleScope, message: &str) {
+fn throw_error(scope: &mut v8::PinScope, message: &str) {
     let message = v8::String::new(scope, message).unwrap();
     let exception = v8::Exception::error(scope, message);
     scope.throw_exception(exception);
@@ -251,7 +251,7 @@ fn throw_error(scope: &mut v8::HandleScope, message: &str) {
 // Synthetic module: internal:process-profiler
 // ---------------------------------------------------------------------------
 
-pub fn create_process_module<'s>(scope: &mut v8::HandleScope<'s>) -> v8::Local<'s, v8::Module> {
+pub fn create_process_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let export_names: Vec<v8::Local<v8::String>> = [
         "beginProcessProfiling",
         "registerRealmProfiling",
@@ -268,7 +268,7 @@ fn process_eval_steps<'a>(
     context: v8::Local<'a, v8::Context>,
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
-    let scope = &mut unsafe { v8::CallbackScope::new(context) };
+    v8::callback_scope!(unsafe let scope, context);
     macro_rules! set_fn {
         ($name:expr, $callback:expr) => {{
             let template = v8::FunctionTemplate::new(scope, $callback);
@@ -284,7 +284,7 @@ fn process_eval_steps<'a>(
 }
 
 fn begin_process_profiling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -305,7 +305,7 @@ fn begin_process_profiling(
 }
 
 fn register_realm_profiling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
@@ -315,7 +315,7 @@ fn register_realm_profiling(
 }
 
 fn finish_process_profiling(
-    scope: &mut v8::HandleScope,
+    scope: &mut v8::PinScope,
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
