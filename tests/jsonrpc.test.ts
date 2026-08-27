@@ -9,6 +9,7 @@ import {
   PARSE_ERROR,
   INVALID_PARAMS,
   INVALID_REQUEST,
+  REQUEST_CANCELLED,
 } from 'fino:jsonrpc';
 import type { Transport } from 'fino:jsonrpc';
 // ---------------------------------------------------------------------------
@@ -180,6 +181,18 @@ describe('fino:jsonrpc — JsonRpcService', () => {
     );
     const parsed = JSON.parse(response!);
     t.equal(parsed.error.code, INVALID_PARAMS, 'custom error code preserved');
+  });
+  it('maps AbortError handler failures to REQUEST_CANCELLED', async (t) => {
+    const svc = new JsonRpcService();
+    svc.method('cancelled').handle(() => {
+      const error = new Error('cancelled');
+      error.name = 'AbortError';
+      throw error;
+    });
+    const response = JSON.parse(
+      (await svc.handle(JSON.stringify({ jsonrpc: '2.0', method: 'cancelled', id: 12 })))!,
+    );
+    t.equal(response.error.code, REQUEST_CANCELLED);
   });
   it('list() returns registered method descriptors', (t) => {
     const svc = new JsonRpcService();
@@ -494,6 +507,54 @@ describe('fino:jsonrpc — JsonRpcPeer', () => {
     await remoteTransport.close();
     await t.rejects(() => pending, /Connection closed/);
     await client.done;
+  });
+  it('close still releases the transport after natural EOF', async (t) => {
+    let transportClosed = false;
+    const transport: Transport = {
+      send() {},
+      async *receive() {},
+      close() {
+        transportClosed = true;
+      },
+    };
+    const peer = new JsonRpcPeer(transport);
+    await peer.done;
+    await peer.close();
+    t.equal(transportClosed, true);
+  });
+  it('call cancellation notifies and aborts the remote request context', async (t) => {
+    const [ta, tb] = loopbackPair();
+    const client = new JsonRpcPeer(ta);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let remoteAborted = false;
+    const svc = new JsonRpcService();
+    svc.method('slow').handle(async (_params, ctx) => {
+      markStarted();
+      await new Promise<void>((_resolve, reject) => {
+        ctx.signal.addEventListener(
+          'abort',
+          () => {
+            remoteAborted = true;
+            reject(ctx.signal.reason);
+          },
+          { once: true },
+        );
+      });
+    });
+    new JsonRpcPeer(tb, svc);
+    const controller = new AbortController();
+    const pending = client.call('slow', {}, { signal: controller.signal });
+    await started;
+    const error = new Error('caller cancelled');
+    error.name = 'AbortError';
+    controller.abort(error);
+    await t.rejects(() => pending, /caller cancelled/);
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    t.ok(remoteAborted);
+    await client.close();
   });
   it('call() and notify() reject after close', async (t) => {
     const [transport] = loopbackPair();

@@ -221,6 +221,10 @@ export class AgentSession {
   constructor(runtime: AgentRuntime) {
     this.#runtime = runtime;
   }
+  /** Current immutable conversation history for persistence or inspection. */
+  get history(): MessageHistory {
+    return this.#runtime.history;
+  }
   #begin(signal?: AbortSignal): AbortSignal {
     if (this.#closed) throw new AgentSessionClosedError();
     if (this.#active) throw new AgentSessionBusyError();

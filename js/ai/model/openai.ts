@@ -126,6 +126,12 @@ function buildOpenAIRequest(
           type: 'image_url',
           image_url: { url: `data:${part.mediaType};base64,${part.data}` },
         });
+      } else if (part.type === 'audio') {
+        const format = part.mediaType === 'audio/wav' ? 'wav' : 'mp3';
+        openaiParts.push({
+          type: 'input_audio',
+          input_audio: { data: part.data, format },
+        });
       } else if (part.type === 'document') {
         openaiParts.push({
           type: 'file',
@@ -362,6 +368,7 @@ class OpenAIModel implements Model {
     input: {
       text: true,
       image: true,
+      audio: true,
       document: false,
     },
     sampling: {

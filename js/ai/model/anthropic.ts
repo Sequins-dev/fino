@@ -104,6 +104,9 @@ function convertContentPart(part: { type: string; [k: string]: unknown }): Recor
       },
     };
   }
+  if (part.type === 'audio') {
+    throw new Error('Anthropic models do not support audio input');
+  }
   if (part.type === 'tool_use') {
     return {
       type: 'tool_use',
@@ -410,6 +413,7 @@ class AnthropicModel implements Model {
     input: {
       text: true,
       image: true,
+      audio: false,
       document: true,
     },
     sampling: {

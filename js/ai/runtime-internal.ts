@@ -1119,6 +1119,10 @@ export class AgentRuntime {
     this.#output = opts.output ? normalizeSchema(opts.output) : undefined;
     this.#structuredOutputMode = opts.structuredOutputMode ?? 'tool';
   }
+  /** Current immutable history owned by this runtime instance. */
+  get history(): MessageHistory {
+    return this.#historyStrategy.history;
+  }
   async #streamWithRetryAndFallback(
     req: GenerateRequest,
     onEvent: ((ev: AgentEvent) => void) | undefined,
