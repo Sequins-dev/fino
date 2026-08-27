@@ -15,7 +15,8 @@
  * structure.
  *
  * ```ts no_run
- * import { SqliteWorkflowStore, activity, workflow } from 'fino:workflow';
+ * import { sqliteStore } from 'fino:store';
+ * import { activity, workflow } from 'fino:workflow';
  *
  * const createTicket = activity({
  *   id: 'create-ticket',
@@ -33,12 +34,12 @@
  *   },
  * });
  *
- * const store = await SqliteWorkflowStore.open('./workflow.db');
+ * const store = await sqliteStore({ path: './application.db' });
  * const run = await routeTicket.start({ title: 'refund request' }, { store });
  * await routeTicket.signal({ store, runId: run.runId, name: 'approval', payload: true });
  * ```
  */
-import { Database, sql, type DatabaseConnection, type SqlFragment } from 'fino:database';
+import type { Store } from 'fino:store';
 import { compile } from 'fino:validate';
 import { topic } from 'fino:context/topic';
 import { lazy } from 'fino:signals';
@@ -253,91 +254,61 @@ export interface WorkflowSignal {
    */
   receivedAt: number;
 }
-/**
- * Store contract for durable workflow state.
- *
- * Implementations persist full `WorkflowState` snapshots. `load()` returns
- * `null` for unknown run ids, `list()` may filter by `workflowId` and `status`,
- * and `delete()` may treat missing runs as a successful no-op.
- */
-export interface WorkflowStore {
-  /**
-   * Persist a full workflow state snapshot.
-   */
-  save(state: WorkflowState): Promise<void>;
-  /**
-   * Load one workflow run by id, or `null` when the store has no matching run.
-   */
-  load(runId: string): Promise<WorkflowState | null>;
-  /**
-   * Return persisted runs, optionally filtered by workflow id or lifecycle
-   * status.
-   */
-  list(filter?: {
-    /**
-     * Only include runs owned by this workflow definition id.
-     */
-    workflowId?: string;
-    /**
-     * Only include runs currently in this lifecycle state.
-     */
-    status?: WorkflowStatus;
-  }): Promise<WorkflowState[]>;
-  /**
-   * Delete one run by id. Stores may treat unknown ids as a successful no-op.
-   */
-  delete(runId: string): Promise<void>;
-}
 function workflowRunTopic(runId: string) {
   return topic<{ runId: string; version: number; deleted?: boolean }>(`fino:workflow:run:${runId}`);
 }
-/**
- * Wrap a workflow store so every save and delete publishes a run update.
- *
- * The wrapped store remains the durable source of truth. Notifications only
- * tell local watchers to reload the run state.
- */
-export function observableWorkflowStore(inner: WorkflowStore): WorkflowStore {
-  return {
-    async save(state: WorkflowState): Promise<void> {
-      await inner.save(state);
-      workflowRunTopic(state.runId).publish({
-        runId: state.runId,
-        version: state.updatedAt,
-      });
-    },
-    load(runId: string): Promise<WorkflowState | null> {
-      return inner.load(runId);
-    },
-    list(filter?: { workflowId?: string; status?: WorkflowStatus }): Promise<WorkflowState[]> {
-      return inner.list(filter);
-    },
-    async delete(runId: string): Promise<void> {
-      await inner.delete(runId);
-      workflowRunTopic(runId).publish({
-        runId,
-        version: Date.now(),
-        deleted: true,
-      });
-    },
-  };
+function workflowStateStore(store: Store): Store {
+  return store.namespace('fino:workflow:v1');
+}
+async function persistWorkflowState(store: Store, state: WorkflowState): Promise<void> {
+  await store.set(state.runId, cloneState(state));
+  workflowRunTopic(state.runId).publish({ runId: state.runId, version: state.updatedAt });
+}
+async function readWorkflowState(store: Store, runId: string): Promise<WorkflowState | null> {
+  const state = await store.get<WorkflowState>(runId);
+  return state ? cloneState(state) : null;
+}
+
+/** Load one detached workflow snapshot from a generic store. */
+export async function loadWorkflowRun(store: Store, runId: string): Promise<WorkflowState | null> {
+  return readWorkflowState(workflowStateStore(store), runId);
+}
+
+/** Save one detached workflow snapshot to a generic store. */
+export function saveWorkflowRun(store: Store, state: WorkflowState): Promise<void> {
+  return persistWorkflowState(workflowStateStore(store), state);
+}
+
+/** List workflow snapshots from a generic store, newest first. */
+export async function listWorkflowRuns(
+  store: Store,
+  filter: { workflowId?: string; status?: WorkflowStatus } = {},
+): Promise<WorkflowState[]> {
+  return (await workflowStateStore(store).list<WorkflowState>())
+    .map((entry) => cloneState(entry.value))
+    .filter((state) => filter.workflowId === undefined || state.workflowId === filter.workflowId)
+    .filter((state) => filter.status === undefined || state.status === filter.status)
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId));
+}
+
+/** Delete one workflow snapshot and notify local watchers. */
+export async function deleteWorkflowRun(store: Store, runId: string): Promise<void> {
+  await workflowStateStore(store).delete(runId);
+  workflowRunTopic(runId).publish({ runId, version: Date.now(), deleted: true });
 }
 /**
  * Watch one workflow run in a store.
  *
  * The returned signal starts as `null`, loads the current state asynchronously,
- * and refreshes whenever an `observableWorkflowStore()` wrapper publishes a run
- * update for the same id.
+ * and refreshes whenever this runtime saves the same run id.
  */
-export function watchRun(
-  store: WorkflowStore,
-  runId: string,
-): ReadonlySignal<WorkflowState | null> {
+export function watchRun(store: Store, runId: string): ReadonlySignal<WorkflowState | null> {
+  const values = workflowStateStore(store);
   return lazy<WorkflowState | null>(null, (set) => {
     let active = true;
     const refresh = () => {
-      void store.load(runId).then((next) => {
-        if (active) set(next ? cloneState(next) : null);
+      void readWorkflowState(values, runId).then((next) => {
+        if (active) set(next);
       });
     };
     refresh();
@@ -347,166 +318,6 @@ export function watchRun(
       handle.dispose();
     };
   });
-}
-/**
- * In-memory store for tests and single-process prototypes.
- */
-export class InMemoryWorkflowStore implements WorkflowStore {
-  #runs = new Map<string, WorkflowState>();
-  /**
-   * Save or replace one workflow run state.
-   */
-  async save(state: WorkflowState): Promise<void> {
-    this.#runs.set(state.runId, cloneState(state));
-  }
-  /**
-   * Load a workflow run by id, or `null` when it is unknown.
-   */
-  async load(runId: string): Promise<WorkflowState | null> {
-    const state = this.#runs.get(runId);
-    return state ? cloneState(state) : null;
-  }
-  /**
-   * List runs, newest first, optionally filtered by workflow id or status.
-   */
-  async list(
-    filter: {
-      workflowId?: string;
-      status?: WorkflowStatus;
-    } = {},
-  ): Promise<WorkflowState[]> {
-    const runs = [...this.#runs.values()]
-      .filter((state) => filter.workflowId === undefined || state.workflowId === filter.workflowId)
-      .filter((state) => filter.status === undefined || state.status === filter.status)
-      .sort((a, b) => b.updatedAt - a.updatedAt);
-    return runs.map(cloneState);
-  }
-  /**
-   * Delete one workflow run if it exists.
-   */
-  async delete(runId: string): Promise<void> {
-    this.#runs.delete(runId);
-  }
-}
-/**
- * Database-backed workflow store.
- *
- * The class name is retained for compatibility. Pass a `sqlite://` path or a
- * `postgres://` URL to choose the storage engine through `fino:database`.
- */
-export class SqliteWorkflowStore implements WorkflowStore {
-  #db: DatabaseConnection;
-  private constructor(db: DatabaseConnection) {
-    this.#db = db;
-  }
-  /**
-   * Open a workflow store and create the required tables.
-   */
-  static async open(
-    path: string,
-    opts?: {
-      fs?: object;
-    },
-  ): Promise<SqliteWorkflowStore> {
-    const db = await Database.open(path, { fs: opts?.fs as never });
-    await db.exec(`CREATE TABLE IF NOT EXISTS workflow_runs (
-        run_id TEXT PRIMARY KEY,
-        workflow_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        state TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`);
-    await db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow ON workflow_runs(workflow_id)`,
-    );
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status)`);
-    return new SqliteWorkflowStore(db);
-  }
-  /**
-   * Save or replace one workflow run state.
-   */
-  async save(state: WorkflowState): Promise<void> {
-    const next = {
-      ...state,
-      updatedAt: Date.now(),
-    };
-    const stmt = this.#db
-      .prepare(sql`INSERT INTO workflow_runs(run_id, workflow_id, status, state, updated_at)
-       VALUES(${next.runId}, ${next.workflowId}, ${next.status}, ${JSON.stringify(next)}, ${next.updatedAt})
-       ON CONFLICT(run_id) DO UPDATE SET
-         workflow_id = excluded.workflow_id,
-         status = excluded.status,
-         state = excluded.state,
-         updated_at = excluded.updated_at`);
-    try {
-      await stmt.run();
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Load a workflow run by id, or `null` when it is unknown.
-   */
-  async load(runId: string): Promise<WorkflowState | null> {
-    const stmt = this.#db.prepare(sql`SELECT state FROM workflow_runs WHERE run_id = ${runId}`);
-    try {
-      const row = await stmt.get();
-      return row ? (JSON.parse(row.state as string) as WorkflowState) : null;
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * List persisted runs, newest first, optionally filtered by workflow id or
-   * status.
-   */
-  async list(
-    filter: {
-      workflowId?: string;
-      status?: WorkflowStatus;
-    } = {},
-  ): Promise<WorkflowState[]> {
-    let query: SqlFragment = sql`SELECT state FROM workflow_runs`;
-    const clauses: SqlFragment[] = [];
-    if (filter.workflowId !== undefined) {
-      clauses.push(sql`workflow_id = ${filter.workflowId}`);
-    }
-    if (filter.status !== undefined) {
-      clauses.push(sql`status = ${filter.status}`);
-    }
-    if (clauses.length > 0) query = sql`${query} WHERE ${sql.join(clauses, ' AND ')}`;
-    query = sql`${query} ORDER BY updated_at DESC`;
-    const stmt = this.#db.prepare(query);
-    try {
-      const rows = await stmt.all();
-      return rows.map((row) => JSON.parse(row.state as string) as WorkflowState);
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Delete one workflow run if it exists.
-   */
-  async delete(runId: string): Promise<void> {
-    const stmt = this.#db.prepare(sql`DELETE FROM workflow_runs WHERE run_id = ${runId}`);
-    try {
-      await stmt.run();
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Close the underlying SQLite database.
-   */
-  async close(): Promise<void> {
-    await this.#db.close();
-  }
-  /**
-   * Dispose the underlying database connection when used with `await using`.
-   */
-  async [Symbol.asyncDispose](): Promise<void> {
-    await this.close();
-  }
 }
 /**
  * Error that prevents retries for a failed activity or step.
@@ -753,7 +564,7 @@ export interface WorkflowStartOptions {
   /**
    * Durable store that owns the run state.
    */
-  readonly store: WorkflowStore;
+  readonly store: Store;
   /**
    * Optional caller-supplied run id. When omitted, Fino generates one.
    */
@@ -782,7 +593,7 @@ export interface WorkflowResumeOptions {
   /**
    * Durable store that owns the run state.
    */
-  readonly store: WorkflowStore;
+  readonly store: Store;
   /**
    * Existing run id to load and resume.
    */
@@ -807,7 +618,7 @@ export interface WorkflowSignalOptions {
   /**
    * Durable store that owns the target run state.
    */
-  readonly store: WorkflowStore;
+  readonly store: Store;
   /**
    * Existing waiting run id.
    */
@@ -897,7 +708,8 @@ export class Workflow<In = unknown, Out = unknown> {
    * Deliver an external signal to a run waiting in `ctx.waitForSignal()`.
    */
   async signal(opts: WorkflowSignalOptions): Promise<void> {
-    const state = await opts.store.load(opts.runId);
+    const store = workflowStateStore(opts.store);
+    const state = await readWorkflowState(store, opts.runId);
     if (!state) throw new Error(`Workflow run ${opts.runId} not found`);
     if (state.status !== 'waiting' || state.waitingOn?.type !== 'signal') {
       throw new Error(`Workflow run ${opts.runId} is not waiting for a signal`);
@@ -905,7 +717,7 @@ export class Workflow<In = unknown, Out = unknown> {
     if (state.waitingOn.name !== opts.name) {
       throw new Error(`Workflow run ${opts.runId} is waiting for signal "${state.waitingOn.name}"`);
     }
-    await opts.store.save({
+    await persistWorkflowState(store, {
       ...state,
       status: 'running',
       waitingOn: undefined,
@@ -941,7 +753,7 @@ export function workflow<In = unknown, Out = unknown>(
  */
 export class WorkflowRun<In = unknown, Out = unknown> {
   #workflow: Workflow<In, Out>;
-  #store: WorkflowStore;
+  #store: Store;
   #runId?: string;
   #key?: string;
   #signal?: AbortSignal;
@@ -952,7 +764,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
    */
   constructor(workflow: Workflow<In, Out>, opts: WorkflowStartOptions | WorkflowResumeOptions) {
     this.#workflow = workflow;
-    this.#store = opts.store;
+    this.#store = workflowStateStore(opts.store);
     this.#runId = 'runId' in opts ? opts.runId : undefined;
     this.#key = 'key' in opts ? opts.key : undefined;
     this.#signal = opts.signal;
@@ -992,7 +804,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
    */
   async resume(): Promise<WorkflowResult<Out>> {
     if (!this.#runId) throw new Error('Workflow run id is required');
-    const loaded = await this.#store.load(this.#runId);
+    const loaded = await readWorkflowState(this.#store, this.#runId);
     if (!loaded) throw new Error(`Workflow run ${this.#runId} not found`);
     if (loaded.status === 'cancelled') throw new Error(`Workflow run ${this.#runId} is cancelled`);
     if (loaded.status === 'done') {
@@ -1009,7 +821,8 @@ export class WorkflowRun<In = unknown, Out = unknown> {
    * Mark this run as cancelled and clear any pending wait.
    */
   async cancel(): Promise<void> {
-    const state = this.#state ?? (this.#runId ? await this.#store.load(this.#runId) : null);
+    const state =
+      this.#state ?? (this.#runId ? await readWorkflowState(this.#store, this.#runId) : null);
     if (!state) return;
     const next = {
       ...state,
@@ -1082,7 +895,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
     }
   }
   async #save(state: WorkflowState): Promise<void> {
-    await this.#store.save({
+    await persistWorkflowState(this.#store, {
       ...state,
       updatedAt: Date.now(),
     });
@@ -1091,7 +904,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
 class WorkflowRuntime<In, Out> {
   readonly context: WorkflowContext;
   #workflow: Workflow<In, Out>;
-  #store: WorkflowStore;
+  #store: Store;
   #callIndex = 0;
   #state: WorkflowState;
   #signal?: AbortSignal;
@@ -1099,7 +912,7 @@ class WorkflowRuntime<In, Out> {
   #completionQueue: Promise<void> = Promise.resolve();
   constructor(
     workflow: Workflow<In, Out>,
-    store: WorkflowStore,
+    store: Store,
     state: WorkflowState,
     signal: AbortSignal | undefined,
     checkpoint: (state: WorkflowState) => Promise<void>,
@@ -1199,7 +1012,7 @@ class WorkflowRuntime<In, Out> {
           stepIndex: index,
         },
       };
-      await this.#store.save(this.#state);
+      await persistWorkflowState(this.#store, this.#state);
       throw new WaitSignal();
     }
     await this.#complete(index, id, undefined);
@@ -1240,13 +1053,13 @@ class WorkflowRuntime<In, Out> {
         ...(timeoutAt !== undefined ? { timeoutAt } : {}),
       },
     };
-    await this.#store.save(this.#state);
+    await persistWorkflowState(this.#store, this.#state);
     throw new WaitSignal();
   }
   async #complete(index: number, id: string, result: unknown): Promise<void> {
     const previous = this.#completionQueue.catch(() => {});
     this.#completionQueue = previous.then(async () => {
-      const latest = await this.#store.load(this.#state.runId);
+      const latest = await readWorkflowState(this.#store, this.#state.runId);
       const base = latest && latest.workflowId === this.#workflow.id ? latest : this.#state;
       const steps = base.steps.slice();
       steps[index] = {

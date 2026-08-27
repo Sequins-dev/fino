@@ -1,13 +1,15 @@
 import { describe, it } from 'fino:test/test';
+import { memoryStore, sqliteStore } from 'fino:store';
 import {
-  InMemoryWorkflowStore,
   NonRetryableWorkflowError,
-  SqliteWorkflowStore,
   WorkflowRun,
   activity,
-  observableWorkflowStore,
+  listWorkflowRuns,
+  loadWorkflowRun,
+  saveWorkflowRun,
   watchRun,
   workflow,
+  type WorkflowState,
 } from 'fino:workflow';
 import { v } from 'fino:validate';
 import { DiskFileSystem } from 'fino:file';
@@ -15,29 +17,24 @@ function tmpPath(): string {
   return `/tmp/fino-workflow-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 describe('fino:workflow', () => {
-  it('watchRun refreshes when an observable store saves a run', async (t) => {
-    const store = observableWorkflowStore(new InMemoryWorkflowStore());
+  it('watchRun refreshes when a workflow saves a run', async (t) => {
+    const store = memoryStore();
     const run = watchRun(store, 'observed-run');
     const statuses: string[] = [];
     run.subscribe((state) => statuses.push(state?.status ?? 'missing'));
-    await store.save({
-      runId: 'observed-run',
-      workflowId: 'observed',
-      status: 'running',
-      cursor: 0,
-      input: null,
-      steps: [],
-      state: {},
-      signals: [],
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+    const observed = workflow({
+      id: 'observed',
+      async run() {
+        return 'done';
+      },
     });
+    await observed.start(null, { store, runId: 'observed-run' });
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
-    t.equal(run.get()?.status, 'running', 'watch retains saved state');
-    t.deepEqual(statuses, ['running'], 'subscriber saw store update');
+    t.equal(run.get()?.status, 'done', 'watch retains saved state');
+    t.deepEqual(statuses, ['running', 'done'], 'subscriber saw each workflow checkpoint');
   });
   it('runs checkpointed steps and skips completed steps on resume', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const calls: string[] = [];
     const wf = workflow({
       id: 'checkpointed',
@@ -56,8 +53,8 @@ describe('fino:workflow', () => {
     t.equal(first.status, 'done');
     t.equal(first.result, 20);
     t.deepEqual(calls, ['double', 'add']);
-    const loaded = await store.load(first.runId);
-    await store.save({
+    const loaded = await loadWorkflowRun(store, first.runId);
+    await saveWorkflowRun(store, {
       ...loaded!,
       status: 'running',
       result: undefined,
@@ -74,7 +71,7 @@ describe('fino:workflow', () => {
     t.deepEqual(calls, ['add']);
   });
   it('uses ordinary JavaScript branches, loops, foreach, and Promise.all', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const wf = workflow({
       id: 'js-control-flow',
       async run(
@@ -111,7 +108,7 @@ describe('fino:workflow', () => {
     });
   });
   it('keeps Promise.all checkpoints when steps finish out of order', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const calls: string[] = [];
     const wf = workflow({
       id: 'out-of-order',
@@ -130,14 +127,14 @@ describe('fino:workflow', () => {
     });
     const result = await wf.start(null, { store });
     t.deepEqual(result.result, ['slow', 'fast']);
-    const loaded = await store.load(result.runId);
+    const loaded = await loadWorkflowRun(store, result.runId);
     t.equal(loaded?.cursor, 2, 'cursor advances only through contiguous completed steps');
     t.deepEqual(
       loaded?.steps.map((step) => step.id),
       ['slow', 'fast'],
     );
     calls.length = 0;
-    await store.save({
+    await saveWorkflowRun(store, {
       ...loaded!,
       status: 'running',
       result: undefined,
@@ -150,7 +147,7 @@ describe('fino:workflow', () => {
     t.deepEqual(calls, [], 'resume reuses both completed parallel step results');
   });
   it('validates workflow and activity input/output schemas', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const stringify = activity({
       id: 'stringify',
       inputSchema: v.number(),
@@ -171,7 +168,7 @@ describe('fino:workflow', () => {
     await t.rejects(() => wf.start('nope' as unknown as number, { store }), /validation/i);
   });
   it('retries activities and stops on non-retryable errors', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     let attempts = 0;
     const flaky = activity({
       id: 'flaky',
@@ -204,11 +201,11 @@ describe('fino:workflow', () => {
       },
     });
     await t.rejects(() => bad.start(null, { store }), /do not retry/);
-    const failed = (await store.list()).find((s) => s.workflowId === 'non-retryable');
+    const failed = (await listWorkflowRuns(store)).find((s) => s.workflowId === 'non-retryable');
     t.equal(failed?.status, 'error');
   });
   it('waits for a signal and resumes exactly once', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const wf = workflow({
       id: 'approval',
       async run(ctx, input: string) {
@@ -243,7 +240,7 @@ describe('fino:workflow', () => {
     );
   });
   it('waits for a timer until it is due', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const wf = workflow({
       id: 'timer',
       async run(ctx) {
@@ -259,8 +256,8 @@ describe('fino:workflow', () => {
       runId: first.runId,
     });
     t.equal(early.status, 'waiting');
-    const state = await store.load(first.runId);
-    await store.save({
+    const state = await loadWorkflowRun(store, first.runId);
+    await saveWorkflowRun(store, {
       ...state!,
       waitingOn: {
         ...state!.waitingOn!,
@@ -275,7 +272,7 @@ describe('fino:workflow', () => {
     t.equal(done.result, 'done');
   });
   it('cancels a run and prevents further resume', async (t) => {
-    const store = new InMemoryWorkflowStore();
+    const store = memoryStore();
     const wf = workflow({
       id: 'cancel',
       async run(ctx) {
@@ -289,7 +286,7 @@ describe('fino:workflow', () => {
       runId: first.runId,
     });
     await run.cancel();
-    const loaded = await store.load(first.runId);
+    const loaded = await loadWorkflowRun(store, first.runId);
     t.equal(loaded?.status, 'cancelled');
     await t.rejects(
       () =>
@@ -306,7 +303,7 @@ describe('fino:workflow', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteWorkflowStore.open(`sqlite://${path}`);
+    const store = await sqliteStore({ path });
     try {
       const wf = workflow({
         id: 'sqlite',
@@ -315,7 +312,7 @@ describe('fino:workflow', () => {
         },
       });
       const result = await wf.start(7, { store });
-      const loaded = await store.load(result.runId);
+      const loaded = await loadWorkflowRun(store, result.runId);
       t.equal(loaded?.result, 14);
     } finally {
       await store.close();

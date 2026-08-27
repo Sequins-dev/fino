@@ -46,7 +46,7 @@
 import type { Task } from './task.ts';
 import type { JobsService } from './internal/jobs/service.ts';
 import type { JobsWireCall, JobsWireResult } from './internal/jobs/runner.ts';
-import type { WorkflowState, WorkflowStore } from './workflow.ts';
+import type { Store } from './store.ts';
 import type { RealmOptions } from './realm/index.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
@@ -496,10 +496,10 @@ interface ControlModule {
   registerWorkers(opts: { entry: string; size?: number }): Promise<boolean>;
   registerInline(taskNames: string[], concurrency: number): Promise<number>;
   completeInline(relayIndex: number, jobId: string, result: JobsWireResult): Promise<void>;
-  wfSave(state: WorkflowState): Promise<void>;
-  wfLoad(runId: string): Promise<WorkflowState | null>;
-  wfList(filter?: unknown): Promise<WorkflowState[]>;
-  wfRemove(runId: string): Promise<void>;
+  wfSet(key: string, value: unknown): Promise<void>;
+  wfGet(key: string): Promise<unknown | null>;
+  wfEntries(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+  wfDelete(key: string): Promise<boolean>;
   inlineCalls(relayIndex: number): AsyncIterable<JobsWireCall>;
 }
 
@@ -776,12 +776,25 @@ export class Jobs {
         (await import('internal:jobs/runner')) as typeof import('./internal/jobs/runner.ts');
       const registry = collectTasks(opts.tasks);
       const control = this.#control;
-      const store: WorkflowStore = {
-        save: (state) => control.wfSave(state),
-        load: (runId) => control.wfLoad(runId),
-        list: (filter) => control.wfList(filter as never),
-        delete: (runId) => control.wfRemove(runId),
-      };
+      const createStore = (prefix: string): Store => ({
+        set: (key, value) => control.wfSet(`${prefix}${key}`, value),
+        async get<T = unknown>(key: string): Promise<T | null> {
+          return (await control.wfGet(`${prefix}${key}`)) as T | null;
+        },
+        async list<T = unknown>(options: { prefix?: string } = {}) {
+          const selected = `${prefix}${options.prefix ?? ''}`;
+          return (await control.wfEntries(selected)).map((entry) => ({
+            key: entry.key.slice(prefix.length),
+            value: entry.value as T,
+          }));
+        },
+        delete: (key) => control.wfDelete(`${prefix}${key}`),
+        namespace(name) {
+          if (name.length === 0) throw new TypeError('Store namespace must not be empty');
+          return createStore(`${prefix}${encodeURIComponent(name)}/`);
+        },
+      });
+      const store = createStore('');
       const relayIndex = await control.registerInline([...registry.keys()], opts.concurrency ?? 1);
       void (async () => {
         try {

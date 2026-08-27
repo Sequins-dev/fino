@@ -2,7 +2,7 @@
  * Tests for fino:net/http/app — middleware, routing, context, and OpenAPI.
  */
 import { describe, it } from 'fino:test/test';
-import { memoryCache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import {
   App,
   BuilderBranch,
@@ -443,7 +443,7 @@ describe('HTTP app built-ins', () => {
     const stateful = app.value('cookies', cookies()).value(
       'session',
       sessions({
-        store: memoryCache({ namespace: 'sessions' }),
+        store: memoryStore({ namespace: 'sessions' }),
         keys: [{ id: 'test', secret: 'http-app-session-test-secret' }],
         ttlMs: 60_000,
         cookie: 'sid',

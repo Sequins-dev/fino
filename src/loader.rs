@@ -472,6 +472,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:validate", "validate"),
     source_builtin!("fino:config", "config"),
     source_builtin!("fino:webhooks", "webhooks"),
+    source_builtin!("fino:store", "store"),
     source_builtin!("fino:cache", "cache"),
     source_builtin!("fino:storage", "storage"),
     source_builtin!("fino:email", "email"),

@@ -1,4 +1,4 @@
-import { memoryCache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import { App, cookies, sessions } from 'fino:net/http/app';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { h, Signal } from 'fino:ui';
@@ -11,14 +11,14 @@ import {
   type PortableUIEvent,
   type PortableValue,
 } from 'fino:ui/web';
-import { InMemoryViewStore } from 'fino:ui/web/state';
+import { deleteViewState, loadViewState } from 'fino:ui/web/state';
 import type { Assert } from 'fino:test/assert';
 import { describe, it } from 'fino:test/test';
 
 const eventStreamAccept = 'text/event-stream';
 
 function makeApp(options: { maxActionBytes?: number } = {}) {
-  const store = new InMemoryViewStore();
+  const store = memoryStore();
   const counter = view({
     id: 'portable-counter',
     state: () => ({ count: new Signal(0) }),
@@ -52,7 +52,7 @@ function makeApp(options: { maxActionBytes?: number } = {}) {
     .value(
       'session',
       sessions({
-        store: memoryCache({ namespace: 'portable-ui-sessions' }),
+        store: memoryStore({ namespace: 'portable-ui-sessions' }),
         keys: [{ id: 'test', secret: 'portable-ui-session-secret' }],
         ttlMs: 6e4,
       }),
@@ -244,7 +244,7 @@ describe('JSON server-driven UI', () => {
     t.equal(events[0]?.data.kind, 'render');
     t.equal(events[0]?.data.tree.props.count, 2);
     t.deepEqual(events[1]?.data, { version: 1, kind: 'close' });
-    t.equal((await store.load(action.view))?.version, 1);
+    t.equal((await loadViewState(store, action.view))?.version, 1);
   });
 
   it('returns a safe SSE error before invalid input reaches an action', async (t) => {
@@ -293,7 +293,7 @@ describe('JSON server-driven UI', () => {
     t.equal(currentEvent.data.kind, 'render');
     t.equal(currentEvent.data.revision, 1);
 
-    await store.delete(action.view);
+    await deleteViewState(store, action.view);
     const expired = (await app.handle(
       new Request(`http://local/_fino/live?view=${action.view}`, {
         headers: {
@@ -407,7 +407,7 @@ describe('JSON server-driven UI', () => {
     t.equal(events.length, 1);
     t.equal(events[0]?.type, 'ui');
     t.deepEqual(events[0]?.data, { version: 1, kind: 'close' });
-    t.deepEqual((await store.load(action.view))?.data, { count: 2 });
+    t.deepEqual((await loadViewState(store, action.view))?.data, { count: 2 });
   });
 
   it('rejects stale action revisions with a recoverable SSE error', async (t) => {
@@ -437,7 +437,7 @@ describe('JSON server-driven UI', () => {
   it('reports an expired action view through the portable stream', async (t) => {
     const { app, store } = makeApp();
     const { cookie, action } = await mountPortable(app);
-    await store.delete(action.view);
+    await deleteViewState(store, action.view);
 
     const response = (await postAction(app, action, cookie, { amount: 2 })) as Response;
     await expectPortableError(t, response, 410, 'view_expired', false);
@@ -488,7 +488,7 @@ describe('JSON server-driven UI', () => {
     const app = new App();
     const ui = app.layer(
       webUI({
-        store: new InMemoryViewStore(),
+        store: memoryStore(),
         secret: 'portable-ui-secret',
       }),
     );
@@ -526,7 +526,7 @@ describe('JSON server-driven UI', () => {
     const response = (await postAction(app, swapped, cookie, {})) as Response;
     await expectPortableError(t, response, 404, 'action_not_found', false);
 
-    const snapshot = await store.load(action.view);
+    const snapshot = await loadViewState(store, action.view);
     t.equal(snapshot?.view, 'portable-counter', 'the snapshot keeps its own view definition');
     t.deepEqual(snapshot?.data, { count: 0 }, 'the other view cannot write this snapshot');
   });
@@ -546,9 +546,7 @@ describe('JSON server-driven UI', () => {
       render: ({ actions }) => h('app.danger.v1', { remove: actions.remove }),
     });
     const app = new App();
-    const ui = app.layer(
-      webUI({ store: new InMemoryViewStore(), secret: 'portable-ui-secret' }),
-    );
+    const ui = app.layer(webUI({ store: memoryStore(), secret: 'portable-ui-secret' }));
     ui.get('/').handle(page((ctx) => confirming.mount(ctx)));
 
     const response = (await app.handle(

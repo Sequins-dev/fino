@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { memoryCache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import { GatewayRateLimitError, gatewayModel, GatewayPolicy, modelFacade } from 'fino:ai/gateway';
 import type { GenerateRequest, GenerateResult, Model, ModelStream } from 'fino:ai/model';
 import { ImportMap, Realm } from 'fino:realm';
@@ -48,9 +48,9 @@ function modelNamed(name: string, calls: string[]): Model {
 describe('AI gateway policy', () => {
   it('isolates quotas per tenant and returns deterministic retry metadata', async (t) => {
     let now = 1e3;
-    const cache = memoryCache({ clock: { now: () => now } });
+    const store = memoryStore({ clock: { now: () => now } });
     const policy = new GatewayPolicy({
-      cache,
+      store,
       requests: 2,
       windowMs: 100,
       clock: () => now,
@@ -72,7 +72,7 @@ describe('AI gateway policy', () => {
   it('wraps provider calls without putting credentials into child policy state', async (t) => {
     const calls: string[] = [];
     const policy = new GatewayPolicy({
-      cache: memoryCache(),
+      store: memoryStore(),
       requests: 1,
       windowMs: 1e3,
     });

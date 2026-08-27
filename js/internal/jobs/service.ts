@@ -52,7 +52,13 @@ import { parseCron, nextOccurrence } from './cron.ts';
 import { collectTasks, dispatchJob, type JobsWireCall, type JobsWireResult } from './runner.ts';
 import { Facade, Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
 import type { Task } from '../../task.ts';
-import type { WorkflowState, WorkflowStore, WorkflowWait } from '../../workflow.ts';
+import {
+  loadWorkflowRun,
+  saveWorkflowRun,
+  type WorkflowState,
+  type WorkflowWait,
+} from '../../workflow.ts';
+import type { Store } from '../../store.ts';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../opentelemetry/common.ts';
 
 const _topicEnqueue = topic(otelRuntimeTopic('jobs', 'job', 'enqueue'));
@@ -282,7 +288,7 @@ function parkRunAt(waitingOn: WorkflowWait): number {
  */
 export class JobsService {
   #store: JobsStore;
-  #workflowStore: WorkflowStore;
+  #workflowStore: Store;
   #id: string;
   #leaseMs: number;
   #pollIntervalMs: number;
@@ -332,7 +338,7 @@ export class JobsService {
    *
    * @internal
    */
-  get workflowStore(): WorkflowStore {
+  get workflowStore(): Store {
     return this.#workflowStore;
   }
   /**
@@ -544,7 +550,7 @@ export class JobsService {
     const job = await this.#store.getJob(id);
     if (job === null) throw new Error(`job ${id} not found`);
     if (job.workflowRunId === null) throw new Error(`job ${id} has no durable run to signal`);
-    const state = (await this.#workflowStore.load(job.workflowRunId)) as WorkflowState | null;
+    const state = await loadWorkflowRun(this.#workflowStore, job.workflowRunId);
     if (state === null) throw new Error(`workflow run ${job.workflowRunId} not found`);
     if (state.status !== 'waiting' || state.waitingOn?.type !== 'signal') {
       throw new Error(`job ${id} is not waiting for a signal`);
@@ -552,7 +558,7 @@ export class JobsService {
     if (state.waitingOn.name !== name) {
       throw new Error(`job ${id} is waiting for signal "${state.waitingOn.name}", not "${name}"`);
     }
-    await this.#workflowStore.save({
+    const next = {
       ...state,
       status: 'running',
       waitingOn: undefined,
@@ -564,7 +570,8 @@ export class JobsService {
           receivedAt: Date.now(),
         },
       ],
-    });
+    };
+    await saveWorkflowRun(this.#workflowStore, next);
     await this.#store.wake(id);
     this.#wake();
   }
@@ -687,11 +694,11 @@ export class JobsService {
     const workflowStore = this.#workflowStore;
     const baseOverrides = opts.realm?.overrides;
     const createWorker = (): Realm => {
-      const facade = new Facade('fino:jobs/checkpoints', ['save', 'load', 'list', 'remove'])
-        .handle('save', (state) => workflowStore.save(state as WorkflowState))
-        .handle('load', (runId) => workflowStore.load(runId as string))
-        .handle('list', (filter) => workflowStore.list(filter as never))
-        .handle('remove', (runId) => workflowStore.delete(runId as string));
+      const facade = new Facade('fino:jobs/checkpoints', ['set', 'get', 'list', 'remove'])
+        .handle('set', (key, value) => workflowStore.set(key as string, value))
+        .handle('get', (key) => workflowStore.get(key as string))
+        .handle('list', (prefix) => workflowStore.list({ prefix: prefix as string | undefined }))
+        .handle('remove', (key) => workflowStore.delete(key as string));
       const rules: ImportRule[] = [
         ...(baseOverrides === undefined
           ? []

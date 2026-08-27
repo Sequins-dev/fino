@@ -43,7 +43,6 @@ import { Facade } from '../../realm/index.ts';
 import { registerShutdownHook } from '../shutdown.ts';
 import type { JobsService, JobProcessor } from './service.ts';
 import type { JobsWireCall, JobsWireResult } from './runner.ts';
-import type { WorkflowState } from '../../workflow.ts';
 
 let _service: JobsService | undefined;
 let _servicePath: string | undefined;
@@ -229,10 +228,10 @@ export function createJobsControlFacade(): Facade {
     'registerWorkers',
     'registerInline',
     'completeInline',
-    'wfSave',
-    'wfLoad',
-    'wfList',
-    'wfRemove',
+    'wfSet',
+    'wfGet',
+    'wfEntries',
+    'wfDelete',
   ])
     .handle('open', async (opts) => {
       await ensureService(
@@ -277,10 +276,12 @@ export function createJobsControlFacade(): Facade {
     .handle('completeInline', (relayIndex, jobId, result) => {
       _relays[relayIndex as number]?.complete(jobId as string, result as JobsWireResult);
     })
-    .handle('wfSave', (state) => requireService().workflowStore.save(state as WorkflowState))
-    .handle('wfLoad', (runId) => requireService().workflowStore.load(runId as string))
-    .handle('wfList', (filter) => requireService().workflowStore.list(filter as never))
-    .handle('wfRemove', (runId) => requireService().workflowStore.delete(runId as string))
+    .handle('wfSet', (key, value) => requireService().workflowStore.set(key as string, value))
+    .handle('wfGet', (key) => requireService().workflowStore.get(key as string))
+    .handle('wfEntries', (prefix) =>
+      requireService().workflowStore.list({ prefix: prefix as string | undefined }),
+    )
+    .handle('wfDelete', (key) => requireService().workflowStore.delete(key as string))
     .stream('inlineCalls', async function* inlineCalls(relayIndex) {
       const relay = _relays[relayIndex as number];
       if (relay === undefined) throw new Error('unknown inline processor');

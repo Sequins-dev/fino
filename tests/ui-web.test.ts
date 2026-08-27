@@ -1,10 +1,10 @@
 import { describe, it } from 'fino:test/test';
-import { memoryCache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import { App, cookies, sessions } from 'fino:net/http/app';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { h, Signal } from 'fino:ui';
 import { page, view, webUI } from 'fino:ui/web';
-import { InMemoryViewStore } from 'fino:ui/web/state';
+import { loadViewState } from 'fino:ui/web/state';
 async function collectEvents(response: Response) {
   const events: Array<{
     type: string;
@@ -21,7 +21,7 @@ async function collectEvents(response: Response) {
   return events;
 }
 function makeApp() {
-  const store = new InMemoryViewStore();
+  const store = memoryStore();
   const todos = view({
     id: 'todos',
     state: () => ({
@@ -65,7 +65,7 @@ function makeApp() {
     .value(
       'session',
       sessions({
-        store: memoryCache({ namespace: 'sessions' }),
+        store: memoryStore({ namespace: 'sessions' }),
         keys: [
           {
             id: 'test',
@@ -89,7 +89,7 @@ function makeApp() {
   };
 }
 function makeSecureApp() {
-  const store = new InMemoryViewStore();
+  const store = memoryStore();
   let handlerRuns = 0;
   const secure = view({
     id: 'secure-view',
@@ -130,7 +130,7 @@ function makeSecureApp() {
     .value(
       'session',
       sessions({
-        store: memoryCache({ namespace: 'sessions' }),
+        store: memoryStore({ namespace: 'sessions' }),
         keys: [
           {
             id: 'test',
@@ -214,7 +214,7 @@ describe('fino:ui/web', () => {
     t.equal(events.at(-1)?.type, 'ui');
     t.equal((events.at(-1)?.data as { kind?: string }).kind, 'close');
     t.equal(
-      (await store.load(hidden(html, '_view')))?.version,
+      (await loadViewState(store, hidden(html, '_view')))?.version,
       2,
       'checkpoint and final state are both durable',
     );

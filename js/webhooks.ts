@@ -39,6 +39,7 @@ import { Headers, Request, Response } from './net/http/index.ts';
 import type { HttpContext, Middleware } from './net/http/app.ts';
 import { NonRetryableJobError, type JobRecord, type JobRetryPolicy, type Jobs } from './jobs.ts';
 import { task, type Task } from './task.ts';
+import type { AtomicExpiringStore } from 'fino:store';
 const encoder = new TextEncoder();
 const DEFAULT_TOLERANCE_SECONDS = 300;
 const DEFAULT_TASK_NAME = 'webhooks.deliver';
@@ -139,38 +140,18 @@ export class WebhookVerificationError extends Error {
     this.status = status;
   }
 }
-/**
- * Storage contract for atomic webhook replay claims.
- *
- * Shared deployments should implement this with a shared cache or database.
- * The in-memory implementation is appropriate only for one process.
- */
-export interface WebhookReplayStore {
-  /**
-   * Atomically claim an event id until `expiresAt`.
-   *
-   * Return `false` when an unexpired claim already exists.
-   */
-  claim(id: string, expiresAt: number): Promise<boolean>;
-}
-/**
- * Single-process replay protection for inbound webhooks.
- */
-export class InMemoryWebhookReplayStore implements WebhookReplayStore {
-  readonly #claims = new Map<string, number>();
-  /**
-   * Atomically claim one event id in this process.
-   */
-  async claim(id: string, expiresAt: number): Promise<boolean> {
-    const now = Date.now();
-    for (const [key, expiry] of this.#claims) {
-      if (expiry <= now) this.#claims.delete(key);
-    }
-    const existing = this.#claims.get(id);
-    if (existing !== undefined && existing > now) return false;
-    this.#claims.set(id, expiresAt);
-    return true;
-  }
+async function claimReplay(
+  store: AtomicExpiringStore,
+  id: string,
+  ttlMs: number,
+): Promise<boolean> {
+  const replay = store.namespace('fino:webhooks/replay:v1');
+  return (
+    (await replay.atomic.commit({
+      checks: [{ key: id, ifVersion: null }],
+      writes: [{ key: id, value: true, ttlMs: Math.max(0, ttlMs) }],
+    })) !== null
+  );
 }
 /**
  * Options controlling inbound webhook verification.
@@ -199,11 +180,11 @@ export interface WebhookVerificationOptions {
    */
   now?: () => number;
   /**
-   * Optional atomic replay store.
+   * Optional generic store with atomic commit and provider-managed expiry.
    *
    * Signature and timestamp checks complete before the event id is claimed.
    */
-  replay?: WebhookReplayStore;
+  replay?: AtomicExpiringStore;
 }
 /**
  * Authenticated inbound webhook data.
@@ -307,7 +288,7 @@ export async function verifyWebhookRequest(
   }
   if (options.replay !== undefined) {
     const expiresAt = nowMs + tolerance * 1e3;
-    if (!(await options.replay.claim(id, expiresAt))) {
+    if (!(await claimReplay(options.replay, id, expiresAt - nowMs))) {
       throw new WebhookVerificationError(
         'replay_detected',
         `Webhook '${id}' was already received`,

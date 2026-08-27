@@ -33,11 +33,11 @@
  * @example
  * ```ts no_run
  * import { durableTask } from 'fino:task/durable';
- * import { SqliteWorkflowStore } from 'fino:workflow';
+ * import { sqliteStore } from 'fino:store';
  *
  * const ingest = durableTask({
  *   name: 'ingest',
- *   store: () => SqliteWorkflowStore.open('/data/jobs.db'),
+ *   store: () => sqliteStore({ path: '/data/jobs.db' }),
  *   run: async (input: { url: string }, ctx) => {
  *     const doc = await ctx.step('fetch', () => fetch(input.url).then((r) => r.text()));
  *     await ctx.sleep('cooldown', '5s');
@@ -56,8 +56,8 @@ import {
   type TaskRunOptions,
 } from '../task.ts';
 import {
+  loadWorkflowRun,
   workflow,
-  InMemoryWorkflowStore,
   type Activity,
   type Workflow,
   type WorkflowContext,
@@ -65,10 +65,10 @@ import {
   type WorkflowRetryOptions,
   type WorkflowStateBag,
   type WorkflowStatus,
-  type WorkflowStore,
   type WorkflowWait,
 } from '../workflow.ts';
 import { Context } from 'fino:context';
+import { memoryStore, type Store } from 'fino:store';
 
 /**
  * Context passed to a durable task handler.
@@ -130,9 +130,9 @@ export interface DurableTaskOptions<Input = unknown, Output = unknown> extends O
   /**
    * Workflow store backing this task's runs — a store instance or a lazy
    * factory resolved once on first use. Defaults to a per-task
-   * `InMemoryWorkflowStore` (checkpointing without persistence).
+   * `memoryStore()` (checkpointing without persistence).
    */
-  store?: WorkflowStore | (() => WorkflowStore | Promise<WorkflowStore>);
+  store?: Store | (() => Store | Promise<Store>);
   run: DurableTaskHandler<Input, Output>;
 }
 /**
@@ -141,7 +141,7 @@ export interface DurableTaskOptions<Input = unknown, Output = unknown> extends O
  */
 export interface DurableTaskRunOptions extends TaskRunOptions {
   /** Store override for this run (wins over the task-level store). */
-  store?: WorkflowStore;
+  store?: Store;
   /** Idempotency key recorded on the workflow run state. */
   key?: string;
 }
@@ -149,7 +149,7 @@ export interface DurableTaskRunOptions extends TaskRunOptions {
  * Options for the one-drive control surface (`start`, `resume`, `signalRun`).
  */
 export interface DurableRunOptions {
-  store?: WorkflowStore;
+  store?: Store;
   key?: string;
   signal?: AbortSignal;
   writer?: TaskOutputWriter;
@@ -169,7 +169,7 @@ export interface DurableRunHandle {
 }
 
 const _durableRunExtras = new Context<{
-  store?: WorkflowStore;
+  store?: Store;
   key?: string;
 }>('durableRunExtras');
 
@@ -244,13 +244,13 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
    *
    * @internal
    */
-  #storeSource?: WorkflowStore | (() => WorkflowStore | Promise<WorkflowStore>);
+  #storeSource?: Store | (() => Store | Promise<Store>);
   /**
    * Private property `#storeInstance` — resolved task-level store.
    *
    * @internal
    */
-  #storeInstance?: Promise<WorkflowStore>;
+  #storeInstance?: Promise<Store>;
   /**
    * Private property `#inputSchemaRaw` — schema forwarded to the workflow so
    * the one-drive surface validates input like `Task.run()` does.
@@ -357,7 +357,7 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
     name: string,
     payload?: unknown,
     opts: {
-      store?: WorkflowStore;
+      store?: Store;
     } = {},
   ): Promise<void> {
     const store = await this.#resolveStore(opts.store);
@@ -396,12 +396,12 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
    *
    * @internal
    */
-  #resolveStore(override?: WorkflowStore): Promise<WorkflowStore> {
+  #resolveStore(override?: Store): Promise<Store> {
     if (override !== undefined) return Promise.resolve(override);
     if (this.#storeInstance === undefined) {
       const source = this.#storeSource;
       this.#storeInstance = Promise.resolve(
-        typeof source === 'function' ? source() : (source ?? new InMemoryWorkflowStore()),
+        typeof source === 'function' ? source() : (source ?? memoryStore()),
       );
     }
     return this.#storeInstance;
@@ -414,14 +414,14 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
    */
   async #startOrResume(
     wf: Workflow<Input, Output>,
-    store: WorkflowStore,
+    store: Store,
     runId: string | undefined,
     input: Input,
     key: string | undefined,
     signal: AbortSignal | undefined,
   ): Promise<WorkflowResult<Output>> {
     if (runId !== undefined) {
-      const existing = await store.load(runId);
+      const existing = await loadWorkflowRun(store, runId);
       if (existing !== null) {
         return wf.resume({
           store,
@@ -479,7 +479,7 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
    * @internal
    */
   async #driveOnce(
-    store: WorkflowStore,
+    store: Store,
     runId: string,
     input: unknown,
     opts: DurableRunOptions,
@@ -496,7 +496,7 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
       if (allowStart) {
         result = await this.#startOrResume(wf, store, runId, input as Input, opts.key, opts.signal);
       } else {
-        const existing = await store.load(runId);
+        const existing = await loadWorkflowRun(store, runId);
         if (existing === null) {
           throw new Error(`Durable task "${this.name}" run ${runId} not found`);
         }
@@ -513,7 +513,7 @@ export class DurableTask<Input = unknown, Output = unknown> extends Task<Input, 
         ...(result.status === 'done' ? { result: result.result } : {}),
       };
     } catch (err) {
-      const persisted = await store.load(runId);
+      const persisted = await loadWorkflowRun(store, runId);
       return {
         runId,
         status: persisted?.status === 'cancelled' ? 'cancelled' : 'error',

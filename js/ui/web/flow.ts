@@ -37,7 +37,8 @@ import { h, Signal, type VNode } from 'fino:ui';
 import { page, view, ViewActionError } from 'fino:ui/web';
 import type { Handler, HttpContext } from 'fino:net/http/app';
 import type { JsonSchema } from 'fino:validate';
-import type { Workflow, WorkflowState, WorkflowStore } from 'fino:workflow';
+import { loadWorkflowRun, saveWorkflowRun, type Workflow, type WorkflowState } from 'fino:workflow';
+import type { Store } from 'fino:store';
 
 /** Durable-state key recording which session owns a run. */
 const OWNER_KEY = 'fino:ui/flow:owner';
@@ -51,7 +52,7 @@ export type FlowAdvance = unknown;
 
 export interface FlowPageOptions<In = unknown> {
   /** Durable workflow store containing runs for this page. */
-  store: WorkflowStore;
+  store: Store;
   /** Input factory used when a GET starts a new run. */
   start: (ctx: HttpContext) => In | Promise<In>;
   /**
@@ -109,7 +110,7 @@ function coerce(value: unknown): unknown {
   return value;
 }
 
-// WorkflowStore.save() has no compare-and-swap, so serialize per run. Two tabs
+// Plain Store.set() has no compare-and-swap, so serialize per run. Two tabs
 // hold different view snapshots and would otherwise both pass their own revision
 // check and interleave a signal with a resume.
 const runLocks = new Map<string, Promise<void>>();
@@ -164,7 +165,7 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
         }),
         async derive({ state }) {
           const runId = state.runId.get() as string;
-          state.run.set(runId === '' ? null : await opts.store.load(runId));
+          state.run.set(runId === '' ? null : await loadWorkflowRun(opts.store, runId));
         },
         actions: {
           advance: {
@@ -176,7 +177,7 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
                 name: state.awaitedName.get() as string | null,
               };
               await withRunLock(runId, async () => {
-                const current = await opts.store.load(runId);
+                const current = await loadWorkflowRun(opts.store, runId);
                 if (current === null)
                   throw new ViewActionError('view_expired', {
                     status: 410,
@@ -210,7 +211,7 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
                   payload: coerce((input as Record<string, unknown>)[wait.name]),
                 });
                 await workflow.resume({ store: opts.store, runId });
-                const next = await opts.store.load(runId);
+                const next = await loadWorkflowRun(opts.store, runId);
                 const nextWait = awaitedSignal(next);
                 state.run.set(next);
                 state.awaitedStep.set(nextWait?.step ?? null);
@@ -238,15 +239,15 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
       const started = await workflow.start(await opts.start(ctx), { store: opts.store });
       const session = sessionOf(ctx);
       if (session !== undefined) {
-        const persisted = await opts.store.load(started.runId);
+        const persisted = await loadWorkflowRun(opts.store, started.runId);
         if (persisted !== null) {
           persisted.state[OWNER_KEY] = session;
-          await opts.store.save(persisted);
+          await saveWorkflowRun(opts.store, persisted);
         }
       }
       return new Response(null, { status: 303, headers: { location: runUrl(ctx, started.runId) } });
     }
-    const state = await opts.store.load(runId);
+    const state = await loadWorkflowRun(opts.store, runId);
     if (state === null || state.workflowId !== workflow.id)
       return new Response('Workflow run not found', { status: 404 });
     if (!ownedBy(state, sessionOf(ctx))) return new Response('Forbidden', { status: 403 });
@@ -268,4 +269,4 @@ export function flowPage<In, Out>(workflow: Workflow<In, Out>, opts: FlowPageOpt
   };
 }
 
-export { observableWorkflowStore, watchRun } from 'fino:workflow';
+export { watchRun } from 'fino:workflow';

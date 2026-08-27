@@ -18,7 +18,7 @@
  * whether it runs in the same realm or across a process boundary.
  *
  * Plain tasks run once per call. Durable tasks perform exactly one workflow
- * drive against a `WorkflowStore` and report a park (a pending timer or signal
+ * drive against a generic `Store` and report a park (a pending timer or signal
  * wait) instead of blocking on it; the scheduler owns the timers and issues a
  * fresh call when the wait is due. Retryability is derived from the error name
  * (`NonRetryableJobError` / `NonRetryableWorkflowError` opt out) so tasks can
@@ -26,13 +26,13 @@
  *
  * ```ts no_run
  * import { collectTasks, dispatchJob } from 'internal:jobs/runner';
- * import { InMemoryWorkflowStore } from 'fino:workflow';
+ * import { memoryStore } from 'fino:store';
  *
  * const registry = collectTasks([greetTask, checkoutWorkflow]);
  * const result = await dispatchJob(
  *   registry,
  *   { kind: 'run', jobId: 'j-1', task: 'greet', input: { name: 'Ada' }, attempt: 1 },
- *   new InMemoryWorkflowStore(),
+ *   memoryStore(),
  * );
  * if (result.ok) console.log(result.output);
  * ```
@@ -41,7 +41,8 @@
  */
 import { Task } from '../../task.ts';
 import { DurableTask } from '../../task/durable.ts';
-import type { WorkflowStore, WorkflowWait } from '../../workflow.ts';
+import type { WorkflowWait } from '../../workflow.ts';
+import type { Store } from '../../store.ts';
 
 /**
  * One job execution request delivered to a processor.
@@ -197,10 +198,10 @@ function errorResult(err: unknown): JobsWireResult {
  *
  * ```ts no_run
  * import { collectTasks, dispatchJob } from 'internal:jobs/runner';
- * import { InMemoryWorkflowStore } from 'fino:workflow';
+ * import { memoryStore } from 'fino:store';
  *
  * const registry = collectTasks([checkoutWorkflow]);
- * const store = new InMemoryWorkflowStore();
+ * const store = memoryStore();
  * const result = await dispatchJob(
  *   registry,
  *   { kind: 'run', jobId: 'j-42', task: 'checkout', input: { cart: 7 }, attempt: 1 },
@@ -218,7 +219,7 @@ function errorResult(err: unknown): JobsWireResult {
 export async function dispatchJob(
   registry: Map<string, Task>,
   call: JobsWireCall,
-  workflowStore: WorkflowStore,
+  workflowStore: Store,
 ): Promise<JobsWireResult> {
   const task = registry.get(call.task);
   if (task === undefined) {
@@ -280,10 +281,10 @@ export async function dispatchJob(
  * Anything else is rejected as a malformed, non-retryable call rather than
  * throwing across the wire.
  *
- * Durable checkpoints need a `WorkflowStore`, which a worker realm cannot own
+ * Durable checkpoints need a generic `Store`, which a worker realm cannot own
  * directly. The store is resolved lazily by importing the
  * `fino:jobs/checkpoints` facade the pool owner injects at spawn, and adapting
- * its `save`/`load`/`list`/`remove` calls to the `WorkflowStore` contract. The
+ * its `set`/`get`/`list`/`remove` calls to the generic store contract. The
  * import happens only the first time a durable task actually runs and is cached
  * thereafter, so plain-task-only workers never import the facade. If a durable
  * task runs in a realm where the facade was not injected, the failed import is
@@ -301,22 +302,35 @@ export async function dispatchJob(
  */
 export function taskWorker(root: Task): (call: JobsWireCall) => Promise<JobsWireResult> {
   const registry = collectTasks([root]);
-  let facadeStore: Promise<WorkflowStore> | undefined;
-  const resolveStore = (): Promise<WorkflowStore> => {
+  let facadeStore: Promise<Store> | undefined;
+  const resolveStore = (): Promise<Store> => {
     facadeStore ??= import('fino:jobs/checkpoints').then(
       (mod) => {
         const facade = mod as {
-          save(state: unknown): Promise<void>;
-          load(runId: string): Promise<unknown>;
-          list(filter?: unknown): Promise<unknown[]>;
-          remove(runId: string): Promise<void>;
+          set(key: string, value: unknown): Promise<void>;
+          get(key: string): Promise<unknown>;
+          list(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
+          remove(key: string): Promise<boolean>;
         };
-        return {
-          save: (state) => facade.save(state),
-          load: (runId) => facade.load(runId),
-          list: (filter) => facade.list(filter),
-          delete: (runId) => facade.remove(runId),
-        } as WorkflowStore;
+        const create = (prefix: string): Store => ({
+          set: (key, value) => facade.set(`${prefix}${key}`, value),
+          async get<T = unknown>(key: string): Promise<T | null> {
+            return (await facade.get(`${prefix}${key}`)) as T | null;
+          },
+          async list<T = unknown>(options: { prefix?: string } = {}) {
+            const selected = `${prefix}${options.prefix ?? ''}`;
+            return (await facade.list(selected)).map((entry) => ({
+              key: entry.key.slice(prefix.length),
+              value: entry.value as T,
+            }));
+          },
+          delete: (key) => facade.remove(`${prefix}${key}`),
+          namespace(name) {
+            if (name.length === 0) throw new TypeError('Store namespace must not be empty');
+            return create(`${prefix}${encodeURIComponent(name)}/`);
+          },
+        });
+        return create('');
       },
       (err) => {
         throw new Error(
@@ -346,9 +360,9 @@ export function taskWorker(root: Task): (call: JobsWireCall) => Promise<JobsWire
       };
     }
     const needsStore = registry.get(call.task) instanceof DurableTask;
-    let store: WorkflowStore;
+    let store: Store;
     try {
-      store = needsStore ? await resolveStore() : (undefined as unknown as WorkflowStore);
+      store = needsStore ? await resolveStore() : (undefined as unknown as Store);
     } catch (err) {
       return errorResult(err);
     }

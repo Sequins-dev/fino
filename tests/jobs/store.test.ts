@@ -8,6 +8,12 @@ import { describe, it } from 'fino:test/test';
 import { JobsStore, backoffDelayMs } from 'internal:jobs/store';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import { env, exit } from 'fino:process';
+import {
+  deleteWorkflowRun,
+  listWorkflowRuns,
+  loadWorkflowRun,
+  saveWorkflowRun,
+} from 'fino:workflow';
 
 if (!sqliteAvailable) {
   if (env.FINO_REQUIRE_SQLITE === '1') throw new Error('sqlite required but unavailable');
@@ -81,12 +87,16 @@ describe('JobsStore', () => {
       createdAt: Date.now(),
       updatedAt: Date.now(),
     };
-    await wf.save(state);
-    const loaded = await wf.load('wf-1');
+    await saveWorkflowRun(wf, state);
+    const loaded = await loadWorkflowRun(wf, 'wf-1');
     t.equal(loaded?.workflowId, 'demo', 'round-trips workflow state');
-    t.equal((await wf.list({ status: 'waiting' })).length, 1, 'list filters by status');
-    await wf.delete('wf-1');
-    t.equal(await wf.load('wf-1'), null, 'delete removes the run');
+    t.equal(
+      (await listWorkflowRuns(wf, { status: 'waiting' })).length,
+      1,
+      'list filters by status',
+    );
+    await deleteWorkflowRun(wf, 'wf-1');
+    t.equal(await loadWorkflowRun(wf, 'wf-1'), null, 'delete removes the run');
   });
   it('dedupes active jobs per (queue, key) and frees the key on completion', async (t) => {
     await using store = await JobsStore.open(tempPath());

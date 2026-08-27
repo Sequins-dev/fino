@@ -19,10 +19,10 @@
  * import { App } from 'fino:net/http/app';
  * import { h, Signal } from 'fino:ui';
  * import { page, view, webUI } from 'fino:ui/web';
- * import { InMemoryViewStore } from 'fino:ui/web/state';
+ * import { memoryStore } from 'fino:store';
  *
  * const app = new App();
- * const ui = app.layer(webUI({ store: new InMemoryViewStore(), secret: 'dev-secret' }));
+ * const ui = app.layer(webUI({ store: memoryStore(), secret: 'dev-secret' }));
  * ui.get('/').handle(page(() => h('main', null, 'Hello')));
  * ```
  */
@@ -36,7 +36,8 @@ import { renderToHtml } from 'fino:ui/html';
 import { toPortable, type PortableVNode } from 'fino:ui/portable';
 import { parse as parseSchema, type JsonSchema } from 'fino:validate';
 import type { Handler, HttpContext, LayerMiddleware } from 'fino:net/http/app';
-import type { ViewSnapshot, ViewStateStore } from 'fino:ui/web/state';
+import { loadViewState, saveViewState, sweepViewState, type ViewSnapshot } from 'fino:ui/web/state';
+import type { AtomicStore } from 'fino:store';
 type StateRecord = Record<string, Signal<unknown>>;
 /**
  * Context supplied to a server-driven view action.
@@ -156,8 +157,8 @@ export type PortableUIEvent =
   | { version: 1; kind: 'error'; code: string; recoverable: boolean }
   | { version: 1; kind: 'close' };
 export interface WebUIOptions {
-  /** Durable snapshot store used for view state. */
-  store: ViewStateStore;
+  /** Generic atomic store used for durable view snapshots. */
+  store: AtomicStore;
   /** Secret used to seal CSRF tokens and sealed embedded state. */
   secret: string;
   /** Snapshot lifetime in milliseconds. Defaults to one hour. */
@@ -574,7 +575,7 @@ class ServerView {
     const now = Date.now();
     const data = this.persisted(state);
     currentRender.pending.push(
-      currentRender.options.store.save({
+      saveViewState(currentRender.options.store, {
         viewId,
         view: this.def.id,
         version: 0,
@@ -831,7 +832,7 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
       ? portableError(404, 'action_not_found', false)
       : new Response('Not Found', { status: 404 });
   return withViewLock(viewId, async () => {
-    const snapshot = await options.store.load(viewId);
+    const snapshot = await loadViewState(options.store, viewId);
     if (snapshot === null)
       return streaming
         ? portableError(410, 'view_expired', false)
@@ -922,7 +923,9 @@ async function handleAction(ctx: HttpContext, options: WebUIOptions): Promise<Re
         streaming,
       );
       nextSnapshot.regions = { [viewId]: rendered.hash };
-      await options.store.save(nextSnapshot, { expectVersion: currentSnapshot.version });
+      await saveViewState(options.store, nextSnapshot, {
+        expectVersion: currentSnapshot.version,
+      });
       currentSnapshot = nextSnapshot;
       topic(`fino:ui/view:${viewId}`).publish({ version: nextVersion });
       return rendered;
@@ -1019,7 +1022,7 @@ function liveResponse(
     controller: ReadableStreamDefaultController<Uint8Array>,
     viewId: string,
   ) => {
-    const snapshot = await options.store.load(viewId);
+    const snapshot = await loadViewState(options.store, viewId);
     if (
       snapshot === null ||
       (snapshot.sessionId !== undefined && snapshot.sessionId !== sessionId(ctx))
@@ -1119,7 +1122,7 @@ export function webUI(options: WebUIOptions): LayerMiddleware {
     sweeping ??= (async () => {
       const startedAt = Date.now();
       try {
-        const deleted = await options.store.sweep(now);
+        const deleted = await sweepViewState(options.store, now);
         topic('fino:ui/sweep').publish({
           deleted,
           durationMs: Date.now() - startedAt,

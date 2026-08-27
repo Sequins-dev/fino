@@ -2,7 +2,6 @@ import { describe, it } from 'fino:test/test';
 import { App } from 'fino:net/http/app';
 import { Jobs } from 'fino:jobs';
 import {
-  InMemoryWebhookReplayStore,
   WebhookVerificationError,
   createWebhookDeliveryTask,
   enqueueWebhook,
@@ -10,6 +9,7 @@ import {
   verifyWebhookRequest,
   webhookVerifier,
 } from 'fino:webhooks';
+import { memoryStore } from 'fino:store';
 const secret = 'webhook-test-secret';
 function signedRequest(
   body: string,
@@ -34,7 +34,7 @@ function signedRequest(
 }
 describe('fino:webhooks inbound verification', () => {
   it('verifies signed bytes, enforces the replay window, and rejects duplicate ids', async (t) => {
-    const replay = new InMemoryWebhookReplayStore();
+    const replay = memoryStore();
     const request = signedRequest('{"ok":true}');
     const verified = await verifyWebhookRequest(request, {
       secret,

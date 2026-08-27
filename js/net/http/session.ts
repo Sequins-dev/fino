@@ -2,11 +2,11 @@
  * internal:net/http/session — revision-safe HTTP app session implementation.
  *
  * The public API is exported only by `fino:net/http/app`. Callers supply a
- * revision-capable `fino:cache` backend directly; session lifecycle code owns
+ * an atomic, expiry-capable `fino:store` backend directly; session lifecycle code owns
  * record validation, TTL translation, sealed identifiers, and conditional
  * writes.
  *
- * Session data is JSON-serialized by the supplied cache. It is suitable for
+ * Session data uses the supplied provider's value representation. It is suitable for
  * authentication identity and small request-scoped metadata, not as a
  * transactional application database. A distributed adapter must provide
  * atomic per-key conditional writes and read-after-write behavior to preserve
@@ -14,17 +14,17 @@
  * replication alone is insufficient for immediate global logout.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { sessions } from 'fino:net/http/app';
  *
  * const middleware = sessions({
- *   store: memoryCache({ namespace: 'sessions' }),
+ *   store: memoryStore(),
  *   keys: [{ id: 'primary', secret: process.env.SESSION_SECRET! }],
  *   ttlMs: 3_600_000,
  * });
  * ```
  */
-import type { CacheEntry, RevisionedCache } from 'fino:cache';
+import type { AtomicExpiringStore, VersionedStoreEntry } from 'fino:store';
 import {
   CookieJar,
   sealCookie,
@@ -63,6 +63,9 @@ function assertRecord(record: SessionRecord<unknown>): void {
     if (!Number.isFinite(value)) throw new TypeError(`session ${name} must be finite`);
   }
 }
+function cloneRecord<T>(record: SessionRecord<T>): SessionRecord<T> {
+  return JSON.parse(JSON.stringify(record)) as SessionRecord<T>;
+}
 /** One cookie-sealing key accepted by server-session middleware. */
 export interface SessionKey {
   /** Stable short identifier written outside the sealed cookie payload. */
@@ -86,8 +89,8 @@ export interface Session<T = Record<string, unknown>> extends SessionRecord<T> {
 }
 /** Options for the secure HTTP session producer. */
 export interface SessionOptions<T = Record<string, unknown>> {
-  /** Caller-owned revision-capable cache used for session records. */
-  store: RevisionedCache;
+  /** Caller-owned generic store with atomic commit and provider-managed expiry. */
+  store: AtomicExpiringStore;
   /** Sealing keys ordered primary-first; old keys remain readable for rotation. */
   keys: readonly [SessionKey, ...SessionKey[]];
   /** Session lifetime in milliseconds. Must be finite and greater than zero. */
@@ -199,12 +202,12 @@ function deleteCookieOptions(options: SessionOptions<unknown>): CookieOptions {
  * are not stored automatically.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { App, cookies, sessions } from 'fino:net/http/app';
  *
  * const app = new App();
  * const authenticated = app.value('cookies', cookies()).value('session', sessions({
- *   store: memoryCache({ namespace: 'sessions' }),
+ *   store: memoryStore(),
  *   keys: [{ id: '2026-07', secret: process.env.SESSION_SECRET! }],
  *   ttlMs: 24 * 60 * 60_000,
  * }));
@@ -213,6 +216,7 @@ function deleteCookieOptions(options: SessionOptions<unknown>): CookieOptions {
  */
 export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>): Producer {
   validateSessionOptions(options);
+  const store = options.store.namespace('fino:http/session:v1');
   const clock = options.clock ?? defaultClock;
   const cookie = options.cookie ?? 'fino.sid';
   const primary = options.keys[0]!;
@@ -224,11 +228,12 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
     if (!(ctx.cookies instanceof CookieJar)) ctx.cookies = jar;
     const opened = jar.get(cookie);
     const decoded = opened === undefined ? null : unsealSessionId(opened, options.keys);
-    let snapshot =
-      decoded === null ? null : await options.store.getEntry<SessionRecord<T>>(decoded.id);
+    const stored =
+      decoded === null ? null : await store.atomic.getEntry<SessionRecord<T>>(decoded.id);
+    let snapshot = stored === null ? null : { ...stored, value: cloneRecord(stored.value) };
     const now = clock.now();
     if (snapshot !== null && snapshot.value.expiresAt <= now) {
-      await options.store.delete(snapshot.value.id);
+      await store.delete(snapshot.value.id);
       snapshot = null;
     }
     const initialRecord: SessionRecord<T> = snapshot?.value ?? {
@@ -265,8 +270,8 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       await previousApply?.(response);
       const finishNow = clock.now();
       if (invalidated) {
-        await options.store.delete(originalId);
-        if (session.id !== originalId) await options.store.delete(session.id);
+        await store.delete(originalId);
+        if (session.id !== originalId) await store.delete(session.id);
         jar.delete(cookie, deleteCookieOptions(options as SessionOptions<unknown>));
         return;
       }
@@ -274,11 +279,11 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
       const dirty = encodedData !== originalData;
       if (dirty) session.updatedAt = finishNow;
       if (options.rolling === true) session.expiresAt = finishNow + options.ttlMs;
-      if (regenerated) await options.store.delete(originalId);
+      if (regenerated) await store.delete(originalId);
       const shouldSave = session.isNew || dirty || options.rolling === true;
-      let saved: CacheEntry<SessionRecord<T>> | null = snapshot;
+      let saved: VersionedStoreEntry<SessionRecord<T>> | null = snapshot;
       if (shouldSave) {
-        const expected = session.isNew ? null : snapshot!.revision;
+        const expected = session.isNew ? null : snapshot!.version;
         const record: SessionRecord<T> = {
           id: session.id,
           data: session.data,
@@ -288,22 +293,26 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
         };
         assertRecord(record);
         const ttlMs = record.expiresAt - finishNow;
-        saved =
+        const committed =
           ttlMs <= 0
             ? null
-            : await options.store.compareAndSet(record.id, record, {
-                ifRevision: expected,
-                ttlMs,
+            : await store.atomic.commit({
+                checks: [{ key: record.id, ifVersion: expected }],
+                writes: [{ key: record.id, value: cloneRecord(record), ttlMs }],
               });
+        saved = (committed?.writes[0] as VersionedStoreEntry<SessionRecord<T>> | undefined) ?? null;
         if (saved === null && !dirty && !session.isNew && options.rolling === true) {
-          const latest = await options.store.getEntry<SessionRecord<T>>(session.id);
+          const latest = await store.atomic.getEntry<SessionRecord<T>>(session.id);
           if (latest !== null) {
-            latest.value.expiresAt = finishNow + options.ttlMs;
-            assertRecord(latest.value);
-            saved = await options.store.compareAndSet(session.id, latest.value, {
-              ifRevision: latest.revision,
-              ttlMs: options.ttlMs,
+            const value = cloneRecord(latest.value);
+            value.expiresAt = finishNow + options.ttlMs;
+            assertRecord(value);
+            const refreshed = await store.atomic.commit({
+              checks: [{ key: session.id, ifVersion: latest.version }],
+              writes: [{ key: session.id, value, ttlMs: options.ttlMs }],
             });
+            saved =
+              (refreshed?.writes[0] as VersionedStoreEntry<SessionRecord<T>> | undefined) ?? null;
           }
         }
         if (saved === null) {

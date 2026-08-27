@@ -5,18 +5,17 @@ normally composes cookie parsing, HTTP sessions, a durable view store, and the
 UI layer in that order:
 
 ```ts no_run
-import { memoryCache } from 'fino:cache';
 import { App, cookies, sessions } from 'fino:net/http/app';
 import { transpileFiles } from 'fino:format/typescript';
+import { memoryStore, sqliteStore } from 'fino:store';
 import { clientScriptPath, page, webUI } from 'fino:ui/web';
-import { DatabaseViewStore } from 'fino:ui/web/state';
 
-const views = await DatabaseViewStore.open('sqlite://var/app/ui.db');
+const views = await sqliteStore({ path: 'var/app/ui.db', namespace: 'views' });
 const app = new App();
 const routes = app
   .value('cookies', cookies())
   .value('session', sessions({
-    store: memoryCache({ namespace: 'sessions' }),
+    store: memoryStore({ namespace: 'sessions' }),
     keys: [{ id: 'current', secret: process.env.SESSION_SECRET! }],
     ttlMs: 24 * 60 * 60 * 1000,
   }))
