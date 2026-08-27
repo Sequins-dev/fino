@@ -7,6 +7,14 @@ inputs:
     required: false
     default: debug
 
+outputs:
+  v8-cache-hit:
+    description: Whether the exact V8 source-build cache key was restored
+    value: ${{ steps.v8-cache.outputs.cache-hit }}
+  v8-cache-key:
+    description: Primary key to use when saving V8 source-build outputs
+    value: ${{ steps.v8-cache.outputs.cache-primary-key }}
+
 runs:
   using: composite
   steps:
@@ -21,7 +29,8 @@ runs:
           cargo-deps-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Restore V8 source build cache
-      uses: actions/cache@v4
+      id: v8-cache
+      uses: actions/cache/restore@v4
       with:
         path: |
           target/${{ inputs.profile }}/gn_out

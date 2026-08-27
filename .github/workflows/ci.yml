@@ -96,6 +96,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
@@ -132,6 +133,15 @@ jobs:
       - name: Build
         run: cargo build
 
+      - name: Save V8 source build cache
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/debug/gn_out
+            target/debug/ninja_gn_binaries
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
+
       - name: Run Rust tests
         run: cargo test --quiet
 
@@ -155,6 +165,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
@@ -164,6 +175,15 @@ jobs:
 
       - name: Build
         run: cargo build
+
+      - name: Save V8 source build cache
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/debug/gn_out
+            target/debug/ninja_gn_binaries
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Run Rust tests
         run: cargo test --quiet

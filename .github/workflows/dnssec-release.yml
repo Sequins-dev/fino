@@ -29,6 +29,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
         with:
           profile: release
@@ -58,6 +59,15 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release
+
+      - name: Save V8 source build cache
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/release/gn_out
+            target/release/ninja_gn_binaries
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Verify signed and bogus public domains
         env:
