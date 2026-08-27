@@ -106,7 +106,8 @@ pause/resume workflow is part of the behavior.
 ```ts
 import { agent } from 'fino:ai/agent';
 import { openai } from 'fino:ai/model';
-import { InMemorySessionStore, session } from 'fino:ai/session';
+import { session } from 'fino:ai/session';
+import { memoryStore } from 'fino:store';
 import { tool } from 'fino:ai/tool';
 import { v } from 'fino:validate';
 
@@ -139,7 +140,7 @@ const bot = agent({
 });
 
 const sess = session({
-  store: new InMemorySessionStore(),
+  store: memoryStore(),
   agent: bot,
   threadId: 'customer-42',
 });

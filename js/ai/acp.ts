@@ -21,8 +21,10 @@
  *
  * Each prompt uses a fresh `AgentSession` seeded from immutable persisted
  * history. Active sessions own MCP connections and cancellation; stored
- * records survive `session/close` and connection shutdown. The default store
- * is in-memory, and `AcpSessionStore` permits a durable backend.
+ * records survive `session/close` and connection shutdown. Persistence uses
+ * the shared `fino:store` contract and the thin codecs from `fino:ai/session`,
+ * so ACP and ordinary durable agent sessions share the same immutable history
+ * graph and optimistic thread commits.
  *
  * ```ts no_run
  * import { acpServer, acpStdioTransport } from 'fino:ai/acp';
@@ -49,6 +51,15 @@ import type { ToolApprovalRequest } from 'fino:ai/runtime';
 import type { ContentPart, ModelMessage, StopReason, Usage } from 'fino:ai/model';
 import { MessageHistory } from 'fino:ai/context';
 import type { MessageHistorySnapshot } from 'fino:ai/context';
+import { memoryStore, type AtomicStore } from 'fino:store';
+import {
+  commitConversationThread,
+  deleteConversationThread,
+  listConversationThreads,
+  loadConversationHistory,
+  loadConversationThread,
+  type ThreadState,
+} from 'fino:ai/session';
 import {
   MCPClient,
   httpTransport as mcpHttpTransport,
@@ -573,122 +584,81 @@ export type AcpElicitationResponse =
   | { action: 'decline' | 'cancel'; _meta?: AcpMeta }
   | ({ action: string; _meta?: AcpMeta } & Record<string, unknown>);
 
-/** Serializable session record used by `AcpSessionStore`. */
-export interface AcpStoredSession {
-  /** Stable ACP session id. */
+interface AcpStoredSession {
   sessionId: string;
-  /** Absolute working directory. */
   cwd: string;
-  /** Additional absolute workspace roots. */
   additionalDirectories: string[];
-  /** Optional display title. */
   title?: string;
-  /** ISO 8601 last-activity timestamp. */
+  createdAt: number;
   updatedAt: string;
-  /** Serializable immutable message history. */
   history: MessageHistorySnapshot;
-  /** Session mode state, when configured. */
   modes?: AcpSessionModeState;
-  /** Current session configuration. */
   configOptions: AcpSessionConfigOption[];
-  /** Cumulative model usage. */
   usage: Usage;
-  /** Cumulative cost in USD, when available. */
   cost?: number;
-  /** Optimistic store revision. */
-  revision: number;
-  /** Opaque extension metadata. */
+  storeVersion?: string;
   _meta?: AcpMeta;
-}
-/** Cursor page returned by an ACP session store. */
-export interface AcpStoredSessionPage {
-  /** Stored sessions in this page. */
-  sessions: AcpStoredSession[];
-  /** Cursor for the next page. */
-  nextCursor?: string;
-}
-/** Persistence contract for ACP session lifecycle methods. */
-export interface AcpSessionStore {
-  /** Load one session, or return `null` when absent. */
-  load(sessionId: string): Promise<AcpStoredSession | null>;
-  /** List one cursor page, optionally filtered by working directory. */
-  list(opts: { cwd?: string; cursor?: string }): Promise<AcpStoredSessionPage>;
-  /** Atomically save if `expectedRevision` still matches. */
-  save(session: AcpStoredSession, expectedRevision: number | null): Promise<AcpStoredSession>;
-  /** Delete one stored session and report whether it existed. */
-  delete(sessionId: string): Promise<boolean>;
-}
-/** Raised when concurrent servers update one stored ACP session. */
-export class AcpSessionConflictError extends Error {
-  /** Conflicting session id. */
-  sessionId: string;
-  /** Revision expected by the writer. */
-  expectedRevision: number | null;
-  /** Revision currently in the store. */
-  actualRevision: number | null;
-  /** Create an optimistic concurrency error. */
-  constructor(sessionId: string, expectedRevision: number | null, actualRevision: number | null) {
-    super(
-      `ACP session ${sessionId} changed from ${expectedRevision ?? '<new>'} to ${actualRevision ?? '<new>'}`,
-    );
-    this.name = 'AcpSessionConflictError';
-    this.sessionId = sessionId;
-    this.expectedRevision = expectedRevision;
-    this.actualRevision = actualRevision;
-  }
 }
 function cloneValue<T>(value: T): T {
   return structuredClone(value);
 }
-/** In-memory ACP persistence with cursor pages and optimistic commits. */
-export class InMemoryAcpSessionStore implements AcpSessionStore {
-  #sessions = new Map<string, AcpStoredSession>();
-  #pageSize: number;
-  /** Create a store with at most `pageSize` records per list response. */
-  constructor(pageSize = 50) {
-    if (!Number.isInteger(pageSize) || pageSize <= 0)
-      throw new RangeError('pageSize must be positive');
-    this.#pageSize = pageSize;
+const ACP_THREAD_KIND = 'fino:acp:v1';
+interface AcpThreadMetadata extends Record<string, unknown> {
+  kind: typeof ACP_THREAD_KIND;
+  cwd: string;
+  additionalDirectories: string[];
+  title?: string;
+  modes?: AcpSessionModeState;
+  configOptions: AcpSessionConfigOption[];
+  usage: Usage;
+  cost?: number;
+  _meta?: AcpMeta;
+}
+function acpThreadMetadata(value: unknown): AcpThreadMetadata | null {
+  if (!isRecord(value) || value.kind !== ACP_THREAD_KIND || typeof value.cwd !== 'string') {
+    return null;
   }
-  /** Load a defensive copy of one stored session. */
-  async load(sessionId: string): Promise<AcpStoredSession | null> {
-    const value = this.#sessions.get(sessionId);
-    return value ? cloneValue(value) : null;
+  if (
+    !Array.isArray(value.additionalDirectories) ||
+    value.additionalDirectories.some((path) => typeof path !== 'string') ||
+    !Array.isArray(value.configOptions) ||
+    !isRecord(value.usage)
+  ) {
+    return null;
   }
-  /** List a deterministic, newest-first cursor page. */
-  async list(opts: { cwd?: string; cursor?: string }): Promise<AcpStoredSessionPage> {
-    const offset = opts.cursor === undefined ? 0 : Number(opts.cursor);
-    if (!Number.isSafeInteger(offset) || offset < 0 || String(offset) !== (opts.cursor ?? '0')) {
-      throw new JsonRpcError('Invalid session list cursor', INVALID_PARAMS);
-    }
-    const sessions = [...this.#sessions.values()]
-      .filter((session) => opts.cwd === undefined || session.cwd === opts.cwd)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
-    const page = sessions.slice(offset, offset + this.#pageSize).map(cloneValue);
-    const next = offset + page.length;
-    return {
-      sessions: page,
-      ...(next < sessions.length ? { nextCursor: String(next) } : {}),
-    };
-  }
-  /** Save with optimistic revision checking and return the committed copy. */
-  async save(
-    session: AcpStoredSession,
-    expectedRevision: number | null,
-  ): Promise<AcpStoredSession> {
-    const current = this.#sessions.get(session.sessionId);
-    const actualRevision = current?.revision ?? null;
-    if (actualRevision !== expectedRevision) {
-      throw new AcpSessionConflictError(session.sessionId, expectedRevision, actualRevision);
-    }
-    const saved = cloneValue({ ...session, revision: (actualRevision ?? 0) + 1 });
-    this.#sessions.set(saved.sessionId, saved);
-    return cloneValue(saved);
-  }
-  /** Delete a stored session. */
-  async delete(sessionId: string): Promise<boolean> {
-    return this.#sessions.delete(sessionId);
-  }
+  return cloneValue(value) as AcpThreadMetadata;
+}
+function threadMetadata(session: AcpStoredSession): AcpThreadMetadata {
+  return {
+    kind: ACP_THREAD_KIND,
+    cwd: session.cwd,
+    additionalDirectories: [...session.additionalDirectories],
+    ...(session.title !== undefined ? { title: session.title } : {}),
+    ...(session.modes !== undefined ? { modes: cloneValue(session.modes) } : {}),
+    configOptions: cloneValue(session.configOptions),
+    usage: cloneValue(session.usage),
+    ...(session.cost !== undefined ? { cost: session.cost } : {}),
+    ...(session._meta !== undefined ? { _meta: cloneValue(session._meta) } : {}),
+  };
+}
+function storedSession(thread: ThreadState, history: MessageHistory): AcpStoredSession | null {
+  const metadata = acpThreadMetadata(thread.metadata);
+  if (!metadata || thread.storeVersion === undefined) return null;
+  return {
+    sessionId: thread.threadId,
+    cwd: metadata.cwd,
+    additionalDirectories: [...metadata.additionalDirectories],
+    ...(metadata.title !== undefined ? { title: metadata.title } : {}),
+    createdAt: thread.createdAt,
+    updatedAt: new Date(thread.updatedAt).toISOString(),
+    history: history.toSnapshot(),
+    ...(metadata.modes !== undefined ? { modes: cloneValue(metadata.modes) } : {}),
+    configOptions: cloneValue(metadata.configOptions),
+    usage: cloneValue(metadata.usage),
+    ...(metadata.cost !== undefined ? { cost: metadata.cost } : {}),
+    storeVersion: thread.storeVersion,
+    ...(metadata._meta !== undefined ? { _meta: cloneValue(metadata._meta) } : {}),
+  };
 }
 
 /** Context passed to an MCP connection policy. */
@@ -746,8 +716,13 @@ export interface AcpServerOptions {
   title?: string;
   /** Implementation version. */
   version?: string;
-  /** Durable session backend; defaults to isolated in-memory storage. */
-  store?: AcpSessionStore;
+  /**
+   * Shared atomic store; defaults to a fresh `memoryStore()`.
+   * Caller-supplied stores remain caller-owned and are not closed by the server.
+   */
+  store?: AtomicStore;
+  /** Maximum sessions returned per ACP list page. Defaults to `50`. */
+  sessionListPageSize?: number;
   /** Rich prompt types accepted by the configured application. */
   promptCapabilities?: {
     image?: boolean;
@@ -1376,7 +1351,8 @@ function sessionResponse(
 /** Complete stable ACP v1 server for reusable Fino agent definitions. */
 export class AcpServer {
   #opts: AcpServerOptions;
-  #store: AcpSessionStore;
+  #store: AtomicStore;
+  #sessionListPageSize: number;
   #peer: JsonRpcPeer | null = null;
   #initialized = false;
   #authenticated: boolean;
@@ -1387,7 +1363,11 @@ export class AcpServer {
   /** Create a server. Each `serve()` call owns one isolated ACP connection. */
   constructor(opts: AcpServerOptions) {
     this.#opts = opts;
-    this.#store = opts.store ?? new InMemoryAcpSessionStore();
+    this.#store = opts.store ?? memoryStore();
+    this.#sessionListPageSize = opts.sessionListPageSize ?? 50;
+    if (!Number.isInteger(this.#sessionListPageSize) || this.#sessionListPageSize <= 0) {
+      throw new RangeError('sessionListPageSize must be positive');
+    }
     this.#authenticated = opts.authentication === undefined;
     for (const name of Object.keys(opts.extensions ?? {})) {
       if (!name.startsWith('_')) throw new TypeError('ACP extension methods must begin with _');
@@ -1691,6 +1671,34 @@ export class AcpServer {
     }
     return tools;
   }
+  async #loadStored(sessionId: string): Promise<AcpStoredSession | null> {
+    const thread = await loadConversationThread(this.#store, sessionId);
+    if (!thread?.historyRevisionId) return null;
+    const history = await loadConversationHistory(this.#store, thread.historyRevisionId);
+    if (!history) return null;
+    return storedSession(thread, history);
+  }
+  async #commitStored(
+    session: AcpStoredSession,
+    history: MessageHistory,
+    expectedStoreVersion: string | null,
+    baseRevisionId?: string,
+  ): Promise<AcpStoredSession> {
+    const updatedAt = Date.parse(session.updatedAt);
+    const saved = await commitConversationThread(this.#store, {
+      thread: {
+        threadId: session.sessionId,
+        historyRevisionId: history.revisionId,
+        createdAt: session.createdAt,
+        updatedAt,
+        metadata: threadMetadata(session),
+      },
+      history,
+      expectedStoreVersion,
+      ...(baseRevisionId !== undefined ? { baseRevisionId } : {}),
+    });
+    return storedSession(saved, history)!;
+  }
   async #activate(stored: AcpStoredSession, servers: AcpMcpServer[]): Promise<ActiveSession> {
     if (this.#sessions.has(stored.sessionId)) {
       await this.#closeActive(stored.sessionId);
@@ -1741,14 +1749,14 @@ export class AcpServer {
     }
   }
   async #persist(record: ActiveSession): Promise<void> {
-    const expected = record.stored.revision;
-    record.stored = await this.#store.save(
-      {
-        ...record.stored,
-        history: record.history.toSnapshot(),
-        updatedAt: new Date().toISOString(),
-      },
-      expected,
+    const previousHistoryRevisionId = record.stored.history.head;
+    const storeVersion = record.stored.storeVersion;
+    if (storeVersion === undefined) throw new Error('ACP session has no backing-store version');
+    record.stored = await this.#commitStored(
+      { ...record.stored, updatedAt: new Date().toISOString() },
+      record.history,
+      storeVersion,
+      previousHistoryRevisionId,
     );
   }
   async #newSession(params: unknown, ctx: RequestContext): Promise<Record<string, unknown>> {
@@ -1762,28 +1770,30 @@ export class AcpServer {
     if (!Array.isArray(value.mcpServers)) invalidParams('mcpServers must be an array');
     const servers = value.mcpServers.map(parseMcpServer);
     const sessionId = crypto.randomUUID();
-    const now = new Date().toISOString();
+    const createdAt = Date.now();
+    const now = new Date(createdAt).toISOString();
     const history = new MessageHistory();
-    const stored = await this.#store.save(
+    const stored = await this.#commitStored(
       {
         sessionId,
         cwd,
         additionalDirectories,
+        createdAt,
         updatedAt: now,
         history: history.toSnapshot(),
         ...(this.#opts.modes ? { modes: cloneValue(this.#opts.modes) } : {}),
         configOptions: cloneValue(this.#opts.configOptions ?? []),
         usage: emptyUsage(),
-        revision: 0,
         ...(isRecord(value._meta) ? { _meta: value._meta } : {}),
       },
+      history,
       null,
     );
     try {
       const record = await this.#activate(stored, servers);
       return { sessionId, ...sessionResponse(record, this.#clientCapabilities) };
     } catch (error) {
-      await this.#store.delete(sessionId).catch(() => {});
+      await deleteConversationThread(this.#store, sessionId).catch(() => {});
       throw error;
     }
   }
@@ -1797,7 +1807,7 @@ export class AcpServer {
     const value = requireRecord(params, `${method} params`);
     const sessionId = requireString(value.sessionId, 'sessionId');
     const cwd = requireAbsolutePath(value.cwd, 'cwd');
-    const stored = await this.#store.load(sessionId);
+    const stored = await this.#loadStored(sessionId);
     if (!stored) throw new JsonRpcError(`Unknown session: ${sessionId}`, ACP_RESOURCE_NOT_FOUND);
     if (stored.cwd !== cwd) invalidParams('cwd does not match the stored session');
     const additionalDirectories = parseAbsolutePaths(
@@ -1876,25 +1886,41 @@ export class AcpServer {
       value.cursor === undefined || value.cursor === null
         ? undefined
         : requireString(value.cursor, 'cursor');
-    const page = await this.#store.list({ cwd, cursor });
+    const offset = cursor === undefined ? 0 : Number(cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0 || String(offset) !== (cursor ?? '0')) {
+      invalidParams('Invalid session list cursor');
+    }
+    const sessions = (await listConversationThreads(this.#store))
+      .map((thread) => {
+        const metadata = acpThreadMetadata(thread.metadata);
+        if (!metadata) return null;
+        return {
+          sessionId: thread.threadId,
+          cwd: metadata.cwd,
+          additionalDirectories: [...metadata.additionalDirectories],
+          ...(metadata.title !== undefined ? { title: metadata.title } : {}),
+          updatedAt: new Date(thread.updatedAt).toISOString(),
+          ...(metadata._meta !== undefined ? { _meta: cloneValue(metadata._meta) } : {}),
+        };
+      })
+      .filter((session): session is NonNullable<typeof session> => session !== null)
+      .filter((session) => cwd === undefined || session.cwd === cwd);
+    const page = sessions.slice(offset, offset + this.#sessionListPageSize);
+    const next = offset + page.length;
     return {
-      sessions: page.sessions.map((session) => ({
-        sessionId: session.sessionId,
-        cwd: session.cwd,
-        additionalDirectories: [...session.additionalDirectories],
-        ...(session.title !== undefined ? { title: session.title } : {}),
-        updatedAt: session.updatedAt,
-        ...(session._meta !== undefined ? { _meta: cloneValue(session._meta) } : {}),
-      })),
-      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {}),
+      sessions: page,
+      ...(next < sessions.length ? { nextCursor: String(next) } : {}),
     };
   }
   async #deleteSession(params: unknown, ctx: RequestContext): Promise<Record<string, never>> {
     await this.#assertAuthenticated(ctx.signal);
     const value = requireRecord(params, 'session/delete params');
     const sessionId = requireString(value.sessionId, 'sessionId');
+    if (!(await this.#loadStored(sessionId))) {
+      throw new JsonRpcError(`Unknown session: ${sessionId}`, ACP_RESOURCE_NOT_FOUND);
+    }
     await this.#closeActive(sessionId);
-    if (!(await this.#store.delete(sessionId))) {
+    if (!(await deleteConversationThread(this.#store, sessionId))) {
       throw new JsonRpcError(`Unknown session: ${sessionId}`, ACP_RESOURCE_NOT_FOUND);
     }
     return {};

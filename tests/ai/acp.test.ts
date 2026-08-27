@@ -1,12 +1,9 @@
 import { describe, it } from 'fino:test/test';
-import {
-  ACP_AUTH_REQUIRED,
-  ACP_RESOURCE_NOT_FOUND,
-  AcpSessionConflictError,
-  InMemoryAcpSessionStore,
-  acpServer,
-} from 'fino:ai/acp';
+import { ACP_AUTH_REQUIRED, ACP_RESOURCE_NOT_FOUND, acpServer } from 'fino:ai/acp';
 import type { AcpServerOptions } from 'fino:ai/acp';
+import { commitConversationThread, loadConversationThread } from 'fino:ai/session';
+import { memoryStore } from 'fino:store';
+import { MessageHistory } from 'fino:ai/context';
 import { agent } from 'fino:ai/agent';
 import type { Agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
@@ -445,6 +442,19 @@ describe('fino:ai/acp', () => {
 
   it('persists, lists, closes, resumes, loads with replay, and deletes sessions', async (t) => {
     const requests: GenerateRequest[] = [];
+    const store = memoryStore();
+    const ordinaryHistory = new MessageHistory();
+    await commitConversationThread(store, {
+      thread: {
+        threadId: 'ordinary-conversation',
+        historyRevisionId: ordinaryHistory.revisionId,
+        createdAt: 1,
+        updatedAt: 1,
+        metadata: { owner: 'application' },
+      },
+      history: ordinaryHistory,
+      expectedStoreVersion: null,
+    });
     await withServer(
       scriptedModel([endTurn('first answer'), endTurn('second answer')], requests),
       async (client, updates) => {
@@ -458,11 +468,30 @@ describe('fino:ai/acp', () => {
           sessionId: created.sessionId,
           prompt: [{ type: 'text', text: 'first question' }],
         });
+        const second = (await client.call('session/new', {
+          cwd: cwd(),
+          mcpServers: [],
+        })) as { sessionId: string };
+        await client.call('session/close', { sessionId: second.sessionId });
         const listed = (await client.call('session/list', { cwd: cwd() })) as {
           sessions: Array<Record<string, unknown>>;
+          nextCursor?: string;
         };
         t.equal(listed.sessions.length, 1);
-        t.deepEqual(listed.sessions[0]!.additionalDirectories, ['/tmp']);
+        t.equal(typeof listed.nextCursor, 'string');
+        const nextPage = (await client.call('session/list', {
+          cwd: cwd(),
+          cursor: listed.nextCursor,
+        })) as { sessions: Array<Record<string, unknown>> };
+        t.equal(nextPage.sessions.length, 1);
+        const allListed = [...listed.sessions, ...nextPage.sessions];
+        t.ok(allListed.some((session) => session.sessionId === created.sessionId));
+        t.ok(allListed.some((session) => session.sessionId === second.sessionId));
+        t.deepEqual(
+          allListed.find((session) => session.sessionId === created.sessionId)
+            ?.additionalDirectories,
+          ['/tmp'],
+        );
         await client.call('session/close', { sessionId: created.sessionId });
         await client.call('session/resume', {
           sessionId: created.sessionId,
@@ -490,8 +519,15 @@ describe('fino:ai/acp', () => {
         t.ok(replay.includes('first question'));
         t.ok(replay.includes('second answer'));
         await client.call('session/delete', { sessionId: created.sessionId });
+        await client.call('session/delete', { sessionId: second.sessionId });
         const empty = (await client.call('session/list', {})) as { sessions: unknown[] };
         t.equal(empty.sessions.length, 0);
+        await t.rejects(
+          () => client.call('session/delete', { sessionId: 'ordinary-conversation' }),
+          (error: unknown) =>
+            error instanceof JsonRpcError && error.code === ACP_RESOURCE_NOT_FOUND,
+        );
+        t.ok(await loadConversationThread(store, 'ordinary-conversation'));
         await t.rejects(
           () =>
             client.call('session/load', {
@@ -503,7 +539,7 @@ describe('fino:ai/acp', () => {
             error instanceof JsonRpcError && error.code === ACP_RESOURCE_NOT_FOUND,
         );
       },
-      { server: { store: new InMemoryAcpSessionStore(1) } },
+      { server: { store, sessionListPageSize: 1 } },
     );
   });
 
@@ -805,32 +841,6 @@ describe('fino:ai/acp', () => {
           service.method('terminal/release').handle(() => ({}));
         },
       },
-    );
-  });
-
-  it('detects optimistic session-store conflicts', async (t) => {
-    const store = new InMemoryAcpSessionStore();
-    const initial = await store.save(
-      {
-        sessionId: 'one',
-        cwd: '/tmp',
-        additionalDirectories: [],
-        updatedAt: new Date(0).toISOString(),
-        history: {
-          entries: [],
-          revisions: [{ id: 'root', entryIds: [], createdAt: 0 }],
-          head: 'root',
-        },
-        configOptions: [],
-        usage: { inputTokens: 0, outputTokens: 0 },
-        revision: 0,
-      },
-      null,
-    );
-    await store.save(initial, initial.revision);
-    await t.rejects(
-      () => store.save(initial, initial.revision),
-      (error: unknown) => error instanceof AcpSessionConflictError,
     );
   });
 });

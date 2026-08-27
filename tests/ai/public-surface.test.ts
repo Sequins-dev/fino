@@ -66,7 +66,9 @@ describe('AI public surface', () => {
     t.equal(typeof ai.AgentSession, 'function');
     t.equal(typeof ai.acpServer, 'function');
     t.equal(typeof ai.acpStdioTransport, 'function');
-    t.equal(typeof ai.InMemoryAcpSessionStore, 'function');
+    t.equal(typeof ai.ConversationConflictError, 'function');
+    t.equal(typeof ai.commitAgentSession, 'function');
+    t.equal(typeof ai.loadConversationThread, 'function');
   });
   it('runtime exports helpers but not the internal AgentRuntime class', async (t) => {
     t.equal('runContext' in runtime, true, 'runContext remains public');

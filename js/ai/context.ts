@@ -18,7 +18,8 @@
  * dependencies.
  *
  * `MessageHistory` never writes durable storage. Sessions own persistence by
- * committing `toSnapshot()` or `changesSince()` output into a `SessionStore`.
+ * committing `toSnapshot()` or `changesSince()` output through the session
+ * codecs in `fino:ai/session`.
  * That keeps the immutable graph model separate from run/thread lifecycle
  * concerns such as checkpoints, suspension, cancellation, and atomic commits.
  *

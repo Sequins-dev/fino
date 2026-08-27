@@ -12,7 +12,7 @@ interrupt.
 
 - `agent()` owns the model and tool loop.
 - `streamText()` renders only text deltas from an agent stream.
-- `Session` and `SqliteSessionStore` persist durable conversation state.
+- `Session` and `sqliteStore()` persist durable conversation state.
 - Tool `ctx.suspend()` returns a resumable session state for approval flows.
 - `AbortController` gives each turn graceful cancellation.
 
@@ -30,7 +30,8 @@ resume every turn after restart, drive all turns through `Session.start()`.
 ```ts
 import { agent, streamText } from 'fino:ai/agent';
 import { openai } from 'fino:ai/model';
-import { Session, session, SqliteSessionStore } from 'fino:ai/session';
+import { Session, session } from 'fino:ai/session';
+import { sqliteStore } from 'fino:store';
 import { tool } from 'fino:ai/tool';
 import { readLine, writeStdout } from 'fino:tty';
 import { v } from 'fino:validate';
@@ -56,7 +57,7 @@ const bot = agent({
   tools: [approveDeploy],
 });
 
-const store = await SqliteSessionStore.open('./cli-agent.db');
+const store = await sqliteStore({ path: './cli-agent.db' });
 let threadId = 'local';
 let pending: { runId: string; token: string } | undefined;
 let currentAbort: AbortController | undefined;
@@ -166,11 +167,10 @@ Recommended commands:
 
 ## Durable State
 
-Use `SqliteSessionStore` when local debug state should survive restarts. Use
-`InMemorySessionStore` for tests and experiments where process-local state is
-acceptable. Durable state is especially important when tools can suspend or
-when a CLI is debugging the same session behavior that an HTTP service will
-use.
+Use `sqliteStore()` when local debug state should survive restarts. Use
+`memoryStore()` for tests and experiments where process-local state is acceptable.
+Durable state is especially important when tools can suspend or when a CLI is
+debugging the same session behavior that an HTTP service will use.
 
 ## Cancellation
 
