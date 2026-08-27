@@ -23,6 +23,7 @@
  *
  * @internal
  */
+import { asByteView, concatBytes } from 'internal:bytes';
 /**
  * Compression formats accepted by `fino:compress`.
  *
@@ -207,8 +208,7 @@ export interface CompressionTransform {
  * @internal
  */
 export function toU8(data: ByteInput): Uint8Array {
-  if (data instanceof Uint8Array) return data;
-  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (data instanceof Uint8Array || data instanceof ArrayBuffer) return asByteView(data);
   throw new TypeError('compression binary input must be a Uint8Array or ArrayBuffer');
 }
 /**
@@ -229,12 +229,8 @@ export function toU8(data: ByteInput): Uint8Array {
 export function concat(parts: Uint8Array[], total?: number): Uint8Array {
   if (parts.length === 0) return new Uint8Array(0);
   if (parts.length === 1) return parts[0] ?? new Uint8Array(0);
-  let size = total;
-  if (size === undefined) {
-    size = 0;
-    for (const part of parts) size += part.byteLength;
-  }
-  const out = new Uint8Array(size);
+  if (total === undefined) return concatBytes(parts);
+  const out = new Uint8Array(total);
   let pos = 0;
   for (const part of parts) {
     out.set(part, pos);

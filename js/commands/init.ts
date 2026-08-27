@@ -27,6 +27,7 @@
  * ```
  *
  */
+import { collectBytes } from 'internal:bytes';
 import { Task, type TaskContext } from '../task.ts';
 import { DiskFileSystem } from '../file/fs.ts';
 import { cwd, env, Process } from '../process.ts';
@@ -66,16 +67,7 @@ function validatePackageName(name: string): string | null {
   return null;
 }
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of reader) chunks.push(chunk);
-  return new TextDecoder().decode(
-    chunks.reduce((acc, c) => {
-      const merged = new Uint8Array(acc.byteLength + c.byteLength);
-      merged.set(acc);
-      merged.set(c, acc.byteLength);
-      return merged;
-    }, new Uint8Array(0)),
-  );
+  return new TextDecoder().decode(await collectBytes(reader));
 }
 async function gitConfig(args: string[], root: string): Promise<string> {
   let proc: Process;

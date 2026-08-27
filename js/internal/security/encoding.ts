@@ -18,6 +18,7 @@
  *
  * @internal
  */
+import { asByteView, timingSafeEqualBytes } from 'internal:bytes';
 import { digest } from '../openssl.ts';
 /**
  * Byte-oriented inputs accepted by security encoding helpers.
@@ -51,10 +52,7 @@ const textDecoder = new TextDecoder();
  */
 export function toBytes(value: BufferLike): Uint8Array {
   if (typeof value === 'string') return textEncoder.encode(value);
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (ArrayBuffer.isView(value))
-    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return asByteView(value);
   throw new TypeError('Expected string, ArrayBuffer, or ArrayBufferView');
 }
 /**
@@ -219,12 +217,7 @@ export function normalizeSecretKey(key: BufferLike, bytes = 32): Uint8Array {
  * @internal
  */
 export function timingSafeEqual(left: BufferLike, right: BufferLike): boolean {
-  const a = toBytes(left);
-  const b = toBytes(right);
-  const len = Math.max(a.byteLength, b.byteLength);
-  let diff = a.byteLength ^ b.byteLength;
-  for (let i = 0; i < len; i++) diff |= (a[i] ?? 0) ^ (b[i] ?? 0);
-  return diff === 0;
+  return timingSafeEqualBytes(toBytes(left), toBytes(right));
 }
 /**
  * Compare two strings using UTF-8 byte equality without early exit.
