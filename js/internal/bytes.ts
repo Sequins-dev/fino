@@ -35,6 +35,8 @@
  * @internal
  */
 
+import { AbortSignal } from '../globals/abort.ts';
+
 type ByteSource = ArrayBuffer | ArrayBufferView;
 
 interface ConcatBytesOptions {
@@ -61,8 +63,6 @@ interface CollectBytesConfig {
   readonly signal: AbortSignal | undefined;
 }
 
-const AbortSignalConstructor = AbortSignal;
-
 function byteLimit(value: number | undefined): number {
   const maxBytes = value ?? Number.MAX_SAFE_INTEGER;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
@@ -86,7 +86,7 @@ function collectBytesConfig(options?: CollectBytesOptions): CollectBytesConfig {
   const maxBytes = byteLimit(options?.maxBytes);
   const expectedBytes = expectedByteLength(options?.expectedBytes);
   const signal = options?.signal;
-  if (signal !== undefined && !(signal instanceof AbortSignalConstructor)) {
+  if (signal !== undefined && !(signal instanceof AbortSignal)) {
     throw new TypeError('signal must be an AbortSignal');
   }
   if (expectedBytes !== undefined && expectedBytes > maxBytes) {

@@ -271,6 +271,21 @@ describe('internal byte primitives', () => {
     t.deepEqual(await collectBytes(source, accessorOptions), new Uint8Array([1]));
     t.equal(signalReads, 1, 'collection snapshots its cancellation configuration');
 
+    const abortSignalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'AbortSignal')!;
+    Object.defineProperty(globalThis, 'AbortSignal', {
+      ...abortSignalDescriptor,
+      value: class ReplacedAbortSignal {},
+    });
+    try {
+      t.deepEqual(
+        await collectBytes([], { signal: stableSignal }),
+        new Uint8Array(),
+        'validation uses the canonical signal class rather than the ambient global',
+      );
+    } finally {
+      Object.defineProperty(globalThis, 'AbortSignal', abortSignalDescriptor);
+    }
+
     let reads = 0;
     let returns = 0;
     const invalid: Iterable<Uint8Array> = {
