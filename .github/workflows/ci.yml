@@ -35,40 +35,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo and V8 build
-        uses: ./.github/actions/cache-cargo-deps
-
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            ca-certificates \
-            cmake \
-            curl \
-            g++ \
-            git \
-            libsqlite3-dev \
-            make \
-            perl \
-            pkg-config \
-            python3
-
-      - name: Install LLVM 21 for bindgen
-        run: |
-          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
-            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
-          echo "deb https://apt.llvm.org/noble/ llvm-toolchain-noble-21 main" \
-            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-21 libclang-21-dev
-          echo "LIBCLANG_PATH=/usr/lib/llvm-21/lib" >> "$GITHUB_ENV"
-
-      - name: Run Rust lint
-        run: cargo clippy
-
       - name: Restore Linux build
         uses: actions/cache/restore@v4
         with:
@@ -150,6 +116,9 @@ jobs:
             target/debug/gn_out/obj/librusty_v8.a
             target/debug/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}
+
+      - name: Run Rust lint
+        run: cargo clippy
 
       - name: Run Rust tests
         run: cargo test --quiet
