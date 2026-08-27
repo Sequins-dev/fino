@@ -6,10 +6,45 @@
  * uses framed binary over a Unix socketpair.
  */
 import { describe, it } from 'fino:test/test';
+import { dlopen } from 'fino:ffi';
+import { os } from 'fino:process';
 import { Realm, ImportMap } from 'fino:realm';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
+import type openFdCountFn from './fixtures/open-fd-count-fn.ts';
+
+const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+  close: {
+    parameters: ['i32'],
+    result: 'i32',
+  },
+  fcntl: {
+    parameters: ['i32', 'i32', 'i32'],
+    result: 'i32',
+  },
+  pipe: {
+    parameters: ['buffer'],
+    result: 'i32',
+  },
+});
+const F_GETFD = 1;
+
+function countOpenFds(): number {
+  let open = 0;
+  for (let fd = 3; fd < 4096; fd++) {
+    if (libc.symbols.fcntl(fd, F_GETFD, 0) >= 0) open++;
+  }
+  return open;
+}
+
+async function countProcessRealmFds(): Promise<number> {
+  const realm = new Realm<typeof openFdCountFn>({
+    process: true,
+    entry: new URL('./fixtures/open-fd-count-fn.ts', import.meta.url).pathname,
+  });
+  return await realm.call();
+}
 describe('Process Realm basics', () => {
   it('spawns a process realm that runs to completion', async (t) => {
     const realm = new Realm({
@@ -213,5 +248,43 @@ describe('Process Realm import rules', () => {
     });
     await realm.run();
     t.ok(true, 'child process realm respected the block rule');
+  });
+});
+
+describe('Process Realm descriptor isolation', { exclusive: true }, () => {
+  it('does not inherit unrelated parent descriptors', async (t) => {
+    const baseline = await countProcessRealmFds();
+    const descriptors: number[] = [];
+    try {
+      for (let index = 0; index < 8; index++) {
+        const buffer = new ArrayBuffer(8);
+        t.equal(libc.symbols.pipe(buffer), 0, `opened unrelated pipe ${index}`);
+        descriptors.push(...new Int32Array(buffer));
+      }
+      const withUnrelatedPipes = await countProcessRealmFds();
+      t.ok(
+        withUnrelatedPipes <= baseline + 2,
+        `child inherited no unrelated descriptors: baseline=${baseline}, actual=${withUnrelatedPipes}`,
+      );
+    } finally {
+      for (const fd of descriptors) libc.symbols.close(fd);
+    }
+  });
+
+  it('releases parent transport descriptors after exit', async (t) => {
+    const before = countOpenFds();
+    for (let index = 0; index < 12; index++) {
+      const realm = new Realm({
+        process: true,
+        entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
+      });
+      await realm.run();
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+    const after = countOpenFds();
+    t.ok(
+      after <= before + 2,
+      `process Realm transport descriptors were released: before=${before}, after=${after}`,
+    );
   });
 });

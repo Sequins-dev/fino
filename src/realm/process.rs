@@ -6,10 +6,10 @@
 //!
 //! ## IPC
 //!
-//! `socketpair(AF_UNIX, SOCK_STREAM, 0)` gives a bidirectional channel.
-//! Parent keeps `fd[0]` (non-blocking, registered with the event loop).
-//! Child keeps `fd[1]` (used as the channel source; a bridge thread reads it
-//! and feeds an mpsc channel so `native_recv` works unchanged).
+//! A close-on-exec Unix socketpair gives a bidirectional channel. Parent keeps
+//! `fd[0]` (non-blocking, registered with the event loop). The pre-exec child
+//! sweep closes every unrelated descriptor and preserves only `fd[1]`, which a
+//! bridge thread reads into an mpsc channel so `native_recv` works unchanged.
 //!
 //! ## Message framing
 //!
@@ -54,6 +54,115 @@ const ENTRY_ERROR_PREFIX: &[u8] = b"\x00FINO_ENTRY_ERROR\x00";
 /// Safe as a static because each child process runs exactly one realm.
 pub static CHILD_RELOAD_REQUESTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+
+fn set_cloexec(fd: RawFd, enabled: bool) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let next = if enabled {
+        flags | libc::FD_CLOEXEC
+    } else {
+        flags & !libc::FD_CLOEXEC
+    };
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, next) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn set_nonblocking(fd: RawFd) -> std::io::Result<()> {
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn close_fds(fds: &[RawFd]) {
+    for &fd in fds {
+        if fd >= 0 {
+            unsafe { libc::close(fd) };
+        }
+    }
+}
+
+fn create_cloexec_socketpair() -> std::io::Result<[RawFd; 2]> {
+    let mut fds = [-1; 2];
+    #[cfg(target_os = "linux")]
+    let socket_type = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
+    #[cfg(not(target_os = "linux"))]
+    let socket_type = libc::SOCK_STREAM;
+    if unsafe { libc::socketpair(libc::AF_UNIX, socket_type, 0, fds.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    #[cfg(not(target_os = "linux"))]
+    for &fd in &fds {
+        if let Err(error) = set_cloexec(fd, true) {
+            close_fds(&fds);
+            return Err(error);
+        }
+    }
+    Ok(fds)
+}
+
+fn create_cloexec_pipe() -> std::io::Result<[RawFd; 2]> {
+    let mut fds = [-1; 2];
+    #[cfg(target_os = "linux")]
+    let result = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    #[cfg(not(target_os = "linux"))]
+    let result = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    #[cfg(not(target_os = "linux"))]
+    for &fd in &fds {
+        if let Err(error) = set_cloexec(fd, true) {
+            close_fds(&fds);
+            return Err(error);
+        }
+    }
+    Ok(fds)
+}
+
+fn mark_open_fds_cloexec(max_fd: RawFd) -> std::io::Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        let result = unsafe {
+            libc::syscall(
+                libc::SYS_close_range,
+                3u32,
+                u32::MAX,
+                libc::CLOSE_RANGE_CLOEXEC,
+            )
+        };
+        if result == 0 {
+            return Ok(());
+        }
+    }
+    for fd in 3..max_fd {
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        if flags < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EBADF) {
+                continue;
+            }
+            return Err(error);
+        }
+        if unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) } < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn prepare_child_exec_fds(child_fd: RawFd, max_fd: RawFd) -> std::io::Result<()> {
+    mark_open_fds_cloexec(max_fd)?;
+    set_cloexec(child_fd, false)
+}
 
 // ---------------------------------------------------------------------------
 // Wire format
@@ -253,41 +362,33 @@ pub struct SpawnArgs {
 pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String> {
     use std::os::unix::process::CommandExt;
 
-    // Socketpair.
-    let mut fds = [0i32; 2];
-    if unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM, 0, fds.as_mut_ptr()) } != 0 {
-        return Err(format!("socketpair: {}", std::io::Error::last_os_error()));
-    }
+    let fds = create_cloexec_socketpair().map_err(|error| format!("socketpair: {error}"))?;
     let (parent_fd, child_fd) = (fds[0], fds[1]);
-    unsafe {
-        // child_fd: clear FD_CLOEXEC so child inherits it. parent_fd stays blocking
-        // until after the config write (set non-blocking below, after write).
-        libc::fcntl(child_fd, libc::F_SETFD, 0);
-    }
 
     // Wake-pipe for the parent (reader bridge writes here on each message).
-    let mut wfds = [0i32; 2];
-    if unsafe { libc::pipe(wfds.as_mut_ptr()) } != 0 {
-        unsafe {
-            libc::close(parent_fd);
-            libc::close(child_fd);
-        }
-        return Err(format!("pipe: {}", std::io::Error::last_os_error()));
-    }
+    let wfds = create_cloexec_pipe().map_err(|error| {
+        close_fds(&fds);
+        format!("process realm wake pipe: {error}")
+    })?;
     let (parent_wake_read, parent_wake_write) = (wfds[0], wfds[1]);
-    let mut cfds = [-1; 2];
-    if unsafe { libc::pipe(cfds.as_mut_ptr()) } != 0 {
-        return Err(format!(
-            "process realm completion pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    let cfds = create_cloexec_pipe().map_err(|error| {
+        close_fds(&fds);
+        close_fds(&wfds);
+        format!("process realm completion pipe: {error}")
+    })?;
     let (completion_wake_read, completion_wake_write) = (cfds[0], cfds[1]);
-    unsafe {
-        libc::fcntl(completion_wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(completion_wake_write, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(parent_wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(parent_wake_write, libc::F_SETFL, libc::O_NONBLOCK);
+    for fd in [
+        completion_wake_read,
+        completion_wake_write,
+        parent_wake_read,
+        parent_wake_write,
+    ] {
+        if let Err(error) = set_nonblocking(fd) {
+            close_fds(&fds);
+            close_fds(&wfds);
+            close_fds(&cfds);
+            return Err(format!("process realm nonblocking pipe: {error}"));
+        }
     }
 
     // Serialise spawn config.
@@ -303,52 +404,74 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         exec_path: args.process_env.exec_path.clone(),
         package_map_json: args.package_map_json,
     };
+    let config_json = serde_json::to_string(&cfg).map_err(|error| {
+        close_fds(&fds);
+        close_fds(&wfds);
+        close_fds(&cfds);
+        error.to_string()
+    })?;
     let config_msg = ThreadMessage {
         header: Vec::new(),
-        data: serde_json::to_string(&cfg)
-            .map_err(|e| e.to_string())?
-            .into_bytes(),
+        data: config_json.into_bytes(),
         transfer_stores: Vec::new(),
         transfer_ports: Vec::new(),
     };
 
     // Spawn child process.
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|error| {
+        close_fds(&fds);
+        close_fds(&wfds);
+        close_fds(&cfds);
+        error.to_string()
+    })?;
     let mut cmd = std::process::Command::new(&exe);
     cmd.arg("--realm-child").arg(child_fd.to_string());
 
-    // In pre_exec: close fds the child doesn't own.
-    let close_in_child = [
-        parent_fd,
-        parent_wake_read,
-        parent_wake_write,
-        completion_wake_read,
-        completion_wake_write,
-    ];
+    // A process Realm receives exactly one inherited runtime descriptor: its
+    // transport socket. Mark every other descriptor close-on-exec in the forked
+    // child, including descriptors owned by concurrently running Realms.
+    let configured_max_fd = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    let max_fd = if configured_max_fd > 3 {
+        RawFd::try_from(configured_max_fd).unwrap_or(65_536)
+    } else {
+        65_536
+    };
     unsafe {
-        cmd.pre_exec(move || {
-            for &fd in &close_in_child {
-                libc::close(fd);
-            }
-            Ok(())
-        });
+        cmd.pre_exec(move || prepare_child_exec_fds(child_fd, max_fd));
     }
 
-    let child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let mut child = cmd.spawn().map_err(|error| {
+        close_fds(&fds);
+        close_fds(&wfds);
+        close_fds(&cfds);
+        format!("spawn: {error}")
+    })?;
     let child_pid = child.id() as libc::pid_t;
-    std::mem::forget(child); // reaping is handled by the reader thread
 
     // Parent closes the child's fd.
     unsafe { libc::close(child_fd) };
 
     // Write spawn config while parent_fd is still blocking — the child may not
     // be reading yet and a non-blocking write could EAGAIN on a fresh socket.
-    write_message(parent_fd, &config_msg).map_err(|e| format!("write config: {e}"))?;
+    if let Err(error) = write_message(parent_fd, &config_msg) {
+        close_fds(&[parent_fd]);
+        close_fds(&wfds);
+        close_fds(&cfds);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("write config: {error}"));
+    }
 
     // Now switch parent_fd to non-blocking for the async event-loop phase.
-    unsafe {
-        libc::fcntl(parent_fd, libc::F_SETFL, libc::O_NONBLOCK);
-    };
+    if let Err(error) = set_nonblocking(parent_fd) {
+        close_fds(&[parent_fd]);
+        close_fds(&wfds);
+        close_fds(&cfds);
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("process realm socket nonblocking: {error}"));
+    }
+    std::mem::forget(child); // reaping is handled by the reader thread
 
     // Bridge threads.
     let (reader_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
@@ -417,6 +540,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
             unsafe {
                 libc::write(parent_wake_write, b.as_ptr() as _, 1);
                 libc::write(completion_wake_write, b.as_ptr() as _, 1);
+                libc::close(parent_wake_write);
                 libc::close(completion_wake_write);
             }
         });
@@ -466,12 +590,13 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
     // Bridge: socket ↔ mpsc + wake pipe (so native_recv / native_send work unchanged).
     let (reader_tx, channel_rx) = mpsc::channel::<ThreadMessage>();
     let (channel_tx, writer_rx) = mpsc::channel::<ThreadMessage>();
-    let mut wfds = [0i32; 2];
-    unsafe { libc::pipe(wfds.as_mut_ptr()) };
+    let wfds = create_cloexec_pipe().map_err(|error| format!("child wake pipe: {error}"))?;
     let (wake_read, wake_write) = (wfds[0], wfds[1]);
-    unsafe {
-        libc::fcntl(wake_read, libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(wake_write, libc::F_SETFL, libc::O_NONBLOCK);
+    for fd in wfds {
+        if let Err(error) = set_nonblocking(fd) {
+            close_fds(&wfds);
+            return Err(format!("child wake pipe nonblocking: {error}"));
+        }
     }
 
     std::thread::spawn(move || {
@@ -482,7 +607,10 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
                     let b = [1u8];
                     unsafe { libc::write(wake_write, b.as_ptr() as _, 1) };
                 }
-                Err(_) => break,
+                Err(_) => {
+                    unsafe { libc::close(wake_write) };
+                    break;
+                }
             }
         }
     });
