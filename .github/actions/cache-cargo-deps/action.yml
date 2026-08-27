@@ -1,5 +1,5 @@
 name: Cache Cargo and V8 build inputs
-description: Cache Cargo downloads and reusable rusty_v8 GN/Ninja source-build outputs
+description: Cache Cargo downloads and the completed Fino-built V8 artifact
 
 inputs:
   profile:
@@ -9,10 +9,10 @@ inputs:
 
 outputs:
   v8-cache-hit:
-    description: Whether the exact V8 source-build cache key was restored
+    description: Whether the exact V8 artifact cache key was restored
     value: ${{ steps.v8-cache.outputs.cache-hit }}
   v8-cache-key:
-    description: Primary key to use when saving V8 source-build outputs
+    description: Primary key to use when saving the V8 build artifact
     value: ${{ steps.v8-cache.outputs.cache-primary-key }}
 
 runs:
@@ -28,11 +28,24 @@ runs:
         restore-keys: |
           cargo-deps-${{ runner.os }}-${{ runner.arch }}-
 
-    - name: Restore V8 source build cache
+    - name: Restore V8 build artifact cache
       id: v8-cache
       uses: actions/cache/restore@v4
       with:
         path: |
-          target/${{ inputs.profile }}/gn_out
-          target/${{ inputs.profile }}/ninja_gn_binaries
-        key: rusty-v8-source-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
+          target/${{ inputs.profile }}/gn_out/obj/librusty_v8.a
+          target/${{ inputs.profile }}/gn_out/src_binding.rs
+        key: rusty-v8-artifact-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
+
+    - name: Use restored V8 build artifact
+      if: ${{ steps.v8-cache.outputs.cache-hit == 'true' }}
+      shell: bash
+      run: |
+        v8_dir="$GITHUB_WORKSPACE/target/${{ inputs.profile }}/gn_out"
+        test -s "$v8_dir/obj/librusty_v8.a"
+        test -s "$v8_dir/src_binding.rs"
+        {
+          echo 'V8_FROM_SOURCE=0'
+          echo 'RUSTY_V8_SKIP_DOWNLOAD=1'
+          echo "RUSTY_V8_SRC_BINDING_PATH=$v8_dir/src_binding.rs"
+        } >> "$GITHUB_ENV"

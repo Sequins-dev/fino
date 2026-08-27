@@ -2,7 +2,9 @@
 # New IsolateGroups require pointer compression without V8's shared cage.
 # rusty_v8's distributed pointer-compressed archive uses a shared cage, so
 # this configuration must be built from source.
-V8_FROM_SOURCE = { value = "1", force = true }
+# Build Fino's customized V8 by default. CI may explicitly use a cached
+# Fino-built archive after validating an exact artifact-cache hit.
+V8_FROM_SOURCE = { value = "1" }
 # The sandbox is deliberately disabled: one sandbox per isolate group would
 # require group-local ArrayBuffer allocators, preventing Fino's existing
 # SharedArrayBuffer backing stores from crossing realm boundaries. Keep code in
