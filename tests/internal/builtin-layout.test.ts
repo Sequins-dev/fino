@@ -153,9 +153,10 @@ describe('builtin module layout', () => {
       t.ok(text.slice(0, text.indexOf('*/') + 2).includes('@internal'), `${path} is @internal`);
     }
   });
-  it('marks internal DNSSEC and HTTP/3 implementation modules as internal', async (t) => {
+  it('marks private implementation modules as internal', async (t) => {
     const fs = new DiskFileSystem('/');
     for (const path of [
+      'js/internal/bytes.ts',
       'js/internal/encoding.ts',
       'js/internal/net/dnssec.ts',
       'js/internal/net/http/h3/bindings.ts',

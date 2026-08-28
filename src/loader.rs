@@ -171,6 +171,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tooling/format", "internal/tooling/format"),
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
+    source_builtin!("internal:bytes", "internal/bytes"),
     source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:statistics", "internal/statistics"),
     source_builtin!("internal:value/equal", "internal/value/equal"),
