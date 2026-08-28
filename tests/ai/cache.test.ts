@@ -2,7 +2,8 @@
  * Tests for fino:ai/cache — exact and semantic model cache wrappers.
  */
 import { describe, it } from 'fino:test/test';
-import { memoryCache } from 'fino:cache';
+import { cache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import { cachedModel } from 'fino:ai/cache';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type {
@@ -60,7 +61,7 @@ function fakeEmbedder(): EmbeddingModel {
 describe('fino:ai/cache', () => {
   it('exact cache prevents repeated generate calls and reports avoided tokens', async (t) => {
     const base = fakeModel();
-    const model = cachedModel(base, { cache: memoryCache() });
+    const model = cachedModel(base, { cache: cache(memoryStore()) });
     const req = { messages: [{ role: 'user' as const, content: 'hello' }] };
     const first = await model.generate(req);
     const second = await model.generate({
@@ -79,7 +80,7 @@ describe('fino:ai/cache', () => {
 
   it('stream cache hits replay cached events', async (t) => {
     const base = fakeModel();
-    const model = cachedModel(base, { cache: memoryCache() });
+    const model = cachedModel(base, { cache: cache(memoryStore()) });
     const req = { messages: [{ role: 'user' as const, content: 'stream me' }] };
     const first = await model.stream(req).result();
     const events: StreamEvent[] = [];
@@ -98,9 +99,9 @@ describe('fino:ai/cache', () => {
   it('semantic cache serves similar requests and bypasses tool requests', async (t) => {
     const base = fakeModel();
     const model = cachedModel(base, {
-      cache: memoryCache(),
+      cache: cache(memoryStore()),
       semantic: {
-        cache: memoryCache(),
+        cache: cache(memoryStore()),
         embedder: fakeEmbedder(),
         threshold: 0.9,
       },

@@ -4,7 +4,8 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { topic } from 'fino:context/topic';
 import { h, Signal } from 'fino:ui';
 import { page, view, webUI, clientScriptPath } from 'fino:ui/web';
-import { InMemoryViewStore } from 'fino:ui/web/state';
+import { memoryStore, type AtomicStore } from 'fino:store';
+import { deleteViewState, loadViewState, saveViewState } from 'fino:ui/web/state';
 function hidden(html: string, name: string): string {
   const match = html.match(new RegExp(`name="${name}" value="([^"]*)"`));
   if (!match) throw new Error(`missing hidden input ${name}`);
@@ -16,7 +17,7 @@ function mountedViewId(html: string): string {
   return match[1]!;
 }
 function makeApp() {
-  const store = new InMemoryViewStore();
+  const store = memoryStore();
   const todos = view({
     id: 'live-todos',
     state: () => ({ items: new Signal<string[]>([]) }),
@@ -66,8 +67,9 @@ describe('fino:ui/web live and client endpoints', () => {
     const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
     const viewId = mountedViewId(html);
-    const snap = (await store.load(viewId))!;
-    await store.save(
+    const snap = (await loadViewState(store, viewId))!;
+    await saveViewState(
+      store,
       {
         ...snap,
         version: 1,
@@ -94,8 +96,9 @@ describe('fino:ui/web live and client endpoints', () => {
     const first = (await app.handle(new Request('http://local/'))) as Response;
     const html = await first.text();
     const viewId = mountedViewId(html);
-    const snap = (await store.load(viewId))!;
-    await store.save(
+    const snap = (await loadViewState(store, viewId))!;
+    await saveViewState(
+      store,
       {
         ...snap,
         version: 2,
@@ -116,7 +119,7 @@ describe('fino:ui/web live and client endpoints', () => {
     t.equal(behindEvent.value?.type, 'ui');
     t.equal(behindData.kind, 'render');
     t.equal(behindData.tree.children[0].children[0].children[0], 'missed');
-    await store.delete(viewId);
+    await deleteViewState(store, viewId);
     const expired = (await app.handle(
       new Request(`http://local/_fino/live?view=${viewId}`, {
         headers: {
@@ -144,13 +147,22 @@ describe('fino:ui/web live and client endpoints', () => {
     t.equal(updates.hasSubscribers, false, 'cancelling the response disposes subscriptions');
   });
   it('sweeps expired snapshots on the configured request cadence', async (t) => {
-    const store = new InMemoryViewStore();
-    let swept = 0;
-    const originalSweep = store.sweep.bind(store);
-    store.sweep = async (now?: number) => {
-      swept++;
-      return originalSweep(now);
-    };
+    let scans = 0;
+    const base = memoryStore();
+    const wrap = (inner: AtomicStore): AtomicStore => ({
+      get: inner.get.bind(inner),
+      set: inner.set.bind(inner),
+      delete: inner.delete.bind(inner),
+      async list(options) {
+        scans++;
+        return inner.list(options);
+      },
+      namespace(prefix) {
+        return wrap(inner.namespace(prefix));
+      },
+      atomic: inner.atomic,
+    });
+    const store = wrap(base);
     const app = new App();
     app.layer(
       webUI({
@@ -161,6 +173,6 @@ describe('fino:ui/web live and client endpoints', () => {
     );
     await app.handle(new Request('http://local/not-found'));
     await app.handle(new Request('http://local/still-not-found'));
-    t.equal(swept, 2, 'zero interval sweeps once per request');
+    t.equal(scans, 2, 'zero interval sweeps once per request');
   });
 });

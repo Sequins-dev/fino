@@ -1,10 +1,10 @@
-import { memoryCache } from 'fino:cache';
+import { memoryStore } from 'fino:store';
 import { App, cookies, sessions } from 'fino:net/http/app';
 import { h } from 'fino:ui';
 import { webUI } from 'fino:ui/web';
 import { flowPage } from 'fino:ui/web/flow';
-import { InMemoryViewStore } from 'fino:ui/web/state';
-import { InMemoryWorkflowStore, workflow, type WorkflowState } from 'fino:workflow';
+import { loadViewState } from 'fino:ui/web/state';
+import { loadWorkflowRun, saveWorkflowRun, workflow, type WorkflowState } from 'fino:workflow';
 import { describe, it } from 'fino:test/test';
 
 const approval = workflow({
@@ -27,8 +27,7 @@ const twoStep = workflow({
 let pageCounter = 0;
 
 function renderFlow(_ctx: unknown, state: WorkflowState, advance: unknown) {
-  if (state.status === 'done')
-    return h('p', { id: 'done' }, JSON.stringify(state.result ?? null));
+  if (state.status === 'done') return h('p', { id: 'done' }, JSON.stringify(state.result ?? null));
   if (state.status === 'cancelled') return h('p', { id: 'cancelled' }, 'cancelled');
   return h(
     'form',
@@ -45,21 +44,21 @@ function makeFlowApp(
     render?: typeof renderFlow;
   } = {},
 ) {
-  const store = new InMemoryWorkflowStore();
+  const store = memoryStore();
   const app = new App();
   let layered = app.value('cookies', cookies());
   if (options.session !== false) {
     layered = layered.value(
       'session',
       sessions({
-        store: memoryCache({ namespace: `flow-sessions-${pageCounter}` }),
+        store: memoryStore({ namespace: `flow-sessions-${pageCounter}` }),
         keys: [{ id: 'test', secret: 'flow-session-secret-value' }],
         ttlMs: 6e4,
       }),
     );
   }
   const ui = layered.layer(
-    webUI({ store: new InMemoryViewStore(), secret: 'flow-ui-secret', sweepIntervalMs: false }),
+    webUI({ store: memoryStore(), secret: 'flow-ui-secret', sweepIntervalMs: false }),
   );
   const flow = options.flow ?? approval;
   ui.get('/flow').handle(
@@ -103,11 +102,7 @@ async function startRun(app: App) {
   };
 }
 
-async function loadPage(
-  app: App,
-  location: string,
-  jar: ReturnType<typeof cookieJar> | string,
-) {
+async function loadPage(app: App, location: string, jar: ReturnType<typeof cookieJar> | string) {
   const header = typeof jar === 'string' ? jar : jar.header;
   const response = (await app.handle(
     new Request(`http://local${location}`, { headers: header ? { cookie: header } : {} }),
@@ -219,9 +214,13 @@ describe('fino:ui/web/flow', () => {
     t.equal(stale.status, 409, 'the first tab cannot advance a newer wait');
     t.equal(stale.code, 'flow_stale_step', 'and says why with a stable code');
 
-    const state = (await store.load(runId))!;
+    const state = (await loadWorkflowRun(store, runId))!;
     t.equal(state.waitingOn?.name, 'second', 'the run advanced exactly one step');
-    t.equal(state.steps.find((step) => step?.id === 'first')?.result, 'b', 'only one payload landed');
+    t.equal(
+      state.steps.find((step) => step?.id === 'first')?.result,
+      'b',
+      'only one payload landed',
+    );
   });
 
   it('does not run a signal twice for a duplicate submission', async (t) => {
@@ -236,13 +235,17 @@ describe('fino:ui/web/flow', () => {
     t.equal(duplicate.status, 200, 'an identical resubmit is acknowledged, not re-run');
     t.equal(duplicate.kind, 'close', 'and closes without a new render');
 
-    const state = (await store.load(runId))!;
+    const state = (await loadWorkflowRun(store, runId))!;
     t.equal(
       state.steps.filter((step) => step?.id === 'first').length,
       1,
       'the signal is recorded once',
     );
-    t.equal(state.steps.find((step) => step?.id === 'first')?.result, 'once', 'with the first payload');
+    t.equal(
+      state.steps.find((step) => step?.id === 'first')?.result,
+      'once',
+      'with the first payload',
+    );
   });
 
   it('serializes concurrent submissions from two tabs', async (t) => {
@@ -260,7 +263,7 @@ describe('fino:ui/web/flow', () => {
     t.equal(renders.length, 1, 'exactly one concurrent submit advances the run');
     t.equal(rejected.length, 1, 'the other is rejected as a stale step');
 
-    const state = (await store.load(runId))!;
+    const state = (await loadWorkflowRun(store, runId))!;
     t.equal(state.waitingOn?.name, 'second', 'the run advanced exactly one step');
     t.equal(
       state.steps.filter((step) => step?.id === 'first').length,
@@ -320,10 +323,10 @@ describe('fino:ui/web/flow', () => {
     const waiting = await loadPage(app, location, jar);
     const fields = actionFields(waiting.html);
 
-    const state = (await store.load(runId))!;
+    const state = (await loadWorkflowRun(store, runId))!;
     state.status = 'cancelled';
     delete state.waitingOn;
-    await store.save(state);
+    await saveWorkflowRun(store, state);
 
     const attempt = await submit(app, fields, jar, { approval: 'true' });
     t.equal(attempt.status, 409);
@@ -334,15 +337,15 @@ describe('fino:ui/web/flow', () => {
   });
 
   it('serves a flow page as a semantic stream and keeps the run out of the view snapshot', async (t) => {
-    const viewStore = new InMemoryViewStore();
-    const store = new InMemoryWorkflowStore();
+    const viewStore = memoryStore();
+    const store = memoryStore();
     const app = new App();
     const ui = app
       .value('cookies', cookies())
       .value(
         'session',
         sessions({
-          store: memoryCache({ namespace: 'flow-sse-sessions' }),
+          store: memoryStore({ namespace: 'flow-sse-sessions' }),
           keys: [{ id: 'test', secret: 'flow-session-secret-value' }],
           ttlMs: 6e4,
         }),
@@ -373,7 +376,7 @@ describe('fino:ui/web/flow', () => {
 
     const viewIdMatch = /"viewId":"(view_[a-f0-9]+)"/.exec(text)?.[1];
     t.ok(viewIdMatch !== undefined, 'the render names a mounted view');
-    const snapshot = await viewStore.load(viewIdMatch!);
+    const snapshot = await loadViewState(viewStore, viewIdMatch!);
     t.deepEqual(
       Object.keys(snapshot!.data).sort(),
       ['awaitedName', 'awaitedStep', 'runId'],

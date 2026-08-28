@@ -190,6 +190,60 @@ describe('Facade RPC — reactor-pooled realm', () => {
     const result = await realm.call();
     t.equal(result, 'greetings world', 'Facade.from wraps method correctly');
   });
+  it('handle() declares scalar exports without a duplicate constructor list', async (t) => {
+    const facade = new Facade('fino:test-facade', []).handle(
+      'greet',
+      async (name) => `hello ${name}`,
+    );
+    const realm = new Realm<typeof facadeCallFn>({
+      overrides: ImportMap.deny([
+        {
+          pattern: 'internal:runtime/loop',
+          directive: 'inherit',
+        },
+        {
+          pattern: 'fino:test-facade',
+          directive: facade,
+        },
+      ]),
+      entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname,
+    });
+    t.equal(await realm.call(), 'hello world', 'registered handler became importable');
+  });
+  it('Facade.proxy() resolves an allowlisted service lazily and preserves its receiver', async (t) => {
+    let resolutions = 0;
+    const service = {
+      prefix: 'proxied',
+      async greet(this: { prefix: string }, name: unknown) {
+        return `${this.prefix} ${name}`;
+      },
+      async hidden() {
+        return 'not exported';
+      },
+    };
+    const facade = Facade.proxy(
+      () => {
+        resolutions++;
+        return service;
+      },
+      { specifier: 'fino:test-facade', methods: ['greet'] },
+    );
+    const realm = new Realm<typeof facadeCallFn>({
+      overrides: ImportMap.deny([
+        {
+          pattern: 'internal:runtime/loop',
+          directive: 'inherit',
+        },
+        {
+          pattern: 'fino:test-facade',
+          directive: facade,
+        },
+      ]),
+      entry: new URL('./fixtures/facade-call.ts', import.meta.url).pathname,
+    });
+    t.equal(await realm.call(), 'proxied world', 'call reached the resolved service');
+    t.equal(resolutions, 1, 'service resolved when called');
+  });
 });
 // ---------------------------------------------------------------------------
 // C2 — embedded realm (same V8 isolate, MessagePort transport)

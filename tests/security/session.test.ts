@@ -1,6 +1,6 @@
-/** Tests for fino:net/http/app session caches and HTTP lifecycle behavior. */
+/** Tests for fino:net/http/app session stores and HTTP lifecycle behavior. */
 import { describe, it } from 'fino:test/test';
-import { memoryCache, sqliteCache, type RevisionedCache } from 'fino:cache';
+import { memoryStore, sqliteStore, type AtomicExpiringStore } from 'fino:store';
 import { DiskFileSystem } from 'fino:file';
 import {
   App,
@@ -32,7 +32,7 @@ function cookiePair(response: Response, name = 'fino.sid'): string {
   return header.split(';')[0]!;
 }
 function makeApp(
-  store: RevisionedCache,
+  store: AtomicExpiringStore,
   options: {
     keys?: readonly [SessionKey, ...SessionKey[]];
     clock?: {
@@ -75,14 +75,14 @@ function makeApp(
   });
   return app;
 }
-describe('fino:net/http/app session cache integration', () => {
-  it('accepts a caller-owned SQLite cache and survives reopen', async (t) => {
+describe('fino:net/http/app session store integration', () => {
+  it('accepts a caller-owned SQLite store and survives reopen', async (t) => {
     const path = `/tmp/fino-session-test-${Math.floor(Math.random() * 1e9)}.db`;
     const fs = new DiskFileSystem();
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await sqliteCache({
+    const store = await sqliteStore({
       path,
       namespace: 'sessions',
       fs,
@@ -92,7 +92,7 @@ describe('fino:net/http/app session cache integration', () => {
       const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
       const pair = cookiePair(login);
       await store.close();
-      const reopened = await sqliteCache({
+      const reopened = await sqliteStore({
         path,
         namespace: 'sessions',
         fs,
@@ -121,7 +121,7 @@ describe('fino:net/http/app session cache integration', () => {
 });
 describe('fino:net/http/app session middleware', () => {
   it('seals the session id and persists login data with secure cookie defaults', async (t) => {
-    const store = memoryCache({ namespace: 'sessions' });
+    const store = memoryStore({ namespace: 'sessions' });
     const app = makeApp(store);
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const body = (await login.json()) as {
@@ -149,7 +149,7 @@ describe('fino:net/http/app session middleware', () => {
     );
   });
   it('rejects tampered cookies and replaces them with a fresh session', async (t) => {
-    const app = makeApp(memoryCache({ namespace: 'sessions' }));
+    const app = makeApp(memoryStore({ namespace: 'sessions' }));
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const original = (await login.clone().json()) as {
       id: string;
@@ -168,7 +168,7 @@ describe('fino:net/http/app session middleware', () => {
     t.ok(me.headers.getSetCookie().some((value) => value.startsWith('fino.sid=')));
   });
   it('accepts an old sealing key and reissues with the primary key', async (t) => {
-    const store = memoryCache({ namespace: 'sessions' });
+    const store = memoryStore({ namespace: 'sessions' });
     const oldApp = makeApp(store, { keys: [oldKey] });
     const login = await oldApp.handle(
       new Request('https://example.test/login', { method: 'POST' }),
@@ -190,7 +190,7 @@ describe('fino:net/http/app session middleware', () => {
   });
   it('supports fixed and rolling expiry', async (t) => {
     const time = fakeClock();
-    const fixedStore = memoryCache({
+    const fixedStore = memoryStore({
       namespace: 'fixed-sessions',
       clock: time.clock,
     });
@@ -213,7 +213,7 @@ describe('fino:net/http/app session middleware', () => {
       ).expiresAt,
       fixedBody.expiresAt,
     );
-    const rollingStore = memoryCache({
+    const rollingStore = memoryStore({
       namespace: 'rolling-sessions',
       clock: time.clock,
     });
@@ -242,7 +242,7 @@ describe('fino:net/http/app session middleware', () => {
   });
   it('replaces an expired session with a fresh anonymous session', async (t) => {
     const time = fakeClock();
-    const store = memoryCache({
+    const store = memoryStore({
       namespace: 'sessions',
       clock: time.clock,
     });
@@ -265,7 +265,7 @@ describe('fino:net/http/app session middleware', () => {
     t.ok(me.headers.getSetCookie().some((value) => value.startsWith('fino.sid=')));
   });
   it('invalidates the stored session and expires the browser cookie', async (t) => {
-    const app = makeApp(memoryCache({ namespace: 'sessions' }));
+    const app = makeApp(memoryStore({ namespace: 'sessions' }));
     const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
     const original = (await login.clone().json()) as {
       id: string;
@@ -290,7 +290,7 @@ describe('fino:net/http/app session middleware', () => {
     t.equal(fresh.user, null);
   });
   it('regenerates a loaded id after login and makes the old cookie unusable', async (t) => {
-    const app = makeApp(memoryCache({ namespace: 'sessions' }));
+    const app = makeApp(memoryStore({ namespace: 'sessions' }));
     const anonymous = await app.handle(new Request('https://example.test/me'));
     const anonymousBody = (await anonymous.clone().json()) as {
       id: string;
@@ -317,8 +317,68 @@ describe('fino:net/http/app session middleware', () => {
     t.notEqual(staleBody.id, authenticated.id);
     t.equal(staleBody.user, null);
   });
+  it('clones and tracks structured session values without JSON serialization', async (t) => {
+    type RichSessionData = {
+      count?: bigint;
+      created?: Date;
+      bytes?: Uint8Array;
+      labels?: Map<string, number>;
+      cycle?: { name: string; self?: unknown };
+    };
+    const app = new App();
+    const stateful = app.value('cookies', cookies()).value(
+      'session',
+      sessions<RichSessionData>({
+        store: memoryStore({ namespace: 'structured-sessions' }),
+        keys: [primaryKey],
+        ttlMs: 1e3,
+      }),
+    );
+    stateful.post('/write').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      const cycle: RichSessionData['cycle'] = { name: 'root' };
+      cycle.self = cycle;
+      data.count = 9_007_199_254_740_993n;
+      data.created = new Date(1234);
+      data.bytes = new Uint8Array([1, 2, 3]);
+      data.labels = new Map([['first', 1]]);
+      data.cycle = cycle;
+      return new Response('written');
+    });
+    stateful.post('/mutate').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      data.bytes![1] = 8;
+      data.labels!.set('second', 2);
+      return new Response('mutated');
+    });
+    stateful.get('/read').handle((ctx) => {
+      const data = (ctx.session as Session<RichSessionData>).data;
+      t.equal(data.count, 9_007_199_254_740_993n, 'bigint survived');
+      t.equal(data.created?.getTime(), 1234, 'Date survived');
+      t.deepEqual([...data.bytes!], [1, 8, 3], 'typed-array mutation was detected');
+      t.deepEqual(
+        [...data.labels!],
+        [
+          ['first', 1],
+          ['second', 2],
+        ],
+        'Map mutation was detected',
+      );
+      t.equal(data.cycle?.self, data.cycle, 'cyclic identity survived cloning');
+      return new Response('read');
+    });
+    const written = await app.handle(new Request('https://example.test/write', { method: 'POST' }));
+    const pair = cookiePair(written);
+    await app.handle(
+      new Request('https://example.test/mutate', {
+        method: 'POST',
+        headers: { cookie: pair },
+      }),
+    );
+    await app.handle(new Request('https://example.test/read', { headers: { cookie: pair } }));
+  });
   it('raises SessionConflictError instead of overwriting a concurrent mutation', async (t) => {
-    const store = memoryCache({ namespace: 'sessions' });
+    const store = memoryStore({ namespace: 'sessions' });
     const setup = makeApp(store);
     const login = await setup.handle(new Request('https://example.test/login', { method: 'POST' }));
     const pair = cookiePair(login);
@@ -329,25 +389,25 @@ describe('fino:net/http/app session middleware', () => {
     const ready = new Promise<void>((resolve) => {
       bothEntered = resolve;
     });
-    app
-      .value('cookies', cookies())
-      .value(
-        'session',
-        sessions({
-          store,
-          keys: [primaryKey],
-          ttlMs: 1e3,
-        }),
-      )
-      .post('/change')
-      .handle(async (ctx) => {
-        const session = ctx.session as Session;
-        session.data.count = Number(session.data.count ?? 0) + 1;
-        entered++;
-        if (entered === 2) bothEntered();
-        await new Promise<void>((resolve) => releases.push(resolve));
-        return new Response('ok');
-      });
+    const stateful = app.value('cookies', cookies()).value(
+      'session',
+      sessions({
+        store,
+        keys: [primaryKey],
+        ttlMs: 1e3,
+      }),
+    );
+    stateful.post('/change').handle(async (ctx) => {
+      const session = ctx.session as Session;
+      session.data.count = Number(session.data.count ?? 0) + 1;
+      entered++;
+      if (entered === 2) bothEntered();
+      await new Promise<void>((resolve) => releases.push(resolve));
+      return new Response('ok');
+    });
+    stateful
+      .get('/count')
+      .handle((ctx) => Response.json({ count: Number((ctx.session as Session).data.count ?? 0) }));
     const request = () =>
       app.handle(
         new Request('https://example.test/change', {
@@ -362,5 +422,9 @@ describe('fino:net/http/app session middleware', () => {
     await first;
     releases.shift()!();
     await t.rejects(() => second, SessionConflictError);
+    const current = await app.handle(
+      new Request('https://example.test/count', { headers: { cookie: pair } }),
+    );
+    t.deepEqual(await current.json(), { count: 1 }, 'losing request did not mutate stored data');
   });
 });

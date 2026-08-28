@@ -3,7 +3,8 @@ import type { GenerateRequest, Model, ModelStream, StreamEvent } from 'fino:ai/m
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { parseEventStream } from 'fino:net/http/eventstream';
 import { createWebAgentChatApp } from '../demos/web-agent-chat-app';
-import { InMemoryViewStore } from 'fino:ui/web/state';
+import { loadViewState } from 'fino:ui/web/state';
+import { memoryStore } from 'fino:store';
 function hidden(html: string, name: string): string {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const match = html.match(new RegExp(`name="${escaped}" value="([^"]*)"`));
@@ -56,7 +57,7 @@ function streamingModel(): Model {
 }
 describe('zero-build web agent chat demo', () => {
   it('streams checkpoints to the action and a second live tab, then persists them', async (t) => {
-    const store = new InMemoryViewStore();
+    const store = memoryStore();
     const app = createWebAgentChatApp({
       model: streamingModel(),
       store,
@@ -109,7 +110,7 @@ describe('zero-build web agent chat demo', () => {
     t.equal(liveUpdate.value?.type, 'ui');
     t.equal(JSON.parse(liveUpdate.value!.data).kind, 'render');
     await liveEvents.return?.();
-    const snapshot = await store.load(viewId);
+    const snapshot = await loadViewState(store, viewId);
     t.ok((snapshot?.version ?? 0) >= 4, 'initial, delta, and final checkpoints are durable');
     t.deepEqual(snapshot?.data.messages, [
       {

@@ -46,7 +46,7 @@
 import type { Task } from './task.ts';
 import type { JobsService } from './internal/jobs/service.ts';
 import type { JobsWireCall, JobsWireResult } from './internal/jobs/runner.ts';
-import type { WorkflowState, WorkflowStore } from './workflow.ts';
+import { storeFromFacade, type StoreFacadeModule } from './internal/store/facade.ts';
 import type { RealmOptions } from './realm/index.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
@@ -470,8 +470,7 @@ function isJobsRuntimeTopic(name: string): boolean {
   return name.startsWith('otel:runtime:jobs:');
 }
 
-interface ControlModule {
-  open(opts: Record<string, unknown>): Promise<boolean>;
+interface JobsBackend {
   push(task: string, input: unknown, opts: JobsPushOptions): Promise<JobRecord>;
   schedule(
     name: string,
@@ -493,13 +492,13 @@ interface ControlModule {
       timeoutMs?: number;
     },
   ): Promise<JobRecord>;
+}
+
+interface ControlModule extends JobsBackend {
+  open(opts: Record<string, unknown>): Promise<boolean>;
   registerWorkers(opts: { entry: string; size?: number }): Promise<boolean>;
   registerInline(taskNames: string[], concurrency: number): Promise<number>;
   completeInline(relayIndex: number, jobId: string, result: JobsWireResult): Promise<void>;
-  wfSave(state: WorkflowState): Promise<void>;
-  wfLoad(runId: string): Promise<WorkflowState | null>;
-  wfList(filter?: unknown): Promise<WorkflowState[]>;
-  wfRemove(runId: string): Promise<void>;
   inlineCalls(relayIndex: number): AsyncIterable<JobsWireCall>;
 }
 
@@ -508,10 +507,16 @@ interface ControlModule {
  * job lifecycle operations. Create with `Jobs.open()`.
  */
 export class Jobs {
+  #backend: JobsBackend;
   #service: JobsService | null;
   #control: ControlModule | null;
   #stopped = false;
-  private constructor(service: JobsService | null, control: ControlModule | null) {
+  private constructor(
+    backend: JobsBackend,
+    service: JobsService | null,
+    control: ControlModule | null,
+  ) {
+    this.#backend = backend;
     this.#service = service;
     this.#control = control;
   }
@@ -541,7 +546,7 @@ export class Jobs {
         ...(opts.pollIntervalMs !== undefined ? { pollIntervalMs: opts.pollIntervalMs } : {}),
         ...(opts.closeTimeout !== undefined ? { closeTimeout: opts.closeTimeout } : {}),
       });
-      jobs = new Jobs(null, control);
+      jobs = new Jobs(control, null, control);
     } else {
       const { JobsService } = (await import('internal:jobs/service')) as {
         JobsService: typeof import('./internal/jobs/service.ts').JobsService;
@@ -553,7 +558,7 @@ export class Jobs {
         ...(opts.closeTimeout !== undefined ? { closeTimeout: opts.closeTimeout } : {}),
       });
       service.start();
-      jobs = new Jobs(service, null);
+      jobs = new Jobs(service as unknown as JobsBackend, service, null);
     }
     if (opts.tasks !== undefined && opts.tasks.length > 0) {
       await jobs.process({
@@ -577,8 +582,7 @@ export class Jobs {
    * ```
    */
   push(task: string, input: unknown, opts: JobsPushOptions = {}): Promise<JobRecord> {
-    if (this.#control !== null) return this.#control.push(task, input, opts);
-    return this.#requireService().push(task, input, opts);
+    return this.#backend.push(task, input, opts);
   }
   /**
    * Create or replace a named schedule that enqueues `task` on a cron or
@@ -597,22 +601,19 @@ export class Jobs {
     input: unknown,
     opts: JobsScheduleOptions,
   ): Promise<ScheduleRecord> {
-    if (this.#control !== null) return this.#control.schedule(name, task, input, opts);
-    return this.#requireService().schedule(name, task, input, opts);
+    return this.#backend.schedule(name, task, input, opts);
   }
   /**
    * Remove a named schedule. Returns whether it existed.
    */
   unschedule(name: string): Promise<boolean> {
-    if (this.#control !== null) return this.#control.unschedule(name);
-    return this.#requireService().unschedule(name);
+    return this.#backend.unschedule(name);
   }
   /**
    * Load one job by id.
    */
   get(id: string): Promise<JobRecord | null> {
-    if (this.#control !== null) return this.#control.get(id);
-    return this.#requireService().get(id);
+    return this.#backend.get(id);
   }
   /**
    * List jobs, newest first.
@@ -627,8 +628,7 @@ export class Jobs {
       offset?: number;
     } = {},
   ): Promise<JobRecord[]> {
-    if (this.#control !== null) return this.#control.list(filter);
-    return this.#requireService().list(filter);
+    return this.#backend.list(filter);
   }
   /**
    * Watch one job by id.
@@ -667,9 +667,7 @@ export class Jobs {
     return lazy<QueueStats>(emptyQueueStats(), (set) => {
       let active = true;
       const refresh = () => {
-        const source =
-          this.#control !== null ? this.#control.stats(queue) : this.#requireService().stats(queue);
-        void source.then((stats) => {
+        void this.#backend.stats(queue).then((stats) => {
           if (active) set(stats);
         });
       };
@@ -689,24 +687,21 @@ export class Jobs {
    * List schedules.
    */
   schedules(): Promise<ScheduleRecord[]> {
-    if (this.#control !== null) return this.#control.schedules();
-    return this.#requireService().schedules();
+    return this.#backend.schedules();
   }
   /**
    * Cancel a job. Pending and parked jobs cancel immediately; a running
    * job is marked cancelled but its in-flight execution is not interrupted.
    */
   cancel(id: string): Promise<boolean> {
-    if (this.#control !== null) return this.#control.cancel(id);
-    return this.#requireService().cancel(id);
+    return this.#backend.cancel(id);
   }
   /**
    * Requeue a dead, errored, or cancelled job from attempt zero. Durable
    * jobs keep their workflow run and resume from the last checkpoint.
    */
   retry(id: string): Promise<boolean> {
-    if (this.#control !== null) return this.#control.retry(id);
-    return this.#requireService().retry(id);
+    return this.#backend.retry(id);
   }
   /**
    * Deliver an external signal to a parked durable job and make it claimable.
@@ -719,8 +714,7 @@ export class Jobs {
    * ```
    */
   signal(id: string, name: string, payload?: unknown): Promise<void> {
-    if (this.#control !== null) return this.#control.signal(id, name, payload);
-    return this.#requireService().signal(id, name, payload);
+    return this.#backend.signal(id, name, payload);
   }
   /**
    * Wait for a job to reach a terminal state.
@@ -731,7 +725,7 @@ export class Jobs {
       timeoutMs?: number;
     } = {},
   ): Promise<JobRecord> {
-    if (this.#control !== null) return this.#control.waitFor(id, opts);
+    if (this.#control !== null) return this.#backend.waitFor(id, opts);
     const terminal = new Set<JobStatus>(['done', 'error', 'dead', 'cancelled']);
     const signal = this.job(id);
     return new Promise<JobRecord>((resolve, reject) => {
@@ -776,12 +770,9 @@ export class Jobs {
         (await import('internal:jobs/runner')) as typeof import('./internal/jobs/runner.ts');
       const registry = collectTasks(opts.tasks);
       const control = this.#control;
-      const store: WorkflowStore = {
-        save: (state) => control.wfSave(state),
-        load: (runId) => control.wfLoad(runId),
-        list: (filter) => control.wfList(filter as never),
-        delete: (runId) => control.wfRemove(runId),
-      };
+      const checkpointModule =
+        (await import('fino:jobs/checkpoints')) as unknown as StoreFacadeModule;
+      const store = storeFromFacade(checkpointModule);
       const relayIndex = await control.registerInline([...registry.keys()], opts.concurrency ?? 1);
       void (async () => {
         try {

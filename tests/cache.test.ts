@@ -1,203 +1,145 @@
-/**
- * Tests for fino:cache — namespaces, TTL, tags, backends, and HTTP middleware.
- */
+/** Tests for generic cache policy and HTTP response caching. */
 import { describe, it } from 'fino:test/test';
-import { memoryCache, responseCache, sqliteCache, type RevisionedCache } from 'fino:cache';
+import { cache, responseCache } from 'fino:cache';
 import { App } from 'fino:net/http/app';
 import { DiskFileSystem } from 'fino:file';
-import { Database } from 'fino:database/sqlite';
-function fakeClock(now = 1e3) {
+import { memoryStore, sqliteStore, type AtomicExpiringStore, type Store } from 'fino:store';
+
+function fakeClock(now = 1_000) {
   return {
-    now,
-    clock: { now: () => now },
+    now: () => now,
     advance(ms: number) {
       now += ms;
     },
   };
 }
+
 function tmpPath(): string {
   return `/tmp/fino-cache-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
-async function assertRevisionedCache(t: any, cache: RevisionedCache): Promise<void> {
-  t.equal(await cache.getEntry('missing'), null, 'missing entry has no revision');
-  const created = await cache.compareAndSet('key', { value: 1 }, { ifRevision: null });
-  t.ok(created !== null, 'missing entry can be created conditionally');
-  t.deepEqual(created!.value, { value: 1 });
-  const duplicate = await cache.compareAndSet('key', { value: 2 }, { ifRevision: null });
-  t.equal(duplicate, null, 'create-only write rejects an existing entry');
-  const updated = await cache.compareAndSet('key', { value: 2 }, { ifRevision: created!.revision });
-  t.ok(updated !== null, 'matching revision updates the entry');
-  t.notEqual(updated!.revision, created!.revision, 'successful writes advance the revision');
-  const stale = await cache.compareAndSet('key', { value: 3 }, { ifRevision: created!.revision });
-  t.equal(stale, null, 'stale revision rejects without overwriting');
-  t.deepEqual(await cache.get('key'), { value: 2 });
+
+function withoutExpiration(store: AtomicExpiringStore): Store {
+  return {
+    get: (key) => store.get(key),
+    set: (key, value) => store.set(key, value),
+    delete: (key) => store.delete(key),
+    list: (options) => store.list(options),
+    namespace: (name) => withoutExpiration(store.namespace(name)),
+  };
 }
-describe('fino:cache', () => {
-  it('memory cache provides atomic revisioned writes', async (t) => {
-    await assertRevisionedCache(t, memoryCache());
-  });
-  it('sqlite cache provides atomic revisioned writes', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const cache = await sqliteCache({
-      path,
-      fs,
-    });
-    try {
-      await assertRevisionedCache(t, cache);
-    } finally {
-      await cache.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('sqlite cache upgrades existing databases with revision metadata', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const db = await Database.open(path, { fs });
-    await db.exec(`CREATE TABLE fino_cache_entries (
-      namespace TEXT NOT NULL,
-      key TEXT NOT NULL,
-      value TEXT NOT NULL,
-      expires_at INTEGER,
-      touched_at INTEGER NOT NULL,
-      PRIMARY KEY(namespace, key)
-    )`);
-    await db.exec(`CREATE TABLE fino_cache_tags (
-      namespace TEXT NOT NULL,
-      key TEXT NOT NULL,
-      tag TEXT NOT NULL,
-      PRIMARY KEY(namespace, key, tag)
-    )`);
-    await db
-      .prepare(
-        `INSERT INTO fino_cache_entries(namespace, key, value, expires_at, touched_at) VALUES(?, ?, ?, ?, ?)`,
-      )
-      .run('default', 'legacy', '"value"', null, 1);
-    await db.close();
-    const cache = await sqliteCache({
-      path,
-      fs,
-    });
-    try {
-      const entry = await cache.getEntry<string>('legacy');
-      t.equal(entry!.value, 'value');
-      t.ok(entry!.revision.length > 0, 'legacy entry receives an opaque revision');
-      const updated = await cache.compareAndSet('legacy', 'updated', {
-        ifRevision: entry!.revision,
-      });
-      t.equal(updated!.value, 'updated');
-    } finally {
-      await cache.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('memory cache applies TTL, namespaces, LRU, and tag invalidation', async (t) => {
-    const time = fakeClock();
-    const cache = memoryCache({
-      maxEntries: 2,
-      clock: time.clock,
-    });
-    await cache.set(
-      'a',
-      { n: 1 },
-      {
-        ttlMs: 50,
-        tags: ['group'],
+
+function redisLike(store: AtomicExpiringStore, writes: { count: number }): Store {
+  return {
+    get: (key) => store.get(key),
+    set: (key, value) => store.set(key, value),
+    delete: (key) => store.delete(key),
+    list: (options) => store.list(options),
+    namespace: (name) => redisLike(store.namespace(name), writes),
+    expiration: {
+      async set(key, value, ttlMs) {
+        writes.count++;
+        await store.expiration.set(key, value, ttlMs);
       },
-    );
-    t.deepEqual(await cache.get('a'), { n: 1 });
+    },
+  };
+}
+
+describe('fino:cache', () => {
+  it('delegates TTL to a provider with native expiry', async (t) => {
+    const time = fakeClock();
+    const writes = { count: 0 };
+    const values = cache(redisLike(memoryStore({ clock: time }), writes), { clock: time });
+    await values.set('key', new Uint8Array([1, 2]), { ttlMs: 50 });
+    t.equal(writes.count, 1, 'cache used the provider expiry capability');
+    t.deepEqual(await values.get('key'), new Uint8Array([1, 2]));
     time.advance(51);
-    t.equal(await cache.get('a'), null, 'expired entries return null');
-    const ns = cache.namespace('tenant');
-    await cache.set('same', 'root');
-    await ns.set('same', 'scoped');
-    t.equal(await cache.get('same'), 'root');
-    t.equal(await ns.get('same'), 'scoped');
-    await cache.set('one', 1);
-    await cache.set('two', 2);
-    await cache.get('one');
-    await cache.set('three', 3);
-    t.equal(await cache.get('one'), 1, 'recently read entry is retained');
-    t.equal(await cache.get('two'), null, 'least recently used entry is evicted');
-    t.equal(await cache.get('three'), 3);
-    await cache.set('tagged-a', 'a', { tags: ['flush'] });
-    await cache.set('tagged-b', 'b', { tags: ['flush'] });
-    await cache.invalidateTags(['flush']);
-    t.equal(await cache.get('tagged-a'), null);
-    t.equal(await cache.get('tagged-b'), null);
+    t.equal(await values.get('key'), null, 'provider expiry removes the value');
   });
-  it('sqlite cache persists values and invalidates by namespace-local tags', async (t) => {
+
+  it('falls back to lazy expiry for a plain store', async (t) => {
+    const time = fakeClock();
+    const values = cache(withoutExpiration(memoryStore()), { clock: time });
+    await values.set('key', 'value', { ttlMs: 50 });
+    time.advance(51);
+    t.equal(await values.get('key'), null);
+  });
+
+  it('applies namespaces, LRU, and tag invalidation', async (t) => {
+    const root = memoryStore();
+    const values = cache(root, { maxEntries: 2 });
+    const peer = cache(root);
+    const tenant = values.namespace('tenant');
+    await values.set('same', 'root');
+    t.equal(await peer.get('same'), 'root', 'cache views share their selected store');
+    await tenant.set('same', 'tenant');
+    t.equal(await values.get('same'), 'root');
+    t.equal(await tenant.get('same'), 'tenant');
+
+    const lru = cache(memoryStore(), { maxEntries: 2 });
+    await lru.set('one', 1);
+    await lru.set('two', 2);
+    await lru.get('one');
+    await lru.set('three', 3);
+    t.equal(await lru.get('two'), null, 'least recently used value was evicted');
+    await values.set('tagged-a', 'a', { tags: ['flush'] });
+    await values.set('tagged-b', 'b', { tags: ['flush'] });
+    await values.invalidateTags(['flush']);
+    t.equal(await values.get('tagged-a'), null);
+    t.equal(await values.get('tagged-b'), null);
+  });
+
+  it('uses SQLite through the same cache constructor', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
+    const store = await sqliteStore({ path, fs });
     try {
-      await fs.unlink(path);
-    } catch {}
-    const cache = await sqliteCache({
-      path,
-      fs,
-    });
-    try {
-      await cache.set('k', { ok: true }, { tags: ['tag'] });
-      t.deepEqual(await cache.get('k'), { ok: true });
-      const scoped = cache.namespace('scoped');
-      await scoped.set('k', 'scoped', { tags: ['tag'] });
-      await cache.invalidateTags(['tag']);
-      t.equal(await cache.get('k'), null, 'root namespace tag was invalidated');
-      t.equal(await scoped.get('k'), 'scoped', 'other namespace is retained');
+      const values = cache(store);
+      await values.set('k', { body: new Uint8Array([1, 2, 3]) }, { tags: ['tag'] });
+      t.deepEqual(await values.get('k'), { body: new Uint8Array([1, 2, 3]) });
+      await values.invalidateTags(['tag']);
+      t.equal(await values.get('k'), null);
     } finally {
-      await cache.close();
+      await store.close();
       try {
         await fs.unlink(path);
       } catch {}
     }
   });
-  it('responseCache stores cacheable GET responses and respects vary headers', async (t) => {
-    const cache = memoryCache();
+
+  it('responseCache stores binary GET responses and respects vary headers', async (t) => {
+    const values = cache(memoryStore());
     const app = new App();
     const cached = app.layer(
-      responseCache(cache, {
-        ttlMs: 1e3,
+      responseCache(values, {
+        ttlMs: 1_000,
         vary: ['accept-language'],
       }),
     );
     let calls = 0;
     cached.get('/hello').handle((ctx) => {
       calls++;
-      return new Response(
-        `hello ${ctx.request.headers.get('accept-language') ?? 'none'} ${calls}`,
-        { headers: { 'content-type': 'text/plain' } },
-      );
+      const language = ctx.request.headers.get('accept-language') ?? 'none';
+      return new Response(new Uint8Array([0, language.charCodeAt(0), calls]));
     });
     const first = await app.handle(
       new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }),
     );
-    t.equal(await first.text(), 'hello en 1');
+    t.deepEqual(new Uint8Array(await first.arrayBuffer()), new Uint8Array([0, 101, 1]));
     t.equal(first.headers.get('x-fino-cache'), 'MISS');
     const second = await app.handle(
       new Request('http://example.test/hello', { headers: { 'accept-language': 'en' } }),
     );
-    t.equal(await second.text(), 'hello en 1');
+    t.deepEqual(new Uint8Array(await second.arrayBuffer()), new Uint8Array([0, 101, 1]));
     t.equal(second.headers.get('x-fino-cache'), 'HIT');
     const third = await app.handle(
       new Request('http://example.test/hello', { headers: { 'accept-language': 'fr' } }),
     );
-    t.equal(await third.text(), 'hello fr 2');
-    t.equal(third.headers.get('x-fino-cache'), 'MISS');
+    t.deepEqual(new Uint8Array(await third.arrayBuffer()), new Uint8Array([0, 102, 2]));
   });
+
   it('responseCache bypasses unsafe or private responses', async (t) => {
-    const cache = memoryCache();
     const app = new App();
-    const cached = app.layer(responseCache(cache, { ttlMs: 1e3 }));
+    const cached = app.layer(responseCache(cache(memoryStore()), { ttlMs: 1_000 }));
     let calls = 0;
     cached.post('/mutate').handle(() => new Response('mutated'));
     cached.get('/private').handle(() => {

@@ -34,12 +34,13 @@
  * on misses.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { cache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { cachedModel } from 'fino:ai/cache';
  * import { openai } from 'fino:ai/model';
  *
  * const base = openai({ model: 'gpt-4o' });
- * const model = cachedModel(base, { cache: memoryCache(), ttlMs: 60_000 });
+ * const model = cachedModel(base, { cache: cache(memoryStore()), ttlMs: 60_000 });
  * const result = await model.generate({ messages: [{ role: 'user', content: 'hello' }] });
  * ```
  */
@@ -73,15 +74,16 @@ import type {
  * in-cache index.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { cache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { cachedModel } from 'fino:ai/cache';
  * import { openai } from 'fino:ai/model';
  *
  * const embedder = openai({ model: 'gpt-4o' });
  * const model = cachedModel(openai({ model: 'gpt-4o' }), {
- *   cache: memoryCache(),
+ *   cache: cache(memoryStore()),
  *   semantic: {
- *     cache: memoryCache(),
+ *     cache: cache(memoryStore()),
  *     embedder,
  *     threshold: 0.9,
  *     path: './semantic-cache.db',
@@ -110,12 +112,13 @@ export interface SemanticCacheOptions {
  * reach the provider (time-sensitive prompts, per-user answers, and so on).
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { cache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { cachedModel } from 'fino:ai/cache';
  * import { openai } from 'fino:ai/model';
  *
  * const model = cachedModel(openai({ model: 'gpt-4o' }), {
- *   cache: memoryCache(),
+ *   cache: cache(memoryStore()),
  *   ttlMs: 5 * 60_000,
  *   bypass: (req) => req.messages.some(
  *     (m) => typeof m.content === 'string' && m.content.includes('today'),
@@ -462,12 +465,13 @@ function withCacheMetadata(result: GenerateResult, hit: boolean): GenerateResult
  * different models can safely share one `Cache` instance.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { cache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { cachedModel } from 'fino:ai/cache';
  * import { openai } from 'fino:ai/model';
  *
  * const model = cachedModel(openai({ model: 'gpt-4o' }), {
- *   cache: memoryCache(),
+ *   cache: cache(memoryStore()),
  *   ttlMs: 60_000,
  * });
  *

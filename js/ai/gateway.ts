@@ -1,24 +1,24 @@
 /**
  * fino:ai/gateway — per-key model policy and credential-safe realm facades.
  *
- * `GatewayPolicy` uses a revisioned `fino:cache` counter to smooth requests
+ * `GatewayPolicy` uses a generic atomic store counter to smooth requests
  * over a fixed window. `gatewayModel()` applies it immediately before provider
  * work. `modelFacade()` keeps the real model and its credentials in the parent
  * realm while exposing only generation methods to a child.
  *
  * ```ts no_run
- * import { memoryCache } from 'fino:cache';
+ * import { memoryStore } from 'fino:store';
  * import { gatewayModel, GatewayPolicy } from 'fino:ai/gateway';
  *
  * const policy = new GatewayPolicy({
- *   cache: memoryCache(),
+ *   store: memoryStore(),
  *   requests: 60,
  *   windowMs: 60000,
  * });
  * const tenantModel = gatewayModel(parentModel, { policy, key: 'tenant-42' });
  * ```
  */
-import type { RevisionedCache } from 'fino:cache';
+import type { AtomicExpiringStore } from 'fino:store';
 import type { GenerateRequest, Model, ModelStream } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import { Facade } from 'fino:realm';
@@ -30,8 +30,8 @@ interface Counter {
  * Fixed-window gateway policy options.
  */
 export interface GatewayPolicyOptions {
-  /** Revision-capable cache used for atomic counters. */
-  cache: RevisionedCache;
+  /** Generic store used for atomic, expiring counters. */
+  store: AtomicExpiringStore;
   /** Requests allowed for each key in one window. */
   requests: number;
   /** Window duration in milliseconds. */
@@ -62,10 +62,10 @@ export class GatewayRateLimitError extends Error {
   }
 }
 /**
- * Atomic per-key request counter backed by `fino:cache`.
+ * Atomic per-key request counter backed directly by `fino:store`.
  */
 export class GatewayPolicy {
-  #cache: RevisionedCache;
+  #store: AtomicExpiringStore;
   #requests: number;
   #windowMs: number;
   #clock: () => number;
@@ -80,13 +80,13 @@ export class GatewayPolicy {
     if (!Number.isFinite(options.windowMs) || options.windowMs <= 0) {
       throw new RangeError('windowMs must be positive');
     }
-    this.#cache = options.cache.namespace('fino:ai:gateway');
+    this.#store = options.store.namespace('fino:ai:gateway');
     this.#requests = options.requests;
     this.#windowMs = options.windowMs;
     this.#clock = options.clock ?? Date.now;
   }
   /**
-   * Consume one request from `key`, retrying optimistic-cache conflicts.
+   * Consume one request from `key`, retrying optimistic-store conflicts.
    *
    * Throws `GatewayRateLimitError` before provider invocation when the current
    * window is full.
@@ -98,7 +98,7 @@ export class GatewayPolicy {
     if (!key) throw new TypeError('gateway key must not be empty');
     for (let attempt = 0; attempt < 32; attempt++) {
       const now = this.#clock();
-      const entry = await this.#cache.getEntry<Counter>(key);
+      const entry = await this.#store.atomic.getEntry<Counter>(key);
       const expired = entry === null || entry.value.resetAt <= now;
       const current: Counter = expired
         ? {
@@ -113,9 +113,9 @@ export class GatewayPolicy {
         count: current.count + 1,
         resetAt: current.resetAt,
       };
-      const saved = await this.#cache.compareAndSet(key, next, {
-        ifRevision: expired ? null : entry!.revision,
-        ttlMs: Math.max(1, current.resetAt - now),
+      const saved = await this.#store.atomic.commit({
+        checks: [{ key, ifVersion: expired ? null : entry!.version }],
+        writes: [{ key, value: next, ttlMs: Math.max(1, current.resetAt - now) }],
       });
       if (saved !== null) {
         return {

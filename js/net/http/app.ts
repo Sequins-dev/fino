@@ -28,7 +28,7 @@
  * `fino:context`.
  *
  * Server sessions are part of this same application surface. `sessions()`
- * accepts a caller-owned `RevisionedCache` directly, seals browser identifiers,
+ * accepts a caller-owned atomic, expiry-capable `Store` directly, seals browser identifiers,
  * supports key rotation and fixed or rolling expiry, and uses conditional
  * writes so stale requests cannot silently overwrite newer state. Applications
  * choose and close their cache backend; the middleware owns only session

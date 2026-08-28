@@ -1110,9 +1110,10 @@ export class Facade {
   /**
    * Create a facade for a synthetic module specifier.
    *
-   * `exports` declares the scalar method names visible in the child module.
-   * Register matching handlers with `handle()`. Stream and sink names are
-   * declared by `stream()` and `sendStream()`.
+   * `exports` may predeclare scalar method names visible in the child module.
+   * `handle()` also declares its method automatically, so callers building a
+   * facade entirely through handlers may pass an empty array. Stream and sink
+   * names are declared by `stream()` and `sendStream()`.
    *
    * ```ts no_run
    * import { Facade } from 'fino:realm';
@@ -1176,6 +1177,46 @@ export class Facade {
     return f;
   }
   /**
+   * Create a capability-scoped proxy for a service resolved at call time.
+   *
+   * Only `methods` are visible to the child, even when the resolved service has
+   * a larger API. The resolver runs for every call, which supports lazily
+   * initialized or replaceable services without a hand-written forwarding
+   * handler per method. The original service remains the receiver expression.
+   *
+   * ```ts no_run
+   * import { Facade } from 'fino:realm';
+   *
+   * let service: { ping(): Promise<string> } | undefined;
+   * const facade = Facade.proxy(
+   *   () => service ??= { async ping() { return 'pong'; } },
+   *   { specifier: 'app:service', methods: ['ping'] },
+   * );
+   * ```
+   */
+  static proxy(
+    resolve: () => object,
+    opts: {
+      /** Synthetic module specifier imported by the child Realm. */
+      specifier: string;
+      /** Explicit allowlist of service methods exposed to the child. */
+      methods: string[];
+    },
+  ): Facade {
+    const facade = new Facade(opts.specifier, []);
+    for (const name of opts.methods) {
+      facade.handle(name, (...args) => {
+        const target = resolve() as Record<string, unknown>;
+        const method = target[name];
+        if (typeof method !== 'function') {
+          throw new TypeError(`Facade target has no callable method '${name}'`);
+        }
+        return Reflect.apply(method, target, args) as Promise<unknown>;
+      });
+    }
+    return facade;
+  }
+  /**
    * Register a scalar handler.
    *
    * The handler receives the child call arguments and returns one result. A
@@ -1194,6 +1235,7 @@ export class Facade {
    * @returns This facade for chaining.
    */
   handle(method: string, fn: (...args: unknown[]) => Promise<unknown>): this {
+    if (!this.#exports.includes(method)) this.#exports.push(method);
     this.#handlers.set(method, fn);
     return this;
   }

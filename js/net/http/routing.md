@@ -171,13 +171,13 @@ app.route('/messages')
 
 ## Cookies and sessions
 
-`cookies()` parses the request `Cookie` header into a mutable `CookieJar` and applies queued `Set-Cookie` headers to the response automatically. `sessions()` is the single server-session API and accepts a caller-owned revision-capable cache directly:
+`cookies()` parses the request `Cookie` header into a mutable `CookieJar` and applies queued `Set-Cookie` headers to the response automatically. `sessions()` is the single server-session API and accepts a caller-owned store with atomic and expiration capabilities directly:
 
 ```ts
-import { sqliteCache } from 'fino:cache';
 import { App, cookies, sessions } from 'fino:net/http/app';
+import { sqliteStore } from 'fino:store';
 
-const store = await sqliteCache({ path: './sessions.db', namespace: 'sessions' });
+const store = await sqliteStore({ path: './sessions.db', namespace: 'sessions' });
 
 const stateful = app.value('cookies', cookies())
   .value('session', sessions({
@@ -194,7 +194,7 @@ stateful.get('/me').handle((ctx) => {
 });
 ```
 
-Use `memoryCache({ namespace: 'sessions' })` for tests and local applications. SQLite provides durable single-node records and remains caller-owned, so close it during application shutdown. Any future distributed cache supplied here must preserve atomic revision-conditional writes and read-after-write behavior so logout and regeneration cannot be undone by stale requests; eventual consistency alone is insufficient.
+Use `memoryStore({ namespace: 'sessions' })` for tests and local applications. SQLite provides durable single-node records and remains caller-owned, so close it during application shutdown. Distributed providers supplied here must expose atomic version-conditional commits, native expiration, and read-after-write behavior so logout and regeneration cannot be undone by stale requests; eventual consistency alone is insufficient.
 
 ## Error handling middleware
 

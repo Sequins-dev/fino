@@ -24,7 +24,7 @@
  * @internal
  */
 import { Realm, type ImportRule, type RealmOptions } from '../../realm/index.ts';
-import { createJobsControlFacade } from '../jobs/control.ts';
+import { createJobsCheckpointFacade, createJobsControlFacade } from '../jobs/control.ts';
 import { createSignal } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
 
@@ -189,6 +189,10 @@ export async function runApp(opts: AppOptions): Promise<unknown> {
     {
       pattern: 'fino:jobs/control',
       directive: createJobsControlFacade(),
+    },
+    {
+      pattern: 'fino:jobs/checkpoints',
+      directive: createJobsCheckpointFacade(),
     },
   ];
   const realm = new Realm({

@@ -122,6 +122,7 @@ benchmarks, but they are not public builtin coverage targets:
 | `fino:bench` | `benchmarks/test/bench.bench.ts` |
 | `fino:test/mock` | `benchmarks/test/mock.bench.ts` |
 | `fino:compress` | `benchmarks/compress.bench.ts` |
+| `fino:store` | not yet benchmarked |
 | `fino:cache` | not yet benchmarked |
 | `fino:email` | not yet benchmarked |
 | `fino:signals` | not yet benchmarked |

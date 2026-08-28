@@ -3,33 +3,35 @@
  */
 import { describe, it } from 'fino:test/test';
 import { durableTask } from 'fino:task/durable';
-import {
-  InMemoryWorkflowStore,
-  SqliteWorkflowStore,
-  type WorkflowState,
-  type WorkflowStore,
-} from 'fino:workflow';
+import { memoryStore, sqliteStore, type Store, type StoreListOptions } from 'fino:store';
 import { sqliteAvailable } from 'fino:database/sqlite';
 import * as loop from 'internal:runtime/loop';
 
-class CountingStore implements WorkflowStore {
-  inner = new InMemoryWorkflowStore();
-  saves = 0;
-  async save(state: WorkflowState): Promise<void> {
-    this.saves++;
-    await this.inner.save(state);
+class CountingStore implements Store {
+  #inner: Store;
+  #counter: { saves: number };
+  constructor(inner: Store = memoryStore(), counter = { saves: 0 }) {
+    this.#inner = inner;
+    this.#counter = counter;
   }
-  load(runId: string): Promise<WorkflowState | null> {
-    return this.inner.load(runId);
+  get saves(): number {
+    return this.#counter.saves;
   }
-  list(filter?: {
-    workflowId?: string;
-    status?: WorkflowState['status'];
-  }): Promise<WorkflowState[]> {
-    return this.inner.list(filter);
+  async set<T>(key: string, value: T): Promise<void> {
+    this.#counter.saves++;
+    await this.#inner.set(key, value);
   }
-  delete(runId: string): Promise<void> {
-    return this.inner.delete(runId);
+  get<T>(key: string): Promise<T | null> {
+    return this.#inner.get<T>(key);
+  }
+  delete(key: string): Promise<boolean> {
+    return this.#inner.delete(key);
+  }
+  list<T>(options?: StoreListOptions) {
+    return this.#inner.list<T>(options);
+  }
+  namespace(name: string): Store {
+    return new CountingStore(this.#inner.namespace(name), this.#counter);
   }
 }
 
@@ -84,7 +86,7 @@ describe('DurableTask', () => {
     const makeTask = () =>
       durableTask({
         name: 'restartable',
-        store: () => SqliteWorkflowStore.open(path),
+        store: () => sqliteStore({ path }),
         run: async (_input: undefined, ctx) => {
           await ctx.step('first', () => {
             sideEffects.push('first');

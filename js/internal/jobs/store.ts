@@ -25,7 +25,8 @@
  */
 import { Database, type DatabaseConnection, type DbValue } from 'fino:database';
 import { v7 as uuidv7 } from 'fino:uuid';
-import type { WorkflowState, WorkflowStatus, WorkflowStore } from 'fino:workflow';
+import type { WorkflowState } from 'fino:workflow';
+import type { Store } from 'fino:store';
 
 /**
  * The lifecycle state of a job, stored verbatim in the `status` column.
@@ -376,7 +377,7 @@ const ACTIVE_STATUSES = "('pending','claimed','running','waiting')";
  * transitions a worker reports outcomes through, and `sweepLeases` (recover
  * work from dead workers). Schedules are managed with `upsertSchedule` /
  * `dueSchedules` / `advanceSchedule`, and durable jobs checkpoint through the
- * `WorkflowStore` view returned by `workflowStore()`. `nextWakeAt` collapses
+ * generic store view returned by `workflowStore()`. `nextWakeAt` collapses
  * all future due times into one timer target for the service loop.
  *
  * Implements `Symbol.asyncDispose`, so it can be managed with `await using`.
@@ -514,17 +515,18 @@ export class JobsStore {
     return new JobsStore(db);
   }
   /**
-   * A `WorkflowStore` view over this store's `workflow_runs` table, sharing
+   * A generic `Store` view over this store's `workflow_runs` table, sharing
    * the single database connection (schema-compatible with the workflow
    * database store). Durable jobs checkpoint through this.
    *
    * @internal
    */
-  workflowStore(): WorkflowStore {
+  workflowStore(): Store {
     const db = this.#db;
-    return {
-      save: (state: WorkflowState): Promise<void> =>
+    const create = (prefix: string): Store => ({
+      set: (key: string, value: unknown): Promise<void> =>
         this.#op(async () => {
+          const state = value as WorkflowState;
           const next = {
             ...state,
             updatedAt: Date.now(),
@@ -539,7 +541,7 @@ export class JobsStore {
              updated_at = excluded.updated_at`);
           try {
             await stmt.run({
-              run_id: next.runId,
+              run_id: `${prefix}${key}`,
               workflow_id: next.workflowId,
               status: next.status,
               state: JSON.stringify(next),
@@ -549,53 +551,51 @@ export class JobsStore {
             stmt.finalize();
           }
         }),
-      load: (runId: string): Promise<WorkflowState | null> =>
+      get: <T = unknown>(key: string): Promise<T | null> =>
         this.#op(async () => {
           const stmt = db.prepare('SELECT state FROM workflow_runs WHERE run_id = ?');
           try {
-            const row = await stmt.get(runId);
-            return row ? (JSON.parse(row.state as string) as WorkflowState) : null;
+            const row = await stmt.get(`${prefix}${key}`);
+            return row ? (JSON.parse(row.state as string) as T) : null;
           } finally {
             stmt.finalize();
           }
         }),
-      list: (
-        filter: {
-          workflowId?: string;
-          status?: WorkflowStatus;
-        } = {},
-      ): Promise<WorkflowState[]> =>
+      list: <T = unknown>(
+        options: { prefix?: string } = {},
+      ): Promise<Array<{ key: string; value: T }>> =>
         this.#op(async () => {
-          const clauses: string[] = [];
-          const params: unknown[] = [];
-          if (filter.workflowId !== undefined) {
-            clauses.push('workflow_id = ?');
-            params.push(filter.workflowId);
-          }
-          if (filter.status !== undefined) {
-            clauses.push('status = ?');
-            params.push(filter.status);
-          }
+          const selected = `${prefix}${options.prefix ?? ''}`;
           const stmt = db.prepare(
-            `SELECT state FROM workflow_runs ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''} ORDER BY updated_at DESC`,
+            `SELECT run_id, state FROM workflow_runs
+             WHERE substr(run_id, 1, length(?)) = ? ORDER BY run_id ASC`,
           );
           try {
-            const rows = await stmt.all(...(params as DbValue[]));
-            return rows.map((row) => JSON.parse(row.state as string) as WorkflowState);
+            const rows = await stmt.all(selected, selected);
+            return rows.map((row) => ({
+              key: (row.run_id as string).slice(prefix.length),
+              value: JSON.parse(row.state as string) as T,
+            }));
           } finally {
             stmt.finalize();
           }
         }),
-      delete: (runId: string): Promise<void> =>
+      delete: (key: string): Promise<boolean> =>
         this.#op(async () => {
           const stmt = db.prepare('DELETE FROM workflow_runs WHERE run_id = ?');
           try {
-            await stmt.run(runId);
+            const result = await stmt.run(`${prefix}${key}`);
+            return Number(result.changes) > 0;
           } finally {
             stmt.finalize();
           }
         }),
-    };
+      namespace: (name: string): Store => {
+        if (name.length === 0) throw new TypeError('Store namespace must not be empty');
+        return create(`${prefix}${encodeURIComponent(name)}/`);
+      },
+    });
+    return create('');
   }
   /**
    * Insert a job. When `dedupeKey` collides with an active job in the same
