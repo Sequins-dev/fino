@@ -134,6 +134,10 @@ Keep hot paths allocation-conscious. Main-thread I/O must be asynchronous; use
 the runtime loop or a safe async FFI bridge rather than a blocking system call.
 Avoid DOM-only types for server-runtime APIs.
 
+Never use a `JSON.stringify()`/`JSON.parse()` round trip to clone values. Use
+`structuredClone()` so cloning does not silently discard or coerce supported
+JavaScript values.
+
 Every behavior change needs focused regression coverage in the nearest domain.
 Test the observable contract, including relevant success, boundary, error,
 cancellation, cleanup, ordering, concurrency, and unsupported paths. Use

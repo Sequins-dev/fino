@@ -525,11 +525,11 @@ export class JsonEvalReporter extends EvalReporter {
     this.#suite = { ...suite };
   }
   /**
-   * Stores a deep JSON clone of the case report, so later mutation of the
+   * Stores a deep clone of the case report, so later mutation of the
    * original cannot affect the artifact.
    */
   async onCase(r: EvalCaseReport): Promise<void> {
-    this.#cases.push(JSON.parse(JSON.stringify(r)) as EvalCaseReport);
+    this.#cases.push(structuredClone(r));
   }
   /**
    * Records the summary and, when `path` and `fs` were configured, writes the
@@ -556,7 +556,7 @@ export class JsonEvalReporter extends EvalReporter {
       ...(this.#suite ? { suite: { ...this.#suite } } : {}),
       cases: [...this.#cases]
         .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
-        .map((item) => JSON.parse(JSON.stringify(item)) as EvalCaseReport),
+        .map((item) => structuredClone(item)),
       ...(this.#summary ? { summary: { ...this.#summary } } : {}),
     };
   }

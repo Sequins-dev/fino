@@ -83,7 +83,7 @@ bench('structuredClone', (b) => {
   b.measure('array 100', () => structuredClone(arr100));
   b.measure('complex obj', () => structuredClone(complexObj));
 });
-bench('structuredClone compared with JSON cloning', (b) => {
+bench('structuredClone session records', (b) => {
   const sessionRecord = {
     id: 'f3912457-c02d-4337-99d8-3c749d5ac940',
     data: {
@@ -99,5 +99,4 @@ bench('structuredClone compared with JSON cloning', (b) => {
     expiresAt: 1_725_003_600_000,
   };
   b.measure('structuredClone session record', () => structuredClone(sessionRecord));
-  b.measure('JSON clone session record', () => JSON.parse(JSON.stringify(sessionRecord)));
 });

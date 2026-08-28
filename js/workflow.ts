@@ -126,7 +126,7 @@ export type WorkflowWait =
  * One completed checkpointed call.
  *
  * Each record stores the checkpoint `id`, the completed `status`, and the
- * optional serialized `result` that replay returns instead of rerunning the
+ * optional stored `result` that replay returns instead of rerunning the
  * step.
  */
 export interface WorkflowStepState {
@@ -140,7 +140,7 @@ export interface WorkflowStepState {
    */
   readonly status: 'done';
   /**
-   * JSON-serializable result reused when workflow code replays.
+   * Store-compatible structured-cloneable result reused when workflow code replays.
    */
   readonly result?: unknown;
 }
@@ -153,7 +153,7 @@ export interface WorkflowStepState {
  * - `workflowId` identifies the workflow definition that owns the run.
  * - `status` tracks lifecycle state.
  * - `cursor` is the first contiguous checkpoint index not yet complete.
- * - `input` is the original `start()` input.
+ * - `input` is the original `start()` input when it is not `undefined`.
  * - `steps` stores completed checkpoints in call order.
  * - `state` stores the durable `ctx.state` bag.
  * - `signals` queues delivered signals until `ctx.waitForSignal()` consumes
@@ -183,9 +183,10 @@ export interface WorkflowState {
    */
   cursor: number;
   /**
-   * Original input passed to `Workflow.start()`.
+   * Original input passed to `Workflow.start()`. Absent when the input was
+   * `undefined`.
    */
-  input: unknown;
+  input?: unknown;
   /**
    * Completed checkpoint records in call order. Sparse positions can appear
    * while parallel steps finish out of order.
@@ -248,7 +249,7 @@ export interface WorkflowSignal {
   /**
    * Payload returned from `ctx.waitForSignal()`.
    */
-  payload: unknown;
+  payload?: unknown;
   /**
    * Unix timestamp in milliseconds when `Workflow.signal()` stored the signal.
    */
@@ -261,12 +262,12 @@ function workflowStateStore(store: Store): Store {
   return store.namespace('fino:workflow:v1');
 }
 async function persistWorkflowState(store: Store, state: WorkflowState): Promise<void> {
-  await store.set(state.runId, cloneState(state));
+  await store.set(state.runId, structuredClone(state));
   workflowRunTopic(state.runId).publish({ runId: state.runId, version: state.updatedAt });
 }
 async function readWorkflowState(store: Store, runId: string): Promise<WorkflowState | null> {
   const state = await store.get<WorkflowState>(runId);
-  return state ? cloneState(state) : null;
+  return state ? structuredClone(state) : null;
 }
 
 /** Load one detached workflow snapshot from a generic store. */
@@ -285,7 +286,7 @@ export async function listWorkflowRuns(
   filter: { workflowId?: string; status?: WorkflowStatus } = {},
 ): Promise<WorkflowState[]> {
   return (await workflowStateStore(store).list<WorkflowState>())
-    .map((entry) => cloneState(entry.value))
+    .map((entry) => structuredClone(entry.value))
     .filter((state) => filter.workflowId === undefined || state.workflowId === filter.workflowId)
     .filter((state) => filter.status === undefined || state.status === filter.status)
     .sort((a, b) => b.updatedAt - a.updatedAt || a.runId.localeCompare(b.runId));
@@ -717,19 +718,20 @@ export class Workflow<In = unknown, Out = unknown> {
     if (state.waitingOn.name !== opts.name) {
       throw new Error(`Workflow run ${opts.runId} is waiting for signal "${state.waitingOn.name}"`);
     }
-    await persistWorkflowState(store, {
+    const next: WorkflowState = {
       ...state,
       status: 'running',
-      waitingOn: undefined,
       signals: [
         ...state.signals,
         {
           name: opts.name,
-          payload: opts.payload,
+          ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
           receivedAt: Date.now(),
         },
       ],
-    });
+    };
+    delete next.waitingOn;
+    await persistWorkflowState(store, next);
   }
   /**
    * Drive the user-supplied workflow body.
@@ -774,7 +776,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
    * Last loaded state for this handle, if it has started or resumed a run.
    */
   get state(): WorkflowState | undefined {
-    return this.#state ? cloneState(this.#state) : undefined;
+    return this.#state ? structuredClone(this.#state) : undefined;
   }
   /**
    * Start this run with `input`.
@@ -787,7 +789,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       workflowId: this.#workflow.id,
       status: 'running',
       cursor: 0,
-      input,
+      ...(input !== undefined ? { input } : {}),
       steps: [],
       state: {},
       signals: [],
@@ -827,8 +829,8 @@ export class WorkflowRun<In = unknown, Out = unknown> {
     const next = {
       ...state,
       status: 'cancelled' as const,
-      waitingOn: undefined,
     };
+    delete next.waitingOn;
     this.#state = next;
     await this.#save(next);
   }
@@ -855,10 +857,10 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       state = {
         ...state,
         status: 'done',
-        waitingOn: undefined,
         result: output,
-        error: undefined,
       };
+      delete state.waitingOn;
+      delete state.error;
       this.#state = state;
       await this.#save(state);
       return toResult<Out>(state);
@@ -874,8 +876,8 @@ export class WorkflowRun<In = unknown, Out = unknown> {
         state = {
           ...runtime.state,
           status: 'cancelled',
-          waitingOn: undefined,
         };
+        delete state.waitingOn;
         this.#state = state;
         await this.#save(state);
         throw err;
@@ -883,12 +885,12 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       state = {
         ...runtime.state,
         status: 'error',
-        waitingOn: undefined,
         error: {
           message: e.message,
-          stack: e.stack,
+          ...(e.stack !== undefined ? { stack: e.stack } : {}),
         },
       };
+      delete state.waitingOn;
       this.#state = state;
       await this.#save(state);
       throw err;
@@ -1065,18 +1067,19 @@ class WorkflowRuntime<In, Out> {
       steps[index] = {
         id,
         status: 'done',
-        result,
+        ...(result !== undefined ? { result } : {}),
       };
       let cursor = base.cursor;
       while (steps[cursor]?.status === 'done') cursor++;
-      this.#state = {
+      const next: WorkflowState = {
         ...base,
         status: 'running',
         cursor,
         steps,
-        waitingOn: undefined,
         updatedAt: Date.now(),
       };
+      delete next.waitingOn;
+      this.#state = next;
       await this.#checkpoint(this.#state);
     });
     await this.#completionQueue;
@@ -1104,9 +1107,6 @@ function validateValue(schema: unknown, value: unknown, message: string): void {
   const validator = compile(schema);
   const result = validator.safeParse(value);
   if (!result.success) throw new Error(`${message}: ${result.error.message}`);
-}
-function cloneState(state: WorkflowState): WorkflowState {
-  return JSON.parse(JSON.stringify(state)) as WorkflowState;
 }
 function toResult<Out>(state: WorkflowState): WorkflowResult<Out> {
   return {

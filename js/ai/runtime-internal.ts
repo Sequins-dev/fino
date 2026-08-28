@@ -1674,8 +1674,8 @@ export class AgentRuntime {
             toolCallId: part.id,
             toolName: part.name,
             args: part.args,
-            risk: t.risk,
-            sideEffects: t.sideEffects,
+            ...(t.risk !== undefined ? { risk: t.risk } : {}),
+            ...(t.sideEffects !== undefined ? { sideEffects: t.sideEffects } : {}),
           });
         }
         if (t.requiresApproval) {
@@ -1684,8 +1684,8 @@ export class AgentRuntime {
             toolCallId: part.id,
             toolName: part.name,
             args: part.args,
-            risk: t.risk,
-            sideEffects: t.sideEffects,
+            ...(t.risk !== undefined ? { risk: t.risk } : {}),
+            ...(t.sideEffects !== undefined ? { sideEffects: t.sideEffects } : {}),
           };
           const approval = await this.#requestToolApproval!(request, { signal: sig });
           const approved = approval === true || (isRecord(approval) && approval.approved === true);

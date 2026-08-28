@@ -158,8 +158,8 @@ export interface RunState {
    */
   suspendedOn?: SuspendReason;
   /**
-   * JSON-serializable bag for application bookkeeping carried across
-   * checkpoints and restarts.
+   * Store-compatible structured-cloneable bag for application bookkeeping
+   * carried across checkpoints and restarts.
    */
   scratch: Record<string, unknown>;
   /**
@@ -214,7 +214,8 @@ export interface ThreadState {
    */
   storeVersion?: string;
   /**
-   * JSON-serializable conversation metadata owned by the caller.
+   * Store-compatible structured-cloneable conversation metadata owned by the
+   * caller.
    *
    * The store treats this as opaque data and commits it atomically with the
    * history head. Protocol adapters can therefore retain their own session
@@ -460,12 +461,6 @@ async function driveHistoryFromState(state: RunState, store: AtomicStore): Promi
   if (!history) throw new Error(`History revision ${state.historyRevisionId} not found`);
   return history;
 }
-function cloneRunState(state: RunState): RunState {
-  return JSON.parse(JSON.stringify(state)) as RunState;
-}
-function cloneThreadState(thread: ThreadState): ThreadState {
-  return JSON.parse(JSON.stringify(thread)) as ThreadState;
-}
 function isToolApprovalRequest(value: unknown): value is ToolApprovalRequest {
   return (
     typeof value === 'object' &&
@@ -531,7 +526,7 @@ function revisionKey(revisionId: string): string {
 }
 
 function threadValue(thread: ThreadState): ThreadState {
-  const copy = cloneThreadState(thread);
+  const copy = structuredClone(thread);
   delete copy.storeVersion;
   return copy;
 }
@@ -541,11 +536,11 @@ function historyWrites(history: MessageHistory, baseRevisionId?: string) {
   return [
     ...delta.entries.map((entry) => ({
       key: entryKey(entry.id),
-      value: JSON.parse(JSON.stringify(entry)) as MessageHistoryEntry,
+      value: structuredClone(entry),
     })),
     ...delta.revisions.map((revision) => ({
       key: revisionKey(revision.id),
-      value: JSON.parse(JSON.stringify(revision)) as MessageHistoryRevision,
+      value: structuredClone(revision),
     })),
   ];
 }
@@ -557,7 +552,7 @@ function sessionValues(store: AtomicStore): AtomicStore {
 /** Load a detached agent run checkpoint, or `null`. */
 export async function loadAgentRun(store: AtomicStore, runId: string): Promise<RunState | null> {
   const state = await sessionValues(store).get<RunState>(runKey(runId));
-  return state ? cloneRunState(state) : null;
+  return state ? structuredClone(state) : null;
 }
 
 /** List detached agent run checkpoints, optionally restricted to one thread. */
@@ -566,7 +561,7 @@ export async function listAgentRuns(
   filter: { threadId?: string } = {},
 ): Promise<RunState[]> {
   return (await sessionValues(store).list<RunState>({ prefix: RUN_PREFIX }))
-    .map((entry) => cloneRunState(entry.value))
+    .map((entry) => structuredClone(entry.value))
     .filter((run) => filter.threadId === undefined || run.threadId === filter.threadId);
 }
 
@@ -581,7 +576,7 @@ export async function loadConversationThread(
   threadId: string,
 ): Promise<ThreadState | null> {
   const entry = await sessionValues(store).atomic.getEntry<ThreadState>(threadKey(threadId));
-  return entry ? { ...cloneThreadState(entry.value), storeVersion: entry.version } : null;
+  return entry ? { ...structuredClone(entry.value), storeVersion: entry.version } : null;
 }
 
 /** List detached conversation threads newest first. */
@@ -593,7 +588,7 @@ export async function listConversationThreads(store: AtomicStore): Promise<Threa
   );
   return loaded
     .filter((entry) => entry !== null)
-    .map((entry) => ({ ...cloneThreadState(entry!.value), storeVersion: entry!.version }))
+    .map((entry) => ({ ...structuredClone(entry!.value), storeVersion: entry!.version }))
     .sort((a, b) => b.updatedAt - a.updatedAt || a.threadId.localeCompare(b.threadId));
 }
 
@@ -629,7 +624,7 @@ export async function loadConversationHistory(
       if (revisions.length === 0) return null;
       break;
     }
-    revisions.push(JSON.parse(JSON.stringify(revision)) as MessageHistoryRevision);
+    revisions.push(structuredClone(revision));
     currentId = revision.parent;
   }
   const needed = new Set(revisions.flatMap((revision) => revision.entryIds));
@@ -637,7 +632,7 @@ export async function loadConversationHistory(
   for (const id of needed) {
     const entry = await values.get<MessageHistoryEntry>(entryKey(id));
     if (!entry) throw new Error(`History entry ${id} not found`);
-    entries.push(JSON.parse(JSON.stringify(entry)) as MessageHistoryEntry);
+    entries.push(structuredClone(entry));
   }
   const snapshot: MessageHistorySnapshot = { entries, revisions, head: revisionId };
   return MessageHistory.fromSnapshot(snapshot);
@@ -649,7 +644,7 @@ export async function commitConversationThread(
   args: ConversationCommitOptions,
 ): Promise<ThreadState> {
   const values = sessionValues(store);
-  const thread = cloneThreadState(args.thread);
+  const thread = structuredClone(args.thread);
   validateCommit({ thread, history: args.history });
   const key = threadKey(thread.threadId);
   const current = await values.atomic.getEntry<ThreadState>(key);
@@ -658,7 +653,7 @@ export async function commitConversationThread(
     throw new ConversationConflictError(thread.threadId, args.expectedStoreVersion, actualVersion);
   }
   if (thread.metadata === undefined && current?.value.metadata !== undefined)
-    thread.metadata = cloneThreadState(current.value).metadata;
+    thread.metadata = structuredClone(current.value).metadata;
   const result = await values.atomic.commit({
     checks: [{ key, ifVersion: args.expectedStoreVersion }],
     writes: [
@@ -675,7 +670,7 @@ export async function commitConversationThread(
     );
   }
   const saved = result.writes[result.writes.length - 1]!;
-  return { ...cloneThreadState(saved.value as ThreadState), storeVersion: saved.version };
+  return { ...structuredClone(saved.value as ThreadState), storeVersion: saved.version };
 }
 
 /** Atomically commit a run checkpoint with its history and thread head. */
@@ -684,8 +679,8 @@ export async function commitAgentSession(
   args: AgentSessionCommitOptions,
 ): Promise<void> {
   const values = sessionValues(store);
-  const run = cloneRunState(args.run);
-  const thread = cloneThreadState(args.thread);
+  const run = structuredClone(args.run);
+  const thread = structuredClone(args.thread);
   validateCommit({ run, thread, history: args.history });
   const key = threadKey(thread.threadId);
   for (;;) {
@@ -700,7 +695,7 @@ export async function commitAgentSession(
     }
     const nextThread =
       thread.metadata === undefined && current?.value.metadata !== undefined
-        ? { ...thread, metadata: cloneThreadState(current.value).metadata }
+        ? { ...thread, metadata: structuredClone(current.value).metadata }
         : thread;
     const result = await values.atomic.commit({
       checks: [{ key, ifVersion: current?.version ?? null }],
@@ -765,7 +760,7 @@ export class Session {
     this.#threadId = loaded?.threadId ?? opts.threadId ?? newId();
     this.#state = loaded;
     this.#stateSignal = createSignal<RunState | undefined>(
-      loaded ? cloneRunState(loaded) : undefined,
+      loaded ? structuredClone(loaded) : undefined,
     );
   }
   /**
@@ -794,7 +789,7 @@ export class Session {
   }
   #setState(state: RunState): void {
     this.#state = state;
-    this.#stateSignal.set(cloneRunState(state));
+    this.#stateSignal.set(structuredClone(state));
   }
   /**
    * Resume a non-suspended run from its persisted checkpoint.
@@ -1056,9 +1051,9 @@ export class Session {
     const state: RunState = {
       ...this.#state,
       status: 'running',
-      suspendedOn: undefined,
       historyRevisionId: history.revisionId,
     };
+    delete state.suspendedOn;
     const injected: ModelMessage = {
       role: 'user',
       content: typeof value === 'string' ? value : JSON.stringify(value),
@@ -1152,13 +1147,13 @@ export class Session {
     const state: RunState = {
       ...this.#state,
       status: 'running',
-      suspendedOn: undefined,
       historyRevisionId: history.revisionId,
     };
+    delete state.suspendedOn;
     const approvalValue = decision.approved
       ? {
           approved: true,
-          approval: decision.approval,
+          ...(decision.approval !== undefined ? { approval: decision.approval } : {}),
         }
       : {
           approved: false,
@@ -1187,9 +1182,10 @@ export class Session {
       ...state,
       stepIndex: approval.state.stepIndex,
       usage: approval.state.usage,
-      cost: approval.state.cost,
       historyRevisionId: approvedHistory.revisionId,
+      ...(approval.state.cost !== undefined ? { cost: approval.state.cost } : {}),
     };
+    if (approval.state.cost === undefined) delete approvedState.cost;
     this.#setState(approvedState);
     const committedThread = await this.#commit(
       approvedState,
@@ -1378,7 +1374,7 @@ export class Session {
               status: 'error',
               error: {
                 message: e.message,
-                stack: e.stack,
+                ...(e.stack !== undefined ? { stack: e.stack } : {}),
               },
             };
             this.#setState(state);
@@ -1392,9 +1388,10 @@ export class Session {
             ...state,
             stepIndex: r.state.stepIndex,
             usage: r.state.usage,
-            cost: r.state.cost,
             historyRevisionId: history.revisionId,
+            ...(r.state.cost !== undefined ? { cost: r.state.cost } : {}),
           };
+          if (r.state.cost === undefined) delete state.cost;
           if (this.#opts.memory) {
             const newMsgs = history.render().slice(prevLen);
             for (const msg of newMsgs) {
@@ -1416,7 +1413,7 @@ export class Session {
               suspendedOn: {
                 token,
                 reason: r.suspend.message,
-                payload: r.suspend.payload,
+                ...(r.suspend.payload !== undefined ? { payload: r.suspend.payload } : {}),
               },
             };
             this.#setState(state);

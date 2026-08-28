@@ -1090,7 +1090,7 @@ export class SqliteMemory implements Memory {
        ON CONFLICT(thread_id) DO UPDATE SET data = excluded.data`);
     try {
       await stmt.run(this.#threadId, JSON.stringify(data));
-      this.#workingMemorySignal.set(JSON.parse(JSON.stringify(data)) as Record<string, unknown>);
+      this.#workingMemorySignal.set(structuredClone(data));
     } finally {
       stmt.finalize();
     }

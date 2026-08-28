@@ -1140,7 +1140,8 @@ describe('session codecs over Store', () => {
       await fs.unlink(path);
     } catch {}
     const sqlite = await sqliteStore({ path });
-    const stores = [memoryStore(), sqlite];
+    const memory = memoryStore();
+    const stores = [memory, sqlite];
     try {
       for (const store of stores) {
         let history = new MessageHistory();
@@ -1218,21 +1219,35 @@ describe('session codecs over Store', () => {
           'run commits preserve metadata owned by another conversation adapter',
         );
         const latest = (await loadConversationThread(store, created.threadId))!;
-        await t.rejects(
-          () =>
-            commitConversationThread(store, {
-              thread: { ...latest, metadata: { invalid: 1n } },
-              history,
-              expectedStoreVersion: latest.storeVersion!,
-              baseRevisionId: history.revisionId,
-            }),
-          /JSON|serialize|BigInt/i,
-        );
-        t.equal(
-          (await loadConversationThread(store, created.threadId))?.storeVersion,
-          latest.storeVersion,
-          'invalid metadata fails before the atomic commit',
-        );
+        if (store === memory) {
+          await commitConversationThread(store, {
+            thread: { ...latest, metadata: { preserved: 1n } },
+            history,
+            expectedStoreVersion: latest.storeVersion!,
+            baseRevisionId: history.revisionId,
+          });
+          t.equal(
+            (await loadConversationThread(store, created.threadId))?.metadata?.preserved,
+            1n,
+            'memory store preserves provider-supported metadata values',
+          );
+        } else {
+          await t.rejects(
+            () =>
+              commitConversationThread(store, {
+                thread: { ...latest, metadata: { unsupported: 1n } },
+                history,
+                expectedStoreVersion: latest.storeVersion!,
+                baseRevisionId: history.revisionId,
+              }),
+            /encode|BigInt|bigint/i,
+          );
+          t.equal(
+            (await loadConversationThread(store, created.threadId))?.storeVersion,
+            latest.storeVersion,
+            'unsupported SQLite metadata fails before the atomic commit',
+          );
+        }
         t.equal(await deleteConversationThread(store, created.threadId), true);
         t.equal(await deleteConversationThread(store, created.threadId), false);
         t.ok(
@@ -1274,7 +1289,7 @@ describe('session codecs over Store', () => {
           inputTokens: 1,
           outputTokens: 1,
         },
-        scratch: {},
+        scratch: { bytes: new Uint8Array([1, 2, 3]) },
         historyRevisionId: history.revisionId,
       };
       const thread = {
@@ -1282,6 +1297,7 @@ describe('session codecs over Store', () => {
         historyRevisionId: history.revisionId,
         createdAt: 1,
         updatedAt: 2,
+        metadata: { bytes: new Uint8Array([4, 5, 6]) },
       };
       await commitAgentSession(memory, {
         run,
@@ -1309,6 +1325,12 @@ describe('session codecs over Store', () => {
           history.revisionId,
           'thread points at committed history',
         );
+        const runBytes = loadedRun?.scratch.bytes;
+        t.ok(runBytes instanceof Uint8Array, 'run scratch preserves typed arrays');
+        t.deepEqual([...(runBytes as Uint8Array)], [1, 2, 3]);
+        const threadBytes = loadedThread?.metadata?.bytes;
+        t.ok(threadBytes instanceof Uint8Array, 'thread metadata preserves typed arrays');
+        t.deepEqual([...(threadBytes as Uint8Array)], [4, 5, 6]);
         t.deepEqual(
           loadedHistory?.render().map((m) => m.content),
           ['stored input', 'stored reply'],
