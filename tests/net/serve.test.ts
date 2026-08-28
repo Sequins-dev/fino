@@ -18,10 +18,10 @@ async function roundtrip(port: number, rawRequest: string): Promise<string> {
   });
   const [reader, writer] = sock.split();
   await writer.write(encodeUtf8(rawRequest));
-  writer.close();
+  await writer.close();
   const chunks = [];
   for await (const chunk of reader) chunks.push(chunk);
-  reader.close();
+  await reader.close();
   const totalLen = chunks.reduce((n, c) => n + c.byteLength, 0);
   const all = new Uint8Array(totalLen);
   let pos = 0;
@@ -691,8 +691,8 @@ describe('Connection management', () => {
     }
     t.ok(second.includes('HTTP/1.1 200'), 'second response 200');
     t.ok(second.includes('req2'), 'second response body');
-    writer.close();
-    reader.close();
+    await writer.close();
+    await reader.close();
     await server.close();
   });
   it('keep-alive: second request succeeds after handler error on first', async (t) => {
@@ -745,8 +745,8 @@ describe('Connection management', () => {
     }
     t.ok(buf2.includes('HTTP/1.1 200'), 'second request returned 200');
     t.ok(buf2.includes('second-ok'), 'second response body correct');
-    writer.close();
-    reader.close();
+    await writer.close();
+    await reader.close();
     await server.close();
   });
   it('concurrent connections', async (t) => {
@@ -806,8 +806,8 @@ describe('Connection management', () => {
     t.ok(slowIdx >= 0, 'slow response body present');
     t.ok(fastIdx >= 0, 'fast response body present');
     t.ok(slowIdx < fastIdx, 'responses emitted in request order');
-    writer.close();
-    reader.close();
+    await writer.close();
+    await reader.close();
     await server.close();
   });
   it('parses multiple pipelined requests from a single client write', async (t) => {
@@ -852,8 +852,8 @@ describe('Connection management', () => {
     t.ok(response.includes('\r\n\r\none'), 'first response body present');
     t.ok(response.includes('\r\n\r\ntwo'), 'second response body present');
     t.ok(response.includes('\r\n\r\nthree'), 'third response body present');
-    writer.close();
-    reader.close();
+    await writer.close();
+    await reader.close();
     await server.close();
   });
 });
