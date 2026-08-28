@@ -60,8 +60,11 @@ Use `fino test --parallel` to run each matched file in an isolated Realm. A
 rolling window retains at most the configured concurrency of file Realms;
 finishing one file admits the next in discovery order. The default admission
 limit is ten top-level groups per reactor thread, and `FINO_TEST_CONCURRENCY`
-sets an explicit positive-integer limit. At most one group per file Realm
-executes at a time. Structured group results are buffered and merged into one
+sets that positive-integer per-reactor amount. `FINO_REACTOR_THREADS` controls
+the pool size, which otherwise reserves one online processor for main-thread
+coordination while retaining at least two reactors on multi-processor hosts. At
+most one group per file Realm executes at a time. Structured group results are
+buffered and merged into one
 top-level TAP stream in completion order by default. Each group emits as an
 atomic block as soon as it settles. Pass `--ordered` to emit those blocks in
 deterministic registration order instead. The aggregate plan is emitted at the

@@ -12,6 +12,11 @@ describe('CI workflow', () => {
       /run: FINO_REQUIRE_SQLITE=1 \.\/target\/debug\/fino test --parallel tests/g,
     );
     t.equal(fullRuns?.length, 2, 'Linux and macOS each run the complete parallel suite');
+    t.equal(
+      workflow.includes('FINO_TEST_CONCURRENCY:'),
+      false,
+      'CI retains the reactor-scaled default concurrency',
+    );
   });
 
   it('reuses the Linux build for linting', async (t) => {

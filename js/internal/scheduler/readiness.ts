@@ -24,7 +24,11 @@ import {
 import { currentProcessReadinessController } from './reactor.ts';
 
 /**
- * Reactor thread count: one per online processor, or `FINO_REACTOR_THREADS`.
+ * Reactor thread count: one fewer than the online processor count, or
+ * `FINO_REACTOR_THREADS`. The reserved processor leaves capacity for the main
+ * thread that routes reactor events and performs process-level coordination.
+ * Multi-processor hosts retain at least two reactors so a Realm awaiting a
+ * nested Realm cannot occupy the pool's only worker.
  *
  * The pool sized itself from `navigator.hardwareConcurrency`, which fino does
  * not define, so it silently ran a single thread for the whole life of the
@@ -38,11 +42,24 @@ import { currentProcessReadinessController } from './reactor.ts';
  * Pin the variable to 1 to get single-threaded behaviour back when isolating a
  * scheduling problem.
  */
+/** Select the reactor pool size from a processor count and optional override. @internal */
+export function selectReactorThreadCount(
+  onlineProcessorCount: number,
+  configuredValue?: string,
+): number {
+  const configured = Number(configuredValue ?? '');
+  if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
+  const processors =
+    Number.isFinite(onlineProcessorCount) && onlineProcessorCount >= 1
+      ? Math.floor(onlineProcessorCount)
+      : 1;
+  if (processors === 1) return 1;
+  return Math.max(2, processors - 1);
+}
+
 /** Return the process reactor thread count selected from the environment and host. @internal */
 export function configuredReactorThreadCount(): number {
-  const configured = Number(env['FINO_REACTOR_THREADS'] ?? '');
-  if (Number.isFinite(configured) && configured >= 1) return Math.floor(configured);
-  return onlineProcessors();
+  return selectReactorThreadCount(onlineProcessors(), env['FINO_REACTOR_THREADS']);
 }
 
 /**

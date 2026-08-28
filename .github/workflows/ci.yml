@@ -190,7 +190,6 @@ jobs:
       FINO_REQUIRE_H2: "1"
       FINO_REQUIRE_H3: "1"
       FINO_REQUIRE_TLS: "1"
-      FINO_TEST_CONCURRENCY: "4"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -244,8 +243,6 @@ jobs:
     name: macOS Tests
     runs-on: blacksmith-6vcpu-macos-15
     needs: macos-build
-    env:
-      FINO_TEST_CONCURRENCY: "6"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

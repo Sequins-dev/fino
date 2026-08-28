@@ -14,8 +14,8 @@
  * TAP output. With `--parallel`, each file runs in an isolated Realm and
  * returns a structured result whose top-level entries are merged into the
  * ordinary root TAP document. Top-level group execution defaults to ten
- * groups per configured reactor thread and can be set explicitly through
- * `FINO_TEST_CONCURRENCY`. At most one group executes per file Realm. A
+ * groups per configured reactor thread. `FINO_TEST_CONCURRENCY` changes that
+ * per-reactor multiplier. At most one group executes per file Realm. A
  * completed file admits the next file Realm into the bounded live window.
  *
  * Parallel output remains TAP 13 and has the same top-level shape as serial
@@ -59,20 +59,24 @@ type PreparedTestDiagnostic = TestGroupResult['diagnostics'][number];
 type ParallelShowOutputMode = NonNullable<Parameters<typeof runTestFile>[1]['showOutput']>;
 type ParallelLineWriter = (line?: string) => void;
 
-const PARALLEL_GROUPS_PER_THREAD = 10;
+const DEFAULT_PARALLEL_GROUPS_PER_REACTOR = 10;
 
 /**
- * Calculate the parallel test admission limit from an explicit test override
- * or the configured reactor pool. There is intentionally no system-independent
- * cap.
+ * Calculate the parallel test admission limit from the configured reactor pool
+ * and an optional per-reactor override. There is intentionally no
+ * system-independent cap.
  *
  */
 function parallelTestConcurrency(reactorThreadCount: number): number {
   const configured = env.FINO_TEST_CONCURRENCY;
-  if (configured === undefined) return reactorThreadCount * PARALLEL_GROUPS_PER_THREAD;
-  const concurrency = Number(configured);
-  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
-    throw new Error('FINO_TEST_CONCURRENCY must be a positive integer');
+  const perReactor =
+    configured === undefined ? DEFAULT_PARALLEL_GROUPS_PER_REACTOR : Number(configured);
+  if (!Number.isSafeInteger(perReactor) || perReactor < 1) {
+    throw new Error('FINO_TEST_CONCURRENCY must be a positive per-reactor integer');
+  }
+  const concurrency = reactorThreadCount * perReactor;
+  if (!Number.isSafeInteger(concurrency)) {
+    throw new Error('total parallel test concurrency exceeds the safe integer range');
   }
   return concurrency;
 }
@@ -534,7 +538,8 @@ async function expandArg(arg: string): Promise<string[]> {
  * default — `always`, or `never`), and `--durations` appends
  * `duration=<time>` metadata to every TAP result line. `--parallel` runs one
  * isolated Realm per file with up to ten executing top-level groups per reactor
- * thread by default and one active group per Realm. A settled group releases its slot
+ * thread by default and one active group per Realm. `FINO_TEST_CONCURRENCY`
+ * changes the number of groups admitted per reactor. A settled group releases its slot
  * immediately and emits as one atomic TAP block. Results emit in completion
  * order by default; `--ordered` holds later results until all earlier registered
  * groups have completed.

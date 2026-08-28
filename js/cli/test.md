@@ -46,10 +46,12 @@ suppress captured output in failure details.
 
 `--parallel` runs every matched test file in its own Realm. The command defaults
 to ten executing top-level test groups per configured reactor thread. Set
-`FINO_TEST_CONCURRENCY` to a positive integer to override that limit directly,
-or `FINO_REACTOR_THREADS` to control the underlying reactor pool. At most one
-group executes in a given file Realm so its shared module state retains serial
-semantics.
+`FINO_TEST_CONCURRENCY` to a positive integer to change that per-reactor amount,
+or `FINO_REACTOR_THREADS` to control the underlying reactor pool. The reactor
+pool defaults to one fewer than the host's online processor count, reserving a
+processor for main-thread coordination while retaining at least two reactors on
+multi-processor hosts. At most one group executes in a given file Realm so its
+shared module state retains serial semantics.
 
 Files enter a rolling live-Realm window in discovery order. Each module's top
 level registers its groups, then their closures wait for group admission. When

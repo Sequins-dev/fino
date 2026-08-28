@@ -1288,7 +1288,7 @@ describe('CLI commands', () => {
       t.ok(stdout.includes('    ok 1 - b waits for a'), 'nested numbering remains local');
     });
   });
-  it('emits parallel groups as each completes by default', async (t) => {
+  it('scales test concurrency per reactor and emits groups as each completes', async (t) => {
     await withTempProject({}, async (dir, fs) => {
       const marker = `${dir}/fast-finished`;
       await fs.writeFile(
@@ -1326,7 +1326,7 @@ describe('CLI commands', () => {
         ['test', '--parallel', '00-slow.test.ts', '01-fast.test.ts'],
         {
           cwd: dir,
-          env: { FINO_REACTOR_THREADS: '1', FINO_TEST_CONCURRENCY: '2' },
+          env: { FINO_REACTOR_THREADS: '2', FINO_TEST_CONCURRENCY: '1' },
         },
       );
       t.equal(result.code, 0, 'completion-order run exits successfully');
@@ -1578,7 +1578,7 @@ describe('CLI commands', () => {
       );
       const { stdout, stderr, result } = await runCli(
         ['test', '--parallel', 'a.test.ts', 'b.test.ts'],
-        { cwd: dir, env: { FINO_TEST_CONCURRENCY: '1' } },
+        { cwd: dir, env: { FINO_REACTOR_THREADS: '1', FINO_TEST_CONCURRENCY: '1' } },
       );
       t.equal(result.code, 0, 'rolling files exit successfully');
       t.equal(stderr, '', 'rolling registration has no diagnostics');
@@ -1604,7 +1604,10 @@ describe('CLI commands', () => {
           env: { FINO_TEST_CONCURRENCY: '0' },
         });
         t.equal(result.code, 1, 'invalid concurrency exits nonzero');
-        t.ok(stderr.includes('positive integer'), 'invalid concurrency reports its contract');
+        t.ok(
+          stderr.includes('positive per-reactor integer'),
+          'invalid concurrency reports its contract',
+        );
       },
     );
   });

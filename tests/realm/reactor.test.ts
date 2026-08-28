@@ -8,6 +8,7 @@ import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import * as schedulerNative from 'internal:scheduler-native';
 import { onlineProcessors } from 'internal:runtime/libc';
+import { selectReactorThreadCount } from 'internal:scheduler/readiness';
 import { Process, env, execPath } from 'fino:process';
 
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
@@ -24,6 +25,13 @@ import type asyncFn from './fixtures/async-fn.ts';
 import type busyLoop from './fixtures/sandbox-busy-loop-fn.ts';
 
 describe('Reactor scheduler native surface', () => {
+  it('reserves a processor without reducing multi-core hosts below two reactors', (t) => {
+    t.equal(selectReactorThreadCount(1), 1, 'single-processor hosts retain one reactor');
+    t.equal(selectReactorThreadCount(2), 2, 'multi-processor hosts retain two reactors');
+    t.equal(selectReactorThreadCount(3), 2, 'three-processor hosts reserve one processor');
+    t.equal(selectReactorThreadCount(8), 7, 'larger hosts reserve exactly one processor');
+    t.equal(selectReactorThreadCount(8, '4'), 4, 'an explicit override controls the pool');
+  });
   it('does not expose retired compatibility operations', (t) => {
     for (const name of [
       'sharedLoopDescriptor',
