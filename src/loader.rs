@@ -179,6 +179,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:bytes", "internal/bytes"),
     source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:process/cwd", "internal/process/cwd"),
+    source_builtin!("internal:process/exit", "internal/process/exit"),
     source_builtin!("internal:statistics", "internal/statistics"),
     source_builtin!("internal:value/equal", "internal/value/equal"),
     source_builtin!("internal:store/facade", "internal/store/facade"),

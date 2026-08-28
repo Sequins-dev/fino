@@ -107,6 +107,7 @@ import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { getRealmCwd, setRealmCwd } from 'internal:process/cwd';
+import { interceptProcessExit } from 'internal:process/exit';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
 import { topic, Topic } from './context/topic.ts';
@@ -858,6 +859,7 @@ export const ppid = lib.symbols.getppid();
  * @param {number} [code=0] exit status
  */
 export function exit(code: number = 0): never {
+  interceptProcessExit(code);
   // Flush coalesce buffers so buffered output isn't silently discarded.
   // flushSync() uses write(2) directly; errors are swallowed so _exit always runs.
   try {

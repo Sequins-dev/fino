@@ -1431,6 +1431,36 @@ describe('CLI commands', () => {
       );
     });
   });
+  it('does not let a parallel test Realm exit the coordinator process', async (t) => {
+    await withTempProject(
+      {
+        '00-exit.test.ts': ["import { exit } from 'fino:process';", 'exit(0);', ''].join('\n'),
+        '01-survivor.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "test('runs after another file requests exit', (t) => t.ok(true));",
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, stderr, result } = await runCli(
+          ['test', '--parallel', '--ordered', '00-exit.test.ts', '01-survivor.test.ts'],
+          {
+            cwd: dir,
+            env: { FINO_REACTOR_THREADS: '1', FINO_TEST_CONCURRENCY: '1' },
+          },
+        );
+        t.equal(result.code, 1, 'an in-process Realm exit request fails the test run');
+        t.ok(stdout.includes('not ok 1 - 00-exit.test.ts failed to load or run'));
+        t.ok(
+          stdout.includes('ok 2 - runs after another file requests exit'),
+          'later files still run',
+        );
+        t.ok(stdout.includes('\n1..2\n'), 'the complete aggregate plan is emitted');
+        t.ok(stdout.includes('# tests 2'), 'the complete aggregate summary is emitted');
+        t.ok(stderr.includes('1 test(s) failed'), 'the exit request is reported as a failure');
+      },
+    );
+  });
   it('drains Realm shutdown hooks before reporting a parallel file', async (t) => {
     await withTempProject({}, async (dir, fs) => {
       await fs.writeFile(
@@ -1484,6 +1514,11 @@ describe('CLI commands', () => {
           } else if (message?.kind === 'fino:test:result') {
             sawResult = true;
           } else if (message?.kind === 'fino:test:complete') {
+            t.equal(callSettled, false, 'call remains pending before the acknowledgement');
+            t.equal(runSettled, false, 'Realm remains alive before the acknowledgement');
+            realm.port.postMessage({
+              kind: 'fino:test:complete-ack',
+            } satisfies TestFileCompletionAck);
             resolveCompletion(message);
           }
         };
@@ -1503,13 +1538,7 @@ describe('CLI commands', () => {
               setTimeout(() => reject(new Error('test worker did not report completion')), 2_000);
             }),
           ]);
-          await new Promise((resolve) => setTimeout(resolve, 10));
           t.ok(sawResult, 'worker emits its test result before completion');
-          t.equal(callSettled, false, 'call remains pending before the acknowledgement');
-          t.equal(runSettled, false, 'Realm remains alive before the acknowledgement');
-          realm.port.postMessage({
-            kind: 'fino:test:complete-ack',
-          } satisfies TestFileCompletionAck);
           const [callResult] = await Promise.all([call, run]);
           t.equal(callResult.kind, completion.kind, 'call returns the acknowledged completion');
         } finally {

@@ -15,6 +15,7 @@
 import { allowInternalForTests } from 'internal:loader-hooks';
 import { port } from 'fino:realm/self';
 import { runShutdownHooks } from 'internal:shutdown';
+import { installProcessExitHandler } from 'internal:process/exit';
 import type { ConsoleCaptureRecord } from 'internal:globals/console';
 import type { RunOptions } from '../test/test.ts';
 
@@ -73,6 +74,9 @@ export default async function runTestFile(
   options: RunOptions,
 ): Promise<TestFileCompletion> {
   if (port === undefined) throw new Error('test worker requires a Realm port');
+  installProcessExitHandler((code) => {
+    throw new Error(`test file requested process exit with code ${code}`);
+  });
   allowInternalForTests();
   const testModule = await import('fino:test/test');
   let prepared: ReturnType<typeof testModule._prepareRun> | undefined;
