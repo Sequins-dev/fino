@@ -21,6 +21,7 @@ import {
   processSandboxCapabilities,
 } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import { dlopen } from 'fino:ffi';
 import { Realm } from 'fino:realm';
 import * as loop from 'internal:runtime/loop';
 import type realmCwd from './fixtures/realm-cwd-fn.ts';
@@ -30,6 +31,16 @@ const childEnv = Object.fromEntries(
   Object.entries(env).filter(([, v]) => v !== undefined),
 ) as Record<string, string>;
 const fs = new DiskFileSystem();
+const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+  close: {
+    parameters: ['i32'],
+    result: 'i32',
+  },
+  pipe: {
+    parameters: ['buffer'],
+    result: 'i32',
+  },
+});
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   const timer = loop.timeout(ms);
   try {
@@ -192,6 +203,44 @@ describe('Process APIs', () => {
   });
 });
 describe('Process class', { exclusive: true }, () => {
+  it('does not inherit unrelated parent descriptors', async (t) => {
+    const countOpenFds = async (): Promise<number> => {
+      const proc = new Process(execPath, [
+        new URL('./fixtures/open-fd-count.ts', import.meta.url).pathname,
+      ]);
+      proc.stdin.close();
+      const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
+      const [result] = await Promise.all([
+        proc.wait(),
+        (async () => {
+          for await (const chunk of proc.stdout) stdout.push(chunk);
+        })(),
+        (async () => {
+          for await (const chunk of proc.stderr) stderr.push(chunk);
+        })(),
+      ]);
+      t.equal(result.code, 0, `fd probe exits successfully: ${joinChunks(stderr)}`);
+      return Number(joinChunks(stdout).trim());
+    };
+
+    const baseline = await countOpenFds();
+    const descriptors: number[] = [];
+    try {
+      for (let index = 0; index < 8; index++) {
+        const buffer = new ArrayBuffer(8);
+        t.equal(libc.symbols.pipe(buffer), 0, `opened unrelated pipe ${index}`);
+        descriptors.push(...new Int32Array(buffer));
+      }
+      const withUnrelatedPipes = await countOpenFds();
+      t.ok(
+        withUnrelatedPipes <= baseline + 2,
+        `child inherited no unrelated descriptors: baseline=${baseline}, actual=${withUnrelatedPipes}`,
+      );
+    } finally {
+      for (const fd of descriptors) libc.symbols.close(fd);
+    }
+  });
   it("does not leak another Process instance's stdio into spawned children", async (t) => {
     const countOpenFds = async (): Promise<number> => {
       const proc = new Process(execPath, [
@@ -757,6 +806,22 @@ describe('Process class', { exclusive: true }, () => {
     for await (const chunk of proc.stderr) errChunks.push(chunk);
     t.equal(joinChunks(errChunks).trim(), 'err');
     await proc.wait();
+  });
+  it('wait() leaves the calling Realm responsive while the child is alive', async (t) => {
+    const proc = new Process('/bin/sh', ['-c', "printf 'ready\\n'; sleep 30"]);
+    proc.stdin.close();
+    const waiting = proc.wait();
+    try {
+      const ready = await withTimeout(
+        proc.stdout.readUntil(new Uint8Array([10]), 1024),
+        2_000,
+        'child readiness output',
+      );
+      t.equal(decodeUtf8(ready!), 'ready\n', 'stdout remains readable while wait is pending');
+    } finally {
+      proc.kill(SIGKILL);
+      await waiting;
+    }
   });
   it('drains high-volume stdout and stderr concurrently', async (t) => {
     const proc = new Process(

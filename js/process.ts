@@ -34,11 +34,12 @@
  *   stderr: [stderrR -> parent Reader, stderrW -> child stderr]
  *
  * `posix_spawn_file_actions_*` wires the child-side fds before exec. Linux
- * creates the descriptors atomically with `pipe2(O_CLOEXEC)`; macOS combines
+ * creates the descriptors atomically with `pipe2(O_CLOEXEC)` and closes every
+ * unrelated descriptor from fd 3 upward in ordinary children; macOS combines
  * close-on-exec descriptors with `POSIX_SPAWN_CLOEXEC_DEFAULT`. This prevents
- * concurrent spawns in other Realms from retaining an unrelated child's pipe
- * writer and delaying EOF. The parent-side fds are set to `O_NONBLOCK` for the
- * event loop.
+ * concurrent Realms from coupling child lifecycles through inherited pipes,
+ * sockets, or event-loop descriptors. The parent-side fds are set to
+ * `O_NONBLOCK` for the event loop.
  *
  *
  * ## buildCStringArray and GC lifetime
@@ -66,8 +67,9 @@
  *   just like any other fd, then close the pidfd. This is the modern
  *   alternative to `waitpid(2)` polling loops.
  *
- * In both cases, after the kernel signals exit, a single `waitpid(pid, 0)` is
- * called to reap the zombie and retrieve the exit status. The status integer
+ * In both cases, after the kernel signals exit, `waitpid(pid, WNOHANG)` confirms
+ * and reaps the zombie. A stale readiness notification is re-armed rather than
+ * ever blocking a reactor thread. The status integer
  * is decoded using the POSIX WIFEXITED / WIFSIGNALED macros inlined as bit
  * operations.
  *
@@ -541,6 +543,7 @@ const F_SETFD = 2;
 const FD_CLOEXEC = 1;
 const O_NONBLOCK = isLinux ? 2048 : 4;
 const O_CLOEXEC = 0x80000;
+const WNOHANG = 1;
 // Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
 const SYS_PIDFD_OPEN = 434n;
 // Default signal for kill (also exported in signal constants below)
@@ -659,6 +662,20 @@ const spawnInheritLib =
         },
       })
     : null;
+const spawnCloseFromLib = isLinux
+  ? (() => {
+      try {
+        return dlopen(LIBC, {
+          posix_spawn_file_actions_addclosefrom_np: {
+            parameters: ['buffer', 'i32'],
+            result: 'i32',
+          },
+        });
+      } catch (_) {
+        return null;
+      }
+    })()
+  : null;
 const RUSAGE_SELF = 0;
 let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------
@@ -1691,6 +1708,8 @@ export class Process {
    * Standard input, output, and error are always exposed as pipes on the
    * returned object. This constructor does not interpret Node-style `shell`,
    * `stdio`, `detached`, `ipc`, `uid`, or `gid` options.
+   * Ordinary children inherit no other parent descriptors. Strict sandbox
+   * launchers retain only their explicitly required bootstrap descriptors.
    *
    * ```ts no_run
    * import { Process } from 'fino:process';
@@ -1847,21 +1866,29 @@ export class Process {
         Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stderrW, 2)),
         'posix_spawn_file_actions_adddup2(stderr)',
       );
-      addCloseIfNeeded(actions, stdinR, 0);
-      addCloseIfNeeded(actions, stdoutW, 1);
-      addCloseIfNeeded(actions, stderrW, 2);
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)),
-        'posix_spawn_file_actions_addclose(parent stdin)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)),
-        'posix_spawn_file_actions_addclose(parent stdout)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
-        'posix_spawn_file_actions_addclose(parent stderr)',
-      );
+      const closeFrom = spawnCloseFromLib !== null && (_inheritFds?.length ?? 0) === 0;
+      if (closeFrom) {
+        addSpawnAction(
+          Number(spawnCloseFromLib.symbols.posix_spawn_file_actions_addclosefrom_np(actions, 3)),
+          'posix_spawn_file_actions_addclosefrom_np(3)',
+        );
+      } else {
+        addCloseIfNeeded(actions, stdinR, 0);
+        addCloseIfNeeded(actions, stdoutW, 1);
+        addCloseIfNeeded(actions, stderrW, 2);
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)),
+          'posix_spawn_file_actions_addclose(parent stdin)',
+        );
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)),
+          'posix_spawn_file_actions_addclose(parent stdout)',
+        );
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
+          'posix_spawn_file_actions_addclose(parent stderr)',
+        );
+      }
       if (spawnInheritLib !== null) {
         for (const fd of _inheritFds ?? []) {
           addSpawnAction(
@@ -2009,7 +2036,9 @@ export class Process {
    * - Linux: opens a pidfd via pidfd_open(2) and polls it with loop.readable()
    *          - the pidfd becomes readable the moment the child exits.
    *
-   * After the kernel signals exit, a single waitpid(pid, 0) reaps the zombie.
+   * After a kernel notification, `waitpid(pid, WNOHANG)` confirms and reaps the
+   * zombie. Spurious notifications are re-armed, so waiting never blocks the
+   * calling Realm's reactor thread.
    *
    * Calling `wait()` more than once is not supported because the first call
    * reaps the process. The promise rejects if the platform wait primitive
@@ -2028,20 +2057,33 @@ export class Process {
   async wait(): Promise<WaitResult> {
     if (this.#waitStarted) throw new Error(`Process ${this.#pid} has already been waited`);
     this.#waitStarted = true;
+    const statusBuf = new ArrayBuffer(4);
     if (isLinux) {
       // pidfd_open(pid, flags=0) returns a pollable file descriptor.
       const pidfd = Number(lib.symbols.syscall(SYS_PIDFD_OPEN, BigInt(this.#pid), 0n));
       if (pidfd < 0) throw new Error(`pidfd_open(${this.#pid}) failed: errno ${-pidfd}`);
-      await loop.readable(pidfd);
-      lib.symbols.close(pidfd);
+      try {
+        while (true) {
+          await loop.readable(pidfd);
+          const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
+          if (waited === this.#pid) break;
+          if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
+        }
+      } finally {
+        loop.removeRead(pidfd);
+        lib.symbols.close(pidfd);
+      }
     } else {
-      // macOS: EVFILT_PROC fires immediately when the child exits.
-      await loop.proc(this.#pid);
+      while (true) {
+        // macOS: EVFILT_PROC fires immediately when the child exits.
+        await loop.proc(this.#pid);
+        const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
+        if (waited === this.#pid) break;
+        if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
+      }
     }
-    // Reap the zombie and decode the exit status.
-    const statusBuf = new ArrayBuffer(4);
+    // Decode the status written by the successful non-blocking reap above.
     const statusView = new DataView(statusBuf);
-    lib.symbols.waitpid(this.#pid, statusBuf, 0);
     // Reap descendants the direct child left behind. A per-spawn cgroup takes
     // down its whole tree via cgroup.kill; otherwise the child was made a
     // process-group leader and kill(-pgid) reaps any orphans in that group.
