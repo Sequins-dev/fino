@@ -96,6 +96,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
@@ -132,6 +133,24 @@ jobs:
       - name: Build
         run: cargo build
 
+      - name: Check V8 artifact cache readiness
+        id: v8-cache-ready
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        run: |
+          if [[ -s target/debug/gn_out/obj/librusty_v8.a \
+            && -s target/debug/gn_out/src_binding.rs ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save V8 build artifact cache
+        if: ${{ !cancelled() && steps.v8-cache-ready.outputs.ready == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/debug/gn_out/obj/librusty_v8.a
+            target/debug/gn_out/src_binding.rs
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
+
       - name: Run Rust tests
         run: cargo test --quiet
 
@@ -155,6 +174,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
 
       - name: Install native dependencies
@@ -164,6 +184,24 @@ jobs:
 
       - name: Build
         run: cargo build
+
+      - name: Check V8 artifact cache readiness
+        id: v8-cache-ready
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        run: |
+          if [[ -s target/debug/gn_out/obj/librusty_v8.a \
+            && -s target/debug/gn_out/src_binding.rs ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save V8 build artifact cache
+        if: ${{ !cancelled() && steps.v8-cache-ready.outputs.ready == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/debug/gn_out/obj/librusty_v8.a
+            target/debug/gn_out/src_binding.rs
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Run Rust tests
         run: cargo test --quiet

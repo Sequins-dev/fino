@@ -21,6 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo and V8 build
+        id: build-cache
         uses: ./.github/actions/cache-cargo-deps
         with:
           profile: release
@@ -50,6 +51,24 @@ jobs:
 
       - name: Build release binary
         run: cargo build --release
+
+      - name: Check V8 artifact cache readiness
+        id: v8-cache-ready
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        run: |
+          if [[ -s target/release/gn_out/obj/librusty_v8.a \
+            && -s target/release/gn_out/src_binding.rs ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save V8 build artifact cache
+        if: ${{ !cancelled() && steps.v8-cache-ready.outputs.ready == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/release/gn_out/obj/librusty_v8.a
+            target/release/gn_out/src_binding.rs
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Save Linux release build
         uses: actions/cache/save@v4
