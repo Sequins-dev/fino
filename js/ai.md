@@ -39,7 +39,7 @@ runs. Reach for an agent as soon as the model may call tools or the output
 must match a schema.
 
 **Sessions** make multi-turn state durable. A `Session` persists agent runs,
-threads, and suspend/resume state through a `SessionStore`, so a conversation
+threads, and suspend/resume state through a generic atomic `Store`, so a conversation
 can survive process restarts or pause for human approval. The agent remains
 the behavior boundary; the session is the durability boundary.
 
@@ -68,8 +68,9 @@ This support assistant has one validated tool, durable session state,
 structured output, and an HTTP route that runs one session turn.
 
 ```ts
-import { agent, InMemorySessionStore, openai, session, tool } from 'fino:ai';
+import { agent, openai, session, tool } from 'fino:ai';
 import { App } from 'fino:net/http/app';
+import { memoryStore } from 'fino:store';
 import { v } from 'fino:validate';
 
 const ticketLookup = tool({
@@ -93,7 +94,7 @@ const bot = agent({
   }),
 });
 
-const store = new InMemorySessionStore();
+const store = memoryStore();
 
 const app = new App();
 app.post('/chat').handle(async (ctx) => {

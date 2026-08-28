@@ -129,6 +129,15 @@ export interface ImagePart {
   /** Base64-encoded image bytes without a `data:` URI prefix. */
   data: string;
 }
+/** Inline audio input encoded as base64 bytes. */
+export interface AudioPart {
+  /** Part discriminant. */
+  type: 'audio';
+  /** MIME type such as `audio/wav` or `audio/mpeg`. */
+  mediaType: string;
+  /** Base64-encoded audio bytes without a data URI prefix. */
+  data: string;
+}
 /**
  * Model-requested tool call content part.
  *
@@ -228,7 +237,13 @@ export interface DocumentPart {
  * Message content is either a plain string or an ordered list of these parts;
  * the string form is shorthand for a single `TextPart`.
  */
-export type ContentPart = TextPart | ImagePart | ToolUsePart | ToolResultPart | DocumentPart;
+export type ContentPart =
+  | TextPart
+  | ImagePart
+  | AudioPart
+  | ToolUsePart
+  | ToolResultPart
+  | DocumentPart;
 /**
  * Native structured response format request.
  *
@@ -564,6 +579,7 @@ export interface ModelCapabilities {
   input?: {
     text?: boolean;
     image?: boolean;
+    audio?: boolean;
     document?: boolean;
   };
   /** Which sampling controls from `GenerateRequest` take effect. */

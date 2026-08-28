@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { MCPClient, mcpServer, mountMcp } from 'fino:ai/mcp';
+import { MCPClient, mcpServer, mountMcp, sseTransport } from 'fino:ai/mcp';
 import { JsonRpcService, JsonRpcServer, JsonRpcPeer } from 'fino:jsonrpc';
 import { agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
@@ -257,6 +257,62 @@ function startMockServer(serverTransport: Transport): JsonRpcServer {
   return server;
 }
 describe('fino:ai/mcp — MCPClient', () => {
+  it('connects through the legacy HTTP+SSE transport required by ACP v1', async (t) => {
+    const encoder = new TextEncoder();
+    const events = new MessageQueue();
+    events.push('event: endpoint\ndata: /messages\n\n');
+    async function* eventBody(): AsyncGenerator<Uint8Array> {
+      for await (const event of events) yield encoder.encode(event);
+    }
+    const request = async (
+      url: string,
+      init: { method: 'GET' | 'POST'; body?: string },
+    ): Promise<{ status: number; body: AsyncIterable<Uint8Array> | null }> => {
+      if (init.method === 'GET') {
+        t.equal(url, 'http://legacy.test/events');
+        return { status: 200, body: eventBody() };
+      }
+      t.equal(url, 'http://legacy.test/messages');
+      const message = JSON.parse(init.body ?? '') as {
+        id?: number;
+        method: string;
+      };
+      if (message.id !== undefined) {
+        const result =
+          message.method === 'initialize'
+            ? {
+                protocolVersion: '2025-06-18',
+                capabilities: { tools: {} },
+                serverInfo: { name: 'legacy-sse', version: '1' },
+              }
+            : message.method === 'tools/list'
+              ? { tools: MOCK_TOOLS }
+              : {};
+        events.push(
+          `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: message.id, result })}\n\n`,
+        );
+      }
+      return { status: 202, body: null };
+    };
+    const client = new MCPClient({
+      transport: sseTransport({
+        url: 'http://legacy.test/events',
+        request,
+        close: () => events.close(),
+      }),
+    });
+    try {
+      await client.connect();
+      const tools = await client.listTools();
+      t.deepEqual(
+        tools.map((item) => item.name),
+        ['get_weather', 'search'],
+      );
+    } finally {
+      await client.close();
+    }
+  });
+
   it('connect() performs initialize + notifications/initialized handshake', async (t) => {
     const [clientTransport, serverTransport] = loopbackPair();
     startMockServer(serverTransport);

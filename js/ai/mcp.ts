@@ -180,12 +180,13 @@ export function stdioTransport(opts: StdioTransportOptions): Transport {
   return {
     async send(message: string): Promise<void> {
       await proc.stdin.write(enc.encode(message + '\n'));
+      await proc.stdin.flush();
     },
     receive(): AsyncIterable<string> {
       return splitLines(proc.stdout);
     },
     async close(): Promise<void> {
-      proc.stdin.close();
+      await proc.stdin.close();
     },
   };
 }
@@ -330,6 +331,130 @@ export function httpTransport(opts: HttpTransportOptions): Transport {
     },
     close(): void {
       void ch.writer.close();
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// sseTransport (legacy MCP HTTP+SSE)
+// ---------------------------------------------------------------------------
+/** Minimal HTTP response consumed by the injectable legacy SSE request effect. */
+export interface SseHttpResponse {
+  /** HTTP status code. */
+  status: number;
+  /** Streaming response body, when present. */
+  body: AsyncIterable<Uint8Array> | null;
+}
+/** Injectable HTTP effect used by the legacy SSE transport. */
+export type SseHttpRequest = (
+  url: string,
+  init: {
+    method: 'GET' | 'POST';
+    headers: Record<string, string>;
+    body?: string;
+  },
+) => Promise<SseHttpResponse>;
+/** Options for the deprecated MCP HTTP+SSE transport used by ACP v1. */
+export interface SseTransportOptions {
+  /** URL whose GET response is the MCP event stream. */
+  url: string;
+  /** Extra headers sent with the event-stream GET and message POSTs. */
+  headers?: Record<string, string>;
+  /** Injectable HTTP request effect for simulation and custom networking policy. */
+  request?: SseHttpRequest;
+  /** Cleanup paired with an injected `request` effect. */
+  close?(): void | Promise<void>;
+}
+
+/**
+ * Create the legacy MCP HTTP+SSE client transport.
+ *
+ * The transport opens `opts.url` as an event stream, waits for its required
+ * `endpoint` event, POSTs outgoing JSON-RPC messages to that endpoint, and
+ * yields `message` event payloads to `MCPClient`. ACP v1 still negotiates this
+ * transport even though newer MCP revisions deprecate it in favor of
+ * Streamable HTTP.
+ */
+export function sseTransport(opts: SseTransportOptions): Transport {
+  const ch = new Channel<string>();
+  const headers = opts.headers ?? {};
+  const httpClient = opts.request ? null : new HttpClient();
+  const request: SseHttpRequest = opts.request ?? ((url, init) => httpClient!.request(url, init));
+  let endpointResolve!: (endpoint: string) => void;
+  let endpointReject!: (error: unknown) => void;
+  let endpointSettled = false;
+  let closed = false;
+  let body: (AsyncIterable<Uint8Array> & { close?(): Promise<void> | void }) | null = null;
+  const endpoint = new Promise<string>((resolve, reject) => {
+    endpointResolve = resolve;
+    endpointReject = reject;
+  });
+  void endpoint.catch(() => {});
+  void (async () => {
+    try {
+      const response = await request(opts.url, {
+        method: 'GET',
+        headers: {
+          accept: 'text/event-stream',
+          ...headers,
+        },
+      });
+      if (response.status < 200 || response.status >= 300 || !response.body) {
+        throw new JsonRpcError(`SSE HTTP ${response.status}`, INTERNAL_ERROR);
+      }
+      body = response.body as typeof body;
+      for await (const event of parseEventStream(response.body)) {
+        if (closed) break;
+        if (event.type === 'endpoint') {
+          if (!endpointSettled) {
+            endpointSettled = true;
+            endpointResolve(new URL(event.data, opts.url).toString());
+          }
+        } else if (event.type === 'message' && event.data) {
+          await ch.writer.write(event.data);
+        }
+      }
+      if (!closed && !endpointSettled) {
+        throw new JsonRpcError('MCP SSE stream closed before endpoint event', INTERNAL_ERROR);
+      }
+    } catch (error) {
+      if (!endpointSettled) {
+        endpointSettled = true;
+        endpointReject(error);
+      }
+    } finally {
+      await ch.writer.close();
+    }
+  })();
+  return {
+    async send(message: string): Promise<void> {
+      if (closed) throw new JsonRpcError('MCP SSE transport is closed', INTERNAL_ERROR);
+      const messageUrl = await endpoint;
+      const response = await request(messageUrl, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...headers,
+        },
+        body: message,
+      });
+      if (response.status < 200 || response.status >= 300) {
+        throw new JsonRpcError(`SSE message HTTP ${response.status}`, INTERNAL_ERROR);
+      }
+    },
+    receive(): AsyncIterable<string> {
+      return ch.reader;
+    },
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      if (!endpointSettled) {
+        endpointSettled = true;
+        endpointReject(new JsonRpcError('MCP SSE transport is closed', INTERNAL_ERROR));
+      }
+      await body?.close?.();
+      await ch.writer.close();
+      await Promise.all([httpClient?.close(), opts.close?.()]);
     },
   };
 }
@@ -1058,6 +1183,15 @@ function contentPartsToMcpContent(content: string | ContentPart[]): McpContent[]
         data: part.data,
         mimeType: part.mediaType,
       });
+    } else if (part.type === 'audio') {
+      out.push({
+        type: 'resource',
+        resource: {
+          uri: 'audio://inline',
+          mimeType: part.mediaType,
+          blob: part.data,
+        },
+      });
     } else if (part.type === 'document') {
       out.push({
         type: 'resource',
@@ -1232,7 +1366,7 @@ export class MCPServer {
           toolCallId:
             typeof ctx.id === 'string' || typeof ctx.id === 'number' ? String(ctx.id) : params.name,
           step: 0,
-          runId: this.#sessionBySignal.get(ctx.signal) ?? 'mcp',
+          runId: this.#sessionBySignal.get(ctx.connectionSignal ?? ctx.signal) ?? 'mcp',
           messages: [] satisfies ModelMessage[],
           suspend(suspendOpts = {}): never {
             throw new Error(suspendOpts.reason ?? 'Tool suspended');
@@ -1257,7 +1391,7 @@ export class MCPServer {
           throw new JsonRpcError(`Unknown resource: ${params.uri}`, INVALID_PARAMS);
         const content = await this.#readResource(params.uri, {
           signal: ctx.signal,
-          sessionId: this.#sessionBySignal.get(ctx.signal),
+          sessionId: this.#sessionBySignal.get(ctx.connectionSignal ?? ctx.signal),
         });
         return { contents: normalizeResourceContent(params.uri, content) };
       })
@@ -1267,7 +1401,7 @@ export class MCPServer {
           throw new JsonRpcError('Invalid resources/subscribe params', INVALID_PARAMS);
         }
         const record =
-          this.#recordBySignal.get(ctx.signal) ??
+          this.#recordBySignal.get(ctx.connectionSignal ?? ctx.signal) ??
           (this.#peers.size === 1 ? [...this.#peers][0] : undefined);
         if (record) record.subscriptions.add(params.uri);
         return {};
@@ -1278,7 +1412,7 @@ export class MCPServer {
           throw new JsonRpcError('Invalid resources/unsubscribe params', INVALID_PARAMS);
         }
         const record =
-          this.#recordBySignal.get(ctx.signal) ??
+          this.#recordBySignal.get(ctx.connectionSignal ?? ctx.signal) ??
           (this.#peers.size === 1 ? [...this.#peers][0] : undefined);
         if (record) record.subscriptions.delete(params.uri);
         return {};
@@ -1294,7 +1428,7 @@ export class MCPServer {
           throw new JsonRpcError(`Unknown prompt: ${params.name}`, INVALID_PARAMS);
         return this.#getPrompt(params.name, isRecord(params.arguments) ? params.arguments : {}, {
           signal: ctx.signal,
-          sessionId: this.#sessionBySignal.get(ctx.signal),
+          sessionId: this.#sessionBySignal.get(ctx.connectionSignal ?? ctx.signal),
         });
       });
   }

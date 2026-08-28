@@ -1,21 +1,23 @@
 /**
- * fino:ai/agent — high-level model loop with tools and strategy-owned history.
+ * fino:ai/agent — reusable agent definitions and isolated conversation sessions.
  *
  * This module is the primary entry point for agent applications. An `Agent`
  * owns the model loop: it sends curated messages to a `Model`, executes tool
  * calls, accumulates usage and cost, applies guardrails, and stops when the
  * model finishes or a configured stop condition fires. Use this module when an
  * application wants a complete LLM interaction loop instead of calling provider
- * adapters directly.
+ * adapters directly. An `Agent` is safe to reuse across concurrent requests:
+ * mutable conversation state belongs to an `AgentSession`, never the definition.
  *
  * ## Design
  *
- * History policy is intentionally external. The agent appends incoming,
+ * History policy is intentionally external. Each session appends incoming,
  * assistant, and tool-result messages through a `HistoryStrategy`, then asks
  * that strategy for the model-facing view before each request. The default is
- * append-only in-memory history. Durable sessions, summarization, selective
- * retrieval, and memory emission are supplied by strategies and session stores,
- * not by hidden agent state.
+ * append-only in-memory history. `Agent.generate()` and `Agent.stream()` create
+ * an ephemeral session for one isolated run. Call `createSession()` when later
+ * turns should retain history. A history factory creates a fresh strategy for
+ * every session, preventing concurrent callers from sharing mutable policy state.
  *
  * Tools are ordinary `Tool` values. They receive abort/run context and may
  * throw `SuspendSignal` to pause a durable session. Agents can also be wrapped
@@ -46,9 +48,11 @@
  *   })],
  * });
  *
- * const stream = bot.stream('lookup account status');
+ * const conversation = bot.createSession();
+ * const stream = conversation.stream('lookup account status');
  * for await (const text of streamText(stream)) console.log(text);
  * const result = await stream.result;
+ * conversation.close();
  * ```
  */
 import { AgentRuntime, streamText as runtimeStreamText } from 'internal:ai/runtime';
@@ -62,10 +66,12 @@ import type {
   AgentEvent,
   AgentRunView,
   ToolApprovalRequest,
+  ToolApprovalHandler,
 } from 'internal:ai/runtime';
-import { appendOnlyHistoryStrategy } from 'fino:ai/context';
+import { appendOnlyHistoryStrategy, MessageHistory } from 'fino:ai/context';
 import type { HistoryStrategy } from 'fino:ai/context';
 import { tool } from 'fino:ai/tool';
+import type { Tool } from 'fino:ai/tool';
 import type { SchemaBuilder } from 'fino:validate';
 function normalizeInput(input: string | RunInput): RunInput {
   if (typeof input === 'string') {
@@ -135,9 +141,10 @@ export function streamText(stream: AgentStream): AsyncGenerator<string> {
  * `AgentResult.object`. `retry`, `fallback`, and `guardrails` control
  * resilience and content policy.
  *
- * `history` defaults to an append-only in-memory strategy. Supplying a strategy
- * gives that strategy complete ownership of append and read-time curation —
- * summarization, selective retrieval, and durable persistence all live there.
+ * `history` defaults to a factory for append-only in-memory strategies.
+ * Supplying a factory gives each session a fresh policy with complete ownership
+ * of append and read-time curation. Summarization, selective retrieval, and
+ * durable persistence all live behind that per-session policy boundary.
  *
  * ```ts no_run
  * import { agent, type AgentOptions } from 'fino:ai/agent';
@@ -154,11 +161,162 @@ export function streamText(stream: AgentStream): AsyncGenerator<string> {
  * const bot = agent(opts);
  * ```
  */
+/** Factory that creates one fresh mutable history policy per agent session. */
+export type HistoryStrategyFactory = (history?: MessageHistory) => HistoryStrategy;
 export type AgentOptions = Omit<AgentRuntimeOptions, 'history'> & {
-  history?: HistoryStrategy;
+  /**
+   * Create the mutable history policy for one conversation session.
+   *
+   * The factory is called once for every `createSession()` and ephemeral
+   * `generate()` / `stream()` run. It must return a fresh strategy object. The
+   * optional `history` argument is the initial immutable history supplied by a
+   * durable session or fork.
+   */
+  history?: HistoryStrategyFactory;
 };
+/** Options for one isolated in-memory conversation. */
+export interface AgentSessionOptions {
+  /** Initial immutable history, usually restored by a durable session store. */
+  history?: MessageHistory;
+  /** Additional tools available only within this session. */
+  tools?: Tool[];
+  /** Inline approval host used only by this session. */
+  requestToolApproval?: ToolApprovalHandler;
+}
+/** Raised when two turns try to use the same `AgentSession` concurrently. */
+export class AgentSessionBusyError extends Error {
+  /** Create the deterministic overlapping-turn error. */
+  constructor() {
+    super('AgentSession already has an active turn');
+    this.name = 'AgentSessionBusyError';
+  }
+}
+/** Raised when work is started after an `AgentSession` has been closed. */
+export class AgentSessionClosedError extends Error {
+  /** Create the closed-session lifecycle error. */
+  constructor() {
+    super('AgentSession is closed');
+    this.name = 'AgentSessionClosedError';
+  }
+}
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
 /**
- * Runs an agent loop against a model.
+ * Mutable execution state for one conversation.
+ *
+ * Sessions retain their own history strategy and may therefore continue across
+ * sequential turns. Different sessions created from the same `Agent` are fully
+ * isolated and may run concurrently. A session permits one active turn at a
+ * time; overlapping `generate()`, `stream()`, `step()`, or `approveTool()`
+ * calls throw `AgentSessionBusyError` instead of interleaving state.
+ */
+export class AgentSession {
+  #runtime: AgentRuntime;
+  #active: AbortController | null = null;
+  #closed = false;
+  /** @internal Construct sessions through `Agent.createSession()`. */
+  constructor(runtime: AgentRuntime) {
+    this.#runtime = runtime;
+  }
+  /** Current immutable conversation history for persistence or inspection. */
+  get history(): MessageHistory {
+    return this.#runtime.history;
+  }
+  #begin(signal?: AbortSignal): AbortSignal {
+    if (this.#closed) throw new AgentSessionClosedError();
+    if (this.#active) throw new AgentSessionBusyError();
+    const controller = new AbortController();
+    this.#active = controller;
+    return signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+  }
+  #finish(controller: AbortController): void {
+    if (this.#active === controller) this.#active = null;
+  }
+  /** Run one isolated turn while retaining this session's prior history. */
+  async generate(input: string | RunInput): Promise<AgentResult> {
+    const normalized = normalizeInput(input);
+    const signal = this.#begin(normalized.signal);
+    const controller = this.#active!;
+    try {
+      return await this.#runtime.generate({
+        ...normalized,
+        signal,
+      });
+    } finally {
+      this.#finish(controller);
+    }
+  }
+  /** Stream one isolated turn while retaining this session's prior history. */
+  stream(input: string | RunInput): AgentStream {
+    const normalized = normalizeInput(input);
+    const signal = this.#begin(normalized.signal);
+    const controller = this.#active!;
+    let stream: AgentStream;
+    try {
+      stream = this.#runtime.stream({
+        ...normalized,
+        signal,
+      });
+    } catch (error) {
+      this.#finish(controller);
+      throw error;
+    }
+    const result = stream.result.finally(() => this.#finish(controller));
+    return {
+      ...stream,
+      result,
+    };
+  }
+  /** Advance one explicit state for durable or custom orchestration. */
+  async step(state: AgentState): Promise<StepResult> {
+    const signal = this.#begin(state.signal);
+    const controller = this.#active!;
+    try {
+      return await this.#runtime.step({
+        ...state,
+        signal,
+      });
+    } finally {
+      this.#finish(controller);
+    }
+  }
+  /** Resolve one pending approval in this session. */
+  async approveTool(
+    state: AgentState,
+    request: ToolApprovalRequest,
+    approval: unknown,
+  ): Promise<StepResult> {
+    const signal = this.#begin(state.signal);
+    const controller = this.#active!;
+    try {
+      return await this.#runtime.approveTool(
+        {
+          ...state,
+          signal,
+        },
+        request,
+        approval,
+      );
+    } finally {
+      this.#finish(controller);
+    }
+  }
+  /** Abort the active turn, if any. The session remains reusable afterwards. */
+  cancel(reason: unknown = abortError('Agent session cancelled')): void {
+    this.#active?.abort(reason);
+  }
+  /** Abort active work and permanently close this session. Repeated calls are harmless. */
+  close(reason: unknown = abortError('Agent session closed')): void {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#active?.abort(reason);
+  }
+}
+/**
+ * Reusable, concurrency-safe definition of an agent loop.
  *
  * Each step curates history through the configured strategy, sends the
  * model-facing view to the model, executes any requested tool calls, and
@@ -167,9 +325,10 @@ export type AgentOptions = Omit<AgentRuntimeOptions, 'history'> & {
  * `SuspendSignal`. Usage and cost accumulate across steps and are reported on
  * the final `AgentResult`.
  *
- * `generate()` and `stream()` are the usual entry points. `step()` and
- * `approveTool()` are lower-level hooks used by `fino:ai/session` for
- * durable, resumable runs that checkpoint between steps.
+ * `generate()` and `stream()` create isolated ephemeral sessions. Use
+ * `createSession()` for a multi-turn conversation. `step()` and `approveTool()`
+ * are stateless lower-level hooks for custom orchestration; durable sessions
+ * create their own isolated execution session before driving multiple steps.
  *
  * ```ts no_run
  * import { Agent } from 'fino:ai/agent';
@@ -184,7 +343,9 @@ export type AgentOptions = Omit<AgentRuntimeOptions, 'history'> & {
  * ```
  */
 export class Agent {
-  #runtime: AgentRuntime;
+  #opts: Omit<AgentRuntimeOptions, 'history'>;
+  #historyFactory: HistoryStrategyFactory;
+  #issuedStrategies = new WeakSet<object>();
   /**
    * Optional display name.
    *
@@ -193,15 +354,48 @@ export class Agent {
    */
   name?: string;
   /**
-   * Create an agent from `AgentOptions`, installing the default append-only
-   * in-memory history strategy when none is supplied.
+   * Create an agent definition from `AgentOptions`, installing a factory for
+   * append-only in-memory history strategies when none is supplied.
    */
   constructor(opts: AgentOptions) {
     this.name = opts.name;
-    this.#runtime = new AgentRuntime({
-      history: appendOnlyHistoryStrategy(),
-      ...opts,
-    });
+    const { history, ...runtimeOpts } = opts;
+    this.#historyFactory = history ?? ((initial) => appendOnlyHistoryStrategy(initial));
+    this.#opts = {
+      ...runtimeOpts,
+      ...(runtimeOpts.tools ? { tools: [...runtimeOpts.tools] } : {}),
+      ...(runtimeOpts.fallback ? { fallback: [...runtimeOpts.fallback] } : {}),
+    };
+  }
+  /**
+   * Create an isolated conversation session from this reusable definition.
+   *
+   * `opts.history` seeds a restored or forked conversation. `opts.tools` are
+   * appended to the definition's base tools for this session only. The history
+   * factory configured on the agent must return a fresh strategy each time;
+   * returning the same object twice throws to prevent accidental state sharing.
+   */
+  createSession(opts: AgentSessionOptions = {}): AgentSession {
+    const history = this.#historyFactory(opts.history);
+    if (this.#issuedStrategies.has(history)) {
+      throw new Error('Agent history factory returned a previously used strategy');
+    }
+    this.#issuedStrategies.add(history);
+    const baseTools = this.#opts.tools ?? [];
+    const sessionTools = opts.tools ?? [];
+    const names = new Set<string>();
+    for (const item of [...baseTools, ...sessionTools]) {
+      if (names.has(item.name)) throw new Error(`Duplicate agent tool: ${item.name}`);
+      names.add(item.name);
+    }
+    return new AgentSession(
+      new AgentRuntime({
+        ...this.#opts,
+        tools: [...baseTools, ...sessionTools],
+        history,
+        ...(opts.requestToolApproval ? { requestToolApproval: opts.requestToolApproval } : {}),
+      }),
+    );
   }
   /**
    * Run one model/tool step from an existing state.
@@ -234,7 +428,7 @@ export class Agent {
    * ```
    */
   step(state: AgentState): Promise<StepResult> {
-    return this.#runtime.step(state);
+    return this.createSession({ history: state.history }).step(state);
   }
   /**
    * Execute or reject a pending approval-required tool call.
@@ -260,7 +454,7 @@ export class Agent {
     request: ToolApprovalRequest,
     approval: unknown,
   ): Promise<StepResult> {
-    return this.#runtime.approveTool(state, request, approval);
+    return this.createSession({ history: state.history }).approveTool(state, request, approval);
   }
   /**
    * Run until the agent reaches a stop condition, suspension, or error.
@@ -283,7 +477,7 @@ export class Agent {
    * ```
    */
   generate(input: string | RunInput): Promise<AgentResult> {
-    return this.#runtime.generate(normalizeInput(input));
+    return this.createSession().generate(input);
   }
   /**
    * Start a streamed run.
@@ -309,7 +503,7 @@ export class Agent {
    * ```
    */
   stream(input: string | RunInput): AgentStream {
-    return this.#runtime.stream(normalizeInput(input));
+    return this.createSession().stream(input);
   }
   /**
    * Expose this agent as a tool for composition with another agent.

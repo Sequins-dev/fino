@@ -26,10 +26,11 @@
  * ## Current coverage
  *
  * The implementation targets the single-message request, response, error, and
- * notification flow from JSON-RPC 2.0. Batch requests are not implemented, and
- * callers that require strict preflight validation of every JSON-RPC envelope
- * field should validate before dispatch. Methods named with the reserved
- * `rpc.` prefix are not blocked by the registry.
+ * notification flow from JSON-RPC 2.0. Batch requests are not implemented.
+ * Single-message envelopes require `jsonrpc: "2.0"`, a string method, a
+ * string/number/null request id when present, and structured params when
+ * present. Methods named with the reserved `rpc.` prefix are not blocked by
+ * the registry.
  *
  * ```ts no_run
  * import { JsonRpcService, JsonRpcServer } from 'fino:jsonrpc';
@@ -62,6 +63,8 @@ export const METHOD_NOT_FOUND = -32601;
 export const INVALID_PARAMS = -32602;
 /** Standard JSON-RPC internal error code for unexpected handler failures. */
 export const INTERNAL_ERROR = -32603;
+/** ACP/LSP-compatible cancellation code for an aborted JSON-RPC request. */
+export const REQUEST_CANCELLED = -32800;
 /**
  * Error type that lets handlers choose the JSON-RPC error code and optional
  * `data` value returned to a caller.
@@ -169,6 +172,8 @@ export interface RequestContext {
   id: number | string | null | undefined;
   /** Abort signal associated with the current dispatch or HTTP request. */
   signal: AbortSignal;
+  /** Stable connection signal when a peer derives a cancellable per-request signal. */
+  connectionSignal?: AbortSignal;
 }
 /**
  * JSON-RPC method implementation.
@@ -334,7 +339,11 @@ export class JsonRpcService {
    * The return value is a serialized JSON-RPC response for requests, or `null`
    * when no response should be sent.
    */
-  async handle(raw: string, signal?: AbortSignal): Promise<string | null> {
+  async handle(
+    raw: string,
+    signal?: AbortSignal,
+    connectionSignal?: AbortSignal,
+  ): Promise<string | null> {
     const sig = signal ?? new AbortController().signal;
     let msg: unknown;
     try {
@@ -360,7 +369,9 @@ export class JsonRpcService {
       });
     }
     const m = msg as Record<string, unknown>;
-    if (typeof m.method !== 'string') {
+    const invalidId =
+      'id' in m && m.id !== null && typeof m.id !== 'string' && typeof m.id !== 'number';
+    if (m.jsonrpc !== '2.0' || typeof m.method !== 'string' || invalidId) {
       return JSON.stringify({
         jsonrpc: '2.0',
         error: {
@@ -371,9 +382,20 @@ export class JsonRpcService {
       });
     }
     const id = 'id' in m ? (m.id as number | string | null) : undefined;
+    if ('params' in m && m.params !== undefined && (!m.params || typeof m.params !== 'object')) {
+      if (id === undefined) return null;
+      return JSON.stringify({
+        jsonrpc: '2.0',
+        error: {
+          code: INVALID_PARAMS,
+          message: 'Invalid params',
+        },
+        id,
+      });
+    }
     const entry = this.#methods.get(m.method);
     if (!entry) {
-      if (id != null) {
+      if (id !== undefined) {
         return JSON.stringify({
           jsonrpc: '2.0',
           error: {
@@ -388,7 +410,7 @@ export class JsonRpcService {
     if (entry.meta.params !== undefined) {
       const check = compile(entry.meta.params).safeParse(m.params);
       if (!check.success) {
-        if (id == null) return null;
+        if (id === undefined) return null;
         return JSON.stringify({
           jsonrpc: '2.0',
           error: {
@@ -406,6 +428,7 @@ export class JsonRpcService {
         entry.handler(m.params, {
           id: undefined,
           signal: sig,
+          ...(connectionSignal ? { connectionSignal } : {}),
         }),
       ).catch(() => {});
       return null;
@@ -414,6 +437,7 @@ export class JsonRpcService {
       const result = await entry.handler(m.params, {
         id,
         signal: sig,
+        ...(connectionSignal ? { connectionSignal } : {}),
       });
       return JSON.stringify({
         jsonrpc: '2.0',
@@ -421,7 +445,12 @@ export class JsonRpcService {
         id,
       });
     } catch (err: unknown) {
-      const code = err instanceof JsonRpcError ? err.code : INTERNAL_ERROR;
+      const code =
+        err instanceof JsonRpcError
+          ? err.code
+          : (err as Error)?.name === 'AbortError'
+            ? REQUEST_CANCELLED
+            : INTERNAL_ERROR;
       const data = err instanceof JsonRpcError ? err.data : undefined;
       return JSON.stringify({
         jsonrpc: '2.0',
@@ -492,11 +521,21 @@ export class JsonRpcPeer {
     {
       resolve(v: unknown): void;
       reject(e: unknown): void;
+      cleanup(): void;
     }
   >();
+  #inflight = new Map<number | string | null, AbortController>();
   #idSeq = 0;
   #closed = false;
+  #transportClosed = false;
   #readLoop: Promise<void>;
+  #rejectPending(error: JsonRpcError): void {
+    for (const pending of this.#pending.values()) {
+      pending.cleanup();
+      pending.reject(error);
+    }
+    this.#pending.clear();
+  }
   /**
    * Create a peer over `transport`.
    *
@@ -516,6 +555,7 @@ export class JsonRpcPeer {
     this.#readLoop = this.#startLoop();
   }
   async #startLoop(): Promise<void> {
+    let closeError = new JsonRpcError('Connection closed', INTERNAL_ERROR);
     try {
       for await (const raw of this.#transport.receive()) {
         if (this.#closed) break;
@@ -523,15 +563,26 @@ export class JsonRpcPeer {
         try {
           msg = JSON.parse(raw);
         } catch {
+          if (this.#service) {
+            const response = await this.#service.handle(raw, this.#signal, this.#signal);
+            if (response !== null) await this.#transport.send(response);
+          }
           continue;
         }
-        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
+        if (!msg || typeof msg !== 'object' || Array.isArray(msg)) {
+          if (this.#service) {
+            const response = await this.#service.handle(raw, this.#signal, this.#signal);
+            if (response !== null) await this.#transport.send(response);
+          }
+          continue;
+        }
         const m = msg as Record<string, unknown>;
         if (('result' in m || 'error' in m) && 'id' in m) {
           const id = m.id as number;
           const p = this.#pending.get(id);
           if (!p) continue;
           this.#pending.delete(id);
+          p.cleanup();
           if ('error' in m) {
             const e = m.error as Record<string, unknown>;
             p.reject(
@@ -546,16 +597,62 @@ export class JsonRpcPeer {
           }
           continue;
         }
+        if (m.method === '$/cancel_request' && !('id' in m)) {
+          const params = m.params as Record<string, unknown> | undefined;
+          const requestId = params?.requestId;
+          if (
+            requestId === null ||
+            typeof requestId === 'string' ||
+            typeof requestId === 'number'
+          ) {
+            const controller = this.#inflight.get(requestId);
+            if (controller && !controller.signal.aborted) {
+              const error = new Error(`JSON-RPC request ${String(requestId)} cancelled`);
+              error.name = 'AbortError';
+              controller.abort(error);
+            }
+          }
+          continue;
+        }
         if (this.#service && typeof m.method === 'string') {
-          void this.#service.handle(raw, this.#signal).then((response) => {
-            if (response !== null) void this.#transport.send(response);
-          });
+          const id =
+            'id' in m && (m.id === null || typeof m.id === 'string' || typeof m.id === 'number')
+              ? m.id
+              : undefined;
+          const controller = id !== undefined ? new AbortController() : null;
+          if (controller) this.#inflight.set(id, controller);
+          const signal = controller
+            ? this.#signal
+              ? AbortSignal.any([this.#signal, controller.signal])
+              : controller.signal
+            : this.#signal;
+          void this.#service
+            .handle(raw, signal, this.#signal)
+            .then((response) => {
+              if (response !== null) return this.#transport.send(response);
+            })
+            .finally(() => {
+              if (controller && this.#inflight.get(id!) === controller) this.#inflight.delete(id!);
+            })
+            .catch(() => {});
         }
       }
-    } catch {
-      const err = new JsonRpcError('Connection closed', INTERNAL_ERROR);
-      for (const p of this.#pending.values()) p.reject(err);
-      this.#pending.clear();
+    } catch (error) {
+      closeError =
+        error instanceof JsonRpcError
+          ? error
+          : new JsonRpcError((error as Error)?.message ?? 'Connection closed', INTERNAL_ERROR);
+    } finally {
+      this.#closed = true;
+      for (const controller of this.#inflight.values()) {
+        if (!controller.signal.aborted) {
+          const error = new Error('JSON-RPC connection closed');
+          error.name = 'AbortError';
+          controller.abort(error);
+        }
+      }
+      this.#inflight.clear();
+      this.#rejectPending(closeError);
     }
   }
   /**
@@ -564,7 +661,16 @@ export class JsonRpcPeer {
    * Request ids are generated as increasing numbers local to this peer. Rejected
    * JSON-RPC responses become `JsonRpcError` instances.
    */
-  call(method: string, params?: unknown): Promise<unknown> {
+  call(
+    method: string,
+    params?: unknown,
+    opts: {
+      /** Abort this call and notify the remote peer with `$/cancel_request`. */
+      signal?: AbortSignal;
+    } = {},
+  ): Promise<unknown> {
+    if (this.#closed) return Promise.reject(new JsonRpcError('Connection closed', INTERNAL_ERROR));
+    if (opts.signal?.aborted) return Promise.reject(opts.signal.reason);
     const id = ++this.#idSeq;
     const body: Record<string, unknown> = {
       jsonrpc: '2.0',
@@ -573,11 +679,25 @@ export class JsonRpcPeer {
     };
     if (params !== undefined) body.params = params;
     return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        if (!this.#pending.delete(id)) return;
+        void this.notify('$/cancel_request', { requestId: id }).catch(() => {});
+        reject(opts.signal!.reason);
+      };
+      const cleanup = () => opts.signal?.removeEventListener('abort', onAbort);
+      opts.signal?.addEventListener('abort', onAbort, { once: true });
       this.#pending.set(id, {
         resolve,
         reject,
+        cleanup,
       });
-      Promise.resolve(this.#transport.send(JSON.stringify(body))).catch(reject);
+      Promise.resolve(this.#transport.send(JSON.stringify(body))).catch((error) => {
+        const pending = this.#pending.get(id);
+        if (!pending) return;
+        this.#pending.delete(id);
+        pending.cleanup();
+        reject(error);
+      });
     });
   }
   /**
@@ -587,6 +707,7 @@ export class JsonRpcPeer {
    * handler failures are not reported to this peer.
    */
   async notify(method: string, params?: unknown): Promise<void> {
+    if (this.#closed) throw new JsonRpcError('Connection closed', INTERNAL_ERROR);
     const body: Record<string, unknown> = {
       jsonrpc: '2.0',
       method,
@@ -606,8 +727,22 @@ export class JsonRpcPeer {
    * Mark the peer closed and close the underlying transport.
    */
   async close(): Promise<void> {
-    this.#closed = true;
-    await this.#transport.close();
+    if (!this.#closed) {
+      this.#closed = true;
+      this.#rejectPending(new JsonRpcError('Connection closed', INTERNAL_ERROR));
+      for (const controller of this.#inflight.values()) {
+        if (!controller.signal.aborted) {
+          const error = new Error('JSON-RPC connection closed');
+          error.name = 'AbortError';
+          controller.abort(error);
+        }
+      }
+      this.#inflight.clear();
+    }
+    if (!this.#transportClosed) {
+      this.#transportClosed = true;
+      await this.#transport.close();
+    }
   }
 }
 // ---------------------------------------------------------------------------

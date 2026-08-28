@@ -1,6 +1,20 @@
 import { describe, it } from 'fino:test/test';
-import { InMemorySessionStore, Session, SqliteSessionStore, session } from 'fino:ai/session';
+import {
+  commitAgentSession,
+  commitConversationThread,
+  ConversationConflictError,
+  deleteConversationThread,
+  listAgentRuns,
+  listConversationThreads,
+  loadAgentRun,
+  loadConversationHistory,
+  loadConversationThread,
+  Session,
+  SessionConflictError,
+  session,
+} from 'fino:ai/session';
 import type { RunState } from 'fino:ai/session';
+import { memoryStore, sqliteStore, type AtomicStore } from 'fino:store';
 import { agent } from 'fino:ai/agent';
 import { tool } from 'fino:ai/tool';
 import { SuspendSignal } from 'fino:ai/runtime';
@@ -135,24 +149,73 @@ async function assertRevisionOnlyCheckpoint(
     ok(value: unknown, message?: string): void;
     equal(actual: unknown, expected: unknown, message?: string): void;
   },
-  store: SqliteSessionStore,
+  store: AtomicStore,
   state: RunState,
 ): Promise<void> {
   t.ok(state.historyRevisionId, 'checkpoint stores a history revision id');
   t.equal('messages' in state, false, 'checkpoint does not duplicate messages');
   t.equal('historyJSON' in state, false, 'checkpoint does not store legacy history JSON');
-  const loadedHistory = await store.loadHistory(state.historyRevisionId!);
+  const loadedHistory = await loadConversationHistory(store, state.historyRevisionId!);
   t.ok(loadedHistory, 'history revision reloads from store');
   t.ok(loadedHistory!.render().length > 0, 'history revision contains messages');
 }
 describe('Session', () => {
+  it('rejects concurrent turns racing on the same durable thread', async (t) => {
+    let started = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model: Model = {
+      name: 'thread-race',
+      dimensions: 0,
+      stream(request: GenerateRequest): ModelStream {
+        async function* generate() {
+          started++;
+          if (started === 2) release();
+          await bothStarted;
+          const rendered = JSON.stringify(request.messages);
+          yield* endTurn(rendered.includes('alpha') ? 'alpha answer' : 'beta answer');
+        }
+        return new ModelStreamImpl(generate());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    const store = memoryStore();
+    const definition = agent({ model });
+    const alpha = session({ store, agent: definition, threadId: 'shared-thread' });
+    const beta = session({ store, agent: definition, threadId: 'shared-thread' });
+    const outcomes = await Promise.allSettled([
+      alpha.start('alpha', { runId: 'alpha-run' }),
+      beta.start('beta', { runId: 'beta-run' }),
+    ]);
+    const winnerIndex = outcomes.findIndex((outcome) => outcome.status === 'fulfilled');
+    const loserIndex = outcomes.findIndex((outcome) => outcome.status === 'rejected');
+    t.ok(winnerIndex >= 0);
+    t.ok(loserIndex >= 0);
+    t.ok((outcomes[loserIndex] as PromiseRejectedResult).reason instanceof SessionConflictError);
+    const winnerRunId = winnerIndex === 0 ? 'alpha-run' : 'beta-run';
+    const loserRunId = loserIndex === 0 ? 'alpha-run' : 'beta-run';
+    t.ok(await loadAgentRun(store, winnerRunId));
+    t.equal(await loadAgentRun(store, loserRunId), null);
+    const thread = await loadConversationThread(store, 'shared-thread');
+    const history = await loadConversationHistory(store, thread!.historyRevisionId!);
+    const rendered = JSON.stringify(history!.render());
+    t.ok(rendered.includes(winnerIndex === 0 ? 'alpha' : 'beta'));
+    t.ok(!rendered.includes(loserIndex === 0 ? 'alpha' : 'beta'));
+  });
   it('memory recall receives input text and hydrates working/recalled context into the model request', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let recalledQuery: MemoryQuery | undefined;
       const appended: Array<{
@@ -240,7 +303,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const callLog: string[] = [];
       const greet = tool({
@@ -271,11 +334,11 @@ describe('Session', () => {
       t.equal(result.text, 'done', 'text extracted from final assistant message');
       t.ok(callLog.includes('Alice'), 'tool was called');
       t.ok(checkpoints.length >= 2, 'checkpointed after each step');
-      const loaded = await store.loadRun(result.runId);
+      const loaded = await loadAgentRun(store, result.runId);
       t.equal(loaded?.status, 'done', 'final checkpoint in store');
       t.equal(loaded?.stepIndex, 2, 'two steps completed');
       await assertRevisionOnlyCheckpoint(t, store, loaded!);
-      const runs = await store.listRuns({ threadId: sess.state!.threadId });
+      const runs = await listAgentRuns(store, { threadId: sess.state!.threadId });
       t.equal(runs.length, 1, 'one run for this thread');
     } finally {
       await store.close();
@@ -285,7 +348,7 @@ describe('Session', () => {
     }
   });
   it('watch() exposes the current run state and terminal updates', async (t) => {
-    const store = new InMemorySessionStore();
+    const store = memoryStore();
     const a = agent({
       model: scriptModel([endTurn('watched')]),
     });
@@ -308,7 +371,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const toolCallsDuringResume: string[] = [];
       const echoTool = tool({
@@ -361,7 +424,7 @@ describe('Session', () => {
         ],
       });
       crashedState.historyRevisionId = crashedHistory.revisionId;
-      await store.commitSession({
+      await commitAgentSession(store, {
         run: crashedState,
         thread: {
           threadId: crashedState.threadId,
@@ -370,6 +433,7 @@ describe('Session', () => {
           updatedAt: Date.now(),
         },
         history: crashedHistory,
+        expectedThreadRevisionId: null,
       });
       const resumeAgent = agent({
         model: scriptModel([endTurn('resumed!')]),
@@ -383,7 +447,7 @@ describe('Session', () => {
       t.equal(result.status, 'done', 'resumed to done');
       t.equal(result.text, 'resumed!', 'correct final text');
       t.equal(toolCallsDuringResume.length, 0, 'tool was NOT re-executed during resume');
-      const final = await store.loadRun('crash-test');
+      const final = await loadAgentRun(store, 'crash-test');
       t.equal(final?.status, 'done');
     } finally {
       await store.close();
@@ -398,7 +462,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const threadId = 'convo-thread';
       const sess1 = session({
@@ -415,7 +479,7 @@ describe('Session', () => {
         agent: agent({ model: spy }),
         threadId,
       });
-      const r1Final = await store.loadRun(r1.runId);
+      const r1Final = await loadAgentRun(store, r1.runId);
       t.ok(r1Final, 'first run is persisted');
       const r2 = await sess2.start('follow up');
       t.equal(r2.status, 'done');
@@ -444,7 +508,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const waitForHuman = tool({
         name: 'await_approval',
@@ -495,7 +559,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let capturedHistoryRender: import('fino:ai/model').ModelMessage[] | undefined;
       const checkHistory = tool({
@@ -535,7 +599,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const pauseTool = tool({
         name: 'pause',
@@ -569,13 +633,13 @@ describe('Session', () => {
       } catch {}
     }
   });
-  it('store.listRuns({threadId}) enumerates all runs for a thread', async (t) => {
+  it('listAgentRuns({threadId}) enumerates all runs for a thread', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const threadId = 'list-test-thread';
       const make = () =>
@@ -588,13 +652,13 @@ describe('Session', () => {
       const r2 = await make().start('run 2');
       t.equal(r1.status, 'done');
       t.equal(r2.status, 'done');
-      const all = await store.listRuns({ threadId });
+      const all = await listAgentRuns(store, { threadId });
       t.equal(all.length, 2, 'two runs found');
       t.ok(
         all.every((s) => s.threadId === threadId),
         'all runs belong to the thread',
       );
-      const other = await store.listRuns({ threadId: 'other-thread' });
+      const other = await listAgentRuns(store, { threadId: 'other-thread' });
       t.equal(other.length, 0, 'other thread has no runs');
     } finally {
       await store.close();
@@ -609,7 +673,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let executed = false;
       const risky = tool({
@@ -657,7 +721,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let executed = 0;
       const risky = tool({
@@ -746,7 +810,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let executed = false;
       const risky = tool({
@@ -821,7 +885,7 @@ describe('Session', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let executed = 0;
       const risky = tool({
@@ -908,7 +972,7 @@ describe('Session.fork', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       const seenMessages: ModelMessage[][] = [];
       const trackingModel: Model = {
@@ -954,7 +1018,7 @@ describe('Session.fork', () => {
       const forkResult = await parentSess.fork('fork question');
       t.equal(forkResult.status, 'done', 'fork ran to completion');
       t.ok(forkResult.runId !== r1.runId, 'fork has its own runId');
-      const forkState = await store.loadRun(forkResult.runId);
+      const forkState = await loadAgentRun(store, forkResult.runId);
       t.ok(forkState, 'fork persisted to store');
       t.ok(forkState!.threadId !== r1.state.threadId, 'fork has its own threadId');
       await assertRevisionOnlyCheckpoint(t, store, forkState!);
@@ -977,11 +1041,11 @@ describe('Session.fork', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let compacted = false;
-      const compactStrategy: HistoryStrategy = {
-        history: new MessageHistory(),
+      const createCompactStrategy = (initial?: MessageHistory): HistoryStrategy => ({
+        history: initial ?? new MessageHistory(),
         async onAppend(message) {
           this.history = await this.history.append(message);
           const refs = this.history.refs();
@@ -1006,7 +1070,7 @@ describe('Session.fork', () => {
             messages: this.history.render(),
           };
         },
-      };
+      });
       const forkMsgs: ModelMessage[][] = [];
       const forkModel: Model = {
         name: 'fork-model',
@@ -1044,7 +1108,7 @@ describe('Session.fork', () => {
         store,
         agent: agent({
           model: forkModel,
-          history: compactStrategy,
+          history: createCompactStrategy,
         }),
       });
       const r1 = await parentSess.start('compactable context');
@@ -1068,15 +1132,144 @@ describe('Session.fork', () => {
     }
   });
 });
-describe('SessionStore', () => {
-  it('InMemorySessionStore and SqliteSessionStore load equivalent committed sessions', async (t) => {
+describe('session codecs over Store', () => {
+  it('conversation stores share metadata, listing, CAS, history, and delete semantics', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try {
       await fs.unlink(path);
     } catch {}
-    const sqlite = await SqliteSessionStore.open(`sqlite://${path}`);
-    const memory = new InMemorySessionStore();
+    const sqlite = await sqliteStore({ path });
+    const memory = memoryStore();
+    const stores = [memory, sqlite];
+    try {
+      for (const store of stores) {
+        let history = new MessageHistory();
+        history = await history.append({ role: 'user', content: 'shared conversation' });
+        const created = await commitConversationThread(store, {
+          thread: {
+            threadId: 'conversation-contract',
+            historyRevisionId: history.revisionId,
+            createdAt: 1,
+            updatedAt: 2,
+            metadata: { owner: 'adapter', phase: 1 },
+          },
+          history,
+          expectedStoreVersion: null,
+        });
+        t.ok(created.storeVersion, 'creation assigns an opaque store version');
+        t.deepEqual((await loadConversationThread(store, created.threadId))?.metadata, {
+          owner: 'adapter',
+          phase: 1,
+        });
+        t.equal((await listConversationThreads(store))[0]?.threadId, created.threadId);
+
+        const updated = await commitConversationThread(store, {
+          thread: {
+            ...created,
+            updatedAt: 3,
+            metadata: { owner: 'adapter', phase: 2 },
+          },
+          history,
+          expectedStoreVersion: created.storeVersion!,
+          baseRevisionId: history.revisionId,
+        });
+        t.notEqual(
+          updated.storeVersion,
+          created.storeVersion,
+          'metadata-only commits advance the store version',
+        );
+        await t.rejects(
+          () =>
+            commitConversationThread(store, {
+              thread: { ...created, updatedAt: 4 },
+              history,
+              expectedStoreVersion: created.storeVersion!,
+              baseRevisionId: history.revisionId,
+            }),
+          (error: unknown) => error instanceof ConversationConflictError,
+        );
+        t.deepEqual((await loadConversationThread(store, created.threadId))?.metadata, {
+          owner: 'adapter',
+          phase: 2,
+        });
+        await commitAgentSession(store, {
+          run: {
+            runId: 'conversation-codec-run',
+            threadId: created.threadId,
+            status: 'done',
+            stepIndex: 0,
+            usage: { inputTokens: 0, outputTokens: 0 },
+            historyRevisionId: history.revisionId,
+            scratch: {},
+          },
+          thread: {
+            threadId: created.threadId,
+            historyRevisionId: history.revisionId,
+            createdAt: created.createdAt,
+            updatedAt: 5,
+          },
+          history,
+          expectedThreadRevisionId: history.revisionId,
+          baseRevisionId: history.revisionId,
+        });
+        t.deepEqual(
+          (await loadConversationThread(store, created.threadId))?.metadata,
+          { owner: 'adapter', phase: 2 },
+          'run commits preserve metadata owned by another conversation adapter',
+        );
+        const latest = (await loadConversationThread(store, created.threadId))!;
+        if (store === memory) {
+          await commitConversationThread(store, {
+            thread: { ...latest, metadata: { preserved: 1n } },
+            history,
+            expectedStoreVersion: latest.storeVersion!,
+            baseRevisionId: history.revisionId,
+          });
+          t.equal(
+            (await loadConversationThread(store, created.threadId))?.metadata?.preserved,
+            1n,
+            'memory store preserves provider-supported metadata values',
+          );
+        } else {
+          await t.rejects(
+            () =>
+              commitConversationThread(store, {
+                thread: { ...latest, metadata: { unsupported: 1n } },
+                history,
+                expectedStoreVersion: latest.storeVersion!,
+                baseRevisionId: history.revisionId,
+              }),
+            /encode|BigInt|bigint/i,
+          );
+          t.equal(
+            (await loadConversationThread(store, created.threadId))?.storeVersion,
+            latest.storeVersion,
+            'unsupported SQLite metadata fails before the atomic commit',
+          );
+        }
+        t.equal(await deleteConversationThread(store, created.threadId), true);
+        t.equal(await deleteConversationThread(store, created.threadId), false);
+        t.ok(
+          await loadConversationHistory(store, history.revisionId),
+          'shared history survives head deletion',
+        );
+      }
+    } finally {
+      await sqlite.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('memoryStore and sqliteStore load equivalent committed sessions', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const sqlite = await sqliteStore({ path });
+    const memory = memoryStore();
     try {
       let history = new MessageHistory();
       history = await history.append({
@@ -1096,7 +1289,7 @@ describe('SessionStore', () => {
           inputTokens: 1,
           outputTokens: 1,
         },
-        scratch: {},
+        scratch: { bytes: new Uint8Array([1, 2, 3]) },
         historyRevisionId: history.revisionId,
       };
       const thread = {
@@ -1104,21 +1297,24 @@ describe('SessionStore', () => {
         historyRevisionId: history.revisionId,
         createdAt: 1,
         updatedAt: 2,
+        metadata: { bytes: new Uint8Array([4, 5, 6]) },
       };
-      await memory.commitSession({
+      await commitAgentSession(memory, {
         run,
         thread,
         history,
+        expectedThreadRevisionId: null,
       });
-      await sqlite.commitSession({
+      await commitAgentSession(sqlite, {
         run,
         thread,
         history,
+        expectedThreadRevisionId: null,
       });
       for (const store of [memory, sqlite]) {
-        const loadedRun = await store.loadRun(run.runId);
-        const loadedThread = await store.loadThread(run.threadId);
-        const loadedHistory = await store.loadHistory(history.revisionId);
+        const loadedRun = await loadAgentRun(store, run.runId);
+        const loadedThread = await loadConversationThread(store, run.threadId);
+        const loadedHistory = await loadConversationHistory(store, history.revisionId);
         t.equal(
           loadedRun?.historyRevisionId,
           history.revisionId,
@@ -1129,6 +1325,12 @@ describe('SessionStore', () => {
           history.revisionId,
           'thread points at committed history',
         );
+        const runBytes = loadedRun?.scratch.bytes;
+        t.ok(runBytes instanceof Uint8Array, 'run scratch preserves typed arrays');
+        t.deepEqual([...(runBytes as Uint8Array)], [1, 2, 3]);
+        const threadBytes = loadedThread?.metadata?.bytes;
+        t.ok(threadBytes instanceof Uint8Array, 'thread metadata preserves typed arrays');
+        t.deepEqual([...(threadBytes as Uint8Array)], [4, 5, 6]);
         t.deepEqual(
           loadedHistory?.render().map((m) => m.content),
           ['stored input', 'stored reply'],
@@ -1147,7 +1349,7 @@ describe('SessionStore', () => {
     try {
       await fs.unlink(path);
     } catch {}
-    const store = await SqliteSessionStore.open(path);
+    const store = await sqliteStore({ path });
     try {
       let history = new MessageHistory();
       history = await history.append({
@@ -1168,7 +1370,7 @@ describe('SessionStore', () => {
       };
       await t.rejects(
         () =>
-          store.commitSession({
+          commitAgentSession(store, {
             run,
             thread: {
               threadId: run.threadId,
@@ -1177,15 +1379,107 @@ describe('SessionStore', () => {
               updatedAt: 1,
             },
             history,
+            expectedThreadRevisionId: null,
           }),
         /points at history revision/,
         'mismatched thread revision rejects before commit',
       );
-      t.equal(await store.loadRun(run.runId), null, 'run was not persisted');
-      t.equal(await store.loadThread(run.threadId), null, 'thread was not persisted');
-      t.equal(await store.loadHistory(history.revisionId), null, 'history graph was not persisted');
+      t.equal(await loadAgentRun(store, run.runId), null, 'run was not persisted');
+      t.equal(await loadConversationThread(store, run.threadId), null, 'thread was not persisted');
+      t.equal(
+        await loadConversationHistory(store, history.revisionId),
+        null,
+        'history graph was not persisted',
+      );
     } finally {
       await store.close();
+      try {
+        await fs.unlink(path);
+      } catch {}
+    }
+  });
+  it('stores reject a stale thread-head commit without writing the losing run', async (t) => {
+    const path = tmpPath();
+    const fs = new DiskFileSystem();
+    try {
+      await fs.unlink(path);
+    } catch {}
+    const sqlite = await sqliteStore({ path });
+    const stores = [memoryStore(), sqlite];
+    try {
+      for (const store of stores) {
+        let base = new MessageHistory();
+        base = await base.append({ role: 'user', content: 'base' });
+        const initialRun: RunState = {
+          runId: `initial-${crypto.randomUUID()}`,
+          threadId: 'conflict-thread',
+          status: 'done',
+          stepIndex: 1,
+          usage: { inputTokens: 1, outputTokens: 1 },
+          scratch: {},
+          historyRevisionId: base.revisionId,
+        };
+        await commitAgentSession(store, {
+          run: initialRun,
+          thread: {
+            threadId: initialRun.threadId,
+            historyRevisionId: base.revisionId,
+            createdAt: 1,
+            updatedAt: 1,
+          },
+          history: base,
+          expectedThreadRevisionId: null,
+        });
+        const winner = await base.append({ role: 'assistant', content: 'winner' });
+        const loser = await base.append({ role: 'assistant', content: 'loser' });
+        const winnerRun: RunState = {
+          ...initialRun,
+          runId: `winner-${crypto.randomUUID()}`,
+          historyRevisionId: winner.revisionId,
+        };
+        await commitAgentSession(store, {
+          run: winnerRun,
+          thread: {
+            threadId: winnerRun.threadId,
+            historyRevisionId: winner.revisionId,
+            createdAt: 1,
+            updatedAt: 2,
+          },
+          history: winner,
+          expectedThreadRevisionId: base.revisionId,
+          baseRevisionId: base.revisionId,
+        });
+        const loserRun: RunState = {
+          ...initialRun,
+          runId: `loser-${crypto.randomUUID()}`,
+          historyRevisionId: loser.revisionId,
+        };
+        let conflict: unknown;
+        try {
+          await commitAgentSession(store, {
+            run: loserRun,
+            thread: {
+              threadId: loserRun.threadId,
+              historyRevisionId: loser.revisionId,
+              createdAt: 1,
+              updatedAt: 2,
+            },
+            history: loser,
+            expectedThreadRevisionId: base.revisionId,
+            baseRevisionId: base.revisionId,
+          });
+        } catch (error) {
+          conflict = error;
+        }
+        t.ok(conflict instanceof SessionConflictError);
+        t.equal(
+          (await loadConversationThread(store, initialRun.threadId))?.historyRevisionId,
+          winner.revisionId,
+        );
+        t.equal(await loadAgentRun(store, loserRun.runId), null);
+      }
+    } finally {
+      await sqlite.close();
       try {
         await fs.unlink(path);
       } catch {}

@@ -135,7 +135,7 @@ describe('Agent', () => {
     };
     const a = agent({
       model,
-      history: strategy,
+      history: () => strategy,
     });
     const result = await a.generate('real input');
     t.deepEqual(
@@ -363,5 +363,115 @@ describe('Agent', () => {
     const result = await outer.generate('start');
     t.equal(result.text, 'outer done');
     t.equal(result.steps.length, 2, 'outer ran two steps');
+  });
+  it('reuses one agent definition across isolated concurrent sessions', async (t) => {
+    const requests: GenerateRequest[] = [];
+    let started = 0;
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const model: Model = {
+      name: 'concurrent-spy',
+      dimensions: 0,
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req);
+        async function* gen() {
+          started++;
+          if (started === 2) releaseBoth();
+          await bothStarted;
+          const ownPrompt = req.messages
+            .map((message) =>
+              typeof message.content === 'string'
+                ? message.content
+                : JSON.stringify(message.content),
+            )
+            .join(' ');
+          yield* endTurn(ownPrompt.includes('alpha') ? 'alpha-result' : 'beta-result');
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    const definition = agent({ model });
+    const [alpha, beta] = await Promise.all([
+      definition.generate('alpha'),
+      definition.generate('beta'),
+    ]);
+    t.equal(alpha.text, 'alpha-result');
+    t.equal(beta.text, 'beta-result');
+    t.equal(requests.length, 2);
+    const rendered = requests.map((request) => JSON.stringify(request.messages));
+    t.ok(rendered.some((messages) => messages.includes('alpha') && !messages.includes('beta')));
+    t.ok(rendered.some((messages) => messages.includes('beta') && !messages.includes('alpha')));
+  });
+  it('retains sequential history only inside an explicit AgentSession', async (t) => {
+    const requests: GenerateRequest[] = [];
+    const model: Model = {
+      name: 'session-spy',
+      dimensions: 0,
+      stream(req: GenerateRequest): ModelStream {
+        requests.push(req);
+        const reply = requests.length === 1 ? 'first answer' : 'second answer';
+        async function* gen() {
+          yield* endTurn(reply);
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    const conversation = agent({ model }).createSession();
+    await conversation.generate('first question');
+    await conversation.generate('second question');
+    const second = JSON.stringify(requests[1]!.messages);
+    t.ok(second.includes('first question'));
+    t.ok(second.includes('first answer'));
+    t.ok(second.includes('second question'));
+    conversation.close();
+  });
+  it('rejects overlapping turns on one AgentSession', async (t) => {
+    let markStarted!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const model: Model = {
+      name: 'slow',
+      dimensions: 0,
+      stream(): ModelStream {
+        async function* gen() {
+          markStarted();
+          await gate;
+          yield* endTurn('done');
+        }
+        return new ModelStreamImpl(gen());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    const conversation = agent({ model }).createSession();
+    const first = conversation.generate('first');
+    await started;
+    await t.rejects(() => conversation.generate('overlap'), /already has an active turn/);
+    release();
+    t.equal((await first).text, 'done');
+    conversation.close();
   });
 });

@@ -61,10 +61,6 @@ export class ViewVersionConflictError extends Error {
   }
 }
 
-function cloneSnapshot(snapshot: ViewSnapshot): ViewSnapshot {
-  return JSON.parse(JSON.stringify(snapshot)) as ViewSnapshot;
-}
-
 function assertJsonRecord(name: string, value: Record<string, unknown>): void {
   for (const [key, entry] of Object.entries(value)) {
     if (entry === undefined)
@@ -83,7 +79,7 @@ function validate(snapshot: ViewSnapshot): ViewSnapshot {
   assertJsonRecord('data', snapshot.data);
   assertJsonRecord('regions', snapshot.regions);
   JSON.stringify(snapshot.applied);
-  return cloneSnapshot(snapshot);
+  return structuredClone(snapshot);
 }
 
 const VIEW_HEAD_PREFIX = 'head/';
@@ -115,7 +111,7 @@ export async function loadViewState(
   viewId: string,
 ): Promise<ViewSnapshot | null> {
   const snapshot = await stateStore(store).get<ViewSnapshot>(viewHeadKey(viewId));
-  return snapshot ? cloneSnapshot(snapshot) : null;
+  return snapshot ? structuredClone(snapshot) : null;
 }
 
 /** Atomically replace a view head and append the same snapshot to history. */
@@ -156,7 +152,7 @@ export async function viewStateHistory(
   const snapshots = (
     await stateStore(store).list<ViewSnapshot>({ prefix: viewHistoryPrefix(viewId) })
   )
-    .map((entry) => cloneSnapshot(entry.value))
+    .map((entry) => structuredClone(entry.value))
     .sort((a, b) => b.version - a.version || b.updatedAt - a.updatedAt);
   return options.limit === undefined ? snapshots : snapshots.slice(0, options.limit);
 }

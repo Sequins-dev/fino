@@ -1,7 +1,8 @@
 import { describe, it } from 'fino:test/test';
 import { agent } from 'fino:ai/agent';
 import { Budget, BudgetExceededError } from 'fino:ai/budget';
-import { InMemorySessionStore, session } from 'fino:ai/session';
+import { session } from 'fino:ai/session';
+import { memoryStore } from 'fino:store';
 import { tool } from 'fino:ai/tool';
 import type { GenerateRequest, Model, ModelStream, StreamEvent } from 'fino:ai/model';
 import { ModelStreamImpl } from 'internal:ai/shared';
@@ -181,7 +182,7 @@ describe('AI budgets', () => {
       tokens: 5,
       onExhausted: 'suspend',
     });
-    const store = new InMemorySessionStore();
+    const store = memoryStore();
     const durable = session({
       store,
       agent: agent({

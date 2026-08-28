@@ -39,6 +39,7 @@
  *   instructions, resources, and tools packaged behind a manifest.
  * - `fino:ai/mcp` — Model Context Protocol client and server adapters with
  *   stdio and HTTP transports, plus `mountMcp()` for serving over HTTP apps.
+ * - `fino:ai/acp` — Agent Client Protocol v1 adapter for editor-hosted agents.
  *
  * ```ts no_run
  * import { agent, openai, streamText, tool } from 'fino:ai';
@@ -61,13 +62,22 @@
  * }
  * ```
  */
-export { Agent, agent, streamText } from 'fino:ai/agent';
+export {
+  Agent,
+  AgentSession,
+  AgentSessionBusyError,
+  AgentSessionClosedError,
+  agent,
+  streamText,
+} from 'fino:ai/agent';
 export type {
   AgentOptions,
   AgentEvent,
   AgentResult,
+  AgentSessionOptions,
   AgentState,
   AgentStream,
+  HistoryStrategyFactory,
   RunInput,
   StepResult,
 } from 'fino:ai/agent';
@@ -94,6 +104,7 @@ export type {
   EmbeddingModel,
   GenerateRequest,
   GenerateResult,
+  AudioPart,
   ImagePart,
   LocalModelOptions,
   LocalModelProviderEntry,
@@ -147,6 +158,7 @@ export type {
   StopCondition,
   StrategyMemorySink,
   ToolApprovalRequest,
+  ToolApprovalHandler,
 } from 'fino:ai/runtime';
 export { Budget, BudgetExceededError, BudgetLease } from 'fino:ai/budget';
 export type { BudgetGrant, BudgetLimits, BudgetOptions, BudgetSnapshot } from 'fino:ai/budget';
@@ -167,13 +179,28 @@ export type {
 } from 'fino:ai/sandbox';
 export { cachedModel } from 'fino:ai/cache';
 export type { CachedModelOptions, SemanticCacheOptions } from 'fino:ai/cache';
-export { InMemorySessionStore, session, Session, SqliteSessionStore } from 'fino:ai/session';
+export {
+  commitAgentSession,
+  commitConversationThread,
+  ConversationConflictError,
+  deleteAgentRun,
+  deleteConversationThread,
+  listAgentRuns,
+  listConversationThreads,
+  loadAgentRun,
+  loadConversationHistory,
+  loadConversationThread,
+  session,
+  Session,
+  SessionConflictError,
+} from 'fino:ai/session';
 export type {
+  AgentSessionCommitOptions,
+  ConversationCommitOptions,
   RunResult,
   RunState,
   RunStatus,
   SessionOptions,
-  SessionStore,
   SuspendReason,
   ThreadState,
   ToolApprovalDecision,
@@ -231,6 +258,7 @@ export {
   MCPServer,
   mcpServer,
   mountMcp,
+  sseTransport,
   stdioTransport,
 } from 'fino:ai/mcp';
 export type {
@@ -255,5 +283,63 @@ export type {
   McpListParams,
   StdioTransportOptions,
   HttpTransportOptions,
+  SseTransportOptions,
+  SseHttpRequest,
+  SseHttpResponse,
   Transport,
 } from 'fino:ai/mcp';
+export {
+  AcpClient,
+  AcpServer,
+  acpServer,
+  acpStdioTransport,
+  ACP_AUTH_REQUIRED,
+  ACP_PROTOCOL_VERSION,
+  ACP_RESOURCE_NOT_FOUND,
+} from 'fino:ai/acp';
+export type {
+  AcpAgentContext,
+  AcpAnnotations,
+  AcpAudioContent,
+  AcpAuthenticationOptions,
+  AcpAuthMethod,
+  AcpAuthMethodAgent,
+  AcpAuthMethodTerminal,
+  AcpAvailableCommand,
+  AcpBlobResource,
+  AcpClientCapabilities,
+  AcpContentBlock,
+  AcpCreateTerminalOptions,
+  AcpCustomElicitationRequest,
+  AcpElicitationRequest,
+  AcpElicitationResponse,
+  AcpEmbeddedResource,
+  AcpEnvVariable,
+  AcpHttpHeader,
+  AcpImageContent,
+  AcpImplementation,
+  AcpMcpServer,
+  AcpMcpServerHttp,
+  AcpMcpServerPolicyContext,
+  AcpMcpServerSse,
+  AcpMcpServerStdio,
+  AcpMeta,
+  AcpPlanEntry,
+  AcpPromptContent,
+  AcpResourceLink,
+  AcpServerOptions,
+  AcpSessionConfigBoolean,
+  AcpSessionConfigOption,
+  AcpSessionConfigSelect,
+  AcpSessionConfigSelectGroup,
+  AcpSessionConfigSelectOption,
+  AcpSessionMode,
+  AcpSessionModeState,
+  AcpSessionUpdate,
+  AcpTerminalOutput,
+  AcpTextContent,
+  AcpTextResource,
+  AcpToolKind,
+  AcpToolCallContent,
+  AcpToolCallLocation,
+} from 'fino:ai/acp';

@@ -78,6 +78,7 @@ export type {
   StopCondition,
   StrategyMemorySink,
   ToolApprovalRequest,
+  ToolApprovalHandler,
 } from './runtime-internal.ts';
 /**
  * Signals that execution should suspend instead of fail.

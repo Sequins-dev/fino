@@ -1,17 +1,17 @@
 /**
  * fino:ai/session — durable agent runs with session-owned history persistence.
  *
- * `Session` runs an already-configured `Agent` against a `SessionStore`.
+ * `Session` runs an already-configured `Agent` against an `AtomicStore`.
  * Use it when an agent run must survive process restarts, pause for external
  * input, continue a thread across multiple requests, or fork from an existing
  * conversation state.
  *
  * ## Storage model
  *
- * `MessageHistory` is an immutable in-memory graph. A `SessionStore` is the
- * durable boundary: it commits new history graph nodes, the current run state,
- * and the thread head revision atomically. `RunState` and `ThreadState` store
- * only revision ids, never rendered message arrays or snapshot blobs.
+ * `MessageHistory` is an immutable in-memory graph. The exported conversation
+ * and run functions are thin record codecs over `fino:store`; ACP and ordinary
+ * agent conversations use the same namespace and layout. Atomic commits store
+ * new history graph nodes, the current run state, and the thread head together.
  *
  * `Session.start()` creates a new run in the session thread, `resume()` injects
  * external input into a suspended run, and `fork()` creates a new thread from
@@ -28,7 +28,7 @@
  * `approveTool()` / `rejectTool()`, or their static `*Suspended` counterparts
  * after a process restart.
  *
- * Every step is committed through `SessionStore.commitSession()` before the
+ * Every step is committed through the store's atomic capability before the
  * next one begins, so a crash never loses more than the in-flight step. The
  * live run state is observable through `watch()` for reactive consumers, and
  * an optional `Memory` feeds recalled context into new runs and records every
@@ -37,9 +37,10 @@
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
  * import { openai } from 'fino:ai/model';
- * import { session, SqliteSessionStore } from 'fino:ai/session';
+ * import { sqliteStore } from 'fino:store';
+ * import { session } from 'fino:ai/session';
  *
- * const store = await SqliteSessionStore.open('./runs.db');
+ * const store = await sqliteStore({ path: './runs.db' });
  * const sess = session({
  *   store,
  *   agent: agent({ model: openai({ model: 'gpt-4o' }) }),
@@ -52,7 +53,7 @@
  * }
  * ```
  */
-import { Database, sql, type DatabaseConnection, type SqlFragment } from 'fino:database';
+import type { AtomicStore } from 'fino:store';
 import { SuspendSignal, runContext } from 'fino:ai/runtime';
 import { createSignal } from 'fino:signals';
 import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
@@ -111,7 +112,7 @@ export interface SuspendReason {
 /**
  * Durable checkpoint state for one run.
  *
- * This is the record a `SessionStore` persists after every step. Conversation
+ * This is the record the session codec persists after every step. Conversation
  * content never lives here — `historyRevisionId` points into the immutable
  * history graph instead, which keeps checkpoints small and lets many runs
  * share one graph.
@@ -157,8 +158,8 @@ export interface RunState {
    */
   suspendedOn?: SuspendReason;
   /**
-   * JSON-serializable bag for application bookkeeping carried across
-   * checkpoints and restarts.
+   * Store-compatible structured-cloneable bag for application bookkeeping
+   * carried across checkpoints and restarts.
    */
   scratch: Record<string, unknown>;
   /**
@@ -182,9 +183,9 @@ export interface RunState {
  * how a conversation spans multiple runs and process lifetimes.
  *
  * ```ts no_run
- * const thread = await store.loadThread('customer-123');
+ * const thread = await loadConversationThread(store, 'customer-123');
  * if (thread?.historyRevisionId) {
- *   const history = await store.loadHistory(thread.historyRevisionId);
+ *   const history = await loadConversationHistory(store, thread.historyRevisionId);
  *   console.log(history?.render().length, 'messages so far');
  * }
  * ```
@@ -207,64 +208,92 @@ export interface ThreadState {
    * Time of the last commit in milliseconds since the epoch.
    */
   updatedAt: number;
+  /**
+   * Opaque backing-store version assigned after every successful commit. It
+   * is absent only on a thread value that has not been persisted yet.
+   */
+  storeVersion?: string;
+  /**
+   * Store-compatible structured-cloneable conversation metadata owned by the
+   * caller.
+   *
+   * The store treats this as opaque data and commits it atomically with the
+   * history head. Protocol adapters can therefore retain their own session
+   * state without introducing a parallel persistence abstraction.
+   */
+  metadata?: Record<string, unknown>;
+}
+/** Raised when a conversation thread changes after a caller loads it. */
+export class ConversationConflictError extends Error {
+  /** Thread whose optimistic store version changed. */
+  threadId: string;
+  /** Store version observed by the caller, or `null` for creation. */
+  expectedVersion: string | null;
+  /** Current store version, or `null` when the thread does not exist. */
+  actualVersion: string | null;
+  /** Create a typed conversation-store conflict. */
+  constructor(threadId: string, expectedVersion: string | null, actualVersion: string | null) {
+    super(
+      `Thread ${threadId} changed from store version ${expectedVersion ?? '<new>'} to ${actualVersion ?? '<new>'}`,
+    );
+    this.name = 'ConversationConflictError';
+    this.threadId = threadId;
+    this.expectedVersion = expectedVersion;
+    this.actualVersion = actualVersion;
+  }
 }
 /**
- * Durable session boundary for runs, threads, and immutable history graphs.
+ * Raised when a durable thread advances after a caller read its head.
  *
- * Implement this interface to back sessions with custom storage;
- * `InMemorySessionStore` and `SqliteSessionStore` are the built-in
- * implementations. The contract that matters most is `commitSession()`: it
- * must persist the history delta, the run checkpoint, and the thread head as
- * one atomic unit, because a partially applied commit would leave a run
- * pointing at a revision that does not exist. History entries and revisions
- * are content-immutable, so their writes may be insert-if-absent.
- *
- * ```ts no_run
- * import { SqliteSessionStore, type SessionStore } from 'fino:ai/session';
- *
- * const store: SessionStore = await SqliteSessionStore.open('./runs.db');
- * for (const run of await store.listRuns({ threadId: 'customer-123' })) {
- *   console.log(run.runId, run.status);
- * }
- * ```
+ * The failed commit writes nothing. Callers may reload and retry, reject the
+ * overlapping turn, or explicitly fork from the revision they originally read.
  */
-export interface SessionStore {
-  /**
-   * Load a persisted run checkpoint, or `null` if the run id is unknown.
-   */
-  loadRun(runId: string): Promise<RunState | null>;
-  /**
-   * List persisted run checkpoints, optionally scoped to one thread.
-   */
-  listRuns(filter?: { threadId?: string }): Promise<RunState[]>;
-  /**
-   * Remove a run checkpoint. History entries and revisions are shared with
-   * the thread and other runs, so they are left in place.
-   */
-  deleteRun(runId: string): Promise<void>;
-  /**
-   * Load a thread head pointer, or `null` if the thread id is unknown.
-   */
-  loadThread(threadId: string): Promise<ThreadState | null>;
-  /**
-   * Reconstruct the `MessageHistory` graph reachable from a revision id
-   * (the revision plus its full parent lineage), or `null` if the revision
-   * is unknown.
-   */
-  loadHistory(revisionId: string): Promise<MessageHistory | null>;
-  /**
-   * Atomically persist one checkpoint: the history entries and revisions
-   * added since `baseRevisionId` (all of them when it is omitted), the run
-   * checkpoint, and the thread head. Implementations should reject commits
-   * whose run or thread revision pointers disagree with
-   * `history.revisionId`, as the built-in stores do.
-   */
-  commitSession(args: {
-    run: RunState;
-    thread: ThreadState;
-    history: MessageHistory;
-    baseRevisionId?: string;
-  }): Promise<void>;
+export class SessionConflictError extends Error {
+  /** Thread whose optimistic concurrency check failed. */
+  threadId: string;
+  /** Revision the caller expected, or `null` for a new thread. */
+  expectedRevisionId: string | null;
+  /** Revision currently stored, or `null` when the thread does not exist. */
+  actualRevisionId: string | null;
+  /** Create a typed thread-head conflict. */
+  constructor(
+    threadId: string,
+    expectedRevisionId: string | null,
+    actualRevisionId: string | null,
+  ) {
+    super(
+      `Thread ${threadId} changed from ${expectedRevisionId ?? '<new>'} to ${actualRevisionId ?? '<new>'}`,
+    );
+    this.name = 'SessionConflictError';
+    this.threadId = threadId;
+    this.expectedRevisionId = expectedRevisionId;
+    this.actualRevisionId = actualRevisionId;
+  }
+}
+/** Values atomically committed by `commitConversationThread()`. */
+export interface ConversationCommitOptions {
+  /** New thread head and caller-owned metadata. */
+  thread: ThreadState;
+  /** Immutable history graph whose head the thread references. */
+  history: MessageHistory;
+  /** Store version returned by `loadConversationThread()`, or `null` for creation. */
+  expectedStoreVersion: string | null;
+  /** Existing graph head; only later history nodes are written when supplied. */
+  baseRevisionId?: string;
+}
+
+/** Values atomically committed by `commitAgentSession()`. */
+export interface AgentSessionCommitOptions {
+  /** Run checkpoint written with the thread head. */
+  run: RunState;
+  /** New thread head. */
+  thread: ThreadState;
+  /** Immutable history graph referenced by both records. */
+  history: MessageHistory;
+  /** History head observed before this commit, or `null` for a new thread. */
+  expectedThreadRevisionId: string | null;
+  /** Existing graph head; only later history nodes are written when supplied. */
+  baseRevisionId?: string;
 }
 /**
  * Result returned by session start, resume, and fork operations.
@@ -322,10 +351,11 @@ export type ToolApprovalDecision =
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
  * import { openai } from 'fino:ai/model';
- * import { session, InMemorySessionStore } from 'fino:ai/session';
+ * import { memoryStore } from 'fino:store';
+ * import { session } from 'fino:ai/session';
  *
  * const sess = session({
- *   store: new InMemorySessionStore(),
+ *   store: memoryStore(),
  *   agent: agent({ model: openai({ model: 'gpt-4o' }) }),
  *   threadId: 'customer-123',
  *   onCheckpoint: (s) => console.log(s.status, 'at step', s.stepIndex),
@@ -336,7 +366,7 @@ export interface SessionOptions {
   /**
    * Durable store that receives every checkpoint.
    */
-  store: SessionStore;
+  store: AtomicStore;
   /**
    * Configured agent whose step loop the session drives.
    */
@@ -419,26 +449,17 @@ async function historyFromMessages(messages: ModelMessage[]): Promise<MessageHis
   for (const msg of messages) history = await history.append(msg);
   return history;
 }
-async function forkHistoryFromState(state: RunState, store: SessionStore): Promise<MessageHistory> {
+async function forkHistoryFromState(state: RunState, store: AtomicStore): Promise<MessageHistory> {
   if (!state.historyRevisionId) throw new Error(`Run ${state.runId} has no history revision`);
-  const history = await store.loadHistory(state.historyRevisionId);
+  const history = await loadConversationHistory(store, state.historyRevisionId);
   if (!history) throw new Error(`History revision ${state.historyRevisionId} not found`);
   return history.fork();
 }
-async function driveHistoryFromState(
-  state: RunState,
-  store: SessionStore,
-): Promise<MessageHistory> {
+async function driveHistoryFromState(state: RunState, store: AtomicStore): Promise<MessageHistory> {
   if (!state.historyRevisionId) throw new Error(`Run ${state.runId} has no history revision`);
-  const history = await store.loadHistory(state.historyRevisionId);
+  const history = await loadConversationHistory(store, state.historyRevisionId);
   if (!history) throw new Error(`History revision ${state.historyRevisionId} not found`);
   return history;
-}
-function cloneRunState(state: RunState): RunState {
-  return JSON.parse(JSON.stringify(state)) as RunState;
-}
-function cloneThreadState(thread: ThreadState): ThreadState {
-  return { ...thread };
 }
 function isToolApprovalRequest(value: unknown): value is ToolApprovalRequest {
   return (
@@ -462,12 +483,12 @@ function isToolApprovalRequest(value: unknown): value is ToolApprovalRequest {
   );
 }
 function validateCommit(args: {
-  run: RunState;
+  run?: RunState;
   thread: ThreadState;
   history: MessageHistory;
 }): void {
   if (
-    args.run.historyRevisionId !== undefined &&
+    args.run?.historyRevisionId !== undefined &&
     args.run.historyRevisionId !== args.history.revisionId
   ) {
     throw new Error(
@@ -483,467 +504,215 @@ function validateCommit(args: {
     );
   }
 }
-/**
- * In-memory session store for tests and simple single-process agents.
- *
- * Implements the full `SessionStore` contract with deep-cloned state, so
- * mutating a returned run, thread, or history never leaks back into the
- * store. Nothing survives the process; switch to `SqliteSessionStore` when
- * runs must outlive it.
- *
- * ```ts no_run
- * import { agent } from 'fino:ai/agent';
- * import { openai } from 'fino:ai/model';
- * import { session, InMemorySessionStore } from 'fino:ai/session';
- *
- * const store = new InMemorySessionStore();
- * const sess = session({ store, agent: agent({ model: openai({ model: 'gpt-4o' }) }) });
- * const r = await sess.start('hello');
- * console.log(await store.loadRun(r.runId));
- * ```
- */
-export class InMemorySessionStore implements SessionStore {
-  #runs = new Map<string, RunState>();
-  #threads = new Map<string, ThreadState>();
-  #entries = new Map<string, MessageHistoryEntry>();
-  #revisions = new Map<string, MessageHistoryRevision>();
-  /**
-   * Load a copy of a run checkpoint, or `null` if the run id is unknown.
-   */
-  async loadRun(runId: string): Promise<RunState | null> {
-    const run = this.#runs.get(runId);
-    return run ? cloneRunState(run) : null;
-  }
-  /**
-   * List copies of stored run checkpoints, optionally scoped to one thread.
-   */
-  async listRuns(
-    filter: {
-      threadId?: string;
-    } = {},
-  ): Promise<RunState[]> {
-    return [...this.#runs.values()]
-      .filter((run) => filter.threadId === undefined || run.threadId === filter.threadId)
-      .map(cloneRunState);
-  }
-  /**
-   * Remove a run checkpoint; history entries and threads are untouched.
-   */
-  async deleteRun(runId: string): Promise<void> {
-    this.#runs.delete(runId);
-  }
-  /**
-   * Load a copy of a thread head, or `null` if the thread id is unknown.
-   */
-  async loadThread(threadId: string): Promise<ThreadState | null> {
-    const thread = this.#threads.get(threadId);
-    return thread ? cloneThreadState(thread) : null;
-  }
-  /**
-   * Rebuild the history graph reachable from a revision id, or `null` if the
-   * revision is unknown.
-   */
-  async loadHistory(revisionId: string): Promise<MessageHistory | null> {
-    const revision = this.#revisions.get(revisionId);
-    if (!revision) return null;
-    const revisions: MessageHistoryRevision[] = [];
-    let current: MessageHistoryRevision | undefined = revision;
-    while (current) {
-      revisions.push({
-        ...current,
-        entryIds: [...current.entryIds],
-      });
-      current = current.parent ? this.#revisions.get(current.parent) : undefined;
-    }
-    const needed = new Set<string>();
-    for (const rev of revisions) {
-      for (const entryId of rev.entryIds) needed.add(entryId);
-    }
-    const entries = [...needed]
-      .map((entryId) => this.#entries.get(entryId))
-      .filter((entry): entry is MessageHistoryEntry => entry !== undefined)
-      .map((entry) => JSON.parse(JSON.stringify(entry)) as MessageHistoryEntry);
-    return MessageHistory.fromSnapshot({
-      entries,
-      revisions,
-      head: revisionId,
+const RUN_PREFIX = 'run/';
+const THREAD_PREFIX = 'thread/';
+const ENTRY_PREFIX = 'history-entry/';
+const REVISION_PREFIX = 'history-revision/';
+
+function runKey(runId: string): string {
+  return `${RUN_PREFIX}${runId}`;
+}
+
+function threadKey(threadId: string): string {
+  return `${THREAD_PREFIX}${threadId}`;
+}
+
+function entryKey(entryId: string): string {
+  return `${ENTRY_PREFIX}${entryId}`;
+}
+
+function revisionKey(revisionId: string): string {
+  return `${REVISION_PREFIX}${revisionId}`;
+}
+
+function threadValue(thread: ThreadState): ThreadState {
+  const copy = structuredClone(thread);
+  delete copy.storeVersion;
+  return copy;
+}
+
+function historyWrites(history: MessageHistory, baseRevisionId?: string) {
+  const delta = history.changesSince(baseRevisionId);
+  return [
+    ...delta.entries.map((entry) => ({
+      key: entryKey(entry.id),
+      value: structuredClone(entry),
+    })),
+    ...delta.revisions.map((revision) => ({
+      key: revisionKey(revision.id),
+      value: structuredClone(revision),
+    })),
+  ];
+}
+
+function sessionValues(store: AtomicStore): AtomicStore {
+  return store.namespace('fino:ai/session:v1');
+}
+
+/** Load a detached agent run checkpoint, or `null`. */
+export async function loadAgentRun(store: AtomicStore, runId: string): Promise<RunState | null> {
+  const state = await sessionValues(store).get<RunState>(runKey(runId));
+  return state ? structuredClone(state) : null;
+}
+
+/** List detached agent run checkpoints, optionally restricted to one thread. */
+export async function listAgentRuns(
+  store: AtomicStore,
+  filter: { threadId?: string } = {},
+): Promise<RunState[]> {
+  return (await sessionValues(store).list<RunState>({ prefix: RUN_PREFIX }))
+    .map((entry) => structuredClone(entry.value))
+    .filter((run) => filter.threadId === undefined || run.threadId === filter.threadId);
+}
+
+/** Delete a run checkpoint while retaining its thread and shared history. */
+export async function deleteAgentRun(store: AtomicStore, runId: string): Promise<void> {
+  await sessionValues(store).delete(runKey(runId));
+}
+
+/** Load a detached conversation thread with its current store version. */
+export async function loadConversationThread(
+  store: AtomicStore,
+  threadId: string,
+): Promise<ThreadState | null> {
+  const entry = await sessionValues(store).atomic.getEntry<ThreadState>(threadKey(threadId));
+  return entry ? { ...structuredClone(entry.value), storeVersion: entry.version } : null;
+}
+
+/** List detached conversation threads newest first. */
+export async function listConversationThreads(store: AtomicStore): Promise<ThreadState[]> {
+  const values = sessionValues(store);
+  const threads = await values.list<ThreadState>({ prefix: THREAD_PREFIX });
+  const loaded = await Promise.all(
+    threads.map((thread) => values.atomic.getEntry<ThreadState>(thread.key)),
+  );
+  return loaded
+    .filter((entry) => entry !== null)
+    .map((entry) => ({ ...structuredClone(entry!.value), storeVersion: entry!.version }))
+    .sort((a, b) => b.updatedAt - a.updatedAt || a.threadId.localeCompare(b.threadId));
+}
+
+/** Delete one thread head while retaining runs and shared history nodes. */
+export async function deleteConversationThread(
+  store: AtomicStore,
+  threadId: string,
+): Promise<boolean> {
+  const values = sessionValues(store);
+  const key = threadKey(threadId);
+  for (;;) {
+    const current = await values.atomic.getEntry(key);
+    if (!current) return false;
+    const removed = await values.atomic.commit({
+      checks: [{ key, ifVersion: current.version }],
+      deletes: [key],
     });
-  }
-  /**
-   * Persist a checkpoint: history delta since `baseRevisionId`, run state,
-   * and thread head. Throws if the run or thread revision pointers disagree
-   * with the committed history's head revision.
-   */
-  async commitSession(args: {
-    run: RunState;
-    thread: ThreadState;
-    history: MessageHistory;
-    baseRevisionId?: string;
-  }): Promise<void> {
-    validateCommit(args);
-    const delta = args.history.changesSince(args.baseRevisionId);
-    for (const entry of delta.entries) {
-      if (!this.#entries.has(entry.id))
-        this.#entries.set(entry.id, JSON.parse(JSON.stringify(entry)) as MessageHistoryEntry);
-    }
-    for (const revision of delta.revisions) {
-      if (!this.#revisions.has(revision.id))
-        this.#revisions.set(revision.id, {
-          ...revision,
-          entryIds: [...revision.entryIds],
-        });
-    }
-    this.#runs.set(args.run.runId, cloneRunState(args.run));
-    this.#threads.set(args.thread.threadId, cloneThreadState(args.thread));
-  }
-  /**
-   * Write a run checkpoint directly, without touching thread or history.
-   * Lower-level convenience mirroring `SqliteSessionStore.save()`.
-   */
-  async save(s: RunState): Promise<void> {
-    this.#runs.set(s.runId, cloneRunState(s));
-  }
-  /**
-   * Alias of `loadRun()`.
-   */
-  async load(runId: string): Promise<RunState | null> {
-    return this.loadRun(runId);
-  }
-  /**
-   * Alias of `listRuns()`.
-   */
-  async list(
-    filter: {
-      threadId?: string;
-    } = {},
-  ): Promise<RunState[]> {
-    return this.listRuns(filter);
-  }
-  /**
-   * Alias of `deleteRun()`.
-   */
-  async delete(runId: string): Promise<void> {
-    return this.deleteRun(runId);
+    if (removed) return true;
   }
 }
-/**
- * Database-backed session store.
- *
- * The class name is retained for compatibility: pass a filesystem path or
- * `sqlite://` URL for SQLite, or a `postgres://` URL for Postgres — the
- * engine is chosen through `fino:database`. `commitSession()` runs each
- * checkpoint in a single transaction, so a crash mid-commit leaves the
- * previous checkpoint intact.
- *
- * Runs and threads are stored as rows keyed by id; history entries and
- * revisions are stored append-only and reassembled into a `MessageHistory`
- * by walking the revision lineage.
- *
- * ```ts no_run
- * import { SqliteSessionStore } from 'fino:ai/session';
- *
- * await using store = await SqliteSessionStore.open('./runs.db');
- * const stuck = (await store.listRuns()).filter((r) => r.status === 'suspended');
- * console.log(`${stuck.length} runs waiting on input`);
- * ```
- */
-export class SqliteSessionStore implements SessionStore {
-  #db: DatabaseConnection;
-  private constructor(db: DatabaseConnection) {
-    this.#db = db;
+
+/** Reconstruct an immutable conversation history from one graph revision. */
+export async function loadConversationHistory(
+  store: AtomicStore,
+  revisionId: string,
+): Promise<MessageHistory | null> {
+  const values = sessionValues(store);
+  const revisions: MessageHistoryRevision[] = [];
+  let currentId: string | undefined = revisionId;
+  while (currentId) {
+    const revision = await values.get<MessageHistoryRevision>(revisionKey(currentId));
+    if (!revision) {
+      if (revisions.length === 0) return null;
+      break;
+    }
+    revisions.push(structuredClone(revision));
+    currentId = revision.parent;
   }
-  /**
-   * Open (or create) a session database and ensure its schema exists.
-   *
-   * `path` accepts anything `fino:database` understands: a plain file path or
-   * `sqlite://` URL (including `:memory:`), or a `postgres://` URL. The
-   * `runs`, `threads`, `history_entries`, and `history_revisions` tables are
-   * created if missing, so pointing at a fresh database just works. `opts.fs`
-   * forwards a filesystem provider to the SQLite backend for virtual or
-   * non-default filesystems.
-   */
-  static async open(
-    path: string,
-    opts?: {
-      fs?: object;
-    },
-  ): Promise<SqliteSessionStore> {
-    const db = await Database.open(path, { fs: opts?.fs as never });
-    await db.exec(`CREATE TABLE IF NOT EXISTS runs (
-        run_id TEXT PRIMARY KEY,
-        thread_id TEXT NOT NULL,
-        status TEXT NOT NULL,
-        step_index INTEGER NOT NULL,
-        state TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`);
-    await db.exec(`CREATE INDEX IF NOT EXISTS idx_runs_thread ON runs(thread_id)`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS threads (
-        thread_id TEXT PRIMARY KEY,
-        history_revision_id TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      )`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS history_entries (
-        id TEXT PRIMARY KEY,
-        entry TEXT NOT NULL
-      )`);
-    await db.exec(`CREATE TABLE IF NOT EXISTS history_revisions (
-        id TEXT PRIMARY KEY,
-        parent TEXT,
-        entry_ids TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        operation TEXT
-      )`);
-    await db.exec(
-      `CREATE INDEX IF NOT EXISTS idx_history_revisions_parent ON history_revisions(parent)`,
+  const needed = new Set(revisions.flatMap((revision) => revision.entryIds));
+  const entries: MessageHistoryEntry[] = [];
+  for (const id of needed) {
+    const entry = await values.get<MessageHistoryEntry>(entryKey(id));
+    if (!entry) throw new Error(`History entry ${id} not found`);
+    entries.push(structuredClone(entry));
+  }
+  const snapshot: MessageHistorySnapshot = { entries, revisions, head: revisionId };
+  return MessageHistory.fromSnapshot(snapshot);
+}
+
+/** Atomically commit a conversation history delta, thread head, and metadata. */
+export async function commitConversationThread(
+  store: AtomicStore,
+  args: ConversationCommitOptions,
+): Promise<ThreadState> {
+  const values = sessionValues(store);
+  const thread = structuredClone(args.thread);
+  validateCommit({ thread, history: args.history });
+  const key = threadKey(thread.threadId);
+  const current = await values.atomic.getEntry<ThreadState>(key);
+  const actualVersion = current?.version ?? null;
+  if (actualVersion !== args.expectedStoreVersion) {
+    throw new ConversationConflictError(thread.threadId, args.expectedStoreVersion, actualVersion);
+  }
+  if (thread.metadata === undefined && current?.value.metadata !== undefined)
+    thread.metadata = structuredClone(current.value).metadata;
+  const result = await values.atomic.commit({
+    checks: [{ key, ifVersion: args.expectedStoreVersion }],
+    writes: [
+      ...historyWrites(args.history, args.baseRevisionId),
+      { key, value: threadValue(thread) },
+    ],
+  });
+  if (!result) {
+    const actual = await values.atomic.getEntry(key);
+    throw new ConversationConflictError(
+      thread.threadId,
+      args.expectedStoreVersion,
+      actual?.version ?? null,
     );
-    return new SqliteSessionStore(db);
   }
-  async #saveEntry(entry: MessageHistoryEntry): Promise<void> {
-    const stmt = this.#db.prepare(
-      sql`INSERT INTO history_entries(id, entry) VALUES(${entry.id}, ${JSON.stringify(entry)}) ON CONFLICT(id) DO NOTHING`,
-    );
-    try {
-      await stmt.run();
-    } finally {
-      stmt.finalize();
+  const saved = result.writes[result.writes.length - 1]!;
+  return { ...structuredClone(saved.value as ThreadState), storeVersion: saved.version };
+}
+
+/** Atomically commit a run checkpoint with its history and thread head. */
+export async function commitAgentSession(
+  store: AtomicStore,
+  args: AgentSessionCommitOptions,
+): Promise<void> {
+  const values = sessionValues(store);
+  const run = structuredClone(args.run);
+  const thread = structuredClone(args.thread);
+  validateCommit({ run, thread, history: args.history });
+  const key = threadKey(thread.threadId);
+  for (;;) {
+    const current = await values.atomic.getEntry<ThreadState>(key);
+    const actualHistoryRevision = current?.value.historyRevisionId ?? null;
+    if (actualHistoryRevision !== args.expectedThreadRevisionId) {
+      throw new SessionConflictError(
+        thread.threadId,
+        args.expectedThreadRevisionId,
+        actualHistoryRevision,
+      );
     }
-  }
-  async #saveRevision(revision: MessageHistoryRevision): Promise<void> {
-    const stmt = this.#db
-      .prepare(sql`INSERT INTO history_revisions(id, parent, entry_ids, created_at, operation)
-       VALUES(${revision.id}, ${revision.parent ?? null}, ${JSON.stringify(revision.entryIds)}, ${revision.createdAt}, ${revision.operation !== undefined ? JSON.stringify(revision.operation) : null})
-       ON CONFLICT(id) DO NOTHING`);
-    try {
-      await stmt.run();
-    } finally {
-      stmt.finalize();
-    }
-  }
-  async #loadSnapshot(id: string): Promise<MessageHistorySnapshot | null> {
-    const revStmt = this.#db
-      .prepare(sql`WITH RECURSIVE lineage(id, parent, entry_ids, created_at, operation) AS (
-         SELECT id, parent, entry_ids, created_at, operation FROM history_revisions WHERE id = ${id}
-         UNION ALL
-         SELECT r.id, r.parent, r.entry_ids, r.created_at, r.operation
-         FROM history_revisions r JOIN lineage l ON r.id = l.parent
-       )
-       SELECT id, parent, entry_ids, created_at, operation FROM lineage`);
-    try {
-      const rows = await revStmt.all();
-      if (rows.length === 0) return null;
-      const revisions = rows.map((row) => ({
-        id: row.id as string,
-        ...(row.parent !== null ? { parent: row.parent as string } : {}),
-        entryIds: JSON.parse(row.entry_ids as string) as string[],
-        createdAt: row.created_at as number,
-        ...(row.operation !== null ? { operation: JSON.parse(row.operation as string) } : {}),
-      }));
-      const needed = new Set<string>();
-      for (const rev of revisions) {
-        for (const entryId of rev.entryIds) needed.add(entryId);
-      }
-      const entries: MessageHistoryEntry[] = [];
-      for (const entryId of needed) {
-        const entryStmt = this.#db.prepare(
-          sql`SELECT entry FROM history_entries WHERE id = ${entryId}`,
-        );
-        try {
-          const row = await entryStmt.get();
-          if (row) entries.push(JSON.parse(row.entry as string) as MessageHistoryEntry);
-        } finally {
-          entryStmt.finalize();
-        }
-      }
-      return {
-        entries,
-        revisions,
-        head: id,
-      };
-    } finally {
-      revStmt.finalize();
-    }
-  }
-  /**
-   * Rebuild the history graph reachable from a revision id by walking its
-   * stored lineage, or return `null` if the revision is unknown.
-   */
-  async loadHistory(revisionId: string): Promise<MessageHistory | null> {
-    const snapshot = await this.#loadSnapshot(revisionId);
-    return snapshot ? MessageHistory.fromSnapshot(snapshot) : null;
-  }
-  /**
-   * Load a thread head, or `null` if the thread id is unknown.
-   */
-  async loadThread(threadId: string): Promise<ThreadState | null> {
-    const stmt = this.#db.prepare(
-      sql`SELECT thread_id, history_revision_id, created_at, updated_at FROM threads WHERE thread_id = ${threadId}`,
-    );
-    try {
-      const row = await stmt.get();
-      if (!row) return null;
-      return {
-        threadId: row.thread_id as string,
-        ...(row.history_revision_id !== null
-          ? { historyRevisionId: row.history_revision_id as string }
-          : {}),
-        createdAt: row.created_at as number,
-        updatedAt: row.updated_at as number,
-      };
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Persist a checkpoint in one transaction: history delta since
-   * `baseRevisionId`, run row, and thread head. Throws without writing if
-   * the run or thread revision pointers disagree with the committed
-   * history's head revision.
-   */
-  async commitSession(args: {
-    run: RunState;
-    thread: ThreadState;
-    history: MessageHistory;
-    baseRevisionId?: string;
-  }): Promise<void> {
-    validateCommit(args);
-    await this.#db.transaction(async () => {
-      const delta = args.history.changesSince(args.baseRevisionId);
-      for (const entry of delta.entries) await this.#saveEntry(entry);
-      for (const revision of delta.revisions) await this.#saveRevision(revision);
-      const runStmt = this.#db
-        .prepare(sql`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
-         VALUES(${args.run.runId}, ${args.run.threadId}, ${args.run.status}, ${args.run.stepIndex}, ${JSON.stringify(args.run)}, ${Date.now()})
-         ON CONFLICT(run_id) DO UPDATE SET
-           status = excluded.status,
-           step_index = excluded.step_index,
-           state = excluded.state,
-           updated_at = excluded.updated_at`);
-      try {
-        await runStmt.run();
-      } finally {
-        runStmt.finalize();
-      }
-      const threadStmt = this.#db
-        .prepare(sql`INSERT INTO threads(thread_id, history_revision_id, created_at, updated_at)
-         VALUES(${args.thread.threadId}, ${args.thread.historyRevisionId ?? null}, ${args.thread.createdAt}, ${args.thread.updatedAt})
-         ON CONFLICT(thread_id) DO UPDATE SET
-           history_revision_id = excluded.history_revision_id,
-           updated_at = excluded.updated_at`);
-      try {
-        await threadStmt.run();
-      } finally {
-        threadStmt.finalize();
-      }
+    const nextThread =
+      thread.metadata === undefined && current?.value.metadata !== undefined
+        ? { ...thread, metadata: structuredClone(current.value).metadata }
+        : thread;
+    const result = await values.atomic.commit({
+      checks: [{ key, ifVersion: current?.version ?? null }],
+      writes: [
+        ...historyWrites(args.history, args.baseRevisionId),
+        { key: runKey(run.runId), value: run },
+        { key, value: threadValue(nextThread) },
+      ],
     });
-  }
-  /**
-   * Write a run checkpoint directly, without touching thread or history.
-   */
-  async save(s: RunState): Promise<void> {
-    await this.#db.transaction(async () => {
-      const stmt = this.#db
-        .prepare(sql`INSERT INTO runs(run_id, thread_id, status, step_index, state, updated_at)
-         VALUES(${s.runId}, ${s.threadId}, ${s.status}, ${s.stepIndex}, ${JSON.stringify(s)}, ${Date.now()})
-         ON CONFLICT(run_id) DO UPDATE SET
-           status = excluded.status,
-           step_index = excluded.step_index,
-           state = excluded.state,
-           updated_at = excluded.updated_at`);
-      try {
-        await stmt.run();
-      } finally {
-        stmt.finalize();
-      }
-    });
-  }
-  /**
-   * Load a run checkpoint, or `null` if the run id is unknown.
-   */
-  async loadRun(runId: string): Promise<RunState | null> {
-    return this.load(runId);
-  }
-  /**
-   * Alias of `loadRun()`.
-   */
-  async load(runId: string): Promise<RunState | null> {
-    const stmt = this.#db.prepare(sql`SELECT state FROM runs WHERE run_id = ${runId}`);
-    try {
-      const row = await stmt.get();
-      if (!row) return null;
-      return JSON.parse(row.state as string) as RunState;
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * List run checkpoints, most recently updated first, optionally scoped to
-   * one thread.
-   */
-  async listRuns(
-    filter: {
-      threadId?: string;
-    } = {},
-  ): Promise<RunState[]> {
-    return this.list(filter);
-  }
-  /**
-   * Alias of `listRuns()`.
-   */
-  async list(
-    filter: {
-      threadId?: string;
-    } = {},
-  ): Promise<RunState[]> {
-    let query: SqlFragment = sql`SELECT state FROM runs`;
-    if (filter.threadId !== undefined) {
-      query = sql`${query} WHERE thread_id = ${filter.threadId}`;
-    }
-    query = sql`${query} ORDER BY updated_at DESC`;
-    const stmt = this.#db.prepare(query);
-    try {
-      const rows = await stmt.all();
-      return rows.map((r) => JSON.parse(r.state as string) as RunState);
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Remove a run row; history entries and threads are untouched.
-   */
-  async deleteRun(runId: string): Promise<void> {
-    return this.delete(runId);
-  }
-  /**
-   * Alias of `deleteRun()`.
-   */
-  async delete(runId: string): Promise<void> {
-    const stmt = this.#db.prepare(sql`DELETE FROM runs WHERE run_id = ${runId}`);
-    try {
-      await stmt.run();
-    } finally {
-      stmt.finalize();
-    }
-  }
-  /**
-   * Close the underlying database connection.
-   */
-  async close(): Promise<void> {
-    await this.#db.close();
-  }
-  /**
-   * Close the store when leaving an `await using` scope.
-   */
-  async [Symbol.asyncDispose](): Promise<void> {
-    await this.close();
+    if (result) return;
   }
 }
 const MAX_DRIVE_STEPS = 100;
 /**
  * Durable runner for an agent thread.
  *
- * A `Session` binds an `Agent` to a `SessionStore` and one conversation
+ * A `Session` binds an `Agent` to an `AtomicStore` and one conversation
  * thread. Each `start()` creates a run; the session drives the agent one step
  * at a time, committing a checkpoint after every step, and returns when the
  * run completes or suspends. A single driving call may take at most 100 steps
@@ -961,9 +730,10 @@ const MAX_DRIVE_STEPS = 100;
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
  * import { openai } from 'fino:ai/model';
- * import { session, SqliteSessionStore } from 'fino:ai/session';
+ * import { sqliteStore } from 'fino:store';
+ * import { session } from 'fino:ai/session';
  *
- * const store = await SqliteSessionStore.open('./runs.db');
+ * const store = await sqliteStore({ path: './runs.db' });
  * const sess = session({
  *   store,
  *   agent: agent({ model: openai({ model: 'gpt-4o' }) }),
@@ -990,7 +760,7 @@ export class Session {
     this.#threadId = loaded?.threadId ?? opts.threadId ?? newId();
     this.#state = loaded;
     this.#stateSignal = createSignal<RunState | undefined>(
-      loaded ? cloneRunState(loaded) : undefined,
+      loaded ? structuredClone(loaded) : undefined,
     );
   }
   /**
@@ -1019,7 +789,7 @@ export class Session {
   }
   #setState(state: RunState): void {
     this.#state = state;
-    this.#stateSignal.set(cloneRunState(state));
+    this.#stateSignal.set(structuredClone(state));
   }
   /**
    * Resume a non-suspended run from its persisted checkpoint.
@@ -1045,7 +815,7 @@ export class Session {
       runId: string;
     },
   ): Promise<RunResult> {
-    const loaded = await opts.store.loadRun(opts.runId);
+    const loaded = await loadAgentRun(opts.store, opts.runId);
     if (!loaded) throw new Error(`Run ${opts.runId} not found`);
     if (loaded.status === 'done' || loaded.status === 'cancelled') {
       return {
@@ -1098,7 +868,7 @@ export class Session {
       signal?: AbortSignal;
     },
   ): Promise<RunResult> {
-    const loaded = await opts.store.loadRun(opts.runId);
+    const loaded = await loadAgentRun(opts.store, opts.runId);
     if (!loaded) throw new Error(`Run ${opts.runId} not found`);
     const sess = new Session(opts, loaded);
     return sess.resume(opts.resumeToken, opts.value, { signal: opts.signal });
@@ -1130,7 +900,7 @@ export class Session {
       signal?: AbortSignal;
     },
   ): Promise<RunResult> {
-    const loaded = await opts.store.loadRun(opts.runId);
+    const loaded = await loadAgentRun(opts.store, opts.runId);
     if (!loaded) throw new Error(`Run ${opts.runId} not found`);
     const sess = new Session(opts, loaded);
     return sess.approveTool(opts.resumeToken, {
@@ -1155,7 +925,7 @@ export class Session {
       signal?: AbortSignal;
     },
   ): Promise<RunResult> {
-    const loaded = await opts.store.loadRun(opts.runId);
+    const loaded = await loadAgentRun(opts.store, opts.runId);
     if (!loaded) throw new Error(`Run ${opts.runId} not found`);
     const sess = new Session(opts, loaded);
     return sess.rejectTool(opts.resumeToken, opts.reason, { signal: opts.signal });
@@ -1238,7 +1008,7 @@ export class Session {
       scratch: {},
     };
     this.#setState(state);
-    return this.#drive(state, signal, history, messages, baseRevisionId);
+    return this.#drive(state, signal, history, messages, baseRevisionId, thread);
   }
   /**
    * Resume the current suspended run with external input.
@@ -1277,12 +1047,13 @@ export class Session {
     }
     const history = await driveHistoryFromState(this.#state, this.#opts.store);
     const baseRevisionId = history.revisionId;
+    const thread = await this.#loadExpectedThread(baseRevisionId);
     const state: RunState = {
       ...this.#state,
       status: 'running',
-      suspendedOn: undefined,
       historyRevisionId: history.revisionId,
     };
+    delete state.suspendedOn;
     const injected: ModelMessage = {
       role: 'user',
       content: typeof value === 'string' ? value : JSON.stringify(value),
@@ -1293,6 +1064,7 @@ export class Session {
       history,
       [...history.render(), injected],
       baseRevisionId,
+      thread,
     );
   }
   /**
@@ -1371,50 +1143,63 @@ export class Session {
     }
     const history = await driveHistoryFromState(this.#state, this.#opts.store);
     const baseRevisionId = history.revisionId;
+    const thread = await this.#loadExpectedThread(baseRevisionId);
     const state: RunState = {
       ...this.#state,
       status: 'running',
-      suspendedOn: undefined,
       historyRevisionId: history.revisionId,
     };
+    delete state.suspendedOn;
     const approvalValue = decision.approved
       ? {
           approved: true,
-          approval: decision.approval,
+          ...(decision.approval !== undefined ? { approval: decision.approval } : {}),
         }
       : {
           approved: false,
           reason: decision.reason ?? 'not approved',
         };
-    const approval = await this.#opts.agent.approveTool(
-      {
-        messages: history.render(),
-        stepIndex: state.stepIndex,
-        usage: state.usage,
-        cost: state.cost,
-        history,
-        signal,
-      },
-      request,
-      approvalValue,
-    );
+    const execution = this.#opts.agent.createSession({ history });
+    let approval: StepResult;
+    try {
+      approval = await execution.approveTool(
+        {
+          messages: history.render(),
+          stepIndex: state.stepIndex,
+          usage: state.usage,
+          cost: state.cost,
+          history,
+          signal,
+        },
+        request,
+        approvalValue,
+      );
+    } finally {
+      execution.close();
+    }
     const approvedHistory = approval.state.history ?? history;
     const approvedState: RunState = {
       ...state,
       stepIndex: approval.state.stepIndex,
       usage: approval.state.usage,
-      cost: approval.state.cost,
       historyRevisionId: approvedHistory.revisionId,
+      ...(approval.state.cost !== undefined ? { cost: approval.state.cost } : {}),
     };
+    if (approval.state.cost === undefined) delete approvedState.cost;
     this.#setState(approvedState);
-    const thread = await this.#commit(approvedState, approvedHistory, baseRevisionId);
+    const committedThread = await this.#commit(
+      approvedState,
+      approvedHistory,
+      baseRevisionId,
+      thread,
+    );
     return this.#drive(
       approvedState,
       signal,
       approvedHistory,
       approvedHistory.render(),
       approvedHistory.revisionId,
-      thread,
+      committedThread,
     );
   }
   /**
@@ -1511,10 +1296,11 @@ export class Session {
     };
     this.#setState(state);
     const history = state.historyRevisionId
-      ? await this.#opts.store.loadHistory(state.historyRevisionId)
+      ? await loadConversationHistory(this.#opts.store, state.historyRevisionId)
       : null;
     if (history) {
-      await this.#commit(state, history, state.historyRevisionId);
+      const thread = await this.#loadExpectedThread(state.historyRevisionId);
+      await this.#commit(state, history, state.historyRevisionId, thread);
     }
   }
   async #drive(
@@ -1546,122 +1332,128 @@ export class Session {
               ? { historyRevisionId: initialThread.historyRevisionId }
               : {}),
           }
-        : await this.#loadThread();
-      while (true) {
-        runCtxValue.stepIndex = state.stepIndex;
-        if (stepsThisCall++ >= MAX_DRIVE_STEPS) {
-          state = {
-            ...state,
-            status: 'error',
-            error: { message: 'Session exceeded maximum step count' },
-          };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          throw new Error('Session exceeded maximum step count');
-        }
-        const hState: AgentState = {
-          messages: pendingMessages ?? history.render(),
-          stepIndex: state.stepIndex,
-          usage: state.usage,
-          cost: state.cost,
-          history,
-          signal,
-        };
-        let r: StepResult;
-        try {
-          r = await this.#opts.agent.step(hState);
-        } catch (err) {
-          const e = err as Error;
-          if (e.name === 'AbortError') {
+        : await this.#loadExpectedThread(state.historyRevisionId);
+      const execution = this.#opts.agent.createSession({ history });
+      try {
+        while (true) {
+          runCtxValue.stepIndex = state.stepIndex;
+          if (stepsThisCall++ >= MAX_DRIVE_STEPS) {
             state = {
               ...state,
-              status: 'cancelled',
+              status: 'error',
+              error: { message: 'Session exceeded maximum step count' },
+            };
+            this.#setState(state);
+            await this.#commit(state, history, baseRevisionId, thread);
+            throw new Error('Session exceeded maximum step count');
+          }
+          const hState: AgentState = {
+            messages: pendingMessages ?? history.render(),
+            stepIndex: state.stepIndex,
+            usage: state.usage,
+            cost: state.cost,
+            history,
+            signal,
+          };
+          let r: StepResult;
+          try {
+            r = await execution.step(hState);
+          } catch (err) {
+            const e = err as Error;
+            if (e.name === 'AbortError') {
+              state = {
+                ...state,
+                status: 'cancelled',
+              };
+              this.#setState(state);
+              await this.#commit(state, history, baseRevisionId, thread);
+              throw err;
+            }
+            state = {
+              ...state,
+              status: 'error',
+              error: {
+                message: e.message,
+                ...(e.stack !== undefined ? { stack: e.stack } : {}),
+              },
             };
             this.#setState(state);
             await this.#commit(state, history, baseRevisionId, thread);
             throw err;
           }
+          const prevLen = history.render().length;
+          history = r.state.history ?? history;
+          pendingMessages = undefined;
           state = {
             ...state,
-            status: 'error',
-            error: {
-              message: e.message,
-              stack: e.stack,
-            },
+            stepIndex: r.state.stepIndex,
+            usage: r.state.usage,
+            historyRevisionId: history.revisionId,
+            ...(r.state.cost !== undefined ? { cost: r.state.cost } : {}),
           };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          throw err;
-        }
-        const prevLen = history.render().length;
-        history = r.state.history ?? history;
-        pendingMessages = undefined;
-        state = {
-          ...state,
-          stepIndex: r.state.stepIndex,
-          usage: r.state.usage,
-          cost: r.state.cost,
-          historyRevisionId: history.revisionId,
-        };
-        if (this.#opts.memory) {
-          const newMsgs = history.render().slice(prevLen);
-          for (const msg of newMsgs) {
-            await this.#opts.memory.append({
-              role: msg.role,
-              content: msg.content,
-            });
+          if (r.state.cost === undefined) delete state.cost;
+          if (this.#opts.memory) {
+            const newMsgs = history.render().slice(prevLen);
+            for (const msg of newMsgs) {
+              await this.#opts.memory.append({
+                role: msg.role,
+                content: msg.content,
+              });
+            }
           }
-        }
-        this.#setState(state);
-        thread = await this.#commit(state, history, baseRevisionId, thread);
-        baseRevisionId = history.revisionId;
-        this.#opts.onCheckpoint?.(state);
-        if (r.suspend) {
-          const token = newId();
-          state = {
-            ...state,
-            status: 'suspended',
-            suspendedOn: {
-              token,
-              reason: r.suspend.message,
-              payload: r.suspend.payload,
-            },
-          };
           this.#setState(state);
           thread = await this.#commit(state, history, baseRevisionId, thread);
           baseRevisionId = history.revisionId;
-          return {
-            runId: state.runId,
-            status: 'suspended',
-            state,
-          };
+          this.#opts.onCheckpoint?.(state);
+          if (r.suspend) {
+            const token = newId();
+            state = {
+              ...state,
+              status: 'suspended',
+              suspendedOn: {
+                token,
+                reason: r.suspend.message,
+                ...(r.suspend.payload !== undefined ? { payload: r.suspend.payload } : {}),
+              },
+            };
+            this.#setState(state);
+            thread = await this.#commit(state, history, baseRevisionId, thread);
+            baseRevisionId = history.revisionId;
+            return {
+              runId: state.runId,
+              status: 'suspended',
+              state,
+            };
+          }
+          if (r.done) {
+            const text = extractText(history.render());
+            state = {
+              ...state,
+              status: 'done',
+              result: text,
+            };
+            this.#setState(state);
+            await this.#commit(state, history, baseRevisionId, thread);
+            return {
+              runId: state.runId,
+              status: 'done',
+              state,
+              text,
+            };
+          }
         }
-        if (r.done) {
-          const text = extractText(history.render());
-          state = {
-            ...state,
-            status: 'done',
-            result: text,
-          };
-          this.#setState(state);
-          await this.#commit(state, history, baseRevisionId, thread);
-          return {
-            runId: state.runId,
-            status: 'done',
-            state,
-            text,
-          };
-        }
+      } finally {
+        execution.close();
       }
     });
   }
   async #loadHistory(revisionId: string): Promise<MessageHistory> {
-    const history = await this.#opts.store.loadHistory(revisionId);
+    const history = await loadConversationHistory(this.#opts.store, revisionId);
     if (!history) throw new Error(`History revision ${revisionId} not found`);
     return history;
   }
   async #loadThread(): Promise<ThreadState> {
-    const loaded = await this.#opts.store.loadThread(this.#threadId);
+    const loaded = await loadConversationThread(this.#opts.store, this.#threadId);
     if (loaded) return loaded;
     const now = Date.now();
     return {
@@ -1669,6 +1461,15 @@ export class Session {
       createdAt: now,
       updatedAt: now,
     };
+  }
+  async #loadExpectedThread(expectedRevisionId?: string): Promise<ThreadState> {
+    const thread = await this.#loadThread();
+    const expected = expectedRevisionId ?? null;
+    const actual = thread.historyRevisionId ?? null;
+    if (actual !== expected) {
+      throw new SessionConflictError(thread.threadId, expected, actual);
+    }
+    return thread;
   }
   async #commit(
     state: RunState,
@@ -1688,11 +1489,12 @@ export class Session {
       historyRevisionId: history.revisionId,
     };
     this.#setState(nextState);
-    await this.#opts.store.commitSession({
+    await commitAgentSession(this.#opts.store, {
       run: nextState,
       thread: nextThread,
       history,
-      baseRevisionId,
+      expectedThreadRevisionId: thread?.historyRevisionId ?? null,
+      ...(baseRevisionId !== undefined ? { baseRevisionId } : {}),
     });
     return nextThread;
   }
@@ -1707,9 +1509,10 @@ export class Session {
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
  * import { openai } from 'fino:ai/model';
- * import { session, SqliteSessionStore } from 'fino:ai/session';
+ * import { sqliteStore } from 'fino:store';
+ * import { session } from 'fino:ai/session';
  *
- * const store = await SqliteSessionStore.open('./runs.db');
+ * const store = await sqliteStore({ path: './runs.db' });
  * const sess = session({
  *   store,
  *   agent: agent({ model: openai({ model: 'gpt-4o' }) }),

@@ -132,6 +132,7 @@ describe('model surface — responseFormat (structured output)', () => {
       'OpenAI declares native structured output',
     );
     t.equal(o.capabilities?.toolCalling, true, 'OpenAI declares tool calling');
+    t.equal(o.capabilities?.input?.audio, true, 'OpenAI declares audio input');
     t.equal(o.capabilities?.sampling?.seed, true, 'OpenAI declares seed support');
     t.equal(a.id, 'claude-test', 'Anthropic id is explicit');
     t.equal(a.provider, 'anthropic', 'Anthropic provider is explicit');
@@ -141,7 +142,38 @@ describe('model surface — responseFormat (structured output)', () => {
       'Anthropic declares native structured output',
     );
     t.equal(a.capabilities?.input?.document, true, 'Anthropic declares document input');
+    t.equal(a.capabilities?.input?.audio, false, 'Anthropic declares no audio input');
     t.equal(a.capabilities?.sampling?.seed, false, 'Anthropic declares no seed support');
+  });
+  it('OpenAI serializes inline audio and Anthropic rejects unsupported audio', async (t) => {
+    const openAIClient = makeOpenAIClient('heard');
+    const o = openai({ client: openAIClient as never, model: 'gpt-audio', apiKey: 'test' });
+    await o.generate({
+      messages: [
+        {
+          role: 'user',
+          content: [{ type: 'audio', mediaType: 'audio/wav', data: 'YXVkaW8=' }],
+        },
+      ],
+    });
+    t.ok(JSON.stringify(openAIClient.lastBody).includes('input_audio'));
+    const a = anthropic({
+      client: makeAnthropicClient('unused') as never,
+      model: 'claude-test',
+      apiKey: 'test',
+    });
+    await t.rejects(
+      () =>
+        a.generate({
+          messages: [
+            {
+              role: 'user',
+              content: [{ type: 'audio', mediaType: 'audio/wav', data: 'YXVkaW8=' }],
+            },
+          ],
+        }),
+      /do not support audio input/,
+    );
   });
   it('OpenAI: serializes responseFormat into response_format in request body', async (t) => {
     const client = makeOpenAIClient('{"name":"Alice"}');

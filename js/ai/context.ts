@@ -18,7 +18,8 @@
  * dependencies.
  *
  * `MessageHistory` never writes durable storage. Sessions own persistence by
- * committing `toSnapshot()` or `changesSince()` output into a `SessionStore`.
+ * committing `toSnapshot()` or `changesSince()` output through the session
+ * codecs in `fino:ai/session`.
  * That keeps the immutable graph model separate from run/thread lifecycle
  * concerns such as checkpoints, suspension, cancellation, and atomic commits.
  *
@@ -178,7 +179,10 @@ export interface HistoryStrategy {
  * const { strategy, history } = signalHistoryStrategy(appendOnlyHistoryStrategy());
  * history.subscribe((h) => console.log('history entries:', h.size));
  *
- * const bot = agent({ model: anthropic({ model: 'claude-sonnet-4-6' }), history: strategy });
+ * const bot = agent({
+ *   model: anthropic({ model: 'claude-sonnet-4-6' }),
+ *   history: () => strategy,
+ * });
  * await bot.generate('hello');
  * ```
  */
@@ -281,7 +285,7 @@ export interface MessageHistoryRevision {
  * history = await history.append({ role: 'user', content: 'persist me' });
  *
  * const snapshot = history.toSnapshot();
- * const loaded = MessageHistory.fromSnapshot(JSON.parse(JSON.stringify(snapshot)));
+ * const loaded = MessageHistory.fromSnapshot(structuredClone(snapshot));
  * ```
  */
 export interface MessageHistorySnapshot {
@@ -416,17 +420,12 @@ let idCounter = 0;
 function newId(): string {
   return `${++idCounter}-${Math.random().toString(36).slice(2, 9)}`;
 }
-function cloneMessage<T extends ModelMessage>(message: T): T {
-  return JSON.parse(JSON.stringify(message)) as T;
-}
 function cloneEntry(entry: MessageHistoryEntry): MessageHistoryEntry {
   return {
     id: entry.id,
-    message: cloneMessage(entry.message),
+    message: structuredClone(entry.message),
     kind: entry.kind,
-    ...(entry.meta !== undefined
-      ? { meta: JSON.parse(JSON.stringify(entry.meta)) as MessageMeta }
-      : {}),
+    ...(entry.meta !== undefined ? { meta: structuredClone(entry.meta) } : {}),
     ...(entry.sources !== undefined ? { sources: [...entry.sources] } : {}),
   };
 }
@@ -436,26 +435,22 @@ function cloneRevision(revision: MessageHistoryRevision): MessageHistoryRevision
     entryIds: [...revision.entryIds],
     ...(revision.parent !== undefined ? { parent: revision.parent } : {}),
     createdAt: revision.createdAt,
-    ...(revision.operation !== undefined
-      ? { operation: JSON.parse(JSON.stringify(revision.operation)) as MessageHistoryOperation }
-      : {}),
+    ...(revision.operation !== undefined ? { operation: structuredClone(revision.operation) } : {}),
   };
 }
 function normalizeHistoryEntry(input: MessageHistoryEntryInput): MessageHistoryEntry {
   if ('message' in input) {
     return {
       id: input.id ?? newId(),
-      message: cloneMessage(input.message),
+      message: structuredClone(input.message),
       kind: input.kind ?? 'turn',
-      ...(input.meta !== undefined
-        ? { meta: JSON.parse(JSON.stringify(input.meta)) as MessageMeta }
-        : {}),
+      ...(input.meta !== undefined ? { meta: structuredClone(input.meta) } : {}),
       ...(input.sources !== undefined ? { sources: [...input.sources] } : {}),
     };
   }
   return {
     id: newId(),
-    message: cloneMessage(input),
+    message: structuredClone(input),
     kind: 'turn',
   };
 }
@@ -675,7 +670,7 @@ export class MessageHistory {
   }
   /** Render the active sequence, revision id, or entry-id view as model messages. */
   render(view?: string | string[]): ModelMessage[] {
-    return this.refs(view).map((entry) => cloneMessage(entry.message));
+    return this.refs(view).map((entry) => structuredClone(entry.message));
   }
   /**
    * Expand summaries in the active sequence or selected ids to original messages.
@@ -693,7 +688,7 @@ export class MessageHistory {
       if (entry.kind === 'summary' && entry.sources && entry.sources.length > 0) {
         restored.push(...this.restore(entry.sources));
       } else {
-        restored.push(cloneMessage(entry.message));
+        restored.push(structuredClone(entry.message));
       }
     }
     return restored;
@@ -1030,7 +1025,10 @@ function lastSafeSplitIndex(
  * import { anthropic } from 'fino:ai/model';
  *
  * const strategy = appendOnlyHistoryStrategy();
- * const bot = agent({ model: anthropic({ model: 'claude-sonnet-4-6' }), history: strategy });
+ * const bot = agent({
+ *   model: anthropic({ model: 'claude-sonnet-4-6' }),
+ *   history: () => strategy,
+ * });
  * await bot.generate('hello');
  * console.log(strategy.history.render()); // full transcript so far
  * ```
@@ -1108,7 +1106,9 @@ export interface SummarizingHistoryStrategyOptions {
  * const model = anthropic({ model: 'claude-sonnet-4-6' });
  * const bot = agent({
  *   model,
- *   history: summarizingHistoryStrategy({ model, triggerTokens: 60000, keepRecent: 10 }),
+ *   history: (history) => summarizingHistoryStrategy({
+ *     model, triggerTokens: 60000, keepRecent: 10, history,
+ *   }),
  * });
  * ```
  */
@@ -1252,8 +1252,9 @@ export interface SelectiveSummaryHistoryStrategyOptions {
  * const model = anthropic({ model: 'claude-sonnet-4-6' });
  * const bot = agent({
  *   model,
- *   history: selectiveSummaryHistoryStrategy({
+ *   history: (history) => selectiveSummaryHistoryStrategy({
  *     model,
+ *     history,
  *     summaryPrompt: 'Condense the older conversation into key facts and decisions.',
  *     selector: (history) => history.refs().slice(0, -5).map((entry) => entry.id),
  *   }),
