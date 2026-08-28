@@ -65,9 +65,6 @@ function assertRecord(record: SessionRecord<unknown>): void {
     if (!Number.isFinite(value)) throw new TypeError(`session ${name} must be finite`);
   }
 }
-function cloneRecord<T>(record: SessionRecord<T>): SessionRecord<T> {
-  return structuredClone(record);
-}
 /** One cookie-sealing key accepted by server-session middleware. */
 export interface SessionKey {
   /** Stable short identifier written outside the sealed cookie payload. */
@@ -232,7 +229,7 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
     const decoded = opened === undefined ? null : unsealSessionId(opened, options.keys);
     const stored =
       decoded === null ? null : await store.atomic.getEntry<SessionRecord<T>>(decoded.id);
-    let snapshot = stored === null ? null : { ...stored, value: cloneRecord(stored.value) };
+    let snapshot = stored === null ? null : { ...stored, value: structuredClone(stored.value) };
     const now = clock.now();
     if (snapshot !== null && snapshot.value.expiresAt <= now) {
       await store.delete(snapshot.value.id);
@@ -299,13 +296,13 @@ export function sessions<T = Record<string, unknown>>(options: SessionOptions<T>
             ? null
             : await store.atomic.commit({
                 checks: [{ key: record.id, ifVersion: expected }],
-                writes: [{ key: record.id, value: cloneRecord(record), ttlMs }],
+                writes: [{ key: record.id, value: structuredClone(record), ttlMs }],
               });
         saved = (committed?.writes[0] as VersionedStoreEntry<SessionRecord<T>> | undefined) ?? null;
         if (saved === null && !dirty && !session.isNew && options.rolling === true) {
           const latest = await store.atomic.getEntry<SessionRecord<T>>(session.id);
           if (latest !== null) {
-            const value = cloneRecord(latest.value);
+            const value = structuredClone(latest.value);
             value.expiresAt = finishNow + options.ttlMs;
             assertRecord(value);
             const refreshed = await store.atomic.commit({
