@@ -19,7 +19,7 @@ function nextPortMessage(port: MessagePort, timeout = 2e3): Promise<MessageEvent
     };
   });
 }
-describe('BroadcastChannel', () => {
+describe('BroadcastChannel', { exclusive: true }, () => {
   it('is available as a global', (t) => {
     t.ok(typeof BroadcastChannel === 'function', 'BroadcastChannel is a constructor');
   });

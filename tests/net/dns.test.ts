@@ -669,7 +669,7 @@ describe('Wire protocol', () => {
     );
   });
 });
-describe('Integration', () => {
+describe('Integration', { exclusive: true }, () => {
   let dns: LocalDnsServer;
   before(() => {
     dns = new LocalDnsServer(
