@@ -58,8 +58,8 @@ import { Path } from '../../file/path.ts';
  * Every provider-backed entry method (`stat`, `open`, `child`, `mkdir`,
  * `remove`, and friends) forwards to one of these members on the owning
  * filesystem, so a virtual provider can intercept them by implementing this
- * shape. Directory listing is the sole exception: it reads the local disk
- * through libc rather than going through the provider.
+ * shape. Directory listing goes through the optional `readdir`; a provider that
+ * omits it is assumed to be disk-backed and is listed through libc.
  *
  * @internal
  */
@@ -71,6 +71,7 @@ interface EntryFileSystem {
   mkdir(path: Path | string, mode?: number): Promise<void>;
   rmdir(path: Path | string): Promise<void>;
   unlink(path: Path | string): Promise<void>;
+  readdir?(path: Path | string): Promise<Entry[]>;
 }
 /**
  * Base handle for a filesystem entry. Holds the name, full path, a reference
@@ -318,6 +319,7 @@ export class DirEntry extends Entry {
     const fs = this.#fs;
     const path = this.path;
     const s = path.toString();
+    if (fs?.readdir !== undefined) return fs.readdir(path);
     const dirPtr = lib.symbols.opendir(cstr(s));
     if (dirPtr === null) throwErrno('opendir', s);
     const result: Entry[] = [];
