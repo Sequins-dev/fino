@@ -1246,12 +1246,23 @@ pub unsafe extern "C" fn init_import_meta_callback(
     v8::callback_scope!(unsafe let scope, context);
     let state_rc = get_state(scope);
 
-    let path = {
+    let (path, specifier) = {
         let st = state_rc.borrow();
-        module
-            .script_id()
-            .and_then(|id| st.module_paths.get(&id).cloned())
+        let id = module.script_id();
+        (
+            id.and_then(|id| st.module_paths.get(&id).cloned()),
+            id.and_then(|id| st.builtin_specifiers.get(&id).cloned()),
+        )
     };
+    if let Some(specifier) = specifier {
+        if let (Some(key), Some(value)) = (
+            v8::String::new(scope, "url"),
+            v8::String::new(scope, &specifier),
+        ) {
+            meta.set(scope, key.into(), value.into());
+        }
+        return;
+    }
     let Some(path) = path else { return };
 
     // Delegate to JS callback if registered.

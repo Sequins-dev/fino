@@ -144,6 +144,10 @@ pub struct SyntheticSpec {
     /// Write-stream (sink) exports (RPC mode only).
     #[serde(default)]
     pub sinks: Vec<String>,
+    /// Optional custom module body for RPC facades. The loader compiles this
+    /// source verbatim, letting a facade expose shapes beyond function stubs.
+    #[serde(default)]
+    pub source: Option<String>,
     /// Stub generation mode. Defaults to `Rpc` for backward-compat deserialization.
     #[serde(default)]
     pub mode: SyntheticMode,
