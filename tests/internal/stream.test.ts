@@ -668,4 +668,89 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
       pipe.closeWrite();
     }
   });
+  it('keeps overlapping callers in order when the buffer fills', async (t) => {
+    const seen: number[] = [];
+    class SlowSink extends BufferedBytesWriter {
+      protected async doFlush(buf: Uint8Array): Promise<void> {
+        await delay(1);
+        seen.push(...buf);
+      }
+    }
+    const writer = new SlowSink(() => {}, 4);
+    // Eight two-byte writes into a four-byte buffer: every third caller has to
+    // wait for room, and that is where later callers can take the room it was
+    // waiting for and reach the descriptor ahead of it.
+    await Promise.all(
+      Array.from({ length: 8 }, (_, index) => writer.write(new Uint8Array([index, index]))),
+    );
+    await writer.flush();
+    t.deepEqual(
+      seen,
+      [0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7],
+      'bytes leave in call order however often the buffer fills',
+    );
+  });
+  it('never hands doFlush bytes the next write can overwrite', async (t) => {
+    const seen: number[][] = [];
+    class SlowSink extends BufferedBytesWriter {
+      protected async doFlush(buf: Uint8Array): Promise<void> {
+        await delay(5);
+        seen.push([...buf]);
+      }
+    }
+    const writer = new SlowSink(() => {}, 8);
+    await writer.write(new Uint8Array([1, 2, 3, 4]));
+    // Flushed but not awaited: the emission is still in flight when the next
+    // write lands, and the coalesce buffer refills from offset zero.
+    const inFlight = writer.flush();
+    await writer.write(new Uint8Array([5, 6, 7, 8]));
+    await Promise.all([inFlight, writer.flush()]);
+    t.deepEqual(
+      seen,
+      [
+        [1, 2, 3, 4],
+        [5, 6, 7, 8],
+      ],
+      'each flush emits the bytes it was given, in order',
+    );
+  });
+  it('serializes overlapping unawaited writes through backpressure', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    // Six independent write/flush pairs started in one turn, the way callers
+    // that do not await their writes issue them — a terminal painting frames,
+    // a logger. Each is larger than the coalesce buffer, so each is its own
+    // emission rather than being merged into a neighbour's.
+    const chunks = Array.from({ length: 6 }, (_, index) =>
+      new Uint8Array(96 * 1024).fill(index + 1),
+    );
+    try {
+      const fillerBytes = fillPipe(pipe.writeFd);
+      t.ok(fillerBytes > 0, 'pipe was filled so the writes have to wait out EAGAIN');
+      let done = 0;
+      const writes = chunks.map(async (chunk) => {
+        await writer.write(chunk);
+        await writer.flush();
+        done += 1;
+      });
+      const drained: Uint8Array[] = [];
+      await drainUntilDone(pipe.readFd, () => done === chunks.length, drained);
+      for (const [index, write] of writes.entries()) {
+        await withTimeout(write, `overlapping write ${index}`);
+      }
+      await writer.close();
+      drained.push(...(await drainToEof(pipe.readFd)));
+      const received = concat(drained).subarray(fillerBytes);
+      const expected = concat(chunks);
+      t.equal(received.byteLength, expected.byteLength, 'no write was stranded on a lost wakeup');
+      t.ok(
+        received.every((byte, index) => byte === expected[index]),
+        'partial writes stay in call order instead of interleaving',
+      );
+    } finally {
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
 });
