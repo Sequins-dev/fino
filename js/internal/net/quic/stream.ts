@@ -699,7 +699,9 @@ export class QuicStream extends EventTarget {
     if (typeof this.#connection[quicConnectionInternals.scheduleStreamWriterFlush] === 'function') {
       this.#connection[quicConnectionInternals.scheduleStreamWriterFlush](callback);
     } else {
-      loop.timeout(0).then(callback, () => {});
+      const timer = loop.timeout(0);
+      timer.unref();
+      timer.then(callback, () => {});
     }
   }
   [quicStreamInternals.readIncoming](

@@ -148,7 +148,11 @@ export function snappyCompress(data: ByteInput): Uint8Array {
  *
  * @internal
  */
-export function snappyDecompress(data: ByteInput): Uint8Array {
+export function snappyDecompress(
+  data: ByteInput,
+  maxOutputBytes = Number.MAX_SAFE_INTEGER,
+  outputLimitName: 'maxOutputBytes' | 'expectedOutputBytes' = 'maxOutputBytes',
+): Uint8Array {
   const lib = requireSnappy();
   const u8 = toU8(data);
   const lenBuf = new ArrayBuffer(8);
@@ -156,6 +160,9 @@ export function snappyDecompress(data: ByteInput): Uint8Array {
     throw new TypeError('snappy_uncompressed_length failed: not a valid Snappy block');
   }
   const size = Number(new DataView(lenBuf).getBigUint64(0, true));
+  if (size > maxOutputBytes) {
+    throw new RangeError(`Decompressed output exceeds ${outputLimitName} (${maxOutputBytes})`);
+  }
   const out = new Uint8Array(size);
   new DataView(lenBuf).setBigUint64(0, BigInt(size), true);
   const status = lib.symbols.snappy_uncompress(u8, u8.byteLength, out, lenBuf);
@@ -237,6 +244,7 @@ abstract class SnappyCodec implements CompressionTransform {
    * makes further `write`/`finish` calls throw. Safe to call repeatedly.
    */
   close(): void {
+    this.#chunks = [];
     this.#closed = true;
   }
   /** Close the codec when leaving a `using` block. */
@@ -309,10 +317,17 @@ export class SnappyCompressor extends SnappyCodec {
  * @internal
  */
 export class SnappyDecompressor extends SnappyCodec {
-  constructor() {
+  #maxOutputBytes: number;
+  #outputLimitName: 'maxOutputBytes' | 'expectedOutputBytes';
+  constructor(
+    maxOutputBytes = Number.MAX_SAFE_INTEGER,
+    outputLimitName: 'maxOutputBytes' | 'expectedOutputBytes' = 'maxOutputBytes',
+  ) {
     super(true);
+    this.#maxOutputBytes = maxOutputBytes;
+    this.#outputLimitName = outputLimitName;
   }
   protected block(input: Uint8Array): Uint8Array {
-    return snappyDecompress(input);
+    return snappyDecompress(input, this.#maxOutputBytes, this.#outputLimitName);
   }
 }

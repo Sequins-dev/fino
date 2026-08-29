@@ -80,7 +80,7 @@ class TestClientTransport {
     this.#handlers.push(handler);
   }
   listen(): void {}
-  close(): void {
+  async close(): Promise<void> {
     this.closeCalled = true;
     this.#handlers = [];
   }
@@ -117,7 +117,7 @@ describe('ClusterPort._deliver routes to registered port', () => {
     await flush(1);
     t.ok(received !== undefined, 'message was delivered to port');
     t.equal((received as any).greet, 'hello', 'deserialized payload matches');
-    client.stop();
+    await client.stop();
   });
   it('preserves transferred ArrayBuffer stores across PORT_MSG payloads', async (t) => {
     const transport = new TestClientTransport('nodeA');
@@ -147,9 +147,9 @@ describe('ClusterPort._deliver routes to registered port', () => {
       ).input,
     );
     t.deepEqual([...output], [1, 3, 5, 7], 'transferred buffer contents restored');
-    client.stop();
+    await client.stop();
   });
-  it('rejects MessagePort transfer entries explicitly', (t) => {
+  it('rejects MessagePort transfer entries explicitly', async (t) => {
     const transport = new TestClientTransport('nodeA');
     const client = new ClusterClient(transport as any, 'nodeA');
     client.start();
@@ -164,7 +164,7 @@ describe('ClusterPort._deliver routes to registered port', () => {
     t.equal(transport.sentOfType('PORT_MSG').length, 0, 'unsupported transfer was not sent');
     channel.port1.close();
     channel.port2.close();
-    client.stop();
+    await client.stop();
   });
 });
 describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
@@ -187,7 +187,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     await flush(3);
     t.ok(exitCalled, 'exit handler was called');
     t.equal(exitError, undefined, 'no error string when realm exited cleanly');
-    client.stop();
+    await client.stop();
   });
   it('passes the error string when REALM_EXIT carries an error', async (t) => {
     const transport = new TestClientTransport('nodeA');
@@ -205,7 +205,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
     });
     await flush(3);
     t.equal(exitError, 'crash', 'error string propagated from REALM_EXIT');
-    client.stop();
+    await client.stop();
   });
   it('delivers the final port message before an earlier REALM_EXIT', async (t) => {
     const transport = new TestClientTransport('nodeA');
@@ -252,7 +252,7 @@ describe('ClusterClient.onRealmExit fires on REALM_EXIT from seed', () => {
       ['message:first', 'message:second', 'exit'],
       'messages are delivered in order before realm exit',
     );
-    client.stop();
+    await client.stop();
   });
 });
 describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise', () => {
@@ -285,7 +285,7 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
     await flush(3);
     const childPortId = await spawnPromise;
     t.equal(childPortId, 'nodeB/0', 'spawnRemote resolved with correct childPortId');
-    client.stop();
+    await client.stop();
   });
   it('rejects when SPAWN_ACK ok=false arrives', async (t) => {
     const transport = new TestClientTransport('nodeA');
@@ -316,7 +316,7 @@ describe('ClusterClient.spawnRemote — SPAWN_ACK resolves the pending Promise',
     }
     t.ok(threw, 'spawnRemote rejected on SPAWN_ACK ok=false');
     t.ok(errorMsg.includes('no eligible peer'), 'rejection carries the error message');
-    client.stop();
+    await client.stop();
   });
 });
 describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
@@ -331,7 +331,7 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
       rules: [],
     });
     // Stop immediately, before any ACK arrives
-    client.stop();
+    await client.stop();
     let threw = false;
     try {
       await spawnPromise;
@@ -361,7 +361,7 @@ describe('ClusterClient.stop() rejects all pending spawnRemote calls', () => {
     );
     await flush(5);
     t.equal(settled, false, 'spawn remains pending until ack or explicit client stop');
-    client.stop();
+    await client.stop();
     try {
       await spawnPromise;
       t.fail('spawnRemote should reject when stop() closes the pending request');
@@ -406,6 +406,6 @@ describe('ClusterPort payload compatibility', () => {
     // fails inside the deserializer, surfacing as `messageerror`. Refusing it
     // up front means the port sees nothing at all.
     t.deepEqual(events, [], 'an undecodable payload never reaches the port');
-    client.stop();
+    await client.stop();
   });
 });

@@ -12,6 +12,19 @@ import * as loop from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
 const encoder = new TextEncoder();
 const ASYNC_DEADLINE_MS = 10_000;
+async function withTimeoutValue<T, U>(
+  promise: PromiseLike<T>,
+  ms: number,
+  timeoutValue: U,
+): Promise<T | U> {
+  const timer = loop.timeout(ms);
+  timer.unref();
+  try {
+    return await Promise.race([promise, timer.then(() => timeoutValue)]);
+  } finally {
+    timer.cancel();
+  }
+}
 async function poll(check: () => Promise<boolean>, timeoutMs = ASYNC_DEADLINE_MS): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!(await check())) {
@@ -482,12 +495,12 @@ describe('fino:ui/slides', () => {
       port: 0,
     });
     try {
-      const response = await Promise.race([
+      const response = await withTimeoutValue(
         fetch(`http://127.0.0.1:${server.port}/talk`),
-        loop.timeout(ASYNC_DEADLINE_MS).then(() => {
-          throw new Error('live presentation request timed out');
-        }),
-      ]);
+        ASYNC_DEADLINE_MS,
+        null,
+      );
+      if (response === null) throw new Error('live presentation request timed out');
       t.ok(
         (await response.text()).includes('Slides that stay together'),
         'live server responds with compiled MDX',
@@ -508,13 +521,16 @@ describe('fino:ui/slides', () => {
       for await (const chunk of proc.stderr) stderrChunks.push(chunk);
     })();
     try {
-      const startup = await Promise.race([
-        proc.stdout
-          .readUntil(new Uint8Array([10]), 4096)
-          .then((line) => ({ kind: 'ready' as const, line })),
-        waiting.then((result) => ({ kind: 'exit' as const, result })),
-        loop.timeout(10e3).then(() => ({ kind: 'timeout' as const })),
-      ]);
+      const startup = await withTimeoutValue(
+        Promise.race([
+          proc.stdout
+            .readUntil(new Uint8Array([10]), 4096)
+            .then((line) => ({ kind: 'ready' as const, line })),
+          waiting.then((result) => ({ kind: 'exit' as const, result })),
+        ]),
+        10e3,
+        { kind: 'timeout' as const },
+      );
       if (startup.kind === 'timeout') throw new Error('slide server startup timed out');
       if (startup.kind === 'exit') {
         await readingStderr;
@@ -530,12 +546,12 @@ describe('fino:ui/slides', () => {
       const { line } = startup;
       if (line === null) throw new Error('slide server exited before reporting its port');
       const port = Number(new TextDecoder().decode(line).trim());
-      const response = await Promise.race([
+      const response = await withTimeoutValue(
         fetch(`http://127.0.0.1:${port}/talk`, { signal: controller.signal }),
-        loop.timeout(10e3).then(() => {
-          throw new Error('standalone slide request timed out');
-        }),
-      ]);
+        10e3,
+        null,
+      );
+      if (response === null) throw new Error('standalone slide request timed out');
       t.ok(
         (await response.text()).includes('Slides that stay together'),
         'standalone server responds with compiled MDX',

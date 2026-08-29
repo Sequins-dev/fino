@@ -19,6 +19,16 @@ function tempPath(): string {
 }
 
 describe('fino:jobs local mode', () => {
+  it('stop releases an unused in-flight drain timeout', async (t) => {
+    const handlesBefore = loop._activeHandleCounts();
+    const jobs = await Jobs.open({
+      path: tempPath(),
+      closeTimeout: 30_000,
+    });
+    await jobs.stop();
+    const handlesAfter = loop._activeHandleCounts();
+    t.equal(handlesAfter.timers, handlesBefore.timers, 'stop cancels its close grace timer');
+  });
   it('pushes a job and runs it to completion', async (t) => {
     const echo = task({
       name: 'echo',

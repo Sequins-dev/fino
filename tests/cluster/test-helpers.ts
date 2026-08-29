@@ -9,12 +9,14 @@ function randomPort(): number {
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timer = loop.timeout(ms);
+  timer.unref();
   return Promise.race([
     promise,
-    loop.timeout(ms).then(() => {
+    timer.then(() => {
       throw new Error(`${label} timed out after ${ms}ms`);
     }),
-  ]);
+  ]).finally(() => timer.cancel());
 }
 
 export async function startClusterOnAvailablePort(
@@ -28,7 +30,7 @@ export async function startClusterOnAvailablePort(
       await withTimeout(startCluster(options(port)), START_TIMEOUT_MS, label);
       return port;
     } catch (err) {
-      leaveCluster();
+      await leaveCluster();
       if (!(err instanceof Error) || !/address already in use/i.test(err.message)) throw err;
       collision = err;
     }

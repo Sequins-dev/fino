@@ -1698,6 +1698,10 @@ export const realQuicRuntime: QuicRuntime = {
   },
   setTimer(delayMs: number, callback: () => void): QuicTimerHandle {
     const timer = loop.timeout(delayMs);
+    // The endpoint's UDP readiness owns transport liveness. Protocol clocks
+    // should still fire while that transport is active, but must not keep a
+    // Realm alive after its endpoint and sockets are gone.
+    timer.unref();
     timer.then(callback, () => {});
     return {
       cancel() {

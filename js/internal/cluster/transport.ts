@@ -41,7 +41,7 @@
  *   on(handler: (from: string, msg: ClusterMessage) => void): void {
  *     this.#handlers.push(handler);
  *   }
- *   close(): void { this.#peer = null; }
+ *   async close(): Promise<void> { this.#peer = null; }
  *   deliver(from: string, msg: ClusterMessage): void {
  *     for (const handler of this.#handlers) handler(from, msg);
  *   }
@@ -149,16 +149,19 @@ export interface ClusterTransport {
   /**
    * Close all connections and release transport-owned resources.
    *
-   * `close()` is synchronous at the interface level. Implementations may start
-   * asynchronous close work internally, and callers should treat the transport
-   * as unusable immediately after this method returns.
+   * Async implementations return a promise that settles only after
+   * transport-owned listeners, connections, streams, and timers have released
+   * their runtime handles. In-memory implementations may return `void` after
+   * releasing everything synchronously. Implementations must become unusable as
+   * soon as `close()` is called; callers should always await the result before
+   * considering shutdown complete.
    *
    * ```ts
-   * const transport = { nodeId: 'n', send() {}, broadcast() {}, on() {}, close() { this.closed = true; }, closed: false };
-   * transport.close();
+   * const transport = { nodeId: 'n', send() {}, broadcast() {}, on() {}, async close() { this.closed = true; }, closed: false };
+   * await transport.close();
    * ```
    */
-  close(): void;
+  close(): void | Promise<void>;
 }
 /**
  * Seed-side extension used by the cluster router.

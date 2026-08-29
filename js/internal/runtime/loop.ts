@@ -95,23 +95,26 @@ interface SpinOptions {
   signal?: AbortSignal;
 }
 /**
- * A `Promise<void>` returned by `timeout()` that carries a `cancel()` method
- * for tearing down the pending timer before it fires.
+ * A `Promise<void>` returned by `timeout()` that carries lifecycle controls
+ * for tearing down the pending timer or excluding it from loop liveness.
  *
  * The promise resolves once the timer elapses. Calling `cancel()` first removes
  * the timer from the loop — so it no longer keeps the process alive via
  * `alive()` — and, on backends that support timer removal, cancels the
- * underlying kernel event. A cancelled timer is deliberately left pending
- * forever: it never resolves and never rejects. Code that races a timeout
- * against other work should drop the reference after cancelling rather than
- * awaiting the bare promise expecting it to settle.
+ * underlying kernel event. Calling `unref()` leaves the timer armed but stops
+ * it from keeping the Realm alive by itself; it still resolves if other work
+ * keeps the loop running long enough. A cancelled timer is deliberately left
+ * pending forever: it never resolves and never rejects. Code that races a
+ * timeout against other work should unref the deadline guard, then cancel it
+ * when the protected work settles.
  *
  * ```ts no_run
  * import { timeout } from 'internal:runtime/loop';
  *
  * const timer = timeout(1000);
+ * timer.unref();
  * // ...another operation completed first...
- * timer.cancel(); // the timer stops holding the loop open
+ * timer.cancel();
  * ```
  *
  * @internal
@@ -132,6 +135,17 @@ export interface CancelablePromise extends Promise<void> {
    * ```
    */
   cancel(): void;
+  /**
+   * Stop this pending timer from keeping the Realm alive without cancelling it.
+   *
+   * The timer still resolves if another referenced handle keeps the loop
+   * running until its deadline. Returns this promise so calls may be chained.
+   */
+  unref(): this;
+  /** Restore this pending timer as a source of Realm liveness. Returns this promise. */
+  ref(): this;
+  /** Report whether this pending timer currently contributes to Realm liveness. */
+  hasRef(): boolean;
 }
 const { EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER } = backend;
 // EVFILT_PROC is kqueue-only (macOS). EVFILT_COMPLETION is io_uring-only (Linux).
@@ -174,6 +188,7 @@ function rawBackend(): object {
 const _reads: Map<number, (avail: number) => void> = new Map();
 const _writes: Map<number, () => void> = new Map();
 const _timers: Map<number, () => void> = new Map();
+const _unreferencedTimers: Set<number> = new Set();
 const _procs: Map<number, () => void> = new Map();
 const _completions: Map<number, (result: { res: number }) => void> = new Map();
 const _vnodes: Map<number, (event: { fflags: number }) => void> = new Map();
@@ -287,6 +302,7 @@ function _dispatch(ev: LoopEvent): void {
     const resolve = _timers.get(token);
     if (resolve) {
       _timers.delete(token);
+      _unreferencedTimers.delete(token);
       resolve();
     }
   } else if (EVFILT_PROC !== null && ev.filter === EVFILT_PROC) {
@@ -381,12 +397,12 @@ export function loopFd(): number {
  * Reports whether the loop still has work that could settle, so the outer run
  * loop knows to keep iterating.
  *
- * Returns true while any read, write, timer, proc, completion, or vnode watch
- * is registered, while V8 has pending background tasks, or while an
- * `Atomics.waitAsync` waiter is outstanding. Signal watches and registered
- * wake sources deliberately do NOT count as live work: they can keep firing
- * but should never on their own prevent the process from exiting. `internal/
- * main.ts` uses this to decide when to leave the run loop.
+ * Returns true while any read, write, referenced timer, proc, completion, or
+ * vnode watch is registered, while V8 has pending background tasks, or while
+ * an `Atomics.waitAsync` waiter is outstanding. Unreferenced timers, signal
+ * watches, and registered wake sources deliberately do NOT count as live work:
+ * they can keep firing but should never on their own prevent the process from
+ * exiting. `internal/main.ts` uses this to decide when to leave the run loop.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -398,7 +414,7 @@ export function alive(): boolean {
   return (
     _reads.size > 0 ||
     _writes.size > 0 ||
-    _timers.size > 0 ||
+    _timers.size > _unreferencedTimers.size ||
     _procs.size > 0 ||
     _completions.size > 0 ||
     _vnodes.size > 0 ||
@@ -428,9 +444,12 @@ export function _schedulerPollingRequired(): boolean {
  *
  * Unlike `alive()`, which collapses everything into a single boolean, this
  * breaks out each registered-resolver map size individually and reports the
- * V8 background-task flag separately from native handles. Cleanup and
- * resource-leak tests use it to assert that the specific handle type they own
- * (for example, timers or reads) has actually drained to zero.
+ * V8 background-task flag separately from native handles. Timer counts include
+ * both the total registrations and their referenced/unreferenced liveness
+ * split, so diagnostics can distinguish a leaked liveness source from harmless
+ * best-effort maintenance work. Cleanup and resource-leak tests use the total
+ * to prove owned timers were cancelled and the referenced count to prove a
+ * subsystem cannot keep the Realm alive.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -445,6 +464,8 @@ export function _activeHandleCounts(): {
   reads: number;
   writes: number;
   timers: number;
+  referencedTimers: number;
+  unreferencedTimers: number;
   procs: number;
   completions: number;
   vnodes: number;
@@ -456,6 +477,8 @@ export function _activeHandleCounts(): {
     reads: _reads.size,
     writes: _writes.size,
     timers: _timers.size,
+    referencedTimers: _timers.size - _unreferencedTimers.size,
+    unreferencedTimers: _unreferencedTimers.size,
     procs: _procs.size,
     completions: _completions.size,
     vnodes: _vnodes.size,
@@ -572,12 +595,13 @@ export function writable(fd: number, forToken?: number): Promise<void> {
  * Resolve after at least `ms` milliseconds, returning a `CancelablePromise`.
  *
  * Each call allocates a fresh timer id, so timeouts are independent and may
- * overlap freely. The returned promise carries a `cancel()` method: calling it
- * before the timer fires removes the timer from the loop immediately — so it
- * no longer counts toward `alive()` — and cancels the underlying kernel event
- * on backends that support timer removal. A cancelled timer is left unsettled
- * forever. The delay is a floor, not a guarantee: a busy loop or a blocking
- * `tick()` can push actual delivery later.
+ * overlap freely. The returned promise carries `cancel()`, `unref()`, and
+ * `ref()` lifecycle controls. Cancelling before the timer fires removes it
+ * from the loop and cancels the underlying kernel event when supported.
+ * Unreferencing leaves it armed but excludes it from `alive()`, so a deadline
+ * guard cannot keep a Realm alive after its real work is gone. A cancelled
+ * timer is left unsettled forever. The delay is a floor, not a guarantee: a
+ * busy loop or a blocking `tick()` can push actual delivery later.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';
@@ -586,6 +610,7 @@ export function writable(fd: number, forToken?: number): Promise<void> {
  * await timer;         // resolves after ~50ms
  *
  * const other = loop.timeout(1000);
+ * other.unref();       // may fire, but does not keep the Realm alive
  * other.cancel();      // never fires, never settles
  * ```
  */
@@ -603,11 +628,23 @@ export function timeout(ms: number): CancelablePromise {
   p.cancel = function cancelTimeout() {
     if (!_timers.has(token)) return;
     _timers.delete(token);
+    _unreferencedTimers.delete(token);
     if (_processReadiness) {
       registerProcessReadiness(id, EVFILT_TIMER, EV_DELETE, 0, 0, token);
     } else if (_removeTimer) {
       _removeTimer(rawBackend(), token);
     }
+  };
+  p.unref = function unrefTimeout() {
+    if (_timers.has(token)) _unreferencedTimers.add(token);
+    return p;
+  };
+  p.ref = function refTimeout() {
+    _unreferencedTimers.delete(token);
+    return p;
+  };
+  p.hasRef = function hasTimeoutRef() {
+    return _timers.has(token) && !_unreferencedTimers.has(token);
   };
   return p;
 }

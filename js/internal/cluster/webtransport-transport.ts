@@ -192,7 +192,6 @@ export interface WebTransportWorkerConnectOptions {
 }
 interface PeerConnection {
   wt: WebTransport;
-  control: StreamWriter | null;
   queue: Promise<void>;
 }
 function normalizePath(path: string | undefined): string {
@@ -226,7 +225,7 @@ async function writeMetadata(writer: StreamWriter, value: ClusterStreamMetadata)
 async function writeMessage(writer: StreamWriter, msg: ClusterMessage): Promise<void> {
   await writer.write(frameMessage(msg));
 }
-function closeWriter(writer: StreamWriter): void {
+function releaseWriter(writer: StreamWriter): void {
   try {
     writer.releaseLock();
   } catch {}
@@ -235,8 +234,14 @@ function isExpectedCloseError(error: unknown): boolean {
   return /connection is closed|stream is closed|transport is closed/i.test(String(error));
 }
 function closeConnection(conn: PeerConnection): void {
-  if (conn.control !== null) closeWriter(conn.control);
   conn.wt.close();
+}
+async function finishWriter(writer: StreamWriter): Promise<void> {
+  try {
+    await writer.close();
+  } finally {
+    releaseWriter(writer);
+  }
 }
 function enqueueConnectionSend(conn: PeerConnection, task: () => Promise<void>): Promise<void> {
   const next = conn.queue.catch(() => {}).then(task);
@@ -251,6 +256,7 @@ async function readClusterStream(
   existingWriter?: StreamWriter,
   initialMetadata: ClusterStreamMetadata | null = null,
 ): Promise<void> {
+  const ownsWriter = existingWriter === undefined;
   const writer = existingWriter ?? stream.writable.getWriter();
   const reader = stream.readable.getReader();
   const frames = new ClusterStreamFrameReader();
@@ -275,7 +281,13 @@ async function readClusterStream(
     try {
       reader.releaseLock();
     } catch {}
-    onClose(metadata);
+    try {
+      if (ownsWriter) await finishWriter(writer);
+    } catch (error) {
+      if (!isExpectedCloseError(error)) throw error;
+    } finally {
+      onClose(metadata);
+    }
   }
 }
 async function sendPortMessage(
@@ -301,7 +313,7 @@ async function sendPortMessage(
   } satisfies ClusterStreamMetadata;
   await writeMetadata(writer, metadata);
   await writeMessage(writer, msg);
-  closeWriter(writer);
+  await finishWriter(writer);
 }
 async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promise<void> {
   const stream = await wt.createBidirectionalStream();
@@ -311,7 +323,7 @@ async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promis
     kind: 'control',
   } satisfies ClusterStreamMetadata);
   await writeMessage(writer, msg);
-  closeWriter(writer);
+  await finishWriter(writer);
 }
 /**
  * Seed-side cluster transport: the HTTP/3 hub that workers dial into.
@@ -341,7 +353,7 @@ async function sendControlMessage(wt: WebTransport, msg: ClusterMessage): Promis
  * seed.on((from, msg) => console.log(`${from} -> seed: ${msg.t}`));
  * await seed.listen();
  * // ... later
- * seed.close();
+ * await seed.close();
  * ```
  */
 export class WebTransportSeedTransport implements ClusterTransport {
@@ -355,6 +367,7 @@ export class WebTransportSeedTransport implements ClusterTransport {
   #connections = new Map<string, PeerConnection>();
   #handlers: Handler[] = [];
   #server: ServerHandle | null = null;
+  #closePromise: Promise<void> | null = null;
   /**
    * Create a seed transport bound to `nodeId` with the given listener options.
    *
@@ -495,40 +508,53 @@ export class WebTransportSeedTransport implements ClusterTransport {
   /**
    * Close every worker session and shut down the HTTP/3 server.
    *
-   * All tracked connections are closed and forgotten, and the underlying server
-   * is torn down asynchronously (any close error is logged, not thrown). The
-   * transport is unusable afterward; construct a new one to listen again.
+   * All tracked connections are closed and forgotten immediately. The returned
+   * promise settles after queued writes and the underlying HTTP/3 server have
+   * released their resources. The transport is unusable afterward; construct a
+   * new one to listen again.
    *
    * ```ts no_run
-   * seed.close();
+   * await seed.close();
    * ```
    */
-  close(): void {
-    for (const conn of this.#connections.values()) closeConnection(conn);
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    const connections = [...this.#connections.values()];
+    for (const conn of connections) closeConnection(conn);
     this.#connections.clear();
-    this.#server?.close().catch((err: unknown) => {
-      console.error(`fino:cluster seed server close error: ${err}`);
-    });
+    const server = this.#server;
     this.#server = null;
+    this.#closePromise = (async () => {
+      const results = await Promise.allSettled([
+        ...connections.map((conn) => conn.queue),
+        ...(server === null ? [] : [server.close()]),
+      ]);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected' && !isExpectedCloseError(result.reason),
+      );
+      if (failure !== undefined) throw failure.reason;
+    })();
+    return this.#closePromise;
   }
   /**
-   * Dispose support: calls `close()` so the transport can be managed with
-   * `using`.
+   * Async dispose support: awaits `close()` so the transport can be managed
+   * with `await using`.
    *
    * ```ts no_run
    * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
    *
    * {
-   *   using seed = new WebTransportSeedTransport('__seed__', {
+   *   await using seed = new WebTransportSeedTransport('__seed__', {
    *     port: 4433,
    *     tls: { cert: './cert.pem', key: './key.pem' },
    *   });
    *   await seed.listen();
-   * } // seed.close() runs at scope exit
+   * } // seed.close() completes at scope exit
    * ```
    */
-  [Symbol.dispose](): void {
-    this.close();
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
   }
   async #handleSession(wt: WebTransport): Promise<void> {
     await wt.ready;
@@ -545,18 +571,14 @@ export class WebTransportSeedTransport implements ClusterTransport {
         if (read.done) break;
         const stream = read.value;
         if (stream === undefined) continue;
-        let streamWriter: StreamWriter | null = null;
         void readClusterStream(
           stream,
-          async (metadata, writer) => {
-            if (metadata.kind === 'control') streamWriter = writer;
-          },
+          () => {},
           (metadata, msg) => {
             if (metadata.kind === 'control' && msg.t === 'HELLO') {
               peerNodeId = msg.nodeId;
               this.#connections.set(peerNodeId, {
                 wt,
-                control: streamWriter,
                 queue: Promise.resolve(),
               });
             }
@@ -628,6 +650,8 @@ export class WebTransportWorkerTransport implements ClusterTransport {
     msg: ClusterMessage;
   }> = [];
   #queue: Promise<void> = Promise.resolve();
+  #client: HttpClient | null = null;
+  #closePromise: Promise<void> | null = null;
   #seedNodeId = '__seed__';
   /**
    * Create a worker transport bound to `nodeId`. No connection is opened until
@@ -667,33 +691,39 @@ export class WebTransportWorkerTransport implements ClusterTransport {
       protocols: ['h3'],
       tls: options.tls,
     });
-    const wt = await client.webtransport(url.pathname + url.search, {
-      protocols: [CLUSTER_PROTOCOL],
-      serverCertificateHashes: options.serverCertificateHashes,
-      quic: options.quic as any,
-    });
-    await wt.ready;
-    this.#wt = wt;
-    wt.closed.finally(() => this.#emitSeedDown()).catch(() => {});
-    void this.#readIncomingStreams(wt);
-    const control = await wt.createBidirectionalStream();
-    const writer = control.writable.getWriter();
-    this.#control = writer;
-    await writeMetadata(writer, {
-      v: 1,
-      kind: 'control',
-    } satisfies ClusterStreamMetadata);
-    this.#readStream(control, writer, {
-      v: 1,
-      kind: 'control',
-    });
-    await writeMessage(writer, {
-      t: 'HELLO',
-      nodeId: this.nodeId,
-      load,
-    });
-    closeWriter(writer);
-    this.#control = null;
+    this.#client = client;
+    try {
+      const wt = await client.webtransport(url.pathname + url.search, {
+        protocols: [CLUSTER_PROTOCOL],
+        serverCertificateHashes: options.serverCertificateHashes,
+        quic: options.quic as any,
+      });
+      await wt.ready;
+      this.#wt = wt;
+      wt.closed.finally(() => this.#emitSeedDown()).catch(() => {});
+      void this.#readIncomingStreams(wt);
+      const control = await wt.createBidirectionalStream();
+      const writer = control.writable.getWriter();
+      this.#control = writer;
+      await writeMetadata(writer, {
+        v: 1,
+        kind: 'control',
+      } satisfies ClusterStreamMetadata);
+      this.#readStream(control, writer, {
+        v: 1,
+        kind: 'control',
+      });
+      await writeMessage(writer, {
+        t: 'HELLO',
+        nodeId: this.nodeId,
+        load,
+      });
+      await finishWriter(writer);
+      this.#control = null;
+    } catch (error) {
+      await this.close();
+      throw error;
+    }
   }
   #enqueue(task: () => Promise<void>): Promise<void> {
     const next = this.#queue.catch(() => {}).then(task);
@@ -769,35 +799,50 @@ export class WebTransportWorkerTransport implements ClusterTransport {
   /**
    * Close the session to the seed and release the transport's resources.
    *
-   * Releases the control writer and closes the WebTransport connection. The
-   * transport is unusable afterward; construct and `connect()` a new one to
-   * rejoin.
+   * Releases the control writer and closes the WebTransport session
+   * immediately. The returned promise settles after the owning HTTP client has
+   * closed its HTTP/3 session and QUIC endpoint. The transport is unusable
+   * afterward; construct and `connect()` a new one to rejoin.
    *
    * ```ts no_run
-   * worker.close();
+   * await worker.close();
    * ```
    */
-  close(): void {
-    if (this.#control !== null) closeWriter(this.#control);
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#control !== null) releaseWriter(this.#control);
     this.#control = null;
     this.#wt?.close();
     this.#wt = null;
+    const client = this.#client;
+    this.#client = null;
+    this.#closePromise = (async () => {
+      const results = await Promise.allSettled([
+        this.#queue,
+        ...(client === null ? [] : [client.close()]),
+      ]);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected',
+      );
+      if (failure !== undefined && !isExpectedCloseError(failure.reason)) throw failure.reason;
+    })();
+    return this.#closePromise;
   }
   /**
-   * Dispose support: calls `close()` so the transport can be managed with
-   * `using`.
+   * Async dispose support: awaits `close()` so the transport can be managed
+   * with `await using`.
    *
    * ```ts no_run
    * import { WebTransportWorkerTransport } from 'internal:cluster/webtransport-transport';
    *
    * {
-   *   using worker = new WebTransportWorkerTransport('worker-1');
+   *   await using worker = new WebTransportWorkerTransport('worker-1');
    *   await worker.connect('https://seed.internal:4433', { cpu: 0, memory: 0 });
-   * } // worker.close() runs at scope exit
+   * } // worker.close() completes at scope exit
    * ```
    */
-  [Symbol.dispose](): void {
-    this.close();
+  [Symbol.asyncDispose](): Promise<void> {
+    return this.close();
   }
   async #readIncomingStreams(wt: WebTransport): Promise<void> {
     const reader = wt.incomingBidirectionalStreams.getReader();

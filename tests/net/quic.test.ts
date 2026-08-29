@@ -135,8 +135,18 @@ function testListenOptions<T extends Record<string, unknown>>(
     privateKeyFile: TEST_KEY,
   };
 }
-function timeoutValue<T>(ms: number, value: T): Promise<T> {
-  return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+async function withTimeoutValue<T, U>(
+  promise: PromiseLike<T>,
+  ms: number,
+  timeoutValue: U,
+): Promise<T | U> {
+  const timer = loop.timeout(ms);
+  timer.unref();
+  try {
+    return await Promise.race([promise, timer.then(() => timeoutValue)]);
+  } finally {
+    timer.cancel();
+  }
 }
 async function waitForHandshakeComplete(
   connection: QuicConnection,
@@ -1541,7 +1551,11 @@ describe('QUIC loopback object model', () => {
     t.equal(total, gapStart, 'reader waits at the missing range even after FIN has arrived');
     const blockedRead = stream.reader.read();
     t.equal(
-      await Promise.race([blockedRead.then(() => 'read'), timeoutValue(25, 'blocked')]),
+      await withTimeoutValue(
+        blockedRead.then(() => 'read'),
+        25,
+        'blocked',
+      ),
       'blocked',
       'reader is blocked on the gap',
     );
@@ -1565,7 +1579,7 @@ describe('QUIC loopback object model', () => {
     );
     let checksum = 0;
     for (;;) {
-      const chunk = await Promise.race([stream.reader.read(), timeoutValue(1e3, undefined)]);
+      const chunk = await withTimeoutValue(stream.reader.read(), 1e3, undefined);
       if (chunk === undefined)
         throw new Error('reader did not reach EOF after late retransmits filled the gap');
       if (chunk === null) break;
@@ -1765,6 +1779,7 @@ describe('QUIC loopback object model', () => {
       'local send-only Web readable is closed',
     );
     await sendOnly.writer.write(encodeUtf8('send-only-ok'));
+    await sendOnly.writer.close();
     const receiveOnly = new QuicStream(3, 'unidirectional', streamConnectionStub(), true);
     receiveOnly[quicStreamInternals.pushIncoming](0, encodeUtf8('receive-only-ok'), true);
     t.equal(
@@ -2056,7 +2071,11 @@ describe('QUIC loopback object model', () => {
         verifyPeer: false,
       });
       t.equal(
-        await Promise.race([anonymousConnection.closed.then(() => true), timeoutValue(500, false)]),
+        await withTimeoutValue(
+          anonymousConnection.closed.then(() => true),
+          500,
+          false,
+        ),
         true,
         'server closes clients that do not present a required certificate',
       );
@@ -2568,19 +2587,20 @@ describe('QUIC loopback object model', () => {
       },
     });
     try {
-      const connection = await Promise.race([connectPromise, timeoutValue(150, null)]);
+      const connection = await withTimeoutValue(connectPromise, 150, null);
       if (connection === null) throw new Error('resumed 0-RTT connect waited for handshake');
       t.equal(
         connection.handshakeComplete,
         false,
         '0-RTT connection is returned before handshake completion',
       );
-      const earlyDataEvent = await Promise.race([
+      const earlyDataEvent = await withTimeoutValue(
         new Promise<any>((resolve) =>
           connection.addEventListener('earlydata', resolve, { once: true }),
         ),
-        timeoutValue(250, null),
-      ]);
+        250,
+        null,
+      );
       t.ok(
         earlyDataEvent instanceof QuicEarlyDataEvent,
         '0-RTT readiness emits typed earlydata event',
@@ -2661,7 +2681,7 @@ describe('QUIC loopback object model', () => {
       },
     });
     try {
-      const connection = await Promise.race([
+      const connection = await withTimeoutValue(
         earlyClient.connect({
           address: listener.address,
           serverName: 'localhost',
@@ -2671,8 +2691,9 @@ describe('QUIC loopback object model', () => {
             maxBytes: 16,
           },
         }),
-        timeoutValue(150, null),
-      ]);
+        150,
+        null,
+      );
       if (connection === null) throw new Error('resumed 0-RTT connect waited for handshake');
       const stream = await connection.openBidirectionalStream();
       await t.rejects(
@@ -2768,7 +2789,7 @@ describe('QUIC loopback object model', () => {
       },
     });
     try {
-      const connection = await Promise.race([
+      const connection = await withTimeoutValue(
         earlyClient.connect({
           address: listener.address,
           serverName: 'localhost',
@@ -2782,8 +2803,9 @@ describe('QUIC loopback object model', () => {
             maxFrameSize: 1200,
           },
         }),
-        timeoutValue(150, null),
-      ]);
+        150,
+        null,
+      );
       if (connection === null) throw new Error('resumed 0-RTT connect waited for handshake');
       t.equal(
         connection.handshakeComplete,
@@ -2890,12 +2912,13 @@ describe('QUIC loopback object model', () => {
         true,
         'incompatible 0-RTT parameters fall back to a full handshake',
       );
-      const earlyDataEvent = await Promise.race([
+      const earlyDataEvent = await withTimeoutValue(
         new Promise<any>((resolve) =>
           connection.addEventListener('earlydata', resolve, { once: true }),
         ),
-        timeoutValue(250, null),
-      ]);
+        250,
+        null,
+      );
       t.ok(
         earlyDataEvent instanceof QuicEarlyDataEvent,
         '0-RTT fallback emits typed earlydata event',
@@ -2987,12 +3010,13 @@ describe('QUIC loopback object model', () => {
           ...(testCase.versions === undefined ? {} : { versions: [...testCase.versions] }),
         });
         const serverConnection = await accepted;
-        const event = await Promise.race([
+        const event = await withTimeoutValue(
           new Promise<any>((resolve) =>
             connection.addEventListener('earlydata', resolve, { once: true }),
           ),
-          timeoutValue(250, null),
-        ]);
+          250,
+          null,
+        );
         t.equal(
           connection.handshakeComplete,
           true,
@@ -3109,12 +3133,13 @@ describe('QUIC loopback object model', () => {
         },
       });
       const serverConnection = await accepted;
-      const earlyDataEvent = await Promise.race([
+      const earlyDataEvent = await withTimeoutValue(
         new Promise<any>((resolve) =>
           connection.addEventListener('earlydata', resolve, { once: true }),
         ),
-        timeoutValue(100, null),
-      ]);
+        100,
+        null,
+      );
       t.ok(loadedKeys.length >= 1, '0-RTT lookup checks the offered ALPN session key');
       t.equal(
         loadedKeys.every((key) => key === 'localhost|other-proto'),
@@ -4485,7 +4510,7 @@ describe('QUIC loopback object model', () => {
         reason: 'application shutdown',
       });
       t.equal(
-        await Promise.race([closed, timeoutValue(500, 'open')]),
+        await withTimeoutValue(closed, 500, 'open'),
         'closed',
         'peer observes the application close promptly',
       );
@@ -4550,13 +4575,13 @@ describe('QUIC loopback object model', () => {
       );
       await closePromise;
       t.equal(
-        await Promise.race([closed, timeoutValue(500, 'open')]),
+        await withTimeoutValue(closed, 500, 'open'),
         'closed',
         'closed promise resolves after graceful close',
       );
       t.equal(clientConnection.state, 'closed', 'graceful close reaches closed state');
       t.equal(
-        await Promise.race([peerClosed, timeoutValue(500, 'open')]),
+        await withTimeoutValue(peerClosed, 500, 'open'),
         'closed',
         'peer closes after graceful close packet',
       );
@@ -4660,18 +4685,20 @@ describe('QUIC loopback object model', () => {
         await stream.writer.write(encodeUtf8(`stream-${i}`));
       }
       const blockedOpen = clientConnection.openBidirectionalStream();
-      const early = await Promise.race([
+      const early = await withTimeoutValue(
         blockedOpen.then(() => 'opened'),
-        timeoutValue(25, 'blocked'),
-      ]);
+        25,
+        'blocked',
+      );
       t.equal(early, 'blocked', 'stream open waits while peer stream credit is exhausted');
       await streams[0].writer.close();
       const serverStream = await serverConnection.acceptStream();
       while ((await serverStream.reader.read()) !== null) {}
-      const stillBlocked = await Promise.race([
+      const stillBlocked = await withTimeoutValue(
         blockedOpen.then(() => 'opened'),
-        timeoutValue(25, 'blocked'),
-      ]);
+        25,
+        'blocked',
+      );
       t.equal(
         stillBlocked,
         'blocked',
@@ -4679,7 +4706,7 @@ describe('QUIC loopback object model', () => {
       );
       await serverStream.writer.close();
       t.equal(await streams[0].reader.read(), null, 'client observes the response side close');
-      const unblocked = await Promise.race([blockedOpen, timeoutValue(1e3, null)]);
+      const unblocked = await withTimeoutValue(blockedOpen, 1e3, null);
       if (unblocked === null)
         throw new Error('stream open did not resume after the prior stream fully closed');
       t.ok(
