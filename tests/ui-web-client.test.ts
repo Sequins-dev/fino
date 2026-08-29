@@ -118,6 +118,14 @@ function makeDom() {
     focus() {
       doc.activeElement = this;
     }
+    get form() {
+      let node: any = this.parentNode;
+      while (node !== null) {
+        if (node instanceof HTMLFormElement) return node;
+        node = node.parentNode;
+      }
+      return null;
+    }
     querySelectorAll(selector: string) {
       const match = /^\[([a-z-]+)\]$/.exec(selector);
       if (match === null) throw new Error(`Unsupported selector: ${selector}`);
@@ -230,9 +238,11 @@ function makeDom() {
 
   class FormData {
     #entries: Array<[string, string]> = [];
-    constructor(form?: any) {
+    constructor(form?: any, submitter?: any) {
       for (const control of form?.elements ?? []) {
-        if (control.name) this.#entries.push([control.name, String(control.value ?? '')]);
+        if (control instanceof Button && control !== submitter) continue;
+        const name = control.name || control.getAttribute('name');
+        if (name) this.#entries.push([name, String(control.value ?? '')]);
       }
     }
     get(name: string) {
@@ -264,7 +274,8 @@ interface Harness {
   acceptConfirm(): void;
   declineConfirm(): void;
   finoUI: any;
-  submit(form: any): void;
+  submit(form: any, submitter?: any): void;
+  change(control: any): void;
 }
 
 function load(options: { fetch?: any } = {}): Harness {
@@ -316,7 +327,9 @@ function load(options: { fetch?: any } = {}): Harness {
     acceptConfirm: () => dom.setConfirmAnswer(true),
     declineConfirm: () => dom.setConfirmAnswer(false),
     finoUI,
-    submit: (form: any) => dom.doc.dispatch('submit', { target: form, preventDefault() {} }),
+    submit: (form: any, submitter?: any) =>
+      dom.doc.dispatch('submit', { target: form, submitter, preventDefault() {} }),
+    change: (control: any) => dom.doc.dispatch('change', { target: control }),
   };
 }
 
@@ -548,6 +561,51 @@ describe('bundled browser UI client', () => {
       ['Delete this?', 'Delete this?'],
       'the server message is shown on each attempt',
     );
+  });
+
+  it('submits the triggering button and controlled field changes', (t) => {
+    const requests: any[] = [];
+    const client = load({
+      fetch: (_url: string, init: any) => {
+        requests.push(JSON.parse(init.body));
+        return Promise.reject(new Error('stop after capture'));
+      },
+    });
+    client.mount('view_1');
+    const action = {
+      action: 'update',
+      url: '/?_action=v.update',
+      view: 'view_1',
+      revision: 1,
+      request: 'r',
+    };
+    client.applyUi(
+      render(
+        'view_1',
+        el('div', {}, [
+          el(
+            'form',
+            { action },
+            [el('button', { name: 'do', value: 'save' }, ['Save'], 'button')],
+            'submit',
+          ),
+          el(
+            'form',
+            { action, 'data-fi-change': '1' },
+            [el('input', { name: 'value', value: 'selected' }, [], 'input')],
+            'change',
+          ),
+        ]),
+      ),
+    );
+    const wrapper = client.doc.getElementById('view_1').firstChild;
+    const submitForm = wrapper.childNodes[0];
+    client.submit(submitForm, submitForm.childNodes[0]);
+    t.equal(requests[0].input.do, 'save', 'only the triggering button is submitted');
+
+    const changeForm = wrapper.childNodes[1];
+    client.change(changeForm.childNodes[0]);
+    t.equal(requests[1].input.value, 'selected', 'a controlled change submits its value');
   });
 
   it('surfaces heartbeat and protocol errors as page events', (t) => {

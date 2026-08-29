@@ -251,6 +251,35 @@ function withProps(node: VNode, props: Props): VNode {
   return { ...node, props: { ...node.props, ...props } };
 }
 
+/** Props supplied to a native value control by the shared action adapter. */
+export interface NativeValueOptions {
+  /** Make the rendered control inert. */
+  disabled?: boolean;
+  /** Content inserted before the rendered control inside the action form. */
+  before?: NormalizedChild[];
+}
+
+/**
+ * Render one controlled native value through the shared HTML action protocol.
+ *
+ * The callback supplies attributes to the actual native input or to every
+ * option in a grouped control. This keeps registration, action-form wrapping,
+ * change submission, and disabled behavior identical across form families.
+ */
+export function controlledNativeValue(
+  onValue: ((value?: string) => void) | undefined,
+  render: (attrs: Props) => VNode,
+  options: NativeValueOptions = {},
+): VNode {
+  const enabled = options.disabled !== true && onValue !== undefined;
+  if (!enabled) return render({ disabled: true });
+  if (!actionsActive()) return render({});
+  const act = registerAction(onValue);
+  const attrs: Props = { name: 'value' };
+  if (actions!.ref === undefined || actions!.ref === null) attrs.onchange = 'this.form.submit()';
+  return actionForm({ act, change: true }, ...(options.before ?? []), render(attrs));
+}
+
 /**
  * Apply the shared controlled-native-input contract.
  *
@@ -263,13 +292,7 @@ export function controlledNativeInput(
   onValue: ((value?: string) => void) | undefined,
   options: { disabled?: boolean; before?: NormalizedChild[] } = {},
 ): VNode {
-  const enabled = options.disabled !== true && onValue !== undefined;
-  if (!enabled) return withProps(control, { disabled: true });
-  if (!actionsActive()) return control;
-  const act = registerAction(onValue);
-  const attrs: Props = { name: 'value' };
-  if (actions!.ref === undefined || actions!.ref === null) attrs.onchange = 'this.form.submit()';
-  return actionForm({ act, change: true }, ...(options.before ?? []), withProps(control, attrs));
+  return controlledNativeValue(onValue, (attrs) => withProps(control, attrs), options);
 }
 
 /**

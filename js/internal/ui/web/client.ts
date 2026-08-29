@@ -13,7 +13,8 @@
  * SSE event used by other hosts. If any element carries a `data-fi-view`
  * attribute it opens a long-lived `EventSource` to `/_fino/live`; the first
  * event is the current render, followed by later renders or navigation
- * instructions.
+ * instructions. Controlled native fields share one delegated change bridge
+ * through the same action protocol.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -340,8 +341,8 @@ async function readSse(response) {
   }
 }
 
-function submitAction(form) {
-  const fields = new FormData(form);
+function submitAction(form, submitter) {
+  const fields = new FormData(form, submitter && form.contains(submitter) ? submitter : undefined);
   const action = form.__finoAction || {
     url: form.action,
     view: fields.get('_view'),
@@ -389,6 +390,15 @@ document.addEventListener('submit', (event) => {
   if (form.dataset.fiBusy !== undefined) return;
   const confirmation = (form.__finoAction || {}).confirm;
   if (confirmation && !globalThis.confirm(confirmation)) return;
+  void submitAction(form, event.submitter);
+});
+
+// Every controlled native field uses the same change-submission contract.
+document.addEventListener('change', (event) => {
+  const control = event.target;
+  const form = control && control.form;
+  if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
+  if (form.dataset.fiChange === undefined || form.dataset.fiBusy !== undefined) return;
   void submitAction(form);
 });
 

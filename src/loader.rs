@@ -363,6 +363,23 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/icons.preview",
         "ui/components/icons.preview"
     ),
+    source_builtin!("internal:ui/components/forms", "ui/components/forms"),
+    source_builtin!(
+        "internal:ui/components/forms.html",
+        "ui/components/forms.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.tui",
+        "ui/components/forms.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.preview",
+        "ui/components/forms.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/text-edit",
+        "ui/components/text-edit"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
