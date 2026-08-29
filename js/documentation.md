@@ -66,6 +66,8 @@ surface for what you are building:
   lifetimes, rendering in a realm, and the portable tree contract.
 - [Host-neutral UI components](./ui/components.md) — structural primitives,
   semantic styles, and HTML/terminal target usage.
+- [Component Previews](./ui/preview.md) — one family-owned catalog rendered in
+  the terminal or a live server-driven browser app.
 - [Server-Driven Web UI](./ui/web.md) — progressive enhancement, live SSE
   patches, cleanup, deployment, and operational guidance.
 

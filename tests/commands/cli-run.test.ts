@@ -308,6 +308,7 @@ describe('CLI commands: run', () => {
       'fmt',
       'lint',
       'repl',
+      'preview',
     ];
     for (const command of commands) {
       const stdout = await parseRoot([command, '--help']);

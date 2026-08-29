@@ -21,7 +21,7 @@ export function iconPreviews(): PreviewGroup {
           ),
       },
       {
-        key: 'button',
+        key: 'icon-button',
         name: 'Icon button',
         view: () => h(IconButton, { icon: 'lock', label: 'Lock', onClick: () => {} }),
       },

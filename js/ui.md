@@ -164,6 +164,15 @@ This is what makes a component's location a deployment decision. A theme, a
 plugin, or a page template that stays inside the portable contract runs
 in-process, in a sandboxed realm, or in a browser without changing.
 
+## Component previews
+
+[`fino:ui/components`](./ui/components.md) provides structural primitives and
+semantic components whose trees lower to retained terminal cells or native HTML.
+Each component family owns preview descriptors beside its implementation, and
+[`fino:ui/preview`](./ui/preview.md) composes those descriptors into both
+runners. The catalog therefore exercises production lowerings instead of
+maintaining a preview-only rendering layer.
+
 ## Choosing
 
 | You want | Use |
