@@ -33,9 +33,16 @@ describe('fino:tty/tui renderFrame', () => {
     );
     t.equal(
       frame,
-      ['+--------+', '|        |', '| A    B |', '|        |', '+--------+'].join('\n'),
+      ['┌────────┐', '│        │', '│ A    B │', '│        │', '└────────┘'].join('\n'),
       'row layout fills available width',
     );
+  });
+  it('keeps ascii borders reachable', (t) => {
+    const frame = renderFrame(h(Box, { border: 'ascii' }, h(Text, null, 'x')), {
+      width: 5,
+      height: 3,
+    });
+    t.equal(frame, ['+---+', '|x  |', '+---+'].join('\n'), 'ascii border style');
   });
   it('wraps and clips text inside fixed frames', (t) => {
     const frame = renderFrame(
@@ -52,10 +59,17 @@ describe('fino:tty/tui renderFrame', () => {
         height: 3,
       },
     );
+    t.equal(frame, ['hello   ', 'world   ', '        '].join('\n'), 'wrap means word wrap');
+  });
+  it('still hard-chops with wrap="char"', (t) => {
+    const frame = renderFrame(
+      h(Box, { width: 8, height: 3 }, h(Text, { wrap: 'char' }, 'hello world')),
+      { width: 8, height: 3 },
+    );
     t.equal(
       frame,
       ['hello wo', 'rld     ', '        '].join('\n'),
-      'wrapped text is clipped to the frame',
+      'char wrap breaks at exact cell boundaries',
     );
   });
   it('renders terminal controls with focus order markers', (t) => {
