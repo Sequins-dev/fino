@@ -8,11 +8,15 @@ import {
   createCompressor,
   createDecompressor,
   brotliAvailable,
+  zstdAvailable,
+  lz4Available,
+  snappyAvailable,
+  type CompressionFormat,
 } from 'fino:compress';
 import * as compression from 'fino:compress';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | Uint8Array): string => new TextDecoder().decode(b);
-type CompressionFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli';
+type StreamingValidatedFormat = 'gzip' | 'deflate' | 'deflate-raw' | 'brotli';
 function str(u8: Uint8Array): string {
   return decodeUtf8(u8);
 }
@@ -55,10 +59,18 @@ function concat(parts: Uint8Array[]): Uint8Array {
 function readU32LE(bytes: Uint8Array, offset: number): number {
   return new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0, true);
 }
-function supportedFormats(): CompressionFormat[] {
+function supportedFormats(): StreamingValidatedFormat[] {
   return brotliAvailable
     ? ['gzip', 'deflate', 'deflate-raw', 'brotli']
     : ['gzip', 'deflate', 'deflate-raw'];
+}
+function availableFormats(): CompressionFormat[] {
+  const formats: CompressionFormat[] = ['gzip', 'deflate', 'deflate-raw'];
+  if (brotliAvailable) formats.push('brotli');
+  if (zstdAvailable) formats.push('zstd');
+  if (lz4Available) formats.push('lz4');
+  if (snappyAvailable) formats.push('snappy');
+  return formats;
 }
 const HELLO = bytes('Hello, fino:compress!');
 const LONG = bytes('A'.repeat(1e5));
@@ -328,15 +340,103 @@ describe('fino:compress release contract', () => {
     );
     compressor.close();
   });
-  it('keeps one-shot decompression unconstrained by a public output cap option', (t) => {
+  it('keeps one-shot decompression unlimited by default', (t) => {
     const input = bytes('expanded '.repeat(5e4));
     const packed = compress(input, { format: 'gzip' });
     const restored = decompress(packed, { format: 'gzip' });
     t.equal(restored.byteLength, input.byteLength, 'full output is returned');
     t.equal(str(restored), str(input), 'expanded payload roundtrips');
   });
+  for (const format of availableFormats()) {
+    it(`${format} enforces exact and maximum one-shot output sizes`, (t) => {
+      const input = bytes(`bounded ${format} output `.repeat(128));
+      const packed = compress(input, { format });
+
+      t.equal(
+        decompress(packed, { format, maxOutputBytes: input.byteLength }).byteLength,
+        input.byteLength,
+        'exact maximum succeeds',
+      );
+      t.throws(
+        () => decompress(packed, { format, maxOutputBytes: input.byteLength - 1 }),
+        /maxOutputBytes/,
+        'maximum minus one fails',
+      );
+      t.equal(
+        decompress(packed, { format, expectedOutputBytes: input.byteLength }).byteLength,
+        input.byteLength,
+        'exact expected size succeeds',
+      );
+      t.throws(
+        () => decompress(packed, { format, expectedOutputBytes: input.byteLength - 1 }),
+        /expectedOutputBytes/,
+        'expected size minus one fails while decoding',
+      );
+      t.throws(
+        () => decompress(packed, { format, expectedOutputBytes: input.byteLength + 1 }),
+        /expectedOutputBytes/,
+        'expected size plus one fails at completion',
+      );
+    });
+  }
+  it('validates decompression output limits before opening a backend', (t) => {
+    for (const value of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, NaN, Infinity]) {
+      t.throws(
+        () => createDecompressor({ format: 'gzip', maxOutputBytes: value }),
+        /maxOutputBytes/,
+        `rejects maxOutputBytes ${String(value)}`,
+      );
+      t.throws(
+        () => createDecompressor({ format: 'gzip', expectedOutputBytes: value }),
+        /expectedOutputBytes/,
+        `rejects expectedOutputBytes ${String(value)}`,
+      );
+    }
+    t.throws(
+      () => createDecompressor({ format: 'gzip', maxOutputBytes: 1, expectedOutputBytes: 2 }),
+      /less than or equal/,
+      'expected size cannot exceed the maximum',
+    );
+  });
+  it('enforces a cumulative streaming output budget and closes on overflow', (t) => {
+    const input = bytes('stream budget '.repeat(20_000));
+    const packed = compress(input, { format: 'gzip' });
+    const decompressor = createDecompressor({
+      format: 'gzip',
+      maxOutputBytes: input.byteLength - 1,
+    });
+    t.throws(
+      () => {
+        decompressor.write(packed.subarray(0, Math.floor(packed.byteLength / 2)));
+        decompressor.write(packed.subarray(Math.floor(packed.byteLength / 2)));
+        decompressor.finish();
+      },
+      /maxOutputBytes/,
+      'cumulative output crossing the maximum fails',
+    );
+    t.throws(() => decompressor.write(new Uint8Array()), /closed/i, 'overflow closes backend');
+  });
+  it('closes the async source and backend when output exceeds its budget', async (t) => {
+    const input = bytes('async budget '.repeat(20_000));
+    const packed = compress(input, { format: 'gzip' });
+    let sourceClosed = 0;
+    async function* source(): AsyncGenerator<Uint8Array> {
+      try {
+        yield packed;
+      } finally {
+        sourceClosed++;
+      }
+    }
+    const decompressor = createDecompressor({ format: 'gzip', maxOutputBytes: 1 });
+    await t.rejects(
+      () => collect(decompressor.transform(source())),
+      /maxOutputBytes/,
+      'async transform reports the limit',
+    );
+    t.equal(sourceClosed, 1, 'source iterator is closed exactly once');
+    t.throws(() => decompressor.write(new Uint8Array()), /closed/i, 'backend is closed');
+  });
 });
-import { zstdAvailable, lz4Available } from 'fino:compress';
 const LOREM = bytes('the quick brown fox jumps over the lazy dog. '.repeat(200));
 for (const format of ['zstd', 'lz4'] as const) {
   const available = format === 'zstd' ? zstdAvailable : lz4Available;
@@ -424,7 +524,6 @@ describe('fino:compress — availability flags', () => {
     t.equal(typeof lz4Available, 'boolean', 'lz4Available is boolean');
   });
 });
-import { snappyAvailable } from 'fino:compress';
 describe('fino:compress — snappy', () => {
   if (!snappyAvailable) {
     it('skips: snappy backend not available', (t) => {
