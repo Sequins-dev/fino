@@ -320,6 +320,49 @@ static BUILTINS: &[BuiltinEntry] = &[
         "ui/components/html-runtime"
     ),
     source_builtin!("internal:ui/components/target", "ui/components/target"),
+    source_builtin!("internal:ui/preview", "internal/ui/preview"),
+    source_builtin!("internal:ui/components/layout", "ui/components/layout"),
+    source_builtin!(
+        "internal:ui/components/layout.html",
+        "ui/components/layout.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/layout.tui",
+        "ui/components/layout.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/layout.preview",
+        "ui/components/layout.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography",
+        "ui/components/typography"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.html",
+        "ui/components/typography.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.tui",
+        "ui/components/typography.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.preview",
+        "ui/components/typography.preview"
+    ),
+    source_builtin!("internal:ui/components/icons", "ui/components/icons"),
+    source_builtin!(
+        "internal:ui/components/icons.html",
+        "ui/components/icons.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/icons.tui",
+        "ui/components/icons.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/icons.preview",
+        "ui/components/icons.preview"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(

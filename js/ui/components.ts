@@ -1,20 +1,20 @@
 /**
  * fino:ui/components — host-neutral UI component primitives.
  *
- * This public barrel grows by reviewable component families. The foundation
- * contains only structural primitives and semantic style tokens; later
- * families compose these same contracts for both HTML and terminal targets.
+ * Structural primitives and semantic style tokens form the shared floor.
+ * Layout, typography, and icon families compose that floor without branching
+ * on the active render target; co-located HTML and terminal lowerings own the
+ * target-specific presentation.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
- * import { Box, Rule, Text, styles } from 'fino:ui/components';
+ * import { Code, Panel, Text, styles } from 'fino:ui/components';
  *
  * const view = (
- *   <Box border padding={1} gap={1}>
+ *   <Panel title="Status" width={32}>
  *     <Text style={[styles.bold, styles.accent]}>Status</Text>
- *     <Rule />
- *     <Text>ready</Text>
- *   </Box>
+ *     <Code code="const ready = true;" language="ts" />
+ *   </Panel>
  * );
  * ```
  */
@@ -303,3 +303,28 @@ export function Scroll(props: ScrollProps): VNode {
 export function Rule(props: RuleProps = {}): VNode {
   return h('rule', props);
 }
+
+export { Field, Fieldset, HStack, Panel, Stack, VStack } from './components/layout.ts';
+export type { FieldProps, FieldsetProps, PanelProps, StackProps } from './components/layout.ts';
+export {
+  Blockquote,
+  Bold,
+  Code,
+  Heading,
+  InlineCode,
+  Italic,
+  Link,
+  List,
+} from './components/typography.ts';
+export type {
+  BlockquoteProps,
+  BoldProps,
+  CodeProps,
+  HeadingProps,
+  InlineCodeProps,
+  ItalicProps,
+  LinkProps,
+  ListProps,
+} from './components/typography.ts';
+export { Icon, IconButton } from './components/icons.ts';
+export type { IconButtonProps, IconForms, IconProps } from './components/icons.ts';

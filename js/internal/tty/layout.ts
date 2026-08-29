@@ -367,22 +367,60 @@ function childText(node: LayoutNode): string {
   return out;
 }
 
-function textSegments(node: LayoutNode, base: Style): { rows: Row[]; multiline: boolean } {
-  const content = childText(node);
-  if (content.includes('\x1b')) {
-    return { rows: parseAnsi(content, base), multiline: true };
+interface TextRun {
+  text: string;
+  style: Style;
+}
+
+function collectRuns(node: LayoutNode, inherited: Style, out: TextRun[]): void {
+  if (node.type === '#text') {
+    out.push({ text: node.text ?? '', style: inherited });
+    return;
   }
-  const lines = content.split('\n');
-  return {
-    rows: lines.map((line) => {
-      const width = stringWidth(line);
-      return {
-        segments: line.length > 0 ? [{ text: line, width, style: base }] : [],
-        width,
-      } as Row;
-    }),
-    multiline: lines.length > 1,
-  };
+  for (const child of nodeChildren(node)) {
+    if (typeof child === 'string') {
+      out.push({ text: child, style: inherited });
+      continue;
+    }
+    collectRuns(child, mergeStyle(inherited, styleFromProps(child.props)), out);
+  }
+}
+
+function textSegments(node: LayoutNode, base: Style): { rows: Row[]; multiline: boolean } {
+  const runs: TextRun[] = [];
+  collectRuns(node, base, runs);
+  const rows: Row[] = [];
+  let segments: Segment[] = [];
+  let width = 0;
+
+  function pushRow(): void {
+    rows.push({ segments, width });
+    segments = [];
+    width = 0;
+  }
+
+  for (const run of runs) {
+    if (run.text.length === 0) continue;
+    if (run.text.includes('\x1b')) {
+      parseAnsi(run.text, run.style).forEach((row, index) => {
+        if (index > 0) pushRow();
+        for (const segment of row.segments) {
+          segments.push(segment);
+          width += segment.width;
+        }
+      });
+      continue;
+    }
+    run.text.split('\n').forEach((part, index) => {
+      if (index > 0) pushRow();
+      if (part.length === 0) return;
+      const partWidth = stringWidth(part);
+      segments.push({ text: part, width: partWidth, style: run.style });
+      width += partWidth;
+    });
+  }
+  pushRow();
+  return { rows, multiline: rows.length > 1 };
 }
 
 function wrapMode(props: Record<string, unknown>): WrapMode {
@@ -1022,6 +1060,16 @@ function paintNode(
         const borderStyle =
           spec.borderColor !== undefined ? mergeStyle(own, { fg: spec.borderColor }) : own;
         paintBorder(canvas, rect, spec.border, borderStyle);
+        const title = str(props, 'borderTitle');
+        if (title && rect.width > 4) {
+          const shown = ` ${title} `;
+          const clipped = wrapSegments(
+            [{ text: shown, width: stringWidth(shown), style: own }],
+            rect.width - 4,
+            'char',
+          )[0]!;
+          canvas.draw(rect.x + 2, rect.y, [clipped]);
+        }
       }
       const innerRect: Rect = {
         x: rect.x + spec.insetX,
