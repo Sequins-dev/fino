@@ -380,6 +380,65 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/text-edit",
         "ui/components/text-edit"
     ),
+    source_builtin!(
+        "internal:ui/components/interaction",
+        "ui/components/interaction"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure",
+        "ui/components/disclosure"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure.html",
+        "ui/components/disclosure.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure.tui",
+        "ui/components/disclosure.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure.preview",
+        "ui/components/disclosure.preview"
+    ),
+    source_builtin!("internal:ui/components/menu", "ui/components/menu"),
+    source_builtin!(
+        "internal:ui/components/menu.html",
+        "ui/components/menu.html"
+    ),
+    source_builtin!("internal:ui/components/menu.tui", "ui/components/menu.tui"),
+    source_builtin!(
+        "internal:ui/components/menu.preview",
+        "ui/components/menu.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation",
+        "ui/components/navigation"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.html",
+        "ui/components/navigation.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.tui",
+        "ui/components/navigation.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.preview",
+        "ui/components/navigation.preview"
+    ),
+    source_builtin!("internal:ui/components/overlay", "ui/components/overlay"),
+    source_builtin!(
+        "internal:ui/components/overlay.html",
+        "ui/components/overlay.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/overlay.tui",
+        "ui/components/overlay.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/overlay.preview",
+        "ui/components/overlay.preview"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(

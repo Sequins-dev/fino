@@ -12,6 +12,10 @@ import 'internal:ui/components/icons.tui';
 import 'internal:ui/components/layout.tui';
 import 'internal:ui/components/typography.tui';
 import 'internal:ui/components/forms.tui';
+import 'internal:ui/components/disclosure.tui';
+import 'internal:ui/components/menu.tui';
+import 'internal:ui/components/navigation.tui';
+import 'internal:ui/components/overlay.tui';
 
 /** Node names painted directly by the retained terminal target. */
 export const TUI_PRIMITIVES = [

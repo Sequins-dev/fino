@@ -36,6 +36,10 @@ import 'internal:ui/components/icons.html';
 import 'internal:ui/components/layout.html';
 import 'internal:ui/components/typography.html';
 import 'internal:ui/components/forms.html';
+import 'internal:ui/components/disclosure.html';
+import 'internal:ui/components/menu.html';
+import 'internal:ui/components/navigation.html';
+import 'internal:ui/components/overlay.html';
 
 export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
 
