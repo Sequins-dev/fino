@@ -36,6 +36,9 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:process` | `benchmarks/process.bench.ts` |
 | `fino:context` | `benchmarks/context/index.bench.ts` |
 | `fino:ui` | `benchmarks/ui.bench.ts` |
+| `fino:ui/components` | not yet benchmarked |
+| `fino:ui/components/html` | not yet benchmarked |
+| `fino:ui/components/theme` | not yet benchmarked |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
 | `fino:ui/portable` | `benchmarks/ui.bench.ts` |
