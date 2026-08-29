@@ -51,6 +51,9 @@ fn create_direct_source(spec: &SyntheticSpec) -> String {
 }
 
 fn create_rpc_source(spec: &SyntheticSpec) -> String {
+    if let Some(source) = &spec.source {
+        return source.clone();
+    }
     let spec_json = json_str(&spec.specifier);
     let has_streams = !spec.streams.is_empty();
     let has_sinks = !spec.sinks.is_empty();
@@ -217,6 +220,7 @@ fn js_install(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
         exports,
         streams: vec![],
         sinks: vec![],
+        source: None,
         mode: SyntheticMode::Direct,
     };
 
@@ -262,6 +266,7 @@ mod tests {
             exports: exports.iter().map(|s| s.to_string()).collect(),
             streams: streams.iter().map(|s| s.to_string()).collect(),
             sinks: sinks.iter().map(|s| s.to_string()).collect(),
+            source: None,
             mode: SyntheticMode::Rpc,
         }
     }
@@ -272,6 +277,7 @@ mod tests {
             exports: exports.iter().map(|s| s.to_string()).collect(),
             streams: vec![],
             sinks: vec![],
+            source: None,
             mode: SyntheticMode::Direct,
         }
     }
@@ -284,6 +290,15 @@ mod tests {
         assert!(!src.contains("callStream"));
         assert!(src.contains(r#"const __s = "fino:empty";"#));
         assert!(!src.contains("export const"));
+    }
+
+    #[test]
+    fn rpc_custom_source_is_used_verbatim() {
+        let mut spec = rpc_spec("app:clock", &[], &[], &[]);
+        let source = "import { call } from 'internal:parent-rpc';\nexport class Clock {}";
+        spec.source = Some(source.to_string());
+        let src = create_module_source(&spec);
+        assert_eq!(src, source);
     }
 
     #[test]

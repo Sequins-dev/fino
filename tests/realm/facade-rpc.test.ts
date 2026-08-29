@@ -245,6 +245,42 @@ describe('Facade RPC — reactor-pooled realm', () => {
     t.equal(await realm.call(), 'proxied world', 'call reached the resolved service');
     t.equal(resolutions, 1, 'service resolved when called');
   });
+  it('custom module source exposes classes and values', async (t) => {
+    const facade = new Facade('app:counter', [])
+      .module(`
+        import { call } from 'internal:parent-rpc';
+
+        export const version = 1;
+        export const specifier = import.meta.url;
+        export class Counter {
+          constructor(start = 0) { this.value = start; }
+          add(amount) {
+            this.value += amount;
+            return call(import.meta.url, 'observe', [this.value]);
+          }
+        }
+      `)
+      .handle('observe', async (value) => Number(value) * 2);
+    const realm = Realm.fromSource<() => Promise<unknown>>(
+      `
+        import { Counter, specifier, version } from 'app:counter';
+        export default async function () {
+          return { specifier, version, value: await new Counter(2).add(3) };
+        }
+      `,
+      {
+        overrides: ImportMap.deny([
+          { pattern: 'internal:runtime/loop', directive: 'inherit' },
+          { pattern: 'app:counter', directive: facade },
+        ]),
+      },
+    );
+    t.deepEqual(
+      await realm.call(),
+      { specifier: 'app:counter', version: 1, value: 10 },
+      'module shape and metadata are preserved',
+    );
+  });
 });
 // ---------------------------------------------------------------------------
 // C2 — embedded realm (same V8 isolate, MessagePort transport)

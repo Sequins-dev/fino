@@ -165,6 +165,32 @@ const facade = Facade.proxy(
 The resolver runs for every call and the resolved object remains the method
 receiver. Methods outside the allowlist are not exported to the child Realm.
 
+## Defining an arbitrary module shape
+
+The default facade module exports async functions. Use `Facade.module()` when
+the child should instead see classes, constants, or another module shape.
+Explicitly import the needed transport function from `internal:parent-rpc` and
+use the module's standard `import.meta.url` as the facade specifier:
+
+```ts
+const counter = new Facade('app:counter', [])
+  .module(`
+    import { call } from 'internal:parent-rpc';
+
+    export const version = 1;
+    export class Counter {
+      add(value) {
+        return call(import.meta.url, 'add', [value]);
+      }
+    }
+  `)
+  .handle('add', async (value) => Number(value) + 1);
+```
+
+The source is trusted parent configuration and is compiled when the child
+imports the facade. Ordinary child imports still receive the module only
+through the matching import-map rule.
+
 ## Wiring a facade into an import map
 
 Pass the `Facade` instance directly as the `directive` value in an import rule. The runtime normalizes it to the wire format:
