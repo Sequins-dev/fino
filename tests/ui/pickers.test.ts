@@ -19,7 +19,7 @@ import {
 } from 'fino:ui/components';
 import { pageCss, toHtml } from 'fino:ui/components/html';
 import { renderToHtml } from 'fino:ui/html';
-import { terminalColor } from 'internal:ui/components/color.tui';
+import { adaptTerminalColor, terminalColor } from 'internal:ui/components/color.tui';
 import { normalizeColorSwatches, normalizeTimeStep } from 'internal:ui/components/pickers';
 import { pickersPreviews } from 'internal:ui/components/pickers.preview';
 import { defaultArgs } from 'internal:ui/preview';
@@ -56,6 +56,9 @@ describe('picker date, time, and color mechanics', () => {
     t.equal(normalizeTimeStep(Number.NaN), 1);
     t.deepEqual(terminalColor([1, 2, 3], true), { rgb: [1, 2, 3] });
     t.ok('ansi256' in terminalColor([255, 0, 0], false));
+    t.equal(adaptTerminalColor('cyan', false), 'cyan');
+    t.deepEqual(adaptTerminalColor({ ansi256: 42 }, true), { ansi256: 42 });
+    t.deepEqual(adaptTerminalColor({ rgb: [1, 2, 3] }, true), { rgb: [1, 2, 3] });
   });
 });
 

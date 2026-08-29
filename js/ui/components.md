@@ -388,6 +388,44 @@ const controls = (
 );
 ```
 
+## Charts
+
+`BarChart` and `LineChart` render evenly spaced numeric `Series` through
+native responsive SVG in browsers and constraint-aware cells in terminals.
+Both targets share the same scale, palette, category, and value contracts.
+Terminal line plots reuse one target-neutral braille rasterizer, and explicit
+RGB series colors pass through the same truecolor-to-ANSI-256 adapter as color
+pickers.
+
+Charts do not read layout or environment state in their public component
+functions. The terminal target receives its assigned width from the generic
+measured-content primitive and resamples the plot to fit, including very narrow
+containers. Browser SVGs use a fixed coordinate system but scale to the
+wrapper's assigned width.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { BarChart, LineChart } from 'fino:ui/components';
+
+const charts = (
+  <>
+    <BarChart
+      series={[
+        { key: 'north', points: [12, 19, 8] },
+        { key: 'south', points: [9, 14, 17] },
+      ]}
+      labels={['Q1', 'Q2', 'Q3']}
+      showValues
+    />
+    <LineChart
+      series={[{ key: 'latency', points: [12, 14, 11, 15] }]}
+      showAxis
+      showLegend
+    />
+  </>
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

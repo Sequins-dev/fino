@@ -11,3 +11,10 @@ export function terminalColor(rgb: readonly [number, number, number], truecolor:
   ];
   return truecolor ? { rgb: [r, g, b] } : { ansi256: nearestAnsi256(r, g, b) };
 }
+
+/** Preserve named/indexed colors and adapt only explicit RGB colors. */
+export function adaptTerminalColor(color: Color, truecolor: boolean): Color {
+  return typeof color === 'string' || 'ansi256' in color
+    ? color
+    : terminalColor(color.rgb, truecolor);
+}

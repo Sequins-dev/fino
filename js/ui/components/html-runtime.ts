@@ -11,6 +11,9 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { EMPTY_STYLE, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 
+/** CSS pixels used for one terminal-style row in browser components. */
+export const HTML_ROW_PX = 20;
+
 const NAMED_CSS: Record<string, string> = {
   black: 'var(--tui-black)',
   red: 'var(--tui-red)',

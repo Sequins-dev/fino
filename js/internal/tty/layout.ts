@@ -471,6 +471,23 @@ function childLayoutProps(node: LayoutNode | string): ChildLayout {
   };
 }
 
+type MeasuredRender = (size: Measured) => LayoutNode | null;
+
+function renderMeasured(
+  node: LayoutNode,
+  width: number,
+  height: number | undefined,
+): LayoutNode | null {
+  const render = node.props.render;
+  if (typeof render !== 'function') return null;
+  return (
+    (render as MeasuredRender)({
+      width: Math.max(0, width),
+      height: Math.max(0, height ?? 0),
+    }) ?? null
+  );
+}
+
 const measureCache = new WeakMap<object, Map<string, Measured>>();
 interface NodePaint {
   rect: Rect;
@@ -631,6 +648,19 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
     case 'layer':
       size = { width: 0, height: 0 };
       break;
+    case 'measured': {
+      const produced = renderMeasured(node, availW, explicitH);
+      if (produced === null) {
+        size = { width: 0, height: 0 };
+      } else {
+        const inner = measure(produced, {
+          width: availW,
+          ...(explicitH === undefined ? {} : { height: explicitH }),
+        });
+        size = { width: Math.min(inner.width, availW), height: inner.height };
+      }
+      break;
+    }
     default:
       size = measureFlex(node, constraints, boxSpec(node));
       break;
@@ -964,6 +994,15 @@ function paintNode(
     }
     case 'spacer':
       break;
+    case 'measured': {
+      const produced = renderMeasured(node, rect.width, rect.height);
+      if (produced !== null) {
+        canvas.clipPush(rect);
+        paintNode(produced, ctx, rect, own);
+        canvas.clipPop();
+      }
+      break;
+    }
     case 'rule': {
       const requested = str(props, 'char') ?? '─';
       const fill = stringWidth(requested) === 1 ? requested : '─';

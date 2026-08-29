@@ -516,6 +516,19 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/pickers.preview",
         "ui/components/pickers.preview"
     ),
+    source_builtin!("internal:ui/components/charts", "ui/components/charts"),
+    source_builtin!(
+        "internal:ui/components/charts.html",
+        "ui/components/charts.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/charts.tui",
+        "ui/components/charts.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/charts.preview",
+        "ui/components/charts.preview"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(

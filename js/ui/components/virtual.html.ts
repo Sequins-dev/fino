@@ -2,6 +2,7 @@
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import {
+  HTML_ROW_PX,
   actionForm,
   actionsActive,
   componentStyleAttrs,
@@ -11,7 +12,7 @@ import { VirtualList } from 'internal:ui/components/virtual';
 import { mapComponentLowering, registerHtmlCss } from 'internal:ui/components/target';
 
 /** Browser row-height estimate used to convert scroll pixels to model rows. */
-export const VIRTUAL_ROW_PX = 20;
+export const VIRTUAL_ROW_PX = HTML_ROW_PX;
 
 function spacer(rows: number): VNode {
   return h('div', {
