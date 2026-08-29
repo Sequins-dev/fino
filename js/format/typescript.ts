@@ -5,7 +5,8 @@
  * linter to JavaScript. Use it for tooling-oriented tasks such as inspecting
  * TypeScript/JavaScript source, collecting comments and tokens, validating
  * syntax, stripping TypeScript syntax before evaluation, normalizing source
- * style, or running the default lint rule set. It is not a type checker.
+ * style, producing target-neutral syntax-highlighting runs, or running the
+ * default lint rule set. It is not a type checker.
  *
  * `parse()` returns OXC's serialized ESTree-compatible AST, comments, optional
  * tokens, diagnostics, and the detected source mode. The AST shape follows the
@@ -726,6 +727,227 @@ export interface LintResult {
  */
 export function parse(source: string, options: ParseOptions = {}): ParseResult {
   return parseNative(String(source), options) as ParseResult;
+}
+/**
+ * Lexical class assigned to source text by `highlightLines()`.
+ *
+ * Render targets choose how these semantic classes look. Identifiers,
+ * punctuation, whitespace, and other unclassified text use `null` instead.
+ */
+export type CodeTokenClass = 'keyword' | 'string' | 'number' | 'comment' | 'regexp';
+/**
+ * One source-text run within a line returned by `highlightLines()`.
+ *
+ * `text` preserves the original source spelling. `cls` is `null` for text the
+ * highlighter intentionally leaves unclassified.
+ */
+export interface CodeRun {
+  /** Original source text in this run. */
+  text: string;
+  /** Semantic token class, or `null` for unclassified text. */
+  cls: CodeTokenClass | null;
+}
+const HIGHLIGHT_SOURCE_TYPES: Record<string, NonNullable<ParseOptions['sourceType']>> = {
+  ts: 'ts',
+  typescript: 'ts',
+  mts: 'ts',
+  cts: 'ts',
+  tsx: 'tsx',
+  js: 'js',
+  javascript: 'js',
+  mjs: 'js',
+  cjs: 'js',
+  jsx: 'jsx',
+};
+const HIGHLIGHT_KEYWORDS = new Set([
+  'abstract',
+  'any',
+  'as',
+  'asserts',
+  'async',
+  'await',
+  'bigint',
+  'boolean',
+  'break',
+  'case',
+  'catch',
+  'class',
+  'const',
+  'constructor',
+  'continue',
+  'debugger',
+  'declare',
+  'default',
+  'delete',
+  'do',
+  'else',
+  'enum',
+  'export',
+  'extends',
+  'false',
+  'finally',
+  'for',
+  'function',
+  'get',
+  'if',
+  'implements',
+  'import',
+  'in',
+  'infer',
+  'instanceof',
+  'interface',
+  'keyof',
+  'let',
+  'module',
+  'namespace',
+  'never',
+  'new',
+  'null',
+  'number',
+  'object',
+  'of',
+  'private',
+  'protected',
+  'public',
+  'readonly',
+  'return',
+  'set',
+  'static',
+  'string',
+  'super',
+  'switch',
+  'symbol',
+  'this',
+  'throw',
+  'true',
+  'try',
+  'type',
+  'typeof',
+  'undefined',
+  'unique',
+  'unknown',
+  'var',
+  'void',
+  'while',
+  'with',
+  'yield',
+]);
+function classifyToken(kind: string, text: string): CodeTokenClass | null {
+  if (kind === 'comment') return 'comment';
+  if (text.startsWith('"') || text.startsWith("'") || text.startsWith('`')) return 'string';
+  if (
+    kind.includes('bigint') ||
+    kind === 'decimal' ||
+    kind === 'float' ||
+    kind === 'binary' ||
+    kind === 'octal' ||
+    kind === 'hex'
+  ) {
+    return 'number';
+  }
+  if (kind === '/regexp/') return 'regexp';
+  if (HIGHLIGHT_KEYWORDS.has(kind) || HIGHLIGHT_KEYWORDS.has(text)) return 'keyword';
+  return null;
+}
+function byteToStringOffsets(source: string): number[] {
+  const map: number[] = [];
+  let byteOffset = 0;
+  for (let index = 0; index < source.length; ) {
+    map[byteOffset] = index;
+    const codePoint = source.codePointAt(index)!;
+    index += codePoint > 0xffff ? 2 : 1;
+    byteOffset += codePoint <= 0x7f ? 1 : codePoint <= 0x7ff ? 2 : codePoint <= 0xffff ? 3 : 4;
+  }
+  map[byteOffset] = source.length;
+  return map;
+}
+function stringIndexForByteOffset(map: number[], byteOffset: number): number {
+  if (byteOffset <= 0) return 0;
+  const exact = map[byteOffset];
+  if (exact !== undefined) return exact;
+  for (let index = byteOffset - 1; index >= 0; index--) {
+    if (map[index] !== undefined) return map[index]!;
+  }
+  return 0;
+}
+function highlightSpans(
+  code: string,
+  language: string | undefined,
+): Array<{ start: number; end: number; text: string; cls: CodeTokenClass | null }> {
+  const sourceType =
+    language !== undefined ? HIGHLIGHT_SOURCE_TYPES[language.toLowerCase()] : undefined;
+  if (sourceType === undefined) return [];
+  let parsed: ParseResult;
+  try {
+    parsed = parse(code, { sourceType, tokens: true });
+  } catch {
+    return [];
+  }
+  if (!parsed.ok) return [];
+  const map = byteToStringOffsets(code);
+  const raw = [
+    ...parsed.comments.map((comment) => ({
+      start: comment.start,
+      end: comment.end,
+      kind: 'comment',
+    })),
+    ...parsed.tokens.map((token) => ({ start: token.start, end: token.end, kind: token.kind })),
+  ];
+  return raw
+    .map((span) => {
+      const start = stringIndexForByteOffset(map, span.start);
+      const end = stringIndexForByteOffset(map, span.end);
+      const text = code.slice(start, end);
+      return { start, end, text, cls: classifyToken(span.kind, text) };
+    })
+    .filter((span) => span.text.length > 0 && span.end > span.start)
+    .sort((a, b) => a.start - b.start || b.end - a.end);
+}
+/**
+ * Classify JavaScript and TypeScript source into target-neutral, per-line runs.
+ *
+ * `language` accepts `ts`, `tsx`, `js`, `jsx`, and common module-name aliases.
+ * The function reuses OXC tokenization through `parse()` and maps its detailed
+ * token kinds to a deliberately small semantic vocabulary that terminal and
+ * web renderers can style independently.
+ *
+ * Unknown or omitted languages and syntactically invalid source safely fall
+ * back to one unclassified run per non-empty line. Original text and line
+ * boundaries are preserved, including source containing multi-byte Unicode.
+ *
+ * ```ts no_run
+ * import { highlightLines } from 'fino:format/typescript';
+ *
+ * const lines = highlightLines('const answer = 42; // result', 'ts');
+ * console.log(lines[0]?.map((run) => run.cls));
+ * ```
+ */
+export function highlightLines(code: string, language?: string): CodeRun[][] {
+  const lines: CodeRun[][] = code.split('\n').map(() => []);
+  const spans = highlightSpans(code, language);
+  let cursor = 0;
+  let lineIndex = 0;
+  const push = (text: string, cls: CodeTokenClass | null): void => {
+    let rest = text;
+    while (rest.length > 0) {
+      const newline = rest.indexOf('\n');
+      if (newline === -1) {
+        lines[lineIndex]!.push({ text: rest, cls });
+        rest = '';
+      } else {
+        if (newline > 0) lines[lineIndex]!.push({ text: rest.slice(0, newline), cls });
+        lineIndex++;
+        rest = rest.slice(newline + 1);
+      }
+    }
+  };
+  for (const span of spans) {
+    if (span.start > cursor) push(code.slice(cursor, span.start), null);
+    push(span.text, span.cls);
+    cursor = span.end;
+  }
+  if (cursor < code.length) push(code.slice(cursor), null);
+  return lines;
 }
 /**
  * Transpile TypeScript or JSX syntax to JavaScript.
