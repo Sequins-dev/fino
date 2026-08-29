@@ -31,7 +31,16 @@ import { topic } from 'fino:context/topic';
 import { CLIENT_HASH, CLIENT_SOURCE } from 'internal:ui/web/client';
 import { parseCookieHeader, sealCookie, serializeCookie, unsealCookie } from 'fino:security/cookie';
 import { escapeHtml } from 'fino:template';
-import { batch, h, renderStatic, Signal, type Props, type Sink, type VNode } from 'fino:ui';
+import {
+  batch,
+  h,
+  lowerTree,
+  renderStatic,
+  Signal,
+  type Props,
+  type Sink,
+  type VNode,
+} from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
 import { toPortable, type PortableVNode } from 'fino:ui/portable';
 import { parse as parseSchema, type JsonSchema } from 'fino:validate';
@@ -82,7 +91,10 @@ export type { PortableValue, PortableVNode } from 'fino:ui/portable';
 function passthroughSink(): Sink<VNode> {
   return {
     commit(tree: VNode): VNode {
-      return tree;
+      // A view renders for the web, so its components resolve here — form
+      // annotation and portability conversion both walk the tree afterwards
+      // and need real nodes, not stored component functions.
+      return lowerTree(tree, 'html');
     },
   };
 }

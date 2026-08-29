@@ -36,6 +36,20 @@ describe('fino:ui render programs', () => {
     t.equal(count.get(), 2, 'the rejected write did not land');
   });
 
+  it('guards writes performed by a component during target lowering', (t) => {
+    const count = createSignal(0);
+    function WritesDuringLowering() {
+      count.set(1);
+      return h('p', null, 'unreachable');
+    }
+    t.throws(
+      () => renderStatic(() => h(WritesDuringLowering, null), htmlSink()),
+      /Cannot set a signal during a static render/,
+      'the write guard spans the sink lowering pass',
+    );
+    t.equal(count.get(), 0, 'the deferred component write did not land');
+  });
+
   it('does not guard writes outside the static pass', (t) => {
     const count = createSignal(0);
     renderStatic(() => h('p', null, String(count.get())), htmlSink());
@@ -56,6 +70,18 @@ describe('fino:ui render programs', () => {
     root.dispose();
     name.set('ignored');
     t.equal(root.output, '<p>hello fino</p>', 'a disposed root stops re-rendering');
+  });
+
+  it('tracks signal reads performed by a component during target lowering', (t) => {
+    const count = createSignal(1);
+    function Counter() {
+      return h('p', null, `count ${count.get()}`);
+    }
+    const root = createRoot(() => h(Counter, null), htmlSink());
+    t.equal(root.output, '<p>count 1</p>', 'the first lowering reads component state');
+    count.set(2);
+    t.equal(root.output, '<p>count 2</p>', 'a lowering-time read remains a live dependency');
+    root.dispose();
   });
 
   it('disposes the sink when a render program ends', (t) => {

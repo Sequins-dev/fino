@@ -102,6 +102,7 @@ function childSource(
   return `
 import Component from ${JSON.stringify(entry)};
 import { effect } from 'fino:signals';
+import { defineRenderTarget, lowerTree } from 'fino:ui';
 import { toPortable } from 'fino:ui/portable';
 import { port } from 'fino:realm/self';
 
@@ -109,9 +110,18 @@ const shared = ${JSON.stringify(shared)};
 const items = ${JSON.stringify(items)};
 let revision = 0;
 
+defineRenderTarget('portable');
+
 effect(() => {
   try {
-    const trees = items.map((item) => toPortable(Component({ ...shared, ...item })));
+    // Components are lowered here, in the child, because publishing is the
+    // point at which the tree stops being code and becomes data. The target
+    // name is deliberately one nothing registers against: every component
+    // resolves to its own default, which is what a receiver routing by name
+    // expects to be handed.
+    const trees = items.map((item) =>
+      toPortable(lowerTree(Component({ ...shared, ...item }), 'portable')),
+    );
     port?.postMessage({ kind: 'fino:ui/realm', revision: revision++, trees });
   } catch (error) {
     port?.postMessage({

@@ -27,6 +27,8 @@ import {
   createRoot,
   createSignal,
   batch,
+  defineRenderTarget,
+  lowerTree,
   type Child,
   type Props,
   type Root,
@@ -52,6 +54,11 @@ export { h, Fragment, createSignal, batch };
 type Direction = 'row' | 'column';
 type Align = 'start' | 'center' | 'end';
 type TuiKind = 'box' | 'text' | 'spacer' | 'input' | 'button' | 'list' | 'scrollview';
+
+// The terminal renderer owns this closed primitive floor for its module lifetime.
+defineRenderTarget('tui', {
+  primitives: ['box', 'text', 'spacer', 'input', 'button', 'list', 'scrollview'],
+});
 type BackgroundColor =
   | 'black'
   | 'red'
@@ -694,7 +701,7 @@ function renderElement(node: VNode, width: number, height: number): string[] {
 export function renderFrame(element: VNode, options: RenderFrameOptions): string {
   const width = Math.max(0, Math.floor(options.width));
   const height = Math.max(0, Math.floor(options.height));
-  return renderElement(element, width, height)
+  return renderElement(lowerTree(element, 'tui'), width, height)
     .slice(0, height)
     .map((line) => fitAnsi(line, width))
     .join('\n');

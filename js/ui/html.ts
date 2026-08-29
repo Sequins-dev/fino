@@ -22,6 +22,7 @@
  * ```
  */
 import { escapeHtml } from 'fino:template';
+import { defineRenderTarget, lowerTree } from 'fino:ui';
 import type { NormalizedChild, Props, Sink, VNode } from 'fino:ui';
 
 const VOID_ELEMENTS = new Set([
@@ -40,6 +41,10 @@ const VOID_ELEMENTS = new Set([
   'track',
   'wbr',
 ]);
+
+// HTML has an open primitive vocabulary: custom elements are valid host nodes.
+// The module owns this registration for its full lifetime.
+defineRenderTarget('html');
 
 /**
  * Element type carrying pre-rendered markup.
@@ -113,7 +118,16 @@ function renderAttrs(props: Props): string {
 
 function renderChild(child: NormalizedChild): string {
   if (typeof child === 'string') return escapeHtml(child);
-  return renderToHtml(child);
+  return serialize(child);
+}
+
+function serialize(vnode: VNode): string {
+  const type = vnode.type as string;
+  if (type === RAW_HTML_TYPE) return String(vnode.props.html ?? '');
+  if (type === 'fragment') return vnode.children.map(renderChild).join('');
+  const attrs = renderAttrs(vnode.props);
+  if (VOID_ELEMENTS.has(type)) return `<${type}${attrs}>`;
+  return `<${type}${attrs}>${vnode.children.map(renderChild).join('')}</${type}>`;
 }
 
 /**
@@ -135,11 +149,10 @@ function renderChild(child: NormalizedChild): string {
  * ```
  */
 export function renderToHtml(vnode: VNode): string {
-  if (vnode.type === RAW_HTML_TYPE) return String(vnode.props.html ?? '');
-  if (vnode.type === 'fragment') return vnode.children.map(renderChild).join('');
-  const attrs = renderAttrs(vnode.props);
-  if (VOID_ELEMENTS.has(vnode.type)) return `<${vnode.type}${attrs}>`;
-  return `<${vnode.type}${attrs}>${vnode.children.map(renderChild).join('')}</${vnode.type}>`;
+  // Components are stored by `h()`, not invoked, so the tree is lowered for
+  // the web target before serialization. Element names pass through unchanged,
+  // which keeps an already-lowered tree byte-identical.
+  return serialize(lowerTree(vnode, 'html'));
 }
 
 /**
