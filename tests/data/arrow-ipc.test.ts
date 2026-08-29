@@ -5,9 +5,36 @@ import { describe, it } from 'fino:test/test';
 import * as arrow from 'fino:data/arrow';
 import { Field } from 'fino:data/arrow';
 import { zstdAvailable, lz4Available } from 'fino:compress';
+import { decodeMessage, MessageHeader } from 'internal:data/arrow/ipc/metadata';
 function roundTrip(batch: arrow.RecordBatch, format?: 'stream' | 'file'): arrow.Table {
   const bytes = arrow.tableToIPC(batch, format ? { format } : undefined);
   return arrow.tableFromIPC(bytes);
+}
+function firstCompressedBufferPrefix(bytes: Uint8Array): number {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let offset = 0;
+  while (offset + 8 <= bytes.byteLength) {
+    if (view.getUint32(offset, true) !== 4294967295) break;
+    const metadataLength = view.getInt32(offset + 4, true);
+    if (metadataLength === 0) break;
+    const metadataStart = offset + 8;
+    const info = decodeMessage(bytes.subarray(metadataStart, metadataStart + metadataLength));
+    const bodyStart = metadataStart + metadataLength;
+    if (
+      info.headerType === MessageHeader.RecordBatch &&
+      info.recordBatch !== undefined &&
+      info.recordBatch.compression !== null
+    ) {
+      for (const region of info.recordBatch.buffers) {
+        if (region.length < 8) continue;
+        const prefix = bodyStart + region.offset;
+        if (view.getBigInt64(prefix, true) > 0n) return prefix;
+      }
+    }
+    const paddedBody = info.bodyLength + ((8 - (info.bodyLength % 8)) % 8);
+    offset = bodyStart + paddedBody;
+  }
+  throw new Error('fixture did not contain a compressed body buffer');
 }
 describe('arrow IPC round-trips by type', () => {
   const cases: Array<[string, arrow.DataType, unknown[]]> = [
@@ -179,4 +206,31 @@ describe('arrow IPC compression', () => {
       t.deepEqual(table.getChild('x')!.toArray(), bigValues, `${codec} values round-trip`);
     });
   }
+  it("enforces each compressed buffer's declared decoded length", (t) => {
+    const codec = zstdAvailable ? 'zstd' : lz4Available ? 'lz4' : null;
+    if (codec === null) {
+      t.ok(true, 'no Arrow compression backend available; skipped');
+      return;
+    }
+    const batch = new arrow.RecordBatch(arrow.Schema.from({ x: arrow.int32() }), [
+      arrow.vectorFromArray(bigValues, arrow.int32()),
+    ]);
+    const valid = arrow.tableToIPC(batch, { compression: codec });
+    const prefix = firstCompressedBufferPrefix(valid);
+    const wrongLength = valid.slice();
+    const wrongView = new DataView(wrongLength.buffer);
+    wrongView.setBigInt64(prefix, wrongView.getBigInt64(prefix, true) + 1n, true);
+    t.throws(
+      () => arrow.tableFromIPC(wrongLength),
+      arrow.ArrowParseError,
+      'decoded-size mismatch is a parse error',
+    );
+    const invalidLength = valid.slice();
+    new DataView(invalidLength.buffer).setBigInt64(prefix, -2n, true);
+    t.throws(
+      () => arrow.tableFromIPC(invalidLength),
+      arrow.ArrowParseError,
+      'negative length other than the -1 sentinel is rejected before decompression',
+    );
+  });
 });

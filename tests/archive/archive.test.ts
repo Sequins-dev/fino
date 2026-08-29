@@ -524,6 +524,42 @@ describe('fino:archive', () => {
     );
     await mismatchedArchive.close();
   });
+  it('bounds deflated zip entries by their declared and maximum decoded sizes', async (t) => {
+    const archivePath = TEST_DIR + '/deflated-limits.zip';
+    const archive = await createArchive(archivePath);
+    await archive.write('file.txt', 'compressible '.repeat(100));
+    await archive.close();
+    const original = await readBytes(fs, archivePath);
+    const local = findSignature(original, 67324752);
+    const central = findSignature(original, 33639248);
+    t.ok(local >= 0 && central >= 0, 'fixture zip contains local and central records');
+    const originalSize = new DataView(original.buffer).getUint32(local + 22, true);
+    const huge = original.slice();
+    let view = new DataView(huge.buffer);
+    const hugeSize = 600 * 1024 * 1024;
+    view.setUint32(local + 22, hugeSize, true);
+    view.setUint32(central + 24, hugeSize, true);
+    await fs.writeFile(TEST_DIR + '/deflated-huge-size.zip', huge);
+    const hugeArchive = await openArchive(TEST_DIR + '/deflated-huge-size.zip');
+    await t.rejects(
+      () => hugeArchive.read('file.txt'),
+      /limit|exceeding|512|bytes/i,
+      'declared size over the cap is rejected before decompression',
+    );
+    await hugeArchive.close();
+    const mismatched = original.slice();
+    view = new DataView(mismatched.buffer);
+    view.setUint32(local + 22, originalSize - 1, true);
+    view.setUint32(central + 24, originalSize - 1, true);
+    await fs.writeFile(TEST_DIR + '/deflated-size-mismatch.zip', mismatched);
+    const mismatchedArchive = await openArchive(TEST_DIR + '/deflated-size-mismatch.zip');
+    await t.rejects(
+      () => mismatchedArchive.read('file.txt'),
+      /size mismatch|Invalid zip archive/i,
+      "deflate output cannot grow past the entry's declared size",
+    );
+    await mismatchedArchive.close();
+  });
   it('validates zip CRC while reading and extracting', async (t) => {
     const archivePath = TEST_DIR + '/crc.zip';
     const archive = await createArchive(archivePath);

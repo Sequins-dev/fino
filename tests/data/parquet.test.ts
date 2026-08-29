@@ -6,6 +6,7 @@ import { writeParquet, readParquet, ParquetError } from 'fino:data/parquet';
 import * as arrow from 'fino:data/arrow';
 import { Field } from 'fino:data/arrow';
 import { zstdAvailable, snappyAvailable } from 'fino:compress';
+import { readFileMetaData, readPageHeader, writePageHeader } from 'internal:data/parquet/metadata';
 function roundTrip(
   batch: arrow.RecordBatch,
   compression?: 'uncompressed' | 'snappy' | 'gzip' | 'zstd' | 'brotli',
@@ -21,6 +22,26 @@ function roundTrip(
       throw new Error('bad PAR1 magic');
   }
   return readParquet(bytes);
+}
+function mutateFirstPageDecodedSize(bytes: Uint8Array, delta: number): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const footerLength = view.getUint32(bytes.byteLength - 8, true);
+  const metadata = readFileMetaData(
+    bytes.subarray(bytes.byteLength - 8 - footerLength, bytes.byteLength - 8),
+  );
+  const chunk = metadata.rowGroups[0]!.columns[0]!.metaData!;
+  const offset = Number(chunk.dictionaryPageOffset ?? chunk.dataPageOffset);
+  const { header, end } = readPageHeader(bytes, offset);
+  const encoded = writePageHeader({
+    ...header,
+    uncompressedPageSize: header.uncompressedPageSize + delta,
+  });
+  if (encoded.byteLength !== end - offset) {
+    throw new Error('mutated Parquet page header changed encoded length');
+  }
+  const mutated = bytes.slice();
+  mutated.set(encoded, offset);
+  return mutated;
 }
 describe('parquet round-trips by type', () => {
   const cases: Array<[string, arrow.DataType, unknown[]]> = [
@@ -144,6 +165,51 @@ describe('parquet compression codecs', () => {
       t.deepEqual(roundTrip(batch, codec).getChild('c')!.toArray(), values, `${codec} values`);
     });
   }
+  it('enforces the decoded size declared by compressed v1 page headers', (t) => {
+    const values = Array.from({ length: 500 }, (_, i) => i % 20);
+    const batch = new arrow.RecordBatch(arrow.Schema.from({ c: arrow.int32() }), [
+      arrow.vectorFromArray(values, arrow.int32()),
+    ]);
+    const bytes = writeParquet(batch, {
+      compression: 'gzip',
+      dictionary: false,
+    });
+    t.throws(
+      () => readParquet(mutateFirstPageDecodedSize(bytes, -1)),
+      ParquetError,
+      'compressed page output cannot grow past its declared size',
+    );
+  });
+  it('enforces decoded sizes for uncompressed and v2 pages', (t) => {
+    const values = Array.from({ length: 500 }, (_, i) => i % 20);
+    const batch = new arrow.RecordBatch(arrow.Schema.from({ c: arrow.int32() }), [
+      arrow.vectorFromArray(values, arrow.int32()),
+    ]);
+    for (const [name, options] of [
+      [
+        'uncompressed v1',
+        {
+          compression: 'uncompressed',
+          dictionary: false,
+        },
+      ],
+      [
+        'compressed v2',
+        {
+          compression: 'gzip',
+          dictionary: false,
+          pageVersion: 2,
+        },
+      ],
+    ] as const) {
+      const bytes = writeParquet(batch, options);
+      t.throws(
+        () => readParquet(mutateFirstPageDecodedSize(bytes, 1)),
+        ParquetError,
+        `${name} requires the declared decoded size`,
+      );
+    }
+  });
 });
 describe('parquet dictionary encoding', () => {
   function roundTripDict(batch: arrow.RecordBatch): arrow.Table {

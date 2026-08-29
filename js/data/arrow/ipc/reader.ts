@@ -77,14 +77,40 @@ function decompressBuffer(
   body: Uint8Array,
   compression: number | null,
 ): Uint8Array {
+  if (
+    !Number.isSafeInteger(region.offset) ||
+    !Number.isSafeInteger(region.length) ||
+    region.offset < 0 ||
+    region.length < 0 ||
+    region.offset + region.length > body.byteLength
+  ) {
+    parseError(body, Math.max(0, region.offset), 'buffer region lies outside the message body');
+  }
   const raw = body.subarray(region.offset, region.offset + region.length);
   if (compression === null || region.length === 0) return raw;
+  if (compression !== CompressionType.ZSTD && compression !== CompressionType.LZ4_FRAME) {
+    parseError(body, region.offset, `unsupported body compression codec ${compression}`);
+  }
+  if (raw.byteLength < 8) {
+    parseError(body, region.offset, 'compressed buffer is missing its 8-byte length prefix');
+  }
   const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
   const uncompressed = dv.getBigInt64(0, true);
   const payload = raw.subarray(8);
   if (uncompressed === -1n) return payload;
+  if (uncompressed < 0n || uncompressed > BigInt(Number.MAX_SAFE_INTEGER)) {
+    parseError(body, region.offset, `invalid compressed buffer length ${uncompressed}`);
+  }
   const format = compression === CompressionType.ZSTD ? 'zstd' : 'lz4';
-  return decompressBytes(payload, { format });
+  try {
+    return decompressBytes(payload, {
+      format,
+      expectedOutputBytes: Number(uncompressed),
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    parseError(body, region.offset, `failed to decompress buffer: ${detail}`);
+  }
 }
 function materializeBuffers(header: RecordBatchHeader, body: Uint8Array): Uint8Array[] {
   return header.buffers.map((region) => decompressBuffer(region, body, header.compression));
