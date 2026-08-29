@@ -1,6 +1,7 @@
 /** CLI test-runner integration tests. */
 import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
+import * as loop from 'internal:runtime/loop';
 import type runTestFile from '../../js/internal/test-worker.ts';
 import type {
   TestFileCompletion,
@@ -12,6 +13,21 @@ import type {
 import { runCli, runRootInProcess, withTempProject } from './cli-test-helpers.ts';
 
 const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)\b`;
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  const timer = loop.timeout(ms);
+  timer.unref();
+  try {
+    return await Promise.race([
+      promise,
+      timer.then(() => {
+        throw new Error(message);
+      }),
+    ]);
+  } finally {
+    timer.cancel();
+  }
+}
 
 describe('CLI commands: test', () => {
   it('runs the test subcommand', async (t) => {
@@ -379,29 +395,6 @@ describe('CLI commands: test', () => {
       t.equal((marker as unknown as string).length, 1, 'shutdown hook completed before CLI exit');
     });
   });
-  it('releases completed parallel test Realms with live handles', async (t) => {
-    await withTempProject(
-      {
-        'live-handle.test.ts': [
-          "import { test } from 'fino:test/test';",
-          'setInterval(() => {}, 60_000);',
-          "test('passes with a live handle', (t) => t.ok(true));",
-          '',
-        ].join('\n'),
-      },
-      async (dir) => {
-        const { stdout, stderr, result } = await runCli(
-          ['test', '--parallel', 'live-handle.test.ts'],
-          { cwd: dir, timeoutMs: 10_000 },
-        );
-        t.equal(result.code, 0, 'a residual handle does not keep the CLI alive');
-        t.equal(stderr, '', 'a residual handle does not produce diagnostics');
-        t.ok(stdout.includes('ok 1 - passes with a live handle'));
-        t.ok(stdout.includes('\n1..1\n'), 'the root plan is emitted');
-        t.ok(stdout.includes('# tests 1'), 'the root summary is emitted');
-      },
-    );
-  });
   it('acknowledges worker completion before allowing its Realm to exit', async (t) => {
     await withTempProject(
       {
@@ -452,13 +445,29 @@ describe('CLI commands: test', () => {
           return result;
         });
         try {
-          const completion = await Promise.race([
+          const completion = await withTimeout(
             completionMessage,
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error('test worker did not report completion')), 2_000);
-            }),
-          ]);
+            2_000,
+            'test worker did not report completion',
+          );
           t.ok(sawResult, 'worker emits its test result before completion');
+          t.deepEqual(
+            JSON.parse(completion.activeHandles ?? '{}'),
+            {
+              reads: 1,
+              writes: 0,
+              timers: 0,
+              referencedTimers: 0,
+              unreferencedTimers: 0,
+              procs: 0,
+              completions: 0,
+              vnodes: 0,
+              pendingInstalls: 0,
+              atomicsWaiters: 0,
+              pendingV8Tasks: false,
+            },
+            'only the worker control port remains before the acknowledgement',
+          );
           const [callResult] = await Promise.all([call, run]);
           t.equal(callResult.kind, completion.kind, 'call returns the acknowledged completion');
         } finally {
@@ -480,12 +489,7 @@ describe('CLI commands: test', () => {
         const unackedRun = unackedRealm.run();
         void unackedRealm.call(`file://${dir}/held.test.ts`, {}).catch(() => {});
         try {
-          await Promise.race([
-            unackedRun,
-            new Promise<never>((_, reject) => {
-              setTimeout(() => reject(new Error('unacknowledged test worker did not exit')), 3_000);
-            }),
-          ]);
+          await withTimeout(unackedRun, 3_000, 'unacknowledged test worker did not exit');
           t.ok(true, 'a lost acknowledgement cannot keep the worker Realm alive');
         } finally {
           unackedRealm.port.removeEventListener('message', onUnackedMessage);

@@ -29,12 +29,14 @@ function randomPort(): number {
   return 3e4 + Math.floor(Math.random() * 1e4);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timer = loop.timeout(ms);
+  timer.unref();
   return Promise.race([
     promise,
-    loop.timeout(ms).then(() => {
+    timer.then(() => {
       throw new Error(`${label} timed out after ${ms}ms`);
     }),
-  ]);
+  ]).finally(() => timer.cancel());
 }
 async function waitForWorker(port: number): Promise<Process> {
   const proc = new Process(execPath, [
@@ -122,7 +124,7 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       t.equal(result, 'remote:ok', 'remote realm call returned worker result');
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
     }
   });
   it('startCluster self-joins through the configured IPv6 hostname and path', async (t) => {
@@ -140,13 +142,16 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster IPv6 self-join',
     );
-    leaveCluster();
+    const firstClose = leaveCluster();
+    t.equal(leaveCluster(), firstClose, 'concurrent leaveCluster calls share shutdown');
+    await firstClose;
     t.ok(true, 'seed self-join used configured IPv6 hostname and custom path');
   });
   it('leaveCluster is idempotent and allows a later start', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    leaveCluster();
-    leaveCluster();
+    await leaveCluster();
+    await leaveCluster();
+    const handlesBefore = loop._activeHandleCounts();
     const port = randomPort();
     await withTimeout(
       startCluster({
@@ -157,8 +162,7 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       CLUSTER_OPERATION_TIMEOUT_MS,
       'first startCluster',
     );
-    leaveCluster();
-    await loop.timeout(20);
+    await leaveCluster();
     await withTimeout(
       startCluster({
         port: port + 1,
@@ -168,8 +172,15 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       CLUSTER_OPERATION_TIMEOUT_MS,
       'second startCluster',
     );
-    leaveCluster();
+    await leaveCluster();
     t.ok(true, 'cluster state can be reused after leaveCluster');
+    const handlesAfter = loop._activeHandleCounts();
+    t.equal(handlesAfter.reads, handlesBefore.reads, 'leaveCluster releases cluster read handles');
+    t.equal(
+      handlesAfter.referencedTimers,
+      handlesBefore.referencedTimers,
+      'leaveCluster releases timers that could keep the Realm alive',
+    );
   });
   it('allows only one active cluster connection per process', async (t) => {
     if (!quicAvailable || !h3Available) return;
@@ -195,7 +206,7 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
         'second startCluster rejects while connected',
       );
     } finally {
-      leaveCluster();
+      await leaveCluster();
     }
   });
   it('remote Realm.run settles after terminate()', async (t) => {
@@ -228,7 +239,7 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       t.ok(true, 'remote realm run settled after terminate');
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
     }
   });
   it('worker loss rejects an active remote Realm.call', async (t) => {
@@ -266,7 +277,7 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       await t.rejects(() => pending, /peer .* disconnected/);
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
       if (oldInterval === undefined) delete env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS;
       else env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = oldInterval;
       if (oldTimeout === undefined) delete env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
@@ -297,14 +308,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
       });
       const pending = realm.call();
       await loop.timeout(20);
-      leaveCluster();
+      await leaveCluster();
       await t.rejects(
         () => withTimeout(pending, CLUSTER_OPERATION_TIMEOUT_MS, 'remote Realm.call leaveCluster'),
         /cluster connection closed/i,
       );
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
     }
   });
 });

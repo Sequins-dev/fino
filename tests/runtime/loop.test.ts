@@ -172,6 +172,29 @@ describe('Basic operations', () => {
       'cancelled timer restores the previous loop liveness state',
     );
   });
+  it('unreferenced timers remain armed without keeping the loop alive', (t) => {
+    let fired = false;
+    const unreferenced = loop.timeout(0).unref();
+    unreferenced.then(() => {
+      fired = true;
+    });
+    wait(unreferenced);
+    t.equal(fired, true, 'unreferenced timer still fires while the loop is driven');
+    const baselineAlive = loop.alive();
+    const timer = loop.timeout(1e4);
+    t.equal(timer.hasRef(), true, 'timers are referenced by default');
+    t.equal(loop.alive(), true, 'referenced timer keeps the loop alive');
+    t.equal(timer.unref(), timer, 'unref returns the timer promise');
+    t.equal(timer.hasRef(), false, 'unref marks the timer as unreferenced');
+    t.equal(loop.alive(), baselineAlive, 'unref restores the previous liveness state');
+    t.equal(timer.ref(), timer, 'ref returns the timer promise');
+    t.equal(timer.hasRef(), true, 'ref restores the timer reference');
+    t.equal(loop.alive(), true, 'refed timer keeps the loop alive again');
+    timer.unref().unref();
+    timer.cancel();
+    t.equal(timer.hasRef(), false, 'cancelled timers have no reference');
+    t.equal(loop.alive(), baselineAlive, 'cleanup restores the baseline liveness state');
+  });
 });
 describe('I/O watchers', () => {
   it('readable() resolves when fd has data', (t) => {

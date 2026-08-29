@@ -17,5 +17,5 @@ try {
   for await (const _ of stdin()) {
   }
 } finally {
-  leaveCluster();
+  await leaveCluster();
 }

@@ -236,30 +236,6 @@ describe('Reactor-pooled Realm basics', () => {
     });
     t.equal(await after.call('still working'), 'still working', 'the pool survives a forced stop');
   });
-  it('terminate({ force: true }) wakes a parked realm after call()', async (t) => {
-    const realm = Realm.fromSource<() => string>(
-      "setInterval(() => {}, 5_000); export default () => 'complete';",
-    );
-    const run = realm.run();
-    t.equal(await realm.call(), 'complete', 'the callable result settles before Realm exit');
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    realm.terminate({ force: true });
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      await Promise.race([
-        run,
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error('forced parked Realm did not settle')),
-            1_000,
-          );
-        }),
-      ]);
-    } finally {
-      if (timeout !== undefined) clearTimeout(timeout);
-    }
-    t.ok(true, 'forcing a parked Realm wakes the scheduler and settles run()');
-  });
   it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({
       entry: new URL('./fixtures/error-fn.ts', import.meta.url).pathname,

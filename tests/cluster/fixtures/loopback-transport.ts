@@ -43,7 +43,7 @@ export class LoopbackTransport implements ClusterTransport {
   on(handler: (from: string, msg: ClusterMessage) => void): void {
     this.#handlers.push(handler);
   }
-  close(): void {
+  async close(): Promise<void> {
     this.#handlers = [];
     this.#peer = null;
   }

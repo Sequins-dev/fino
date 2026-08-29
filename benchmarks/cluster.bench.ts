@@ -18,12 +18,14 @@ function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  const timer = loop.timeout(ms);
+  timer.unref();
   return Promise.race([
     promise,
-    loop.timeout(ms).then(() => {
+    timer.then(() => {
       throw new Error(`${label} timed out after ${ms}ms`);
     }),
-  ]);
+  ]).finally(() => timer.cancel());
 }
 async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
@@ -73,7 +75,7 @@ bench('cluster loopback lifecycle', (b) => {
       port: seedPort,
       nodeId: `bench-seed-${seedPort}`,
     });
-    leaveCluster();
+    await leaveCluster();
   });
 });
 bench('cluster remote realm', (b) => {
@@ -93,7 +95,7 @@ bench('cluster remote realm', (b) => {
       await realm.call('bench');
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
     }
   });
   b.measure('worker loss rejects active call', async () => {
@@ -116,7 +118,7 @@ bench('cluster remote realm', (b) => {
       await withTimeout(pending, 2e3, 'worker loss rejection');
     } finally {
       if (worker !== null) await stopWorker(worker);
-      leaveCluster();
+      await leaveCluster();
     }
   });
 });

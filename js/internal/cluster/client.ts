@@ -456,10 +456,10 @@ export class ClusterClient {
    * ```ts no_run
    * import { ClusterClient } from 'internal:cluster/client';
    * const client = new ClusterClient({ nodeId: 'n', send() {}, broadcast() {}, on() {}, close() {} }, 'n');
-   * client.stop();
+   * await client.stop();
    * ```
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.#heartbeatTimer !== null) {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
@@ -484,7 +484,7 @@ export class ClusterClient {
       pending.reject(err);
     }
     this.#pendingSpawns.clear();
-    this.#transport.close();
+    await this.#transport.close();
   }
   /**
    * Dispatch one inbound cluster message.

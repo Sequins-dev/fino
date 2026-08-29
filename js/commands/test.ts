@@ -44,6 +44,7 @@ import { startCoverage } from 'internal:coverage';
 import { formatDurationMs } from 'internal:duration';
 import { ConcurrentTaskChannel } from 'internal:concurrent-task-channel';
 import { captureProcessOutput } from 'internal:runtime/output-capture';
+import { timeout as loopTimeout } from 'internal:runtime/loop';
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
 import type {
@@ -60,6 +61,7 @@ type ParallelShowOutputMode = NonNullable<Parameters<typeof runTestFile>[1]['sho
 type ParallelLineWriter = (line?: string) => void;
 
 const DEFAULT_PARALLEL_GROUPS_PER_REACTOR = 10;
+const PARALLEL_REALM_EXIT_DIAGNOSTIC_MS = 5_000;
 
 /**
  * Calculate the parallel test admission limit from the configured reactor pool
@@ -101,9 +103,8 @@ interface PreparedParallelTest {
   registeredTests: TestFileRegistration['tests'];
   execute(index: number): Promise<ParallelTestResult>;
   completion: Promise<ParallelFileCompletion>;
+  completionReported: Promise<TestFileCompletion>;
 }
-
-const COMPLETED_REALM_GRACE_MS = 1_000;
 
 function errorText(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
@@ -141,7 +142,10 @@ async function prepareParallelFile(
   let registered = false;
   let canStart = true;
   let workerCompletion: TestFileCompletion | undefined;
-  let completedRealmTimeout: ReturnType<typeof setTimeout> | undefined;
+  let resolveCompletionReported!: (completion: TestFileCompletion) => void;
+  const completionReported = new Promise<TestFileCompletion>((resolve) => {
+    resolveCompletionReported = resolve;
+  });
   let resolveRegistration!: (tests: TestFileRegistration['tests']) => void;
   const registration = new Promise<TestFileRegistration['tests']>((resolve) => {
     resolveRegistration = resolve;
@@ -179,14 +183,8 @@ async function prepareParallelFile(
     }
     if (message?.kind === 'fino:test:complete') {
       workerCompletion = message;
+      resolveCompletionReported(message);
       realm.port.postMessage({ kind: 'fino:test:complete-ack' } satisfies TestFileCompletionAck);
-      // The completion frame follows every result, shutdown hook, and coverage
-      // snapshot. Give ordinary host work a turn to drain, then release a Realm
-      // whose unrelated handles would otherwise keep the aggregate run alive.
-      completedRealmTimeout ??= setTimeout(
-        () => realm.terminate({ force: true }),
-        COMPLETED_REALM_GRACE_MS,
-      );
       return;
     }
     if (message?.kind !== 'fino:test:result') return;
@@ -204,7 +202,6 @@ async function prepareParallelFile(
     }
   });
   void completionOutcome.then((error) => {
-    if (completedRealmTimeout !== undefined) clearTimeout(completedRealmTimeout);
     if (error !== undefined) {
       finishRegistration([{ exclusive: false }], false);
       failPending(error);
@@ -214,7 +211,6 @@ async function prepareParallelFile(
   const fileCompletion = Promise.all([callOutcome, completionOutcome]).then(
     ([callResult, realmError]): ParallelFileCompletion => {
       signal.removeEventListener('abort', abort);
-      if (completedRealmTimeout !== undefined) clearTimeout(completedRealmTimeout);
       realm.port.removeEventListener('message', onMessage);
       if (workerCompletion !== undefined) {
         return {
@@ -233,6 +229,7 @@ async function prepareParallelFile(
     file,
     registeredTests,
     completion: fileCompletion,
+    completionReported,
     async execute(index: number): Promise<ParallelTestResult> {
       if (!canStart) {
         const [callResult, realmError] = await Promise.all([callOutcome, completionOutcome]);
@@ -384,6 +381,7 @@ async function runParallelTests(
     })();
 
     const activeFiles = new Set<Promise<void>>();
+    const pendingFiles = new Map<string, PreparedParallelTest>();
     const fileCompletions: Promise<void>[] = [];
     const taskCompletions: Promise<void>[] = [];
     const lifecycleErrors: string[] = [];
@@ -398,9 +396,6 @@ async function runParallelTests(
           if (completion.shutdownError !== undefined) {
             lifecycleErrors.push(`${file.display} shutdown failed: ${completion.shutdownError}`);
           }
-          if (completion.coverageError !== undefined) {
-            lifecycleErrors.push(`${file.display} coverage failed: ${completion.coverageError}`);
-          }
           if (completion.callError !== undefined) {
             lifecycleErrors.push(`${file.display} worker failed: ${completion.callError}`);
           }
@@ -410,6 +405,19 @@ async function runParallelTests(
         })
         .finally(() => activeFiles.delete(fileCompletion));
       activeFiles.add(fileCompletion);
+      pendingFiles.set(file.display, test);
+      void fileCompletion.finally(() => pendingFiles.delete(file.display));
+      void test.completionReported.then((reported) => {
+        const exitDiagnostic = loopTimeout(PARALLEL_REALM_EXIT_DIAGNOSTIC_MS);
+        exitDiagnostic.unref();
+        void exitDiagnostic.then(() => {
+          if (!pendingFiles.has(file.display)) return;
+          write(
+            `# Waiting for ${tapName(file.display)} test Realm to exit; active handles at worker completion: ${reported.activeHandles ?? 'unavailable'}`,
+          );
+        });
+        void fileCompletion.finally(() => exitDiagnostic.cancel());
+      });
       fileCompletions.push(fileCompletion);
 
       let previous: Promise<void> | undefined;
