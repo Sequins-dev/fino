@@ -36,6 +36,7 @@
  */
 import { env, os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
+import { signal, signalArmed } from 'fino:process';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const TCSANOW = 0;
 const TIOCGWINSZ = os === 'darwin' ? 1074295912 : 21523;
@@ -363,13 +364,8 @@ export function enterRawMode(_fd: number = 0): () => void {
 /**
  * Subscribe to terminal resize notifications.
  *
- * Invokes `callback` once synchronously with the current {@link TerminalSize}
- * and returns a disposer to unsubscribe. This is a forward-compatible stub:
- * the runtime does not yet deliver `SIGWINCH` to JS, so no further callbacks
- * fire and the returned disposer is a no-op. Hosts that need to track live
- * resizes should still poll {@link queryTerminalSize} on each paint. The API
- * shape is stable, so once signal delivery lands, callers gain live updates
- * without changing their code.
+ * Invokes `callback` once synchronously with the current {@link TerminalSize},
+ * then again after every `SIGWINCH`, and returns a disposer to unsubscribe.
  *
  * ```ts no_run
  * import { onResize } from 'internal:tty/bindings';
@@ -381,6 +377,17 @@ export function enterRawMode(_fd: number = 0): () => void {
  * ```
  */
 export function onResize(callback: (size: TerminalSize) => void): () => void {
+  let disposed = false;
   callback(queryTerminalSize());
-  return () => {};
+  const subscription = signal('SIGWINCH').subscribe(() => callback(queryTerminalSize()));
+  // A resize can occur after the initial query but before the asynchronous
+  // signal watch is armed. Re-querying at that boundary closes the gap.
+  void signalArmed('SIGWINCH').then(() => {
+    if (!disposed) callback(queryTerminalSize());
+  });
+  return () => {
+    if (disposed) return;
+    disposed = true;
+    subscription.dispose();
+  };
 }

@@ -1162,6 +1162,28 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
       pipe.closeWrite();
     }
   });
+  it('FdReader aborts a pending read without closing the descriptor', async (t) => {
+    const pipe = makePipe();
+    const reader = new FdReader(pipe.readFd, () => pipe.closeRead());
+    const controller = new AbortController();
+    try {
+      const pending = reader.readAtMost(1, { signal: controller.signal });
+      await delay(5);
+      controller.abort(new Error('stop-read'));
+      await t.rejects(() => pending, /stop-read/, 'the pending read rejects with the abort reason');
+
+      t.equal(rawWrite(pipe.writeFd, new Uint8Array([42])), 1, 'the pipe remains writable');
+      t.deepEqual(
+        [...(await readValue(reader.readAtMost(1)))!],
+        [42],
+        'a later read still uses the same descriptor',
+      );
+    } finally {
+      await reader.close();
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
   it('FdReader handles large transfers over a nonblocking pipe', async (t) => {
     const pipe = makePipe();
     const reader = new FdReader(pipe.readFd, () => pipe.closeRead());

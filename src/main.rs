@@ -27,15 +27,16 @@ fn main() {
     }
 
     // Linux signalfd only receives signals that are blocked in the receiving
-    // thread. Block the user-defined signals before V8/runtime worker threads
-    // are created so the mask is inherited process-wide; JS signal() then
-    // creates signalfds for the selected signal numbers.
+    // thread. Block signals used by persistent JS watches before V8/runtime
+    // worker threads are created so the mask is inherited process-wide; JS
+    // signal() then creates signalfds for the selected signal numbers.
     #[cfg(target_os = "linux")]
     unsafe {
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, libc::SIGUSR1);
         libc::sigaddset(&mut set, libc::SIGUSR2);
+        libc::sigaddset(&mut set, libc::SIGWINCH);
         libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut());
     }
 

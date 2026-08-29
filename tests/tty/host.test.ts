@@ -53,4 +53,18 @@ describe('internal:tty/host retained reconciliation', () => {
     renderer.render(h('box', null, h('text', { key: 'a', id: 'a' }, 'A')), root);
     t.deepEqual(released, ['b', 'nested', '#text'], 'removal releases the complete subtree');
   });
+
+  it('updates handler closures without invalidating visual layout', (t) => {
+    const root = createTerminalRoot();
+    const renderer = createRenderer(terminalHost());
+    const first = (): string => 'first';
+    const second = (): string => 'second';
+    renderer.render(h('clickable', { onClick: first }, h('text', null, 'same')), root);
+    const revision = root.revision;
+
+    renderer.render(h('clickable', { onClick: second }, h('text', null, 'same')), root);
+
+    t.equal(root.revision, revision, 'a new handler closure does not dirty layout');
+    t.equal(root.children[0]!.props.onClick, second, 'dispatch still sees the current handler');
+  });
 });

@@ -9,8 +9,9 @@
  *
  * Primitives are host-neutral: `Box` (flexbox layout, padding, margin,
  * borders), `Text` (styled runs, wrapping, caret), `Spacer`, `Input`,
- * `Button`, `List`, `ScrollView`, and `Layer` (content painted above the
- * normal flow). All accept style props (`color`, `background`, `bold`, …)
+ * `Button`, `List`, `ScrollView`, `Layer` (content painted above the normal
+ * flow), and `Clickable` (focusable pointer/key behavior without visuals).
+ * All accept style props (`color`, `background`, `bold`, …)
  * resolved against `fino:tty/style` tokens during layout.
  *
  * ## Layout model
@@ -23,6 +24,13 @@
  * font metric, percentage sizing, grid, or automatic scrolling; overflow is
  * clipped unless a box explicitly requests visible overflow, and scroll offsets
  * are controlled by the application.
+ *
+ * Live apps route mouse input to the topmost painted node and bubble toward
+ * its ancestors. Keys start at the focused node; Tab and Shift-Tab traverse
+ * enabled `Clickable` nodes, while active overlays may opt into unfocused key
+ * capture. Input reads preserve escape sequences and UTF-8 code points split
+ * across operating-system reads. Unless dimensions are pinned, `render()`
+ * reflows the retained tree after terminal resize notifications.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -51,6 +59,7 @@ import {
 } from 'fino:ui';
 import { writeStdout } from '../tty.ts';
 import { stdin } from '../process.ts';
+import type { ReadResult } from '../internal/stream.ts';
 import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
 import {
   disableAutoWrap,
@@ -61,12 +70,14 @@ import {
   exitAlternateScreen,
   exitMouseMode,
   hideCursor,
+  onResize,
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
 import { layout as layoutRetained, measure as measureRetained } from 'internal:tty/layout';
 import type { BorderStyle, Constraints, Measured, WrapMode } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
+import { TuiDispatcher } from 'internal:tty/events';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type { Color, Style } from 'fino:tty/style';
@@ -77,7 +88,17 @@ type Align = 'start' | 'center' | 'end' | 'stretch';
 
 // The terminal renderer owns this closed primitive floor for its module lifetime.
 defineRenderTarget('tui', {
-  primitives: ['box', 'text', 'spacer', 'input', 'button', 'list', 'scrollview', 'layer'],
+  primitives: [
+    'box',
+    'text',
+    'spacer',
+    'input',
+    'button',
+    'list',
+    'scrollview',
+    'layer',
+    'clickable',
+  ],
 });
 
 /** Style props accepted by every terminal primitive. */
@@ -236,6 +257,48 @@ export interface LayerProps extends StyleProps, Props {
   /** Content painted above normal flow. */
   children?: Child;
 }
+/** Props accepted by `Clickable`. */
+export interface ClickableProps extends StyleProps, FlexChildProps, Props {
+  /** Fired when any cell within is clicked, or Enter/Space activates it. */
+  onClick?: () => void;
+  /** Handle a key routed from this node or one of its descendants. */
+  onKey?: (event: TuiKeyEvent) => boolean | void;
+  /** Handle a mouse event routed from this node or one of its descendants. */
+  onMouse?: (event: TuiMouseEvent) => boolean | void;
+  /** Called when this node receives focus. */
+  onFocus?: () => void;
+  /** Called when this node loses focus. */
+  onBlur?: () => void;
+  /** Clickables join the tab order unless this is set to false. */
+  focusable?: boolean;
+  /** Receive keys while nothing is focused; intended for active overlay surfaces. */
+  captureKeys?: boolean;
+  /** Prevent focus, handlers, and activation. */
+  disabled?: boolean;
+  /** Main-axis flow direction; defaults to `column`. */
+  direction?: Direction;
+  /** Cells or rows inserted between non-empty children. */
+  gap?: number;
+  /** Fixed width in terminal cells. */
+  width?: number;
+  /** Fixed height in terminal rows. */
+  height?: number;
+  /** Content laid out inside the behavior container. */
+  children?: Child;
+}
+/** Focus control surface exposed by a live TUI app. */
+export interface TuiFocus {
+  /** Signal carrying the focused node's `id`, for components to render focus. */
+  readonly focusedId: { get(): string | null };
+  /** Move focus to the next enabled focusable node. */
+  next(): boolean;
+  /** Move focus to the previous enabled focusable node. */
+  prev(): boolean;
+  /** Focus the enabled node with `id`, returning whether it was found. */
+  focus(id: string): boolean;
+  /** Clear the current focus. */
+  blur(): void;
+}
 /** Options for deterministic terminal snapshot rendering. */
 export interface RenderFrameOptions {
   /** Output width in terminal cells; negative and fractional values are normalized. */
@@ -273,6 +336,8 @@ export interface TuiApp {
   input?: TuiInput;
   /** The most recently painted frame. */
   frame(): Frame | null;
+  /** Focus traversal and state for the retained tree. */
+  focus: TuiFocus;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -307,6 +372,10 @@ export interface TuiMouseEvent {
   alt: boolean;
   /** Whether Shift modified the pointer event. */
   shift: boolean;
+  /** Column relative to the deepest painted node, when a node was hit. */
+  localX?: number;
+  /** Row relative to the deepest painted node, when a node was hit. */
+  localY?: number;
 }
 /** Terminal input event consumed by TUI applications. */
 export type TuiEvent = TuiKeyEvent | TuiMouseEvent;
@@ -343,6 +412,13 @@ export function ScrollView(props: ScrollViewProps): VNode {
 export function Layer(props: LayerProps): VNode {
   return h('layer', props);
 }
+/**
+ * Non-visual behavior container: lays out like a plain `Box`, and a click
+ * anywhere within it — or Enter/Space while it holds focus — fires `onClick`.
+ */
+export function Clickable(props: ClickableProps): VNode {
+  return h('clickable', props);
+}
 
 function lowerTuiTree(element: VNode): VNode {
   return lowerTree(element, 'tui');
@@ -374,15 +450,29 @@ function emptyFrame(constraints: Required<Constraints>): Frame {
   };
 }
 
-function retainedTerminal(options: RenderFrameOptions): Sink<Frame> {
-  const constraints = frameConstraints(options);
+interface RetainedTerminal {
+  readonly sink: Sink<Frame>;
+  readonly dispatcher: TuiDispatcher;
+  resize(options: RenderFrameOptions): void;
+}
+
+function retainedTerminal(options: RenderFrameOptions): RetainedTerminal {
+  let constraints = frameConstraints(options);
   const root = createTerminalRoot();
   const renderer = createRenderer(terminalHost());
+  const dispatcher = new TuiDispatcher(root);
   return {
-    commit(tree: VNode): Frame {
-      renderer.render(lowerTuiTree(tree), root);
-      const node = root.children[0];
-      return node === undefined ? emptyFrame(constraints) : layoutRetained(node, constraints);
+    dispatcher,
+    sink: {
+      commit(tree: VNode): Frame {
+        renderer.render(lowerTuiTree(tree), root);
+        dispatcher.reconcile();
+        const node = root.children[0];
+        return node === undefined ? emptyFrame(constraints) : layoutRetained(node, constraints);
+      },
+    },
+    resize(next: RenderFrameOptions): void {
+      constraints = frameConstraints(next);
     },
   };
 }
@@ -457,15 +547,12 @@ function decodeCsi(sequence: string): TuiEvent | null {
   }
   return null;
 }
-/**
- * Decode one terminal input byte chunk into TUI input events.
- *
- * The decoder understands printable UTF-8, common control keys, arrow/function
- * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
- * coordinates are converted to zero-based `x`/`y` values.
- */
-export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
-  const text = decoder.decode(bytes);
+/** Whether the suffix beginning at `at` could be an unfinished escape sequence. */
+function pendingEscape(text: string, at: number): boolean {
+  return /^\x1b(?:\[[\d;<]*)?$/.test(text.slice(at));
+}
+
+function decodeInputText(text: string, streaming: boolean): { events: TuiEvent[]; rest: string } {
   const events: TuiEvent[] = [];
   for (let i = 0; i < text.length; ) {
     const ch = text[i]!;
@@ -478,6 +565,7 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
         i += csi[0].length;
         continue;
       }
+      if (streaming && pendingEscape(text, i)) return { events, rest: text.slice(i) };
       if (i + 1 < text.length) {
         events.push(keyEvent(text[i + 1]!, { alt: true }));
         i += 2;
@@ -498,31 +586,103 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     else events.push(keyEvent(ch, { text: ch }));
     i++;
   }
-  return events;
+  return { events, rest: '' };
+}
+
+/**
+ * Decode one complete terminal input byte chunk into TUI input events.
+ *
+ * The decoder understands printable UTF-8, common control keys, arrow/function
+ * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
+ * coordinates are converted to zero-based `x`/`y` values. A trailing partial
+ * sequence is treated literally; `TuiInput` reassembles partial live reads.
+ */
+export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
+  return decodeInputText(decoder.decode(bytes), false).events;
 }
 /** Options for creating a raw terminal input reader. */
 export interface TuiInputOptions {
   /** Whether to enable SGR mouse reporting while the reader is open; defaults to true. */
   mouse?: boolean;
 }
-/** Raw terminal input reader for keyboard and mouse events. */
+/**
+ * Raw terminal input reader for keyboard and mouse events.
+ *
+ * One reader owns stdin raw mode and its readability watch at a time. Calls to
+ * `read()` are sequential: each returns one decoded event, preserving partial
+ * escape sequences and UTF-8 between operating-system reads. `close()` is
+ * idempotent, cancels a blocked read, disables mouse reporting when enabled,
+ * and restores the terminal mode captured by the constructor.
+ */
 export class TuiInput {
   #restoreRaw: (() => void) | null;
   #closed = false;
   #queue: TuiEvent[] = [];
+  #partial = '';
+  #pendingRead: Promise<ReadResult<Uint8Array>> | null = null;
+  #abortRead = new AbortController();
+  #stream = new TextDecoder();
+  #mouse: boolean;
+  #closedPromise: Promise<void>;
+  #resolveClosed: () => void = () => {};
   /** Enter raw mode and optionally enable mouse reporting immediately. */
   constructor(options: TuiInputOptions = {}) {
     this.#restoreRaw = enterRawMode(0);
-    void writeStdout(options.mouse === false ? '' : enterMouseMode());
+    this.#mouse = options.mouse !== false;
+    this.#closedPromise = new Promise((resolve) => {
+      this.#resolveClosed = resolve;
+    });
+    if (this.#mouse) void writeStdout(enterMouseMode());
+  }
+  #flushPartial(): void {
+    if (this.#partial.length === 0) return;
+    const held = this.#partial;
+    this.#partial = '';
+    this.#queue.push(...decodeInputText(held, false).events);
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
     while (!this.#closed) {
       const queued = this.#queue.shift();
       if (queued) return queued;
-      const result = await stdin().read();
-      if (result.done) return null;
-      this.#queue.push(...decodeTuiInput(result.value));
+      this.#pendingRead ??= stdin().read({ signal: this.#abortRead.signal });
+      let result: ReadResult<Uint8Array>;
+      const read = this.#pendingRead.then((value) => ({ kind: 'read' as const, value }));
+      if (this.#partial.length > 0) {
+        const hold = loopTimeout(25);
+        const settled = await Promise.race([
+          read,
+          hold.then(() => ({ kind: 'hold' as const })),
+          this.#closedPromise.then(() => ({ kind: 'closed' as const })),
+        ]);
+        if (settled.kind === 'closed') {
+          hold.cancel();
+          return null;
+        }
+        if (settled.kind === 'hold') {
+          this.#flushPartial();
+          continue;
+        }
+        hold.cancel();
+        result = settled.value;
+      } else {
+        const settled = await Promise.race([
+          read,
+          this.#closedPromise.then(() => ({ kind: 'closed' as const })),
+        ]);
+        if (settled.kind === 'closed') return null;
+        result = settled.value;
+      }
+      this.#pendingRead = null;
+      if (result.done) {
+        if (this.#partial.length === 0) return null;
+        this.#flushPartial();
+        continue;
+      }
+      const chunk = this.#partial + this.#stream.decode(result.value, { stream: true });
+      const { events, rest } = decodeInputText(chunk, true);
+      this.#partial = rest;
+      this.#queue.push(...events);
     }
     return null;
   }
@@ -530,7 +690,9 @@ export class TuiInput {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    void writeStdout(exitMouseMode());
+    this.#resolveClosed();
+    this.#abortRead.abort(new Error('Terminal input closed'));
+    if (this.#mouse) void writeStdout(exitMouseMode());
     this.#restoreRaw?.();
     this.#restoreRaw = null;
   }
@@ -652,7 +814,7 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
  * encoded text.
  */
 export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
-  return retainedTerminal(options);
+  return retainedTerminal(options).sink;
 }
 /**
  * Render a fullscreen terminal app and return a lifecycle handle.
@@ -666,6 +828,10 @@ export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
  * read while rendering becomes a dependency, and the screen repaints when one
  * changes. `update()` remains available for callers that drive frames
  * themselves, and takes over from the reactive root when used.
+ * Tree handlers receive input before `onEvent`; only unconsumed events reach
+ * the fallback callback. `stop()` is idempotent and cancels a blocked input
+ * read before restoring raw mode, mouse reporting, cursor state, auto-wrap,
+ * and the primary screen.
  *
  * ```ts no_run
  * import { createSignal } from 'fino:ui';
@@ -680,19 +846,31 @@ export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
 export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
-  const constraints = frameConstraints({
-    width: options.width ?? size.width,
-    height: options.height ?? size.height,
-  });
+  let width = options.width ?? size.width;
+  let height = options.height ?? size.height;
+  let lastTree: VNode | null = null;
   const input =
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
-  const retained = retainedTerminal(constraints);
+  const retained = retainedTerminal({ width, height });
+  const dispatcher = retained.dispatcher;
   let lastFrame: Frame | null = null;
   let cursorShown = false;
+  let restored = false;
+  let stopResize: (() => void) | null = null;
+  let root: Root<Frame> | null = null;
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
+  const restoreTerminal = (): void => {
+    if (restored) return;
+    restored = true;
+    stopResize?.();
+    stopResize = null;
+    input?.close();
+    void writeStdout(enableAutoWrap() + showCursor() + exitAlternateScreen());
+  };
   const sink: Sink<Frame> = {
     commit(tree: VNode): Frame {
-      const frame = retained.commit(tree);
+      lastTree = tree;
+      const frame = retained.sink.commit(tree);
       if (!stopped) {
         let out = frameToScreen(frame, lastFrame);
         if (frame.cursor) {
@@ -711,11 +889,39 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   };
   // A tree renders once; a thunk keeps its signal dependencies live. Both go
   // through the same sink, so the paint path does not fork.
-  let root: Root<Frame> | null = null;
-  if (typeof element === 'function') root = createRoot(element, sink);
-  else sink.commit(element);
+  try {
+    if (typeof element === 'function') root = createRoot(element, sink);
+    else sink.commit(element);
+    if (options.width === undefined || options.height === undefined) {
+      stopResize = onResize((next) => {
+        if (stopped) return;
+        const nextWidth = options.width ?? next.width;
+        const nextHeight = options.height ?? next.height;
+        if (nextWidth === width && nextHeight === height) return;
+        width = nextWidth;
+        height = nextHeight;
+        retained.resize({ width, height });
+        lastFrame = null;
+        void writeStdout('\x1B[2J');
+        if (lastTree) sink.commit(lastTree);
+      });
+    }
+  } catch (error) {
+    stopped = true;
+    root?.dispose();
+    root = null;
+    restoreTerminal();
+    throw error;
+  }
   const app: TuiApp = {
     input,
+    focus: {
+      focusedId: dispatcher.focusedId,
+      next: () => dispatcher.focusNext(),
+      prev: () => dispatcher.focusPrev(),
+      focus: (id: string) => dispatcher.focusId(id),
+      blur: () => dispatcher.blur(),
+    },
     frame(): Frame | null {
       return lastFrame;
     },
@@ -726,18 +932,23 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     },
     stop(): void {
       if (stopped) return;
-      root?.dispose();
-      root = null;
       stopped = true;
-      input?.close();
-      void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
+      try {
+        root?.dispose();
+      } finally {
+        root = null;
+        restoreTerminal();
+      }
     },
   };
-  if (input && options.onEvent) {
+  if (input) {
     void (async () => {
       while (!stopped) {
         const event = await input.read();
         if (event === null) break;
+        // Handlers on the tree see the event first; `onEvent` receives only
+        // what no handler consumed.
+        if (dispatcher.dispatch(event)) continue;
         await options.onEvent?.(event, app);
       }
     })();
