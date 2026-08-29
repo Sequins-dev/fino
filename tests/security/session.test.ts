@@ -79,6 +79,7 @@ describe('fino:net/http/app session store integration', () => {
   it('accepts a caller-owned SQLite store and survives reopen', async (t) => {
     const path = `/tmp/fino-session-test-${Math.floor(Math.random() * 1e9)}.db`;
     const fs = new DiskFileSystem();
+    const time = fakeClock();
     try {
       await fs.unlink(path);
     } catch {}
@@ -86,9 +87,10 @@ describe('fino:net/http/app session store integration', () => {
       path,
       namespace: 'sessions',
       fs,
+      clock: time.clock,
     });
     try {
-      const app = makeApp(store);
+      const app = makeApp(store, { clock: time.clock });
       const login = await app.handle(new Request('https://example.test/login', { method: 'POST' }));
       const pair = cookiePair(login);
       await store.close();
@@ -96,9 +98,10 @@ describe('fino:net/http/app session store integration', () => {
         path,
         namespace: 'sessions',
         fs,
+        clock: time.clock,
       });
       try {
-        const restored = await makeApp(reopened).handle(
+        const restored = await makeApp(reopened, { clock: time.clock }).handle(
           new Request('https://example.test/me', { headers: { cookie: pair } }),
         );
         t.equal(
