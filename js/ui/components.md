@@ -354,6 +354,40 @@ const list = (
 );
 ```
 
+## Date, time, and color pickers
+
+`Calendar`, `DigitalClock`, `DatePicker`, `TimePicker`, and `ColorPicker` keep
+their values and open state controlled by the application. Browsers receive
+native date, time, and color inputs. Terminal date, time, and optional color
+overlays compose the same `Popover` behavior as menus and dialogs.
+
+Date and time helpers are clock-free: callers supply the displayed month,
+current date, and clock value, which keeps Realm executions repeatable.
+`monthGrid()` and `timeColumnWindow()` provide the shared target-independent
+math. Terminal colors pass through one truecolor-or-ANSI-256 adapter that later
+visualizations can reuse.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Calendar, ColorPicker, DigitalClock } from 'fino:ui/components';
+
+const controls = (
+  <>
+    <Calendar
+      month="2024-02"
+      selected="2024-02-29"
+      onSelect={(date) => console.log(date)}
+    />
+    <DigitalClock time="23:59:58" seconds label="UTC" />
+    <ColorPicker
+      value="#3366ff"
+      swatches={['#3366ff', '#ff3366']}
+      onChange={(color) => console.log(color)}
+    />
+  </>
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

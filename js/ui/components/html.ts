@@ -44,6 +44,7 @@ import 'internal:ui/components/feedback.html';
 import 'internal:ui/components/display.html';
 import 'internal:ui/components/data.html';
 import 'internal:ui/components/virtual.html';
+import 'internal:ui/components/pickers.html';
 
 export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
 
