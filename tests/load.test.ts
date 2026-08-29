@@ -140,7 +140,7 @@ describe('load scheduler and metrics', () => {
   });
 });
 
-describe('HTTP load generation', () => {
+describe('HTTP load generation', { exclusive: true }, () => {
   it('streams and black-holes exact-count H1 responses', async (t) => {
     let count = 0;
     const server = serveHttp({ port: 0 }, async () => {
@@ -478,7 +478,7 @@ describe('HTTP load generation', () => {
   });
 });
 
-describe('scripted load scenarios', () => {
+describe('scripted load scenarios', { exclusive: true }, () => {
   it('runs bounded HTTP sessions with deterministic metrics and cleanup', async (t) => {
     const server = serveHttp({ port: 0 }, async () => new Response('hello'));
     try {

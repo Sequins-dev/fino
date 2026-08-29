@@ -21,13 +21,26 @@ import {
   processSandboxCapabilities,
 } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
+import { dlopen } from 'fino:ffi';
+import { Realm } from 'fino:realm';
 import * as loop from 'internal:runtime/loop';
+import type realmCwd from './fixtures/realm-cwd-fn.ts';
 const encodeUtf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const childEnv = Object.fromEntries(
   Object.entries(env).filter(([, v]) => v !== undefined),
 ) as Record<string, string>;
 const fs = new DiskFileSystem();
+const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
+  close: {
+    parameters: ['i32'],
+    result: 'i32',
+  },
+  pipe: {
+    parameters: ['buffer'],
+    result: 'i32',
+  },
+});
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   const timer = loop.timeout(ms);
   try {
@@ -117,12 +130,52 @@ describe('Process APIs', () => {
     t.ok(dir.length > 0, 'cwd is non-empty');
     t.ok(dir.startsWith('/'), 'cwd is absolute');
   });
-  it('chdir() changes and restores working directory', (t) => {
+  it('chdir() changes and restores the Realm working directory', async (t) => {
     const original = cwd();
-    chdir('/tmp');
-    t.ok(cwd().endsWith('tmp'), `cwd after chdir('/tmp') ends with tmp`);
-    chdir(original);
+    const tempDirectory = await fs.realpath('/tmp');
+    const relativeFile = `fino-realm-cwd-${pid}`;
+    const absoluteFile = `${tempDirectory}/${relativeFile}`;
+    try {
+      chdir('/tmp');
+      t.equal(cwd(), tempDirectory, `chdir() stores the canonical Realm path`);
+      await fs.writeFile(relativeFile, encodeUtf8('realm relative path'));
+      t.equal(
+        decodeUtf8(await fs.readFile(absoluteFile)),
+        'realm relative path',
+        'relative filesystem paths use the Realm cwd',
+      );
+      const proc = new Process('/bin/pwd', []);
+      proc.stdin.close();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of proc.stdout) chunks.push(chunk);
+      for await (const _ of proc.stderr) {
+      }
+      t.equal((await proc.wait()).code, 0, 'child process inherits the Realm cwd');
+      t.equal(
+        joinChunks(chunks).trim(),
+        tempDirectory,
+        'child process starts in the canonical Realm cwd',
+      );
+    } finally {
+      chdir(original);
+      try {
+        await fs.unlink(absoluteFile);
+      } catch (_) {}
+    }
     t.equal(cwd(), original);
+  });
+  it('keeps chdir() isolated between Realms', async (t) => {
+    const original = cwd();
+    const tempDirectory = await fs.realpath('/tmp');
+    const realm = new Realm<typeof realmCwd>({
+      entry: new URL('./fixtures/realm-cwd-fn.ts', import.meta.url).pathname,
+    });
+    t.equal(await realm.call('/tmp'), tempDirectory, 'child Realm changes its own cwd');
+    t.equal(cwd(), original, 'parent Realm cwd is unchanged');
+  });
+  it('rejects nonexistent and non-directory cwd targets', (t) => {
+    t.throws(() => chdir(`/tmp/fino-missing-cwd-${pid}`), /chdir/);
+    t.throws(() => chdir(execPath), /chdir/);
   });
   it('internal:process cannot be imported from user code', async (t) => {
     const script = `/tmp/fino-internal-process-check-${pid}.ts`;
@@ -149,7 +202,92 @@ describe('Process APIs', () => {
     }
   });
 });
-describe('Process class', () => {
+describe('Process class', { exclusive: true }, () => {
+  it('does not inherit unrelated parent descriptors', async (t) => {
+    const countOpenFds = async (): Promise<number> => {
+      const proc = new Process(execPath, [
+        new URL('./fixtures/open-fd-count.ts', import.meta.url).pathname,
+      ]);
+      proc.stdin.close();
+      const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
+      const [result] = await Promise.all([
+        proc.wait(),
+        (async () => {
+          for await (const chunk of proc.stdout) stdout.push(chunk);
+        })(),
+        (async () => {
+          for await (const chunk of proc.stderr) stderr.push(chunk);
+        })(),
+      ]);
+      t.equal(result.code, 0, `fd probe exits successfully: ${joinChunks(stderr)}`);
+      return Number(joinChunks(stdout).trim());
+    };
+
+    const baseline = await countOpenFds();
+    const descriptors: number[] = [];
+    try {
+      for (let index = 0; index < 8; index++) {
+        const buffer = new ArrayBuffer(8);
+        t.equal(libc.symbols.pipe(buffer), 0, `opened unrelated pipe ${index}`);
+        descriptors.push(...new Int32Array(buffer));
+      }
+      const withUnrelatedPipes = await countOpenFds();
+      t.ok(
+        withUnrelatedPipes <= baseline + 2,
+        `child inherited no unrelated descriptors: baseline=${baseline}, actual=${withUnrelatedPipes}`,
+      );
+    } finally {
+      for (const fd of descriptors) libc.symbols.close(fd);
+    }
+  });
+  it("does not leak another Process instance's stdio into spawned children", async (t) => {
+    const countOpenFds = async (): Promise<number> => {
+      const proc = new Process(execPath, [
+        new URL('./fixtures/open-fd-count.ts', import.meta.url).pathname,
+      ]);
+      proc.stdin.close();
+      const stdout: Uint8Array[] = [];
+      const stderr: Uint8Array[] = [];
+      const [result] = await Promise.all([
+        proc.wait(),
+        (async () => {
+          for await (const chunk of proc.stdout) stdout.push(chunk);
+        })(),
+        (async () => {
+          for await (const chunk of proc.stderr) stderr.push(chunk);
+        })(),
+      ]);
+      t.equal(result.code, 0, `fd probe exits successfully: ${joinChunks(stderr)}`);
+      return Number(joinChunks(stdout).trim());
+    };
+
+    const baseline = await countOpenFds();
+    const keepers = Array.from({ length: 8 }, () => new Process('/bin/sleep', ['30']));
+    for (const keeper of keepers) keeper.stdin.close();
+    try {
+      const withKeepers = await countOpenFds();
+      t.ok(
+        withKeepers <= baseline + 2,
+        `child inherited no unrelated stdio descriptors: baseline=${baseline}, actual=${withKeepers}`,
+      );
+    } finally {
+      for (const keeper of keepers) keeper.kill();
+      await Promise.all(
+        keepers.flatMap((keeper) => [
+          keeper.wait(),
+          (async () => {
+            for await (const _ of keeper.stdout) {
+            }
+          })(),
+          (async () => {
+            for await (const _ of keeper.stderr) {
+            }
+          })(),
+        ]),
+      );
+    }
+  });
   it('reports sandbox backend capabilities without spawning', (t) => {
     const capabilities = processSandboxCapabilities();
     t.equal(capabilities.platform, os, 'capabilities use the current platform');
@@ -668,6 +806,22 @@ describe('Process class', () => {
     for await (const chunk of proc.stderr) errChunks.push(chunk);
     t.equal(joinChunks(errChunks).trim(), 'err');
     await proc.wait();
+  });
+  it('wait() leaves the calling Realm responsive while the child is alive', async (t) => {
+    const proc = new Process('/bin/sh', ['-c', "printf 'ready\\n'; sleep 30"]);
+    proc.stdin.close();
+    const waiting = proc.wait();
+    try {
+      const ready = await withTimeout(
+        proc.stdout.readUntil(new Uint8Array([10]), 1024),
+        2_000,
+        'child readiness output',
+      );
+      t.equal(decodeUtf8(ready!), 'ready\n', 'stdout remains readable while wait is pending');
+    } finally {
+      proc.kill(SIGKILL);
+      await waiting;
+    }
   });
   it('drains high-volume stdout and stderr concurrently', async (t) => {
     const proc = new Process(

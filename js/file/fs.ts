@@ -6,6 +6,9 @@
  * `read(2)`, `write(2)`, `stat(2)`, `readdir(3)`, `rename(2)`, `symlink(2)`,
  * etc. The I/O is wired to the event loop so that reads and writes yield
  * control to other async tasks while waiting for the kernel.
+ * Relative filesystem paths resolve from `fino:process.cwd()`, whose value is
+ * local to the calling Realm; one Realm changing directory does not redirect
+ * another Realm's filesystem calls.
  *
  * ## Design: explicit filesystem instance
  *
@@ -52,6 +55,7 @@ import {
   throwErrnoCode,
   readCStr,
   _toStr,
+  _toRawStr,
   _toPath,
   joinPath,
   O_CREAT,
@@ -190,7 +194,8 @@ export {
  * Each method accepts either a raw path string or a `Path` instance. Methods
  * throw errno-backed errors when the underlying syscall fails; they do not
  * return `null` for missing paths unless documented by a lower-level handle
- * API. File handles returned from `open()` must be closed by the caller.
+ * API. Relative paths resolve from the calling Realm's `fino:process.cwd()`.
+ * File handles returned from `open()` must be closed by the caller.
  *
  * ```ts no_run
  * import { DiskFileSystem } from 'fino:file';
@@ -279,7 +284,7 @@ export class DiskFileSystem extends FileSystem {
    */
   async open(path: Path | string, mode: string = 'r'): Promise<File> {
     const p = _toPath(path);
-    const s = p.toString();
+    const s = _toStr(p);
     const flags = modeToFlags(mode);
     let fd: number;
     if (asyncOps) {
@@ -663,7 +668,7 @@ export class DiskFileSystem extends FileSystem {
    * ```
    */
   async symlink(target: Path | string, linkpath: Path | string): Promise<void> {
-    const tS = _toStr(target);
+    const tS = _toRawStr(target);
     const lS = _toStr(linkpath);
     const rc = lib.symbols.symlink(cstr(tS), cstr(lS));
     if (rc !== 0) throwErrno('symlink', lS);

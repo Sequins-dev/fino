@@ -450,7 +450,7 @@ describe('BufferedBytesWriter', () => {
     );
   });
 });
-describe('FdReader / FdWriter', () => {
+describe('FdReader / FdWriter', { exclusive: true }, () => {
   it('exposes borrowed descriptor metadata', (t) => {
     const reader = new FdReader(0, () => {});
     const writer = new FdWriter(1, () => {});

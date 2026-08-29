@@ -17,8 +17,44 @@ const lib = dlopen(LIBC, {
     async: true,
   },
 });
-export default async function (sleepUs: number) {
+type AsyncFfiWork = {
+  sleepUs: number;
+  stats: SharedArrayBuffer;
+  minimumActive: number;
+};
+
+function recordMaximum(stats: Int32Array, value: number): void {
+  while (true) {
+    const previous = Atomics.load(stats, 1);
+    if (previous >= value || Atomics.compareExchange(stats, 1, previous, value) === previous)
+      return;
+  }
+}
+
+export default async function (work: number | AsyncFfiWork) {
+  const sleepUs = typeof work === 'number' ? work : work.sleepUs;
+  const stats = typeof work === 'number' ? undefined : new Int32Array(work.stats);
+  if (stats !== undefined) {
+    const active = Atomics.add(stats, 0, 1) + 1;
+    recordMaximum(stats, active);
+    Atomics.notify(stats, 0);
+    const deadline = Date.now() + 15_000;
+    while (Atomics.load(stats, 0) < work.minimumActive) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error('async FFI concurrency barrier timed out');
+      const current = Atomics.load(stats, 0);
+      const waiter = Atomics.waitAsync(stats, 0, current, remaining);
+      if (waiter.async) await waiter.value;
+    }
+  }
   // Concurrent async FFI calls inside a child realm
-  const [pid] = await Promise.all([lib.symbols.getpid(), lib.symbols.usleep(sleepUs)]);
-  return pid as number;
+  try {
+    const [pid] = await Promise.all([lib.symbols.getpid(), lib.symbols.usleep(sleepUs)]);
+    return pid as number;
+  } finally {
+    if (stats !== undefined) {
+      Atomics.sub(stats, 0, 1);
+      Atomics.notify(stats, 0);
+    }
+  }
 }

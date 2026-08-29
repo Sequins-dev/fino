@@ -17,7 +17,8 @@ const clusterTls = {
   cert: `${cwd()}/tests/net/fixtures/test.crt`,
   key: `${cwd()}/tests/net/fixtures/test.key`,
 };
-const WORKER_READY_TIMEOUT_MS = 5_000;
+const CLUSTER_OPERATION_TIMEOUT_MS = 15_000;
+const WORKER_READY_TIMEOUT_MS = CLUSTER_OPERATION_TIMEOUT_MS;
 const fs = new DiskFileSystem();
 async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
@@ -83,7 +84,7 @@ async function waitForFile(path: string, timeoutMs: number): Promise<void> {
     }
   }
 }
-describe('fino:cluster public WebTransport integration', () => {
+describe('fino:cluster public WebTransport integration', { exclusive: true }, () => {
   it('rejects ws:// cluster seeds', async (t) => {
     await t.rejects(
       () =>
@@ -103,7 +104,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-seed',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
     );
     let worker: Process | null = null;
@@ -113,7 +114,11 @@ describe('fino:cluster public WebTransport integration', () => {
         entry: remoteCallEntry,
         remote: true,
       });
-      const result = await withTimeout(realm.call('ok'), 3e3, 'remote Realm.call');
+      const result = await withTimeout(
+        realm.call('ok'),
+        CLUSTER_OPERATION_TIMEOUT_MS,
+        'remote Realm.call',
+      );
       t.equal(result, 'remote:ok', 'remote realm call returned worker result');
     } finally {
       if (worker !== null) await stopWorker(worker);
@@ -132,7 +137,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-ipv6-self-join',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster IPv6 self-join',
     );
     leaveCluster();
@@ -149,7 +154,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-restart',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'first startCluster',
     );
     leaveCluster();
@@ -160,7 +165,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-restart-2',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'second startCluster',
     );
     leaveCluster();
@@ -175,7 +180,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-single-active',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
     );
     try {
@@ -202,7 +207,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-terminate',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
     );
     let worker: Process | null = null;
@@ -212,7 +217,11 @@ describe('fino:cluster public WebTransport integration', () => {
         entry: longRunningEntry,
         remote: true,
       });
-      const running = withTimeout(realm.run(), 3e3, 'remote Realm.run terminate');
+      const running = withTimeout(
+        realm.run(),
+        CLUSTER_OPERATION_TIMEOUT_MS,
+        'remote Realm.run terminate',
+      );
       await loop.timeout(20);
       realm.terminate();
       await running;
@@ -235,7 +244,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-worker-loss',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
     );
     let worker: Process | null = null;
@@ -246,8 +255,12 @@ describe('fino:cluster public WebTransport integration', () => {
         entry: neverFnEntry,
         remote: true,
       });
-      const pending = withTimeout(realm.call(marker), 8e3, 'remote Realm.call worker loss');
-      await waitForFile(marker, 5e3);
+      const pending = withTimeout(
+        realm.call(marker),
+        CLUSTER_OPERATION_TIMEOUT_MS,
+        'remote Realm.call worker loss',
+      );
+      await waitForFile(marker, CLUSTER_OPERATION_TIMEOUT_MS);
       await killWorker(worker);
       worker = null;
       await t.rejects(() => pending, /peer .* disconnected/);
@@ -272,7 +285,7 @@ describe('fino:cluster public WebTransport integration', () => {
         nodeId: 'cluster-shutdown',
         tls: clusterTls,
       }),
-      2e3,
+      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
     );
     let worker: Process | null = null;
@@ -286,7 +299,7 @@ describe('fino:cluster public WebTransport integration', () => {
       await loop.timeout(20);
       leaveCluster();
       await t.rejects(
-        () => withTimeout(pending, 3e3, 'remote Realm.call leaveCluster'),
+        () => withTimeout(pending, CLUSTER_OPERATION_TIMEOUT_MS, 'remote Realm.call leaveCluster'),
         /cluster connection closed/i,
       );
     } finally {

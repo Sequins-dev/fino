@@ -180,3 +180,12 @@ consideration of a smaller reusable mechanism, focused tests that would have
 failed before the change, and validation proportional to its risk. Report any
 platform dependency, skipped relevant check, known coverage or conformance gap,
 performance impact, or intentional Realm-mode difference.
+
+Before pushing a branch or updating a pull request, run the complete local test
+suite in the mode used by CI in addition to focused validation. Use any required
+CI feature environment variables when they are available. Changes to the test
+runner or its CI invocation must run both `./target/debug/fino test tests` and
+`./target/debug/fino test --parallel tests`, and confirm their root plans and
+summary counts match. If a required full suite cannot run or does not pass, do
+not push; report the blocker and leave the remote branch unchanged so expensive
+CI is not used as the first full validation pass.

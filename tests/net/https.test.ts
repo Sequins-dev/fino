@@ -55,7 +55,7 @@ async function tlsRoundtrip(
   }
   return decodeUtf8(all);
 }
-describe('HTTPS server — basic TLS request/response', () => {
+describe('HTTPS server — basic TLS request/response', { exclusive: true }, () => {
   it('serves a response over TLS', { skip }, async (t) => {
     const server = serveHttp(
       {

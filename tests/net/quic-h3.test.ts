@@ -36,6 +36,19 @@ const TEST_CERT = 'tests/net/fixtures/test.crt';
 const TEST_KEY = 'tests/net/fixtures/test.key';
 const fs = new DiskFileSystem('/');
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
+type UnifiedHttpServer = ReturnType<typeof httpServe>;
+async function startUnifiedH3(create: () => UnifiedHttpServer): Promise<UnifiedHttpServer> {
+  for (let attempt = 0; ; attempt++) {
+    const server = create();
+    try {
+      await server.ready;
+      return server;
+    } catch (error) {
+      await server.close();
+      if (attempt >= 4 || !/address already in use/i.test(String(error))) throw error;
+    }
+  }
+}
 async function readPemCertificateDer(path: string): Promise<Uint8Array> {
   const pem = decodeUtf8(await fs.readFile(path));
   const base64 = pem
@@ -241,7 +254,7 @@ async function rawH3RequestOutcome(
   clientSession.close();
   return outcome;
 }
-describe('HTTP/3 (h3 ALPN)', () => {
+describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
   it('WebTransport H3 constants and framing helpers match draft-15', (t) => {
     t.equal(SETTINGS_WT_ENABLED, 746385408, 'WT setting id');
     t.equal(SETTINGS_ENABLE_CONNECT_PROTOCOL, 8, 'extended CONNECT setting id');
@@ -837,23 +850,24 @@ describe('HTTP/3 (h3 ALPN)', () => {
   });
   it('unified HTTP serve() can enable H3 accept mode', async (t) => {
     if (!available) return;
-    const server = httpServe(
-      {
-        port: 0,
-        hostname: '127.0.0.1',
-        tls: {
-          cert: TEST_CERT,
-          key: TEST_KEY,
+    const server = await startUnifiedH3(() =>
+      httpServe(
+        {
+          port: 0,
+          hostname: '127.0.0.1',
+          tls: {
+            cert: TEST_CERT,
+            key: TEST_KEY,
+          },
+          h3: true,
+        } as any,
+        async (incoming: any) => {
+          const accepted = await incoming.accept();
+          await accepted.respond(new Response(`protocol:${accepted.protocol}`));
         },
-        h3: true,
-      } as any,
-      async (incoming: any) => {
-        const accepted = await incoming.accept();
-        await accepted.respond(new Response(`protocol:${accepted.protocol}`));
-      },
+      ),
     );
     try {
-      await (server as any).ready;
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
         quic: { verifyPeer: false },
       });
@@ -864,25 +878,26 @@ describe('HTTP/3 (h3 ALPN)', () => {
   });
   it('unified HTTP serve() allows H3 clientAuth request mode without a client certificate', async (t) => {
     if (!available) return;
-    const server = httpServe(
-      {
-        port: 0,
-        hostname: '127.0.0.1',
-        tls: {
-          cert: TEST_CERT,
-          key: TEST_KEY,
-          ca: TEST_CERT,
-          clientAuth: 'request',
+    const server = await startUnifiedH3(() =>
+      httpServe(
+        {
+          port: 0,
+          hostname: '127.0.0.1',
+          tls: {
+            cert: TEST_CERT,
+            key: TEST_KEY,
+            ca: TEST_CERT,
+            clientAuth: 'request',
+          },
+          h3: true,
+        } as any,
+        async (incoming: any) => {
+          const accepted = await incoming.accept();
+          await accepted.respond(new Response(`protocol:${accepted.protocol}`));
         },
-        h3: true,
-      } as any,
-      async (incoming: any) => {
-        const accepted = await incoming.accept();
-        await accepted.respond(new Response(`protocol:${accepted.protocol}`));
-      },
+      ),
     );
     try {
-      await (server as any).ready;
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/optional-client-auth`, {
         quic: { verifyPeer: false },
       });
@@ -901,17 +916,18 @@ describe('HTTP/3 (h3 ALPN)', () => {
     app
       .get('/proto')
       .handle((ctx) => new Response(`${ctx.protocol}:${ctx.session?.protocol ?? 'none'}`));
-    const server = app.listen({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: TEST_CERT,
-        key: TEST_KEY,
-      },
-      h3: true,
-    } as any);
+    const server = await startUnifiedH3(() =>
+      app.listen({
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: TEST_CERT,
+          key: TEST_KEY,
+        },
+        h3: true,
+      } as any),
+    );
     try {
-      await (server as any).ready;
       const response = await h3Fetch(`https://127.0.0.1:${server.port}/proto`, {
         quic: { verifyPeer: false },
       });
@@ -936,22 +952,23 @@ describe('HTTP/3 (h3 ALPN)', () => {
           ctx.params?.room === 'lobby' &&
           ctx.tenant === 'acme';
       });
-    const server = app.listen({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: TEST_CERT,
-        key: TEST_KEY,
-      },
-      h3: true,
-    } as any);
+    const server = await startUnifiedH3(() =>
+      app.listen({
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: TEST_CERT,
+          key: TEST_KEY,
+        },
+        h3: true,
+      } as any),
+    );
     const client = new HttpClient({
       baseUrl: `https://127.0.0.1:${server.port}`,
       protocols: ['h3'],
       tls: { rejectUnauthorized: false },
     });
     try {
-      await (server as any).ready;
       const wt = await client.webtransport('/wt/lobby');
       t.equal(await wt.ready, undefined, 'client receives a connected WebTransport');
       t.equal(accepted, true, 'app route accepted the H3 WebTransport session');
@@ -965,22 +982,23 @@ describe('HTTP/3 (h3 ALPN)', () => {
     if (!available) return;
     const app = new App();
     app.route('/wt').webtransport(() => {});
-    const server = app.listen({
-      port: 0,
-      hostname: '127.0.0.1',
-      tls: {
-        cert: TEST_CERT,
-        key: TEST_KEY,
-      },
-      h3: true,
-    } as any);
+    const server = await startUnifiedH3(() =>
+      app.listen({
+        port: 0,
+        hostname: '127.0.0.1',
+        tls: {
+          cert: TEST_CERT,
+          key: TEST_KEY,
+        },
+        h3: true,
+      } as any),
+    );
     const client = new HttpClient({
       baseUrl: `https://127.0.0.1:${server.port}`,
       protocols: ['h3'],
       tls: { rejectUnauthorized: false },
     });
     try {
-      await (server as any).ready;
       const certDer = await readPemCertificateDer(TEST_CERT);
       const matchingHash = await crypto.subtle.digest('SHA-256', certDer);
       const wt = await client.webtransport('/wt', {

@@ -784,7 +784,7 @@ describe('global fetch() — HTTPS H2 pool', () => {
     }
   });
 });
-describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
+describe('global fetch() — HTTPS H3 Alt-Svc pool', { exclusive: true }, () => {
   it(
     'discovers Alt-Svc and reuses one H3 session for later requests',
     { skip: skipGlobalH3 },
@@ -792,7 +792,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       await _resetFetchH2Pool();
       await _resetFetchH3Pool();
       await _resetFetchAltSvc();
-      _setFetchH3HandshakeTimeoutForTest(50);
+      _setFetchH3HandshakeTimeoutForTest(500);
       let tlsRequests = 0;
       let h3Requests = 0;
       const server = serve(
@@ -1037,7 +1037,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
       await _resetFetchH2Pool();
       await _resetFetchH3Pool();
       await _resetFetchAltSvc();
-      _setFetchH3HandshakeTimeoutForTest(50);
+      _setFetchH3HandshakeTimeoutForTest(500);
       let tlsRequests = 0;
       const server = serve(
         {
@@ -1107,6 +1107,7 @@ describe('global fetch() — HTTPS H3 Alt-Svc pool', () => {
           'h3:/direct',
           'h3 override connects directly when no Alt-Svc is cached',
         );
+        _setFetchH3HandshakeTimeoutForTest(50);
         await t.rejects(
           () =>
             fetch(`https://127.0.0.1:9/fail`, {

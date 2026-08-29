@@ -167,12 +167,19 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:commands/fmt", "commands/fmt"),
     source_builtin!("internal:commands/lint", "commands/lint"),
     source_builtin!("internal:commands/task", "commands/task"),
+    source_builtin!(
+        "internal:concurrent-task-channel",
+        "internal/concurrent-task-channel"
+    ),
+    source_builtin!("internal:test-worker", "internal/test-worker"),
     source_builtin!("internal:tooling/files", "internal/tooling/files"),
     source_builtin!("internal:tooling/format", "internal/tooling/format"),
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
     source_builtin!("internal:bytes", "internal/bytes"),
     source_builtin!("internal:duration", "internal/duration"),
+    source_builtin!("internal:process/cwd", "internal/process/cwd"),
+    source_builtin!("internal:process/exit", "internal/process/exit"),
     source_builtin!("internal:statistics", "internal/statistics"),
     source_builtin!("internal:value/equal", "internal/value/equal"),
     source_builtin!("internal:store/facade", "internal/store/facade"),
@@ -255,6 +262,10 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     // runtime
     source_builtin!("internal:runtime/libc", "internal/runtime/libc"),
+    source_builtin!(
+        "internal:runtime/output-capture",
+        "internal/runtime/output-capture"
+    ),
     source_builtin!("internal:parent-rpc", "internal/runtime/parent-rpc"),
     source_builtin!(
         "internal:synthetic-direct",

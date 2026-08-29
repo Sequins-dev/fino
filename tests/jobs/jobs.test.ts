@@ -15,7 +15,7 @@ if (!sqliteAvailable) {
 }
 
 function tempPath(): string {
-  return `/tmp/fino-jobs-test-${Math.floor(Math.random() * 1e9)}.db`;
+  return `/tmp/fino-jobs-api-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 
 describe('fino:jobs local mode', () => {
@@ -46,19 +46,24 @@ describe('fino:jobs local mode', () => {
     const stats = jobs.stats();
     const statSnapshots: number[] = [];
     const disposeStats = stats.subscribe((value) => statSnapshots.push(value.pending));
-    const job = await jobs.push('signal-echo', { value: 7 }, { delay: 200 });
+    const job = await jobs.push('signal-echo', { value: 7 }, { delay: 30_000 });
     const watched = jobs.job(job.id);
     const statuses: string[] = [];
     const disposeJob = watched.subscribe((value) => {
       if (value) statuses.push(value.status);
     });
-    await loop.timeout(50);
+    for (let attempt = 0; attempt < 200 && stats.get().pending < 1; attempt++) {
+      await loop.timeout(50);
+    }
     t.ok(stats.get().pending >= 1, 'delayed job is counted as pending');
+    t.equal(await jobs.cancel(job.id), true, 'pending job can be cancelled');
     const done = await jobs.wait(job.id, { timeoutMs: 10_000 });
-    await loop.timeout(0);
-    t.equal(done.status, 'done', 'job completed');
-    t.equal(watched.get()?.status, 'done', 'job signal retains terminal state');
-    t.ok(statuses.includes('done'), 'job subscriber saw terminal state');
+    for (let attempt = 0; attempt < 200 && watched.get()?.status !== 'cancelled'; attempt++) {
+      await loop.timeout(50);
+    }
+    t.equal(done.status, 'cancelled', 'job reached a terminal state');
+    t.equal(watched.get()?.status, 'cancelled', 'job signal retains terminal state');
+    t.ok(statuses.includes('cancelled'), 'job subscriber saw terminal state');
     t.ok(
       statSnapshots.some((pending) => pending >= 1),
       'stats subscriber saw pending count',

@@ -1,12 +1,14 @@
 /**
  * fino:process - process information and child process spawning.
  *
- * This module combines two concerns: static process metadata (pid, cwd, argv,
- * env, etc.) and the `Process` class for spawning child processes with piped
- * stdio. The static metadata comes from `internal:process`, which is a Rust
+ * This module combines two concerns: process metadata (pid, Realm-local cwd,
+ * argv, env, etc.) and the `Process` class for spawning child processes with
+ * piped stdio. Static host metadata comes from `internal:process`, which is a Rust
  * synthetic module injected at compile time with values that would be awkward
  * to retrieve from JS (e.g. `execPath` needs the Rust binary's own path, and
  * `env` needs to snapshot the environ at startup).
+ * Each Realm initializes its own working directory from the host and may
+ * change it independently; spawned children explicitly inherit that value.
  *
  * The child-process APIs are POSIX-oriented. They use `posix_spawnp(3)`,
  * `pipe(2)`, `kill(2)`, and `waitpid(2)` semantics, with macOS and Linux
@@ -25,15 +27,19 @@
  *
  * ## Pipe lifecycle
  *
- * Three `pipe(2)` calls create six file descriptors before spawning:
+ * Three close-on-exec pipes create six file descriptors before spawning:
  *
  *   stdin:  [stdinR  -> child stdin,  stdinW  -> parent Writer]
  *   stdout: [stdoutR -> parent Reader, stdoutW -> child stdout]
  *   stderr: [stderrR -> parent Reader, stderrW -> child stderr]
  *
- * `posix_spawn_file_actions_*` wires the child-side fds before exec. The
- * parent-side fds are set to O_NONBLOCK so they can be used with the event
- * loop.
+ * `posix_spawn_file_actions_*` wires the child-side fds before exec. Linux
+ * creates the descriptors atomically with `pipe2(O_CLOEXEC)` and closes every
+ * unrelated descriptor from fd 3 upward in ordinary children; macOS combines
+ * close-on-exec descriptors with `POSIX_SPAWN_CLOEXEC_DEFAULT`. This prevents
+ * concurrent Realms from coupling child lifecycles through inherited pipes,
+ * sockets, or event-loop descriptors. The parent-side fds are set to
+ * `O_NONBLOCK` for the event loop.
  *
  *
  * ## buildCStringArray and GC lifetime
@@ -61,8 +67,9 @@
  *   just like any other fd, then close the pidfd. This is the modern
  *   alternative to `waitpid(2)` polling loops.
  *
- * In both cases, after the kernel signals exit, a single `waitpid(pid, 0)` is
- * called to reap the zombie and retrieve the exit status. The status integer
+ * In both cases, after the kernel signals exit, `waitpid(pid, WNOHANG)` confirms
+ * and reaps the zombie. A stale readiness notification is re-armed rather than
+ * ever blocking a reactor thread. The status integer
  * is decoded using the POSIX WIFEXITED / WIFSIGNALED macros inlined as bit
  * operations.
  *
@@ -99,6 +106,8 @@ import { seccompAvailable } from './internal/security/sandbox/seccomp.ts';
 import { seatbeltAvailable } from './internal/security/sandbox/seatbelt.ts';
 import type { SandboxPolicy } from './internal/security/sandbox/plan.ts';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
+import { getRealmCwd, setRealmCwd } from 'internal:process/cwd';
+import { interceptProcessExit } from 'internal:process/exit';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
 import { topic, Topic } from './context/topic.ts';
@@ -531,7 +540,11 @@ const isLinux = os === 'linux';
 // fcntl(2) constants
 const F_GETFL = isLinux ? 3 : 3;
 const F_SETFL = 4;
+const F_SETFD = 2;
+const FD_CLOEXEC = 1;
 const O_NONBLOCK = isLinux ? 2048 : 4;
+const O_CLOEXEC = 0x80000;
+const WNOHANG = 1;
 // Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
 const SYS_PIDFD_OPEN = 434n;
 // Default signal for kill (also exported in signal constants below)
@@ -551,14 +564,6 @@ const lib = dlopen(LIBC, {
   _exit: {
     parameters: ['i32'],
     result: 'void',
-  },
-  getcwd: {
-    parameters: ['buffer', 'usize'],
-    result: 'pointer',
-  },
-  chdir: {
-    parameters: ['buffer'],
-    result: 'i32',
   },
   kill: {
     parameters: ['i32', 'i32'],
@@ -629,6 +634,14 @@ const lib = dlopen(LIBC, {
     result: 'i32',
   },
 });
+const pipe2Lib = isLinux
+  ? dlopen(LIBC, {
+      pipe2: {
+        parameters: ['buffer', 'i32'],
+        result: 'i32',
+      },
+    })
+  : null;
 const spawnChdirLib = (() => {
   try {
     return dlopen(LIBC, {
@@ -641,6 +654,29 @@ const spawnChdirLib = (() => {
     return null;
   }
 })();
+const spawnInheritLib =
+  os === 'darwin'
+    ? dlopen(LIBC, {
+        posix_spawn_file_actions_addinherit_np: {
+          parameters: ['buffer', 'i32'],
+          result: 'i32',
+        },
+      })
+    : null;
+const spawnCloseFromLib = isLinux
+  ? (() => {
+      try {
+        return dlopen(LIBC, {
+          posix_spawn_file_actions_addclosefrom_np: {
+            parameters: ['buffer', 'i32'],
+            result: 'i32',
+          },
+        });
+      } catch (_) {
+        return null;
+      }
+    })()
+  : null;
 const RUSAGE_SELF = 0;
 let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------
@@ -702,6 +738,7 @@ const POSIX_SPAWN_ATTR_BYTES = 512;
 const SIGSET_BYTES = 128;
 const POSIX_SPAWN_SETSIGDEF = 0x0004;
 const POSIX_SPAWN_SETSIGMASK = 0x0008;
+const POSIX_SPAWN_CLOEXEC_DEFAULT = 0x4000;
 function addSpawnAction(rc: number, action: string): void {
   if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
 }
@@ -719,6 +756,22 @@ function addSignalToSet(set: ArrayBuffer, signo: number): void {
   if (byteOffset >= set.byteLength) return;
   const bytes = new Uint8Array(set);
   bytes[byteOffset] |= 1 << (bit & 7);
+}
+function createProcessPipe(buf: ArrayBuffer, label: string): void {
+  const rc = Number(
+    pipe2Lib === null ? lib.symbols.pipe(buf) : pipe2Lib.symbols.pipe2(buf, O_CLOEXEC),
+  );
+  if (rc < 0) throw new Error(`pipe() failed for ${label}`);
+  if (pipe2Lib !== null) return;
+  const [readFd, writeFd] = readPipeFds(buf);
+  if (
+    Number(lib.symbols.fcntl(readFd, F_SETFD, FD_CLOEXEC)) < 0 ||
+    Number(lib.symbols.fcntl(writeFd, F_SETFD, FD_CLOEXEC)) < 0
+  ) {
+    lib.symbols.close(readFd);
+    lib.symbols.close(writeFd);
+    throw new Error(`fcntl(FD_CLOEXEC) failed for ${label}`);
+  }
 }
 function currentRssBytes(): number {
   const buf = new ArrayBuffer(256);
@@ -806,6 +859,7 @@ export const ppid = lib.symbols.getppid();
  * @param {number} [code=0] exit status
  */
 export function exit(code: number = 0): never {
+  interceptProcessExit(code);
   // Flush coalesce buffers so buffered output isn't silently discarded.
   // flushSync() uses write(2) directly; errors are swallowed so _exit always runs.
   try {
@@ -832,18 +886,16 @@ export function exit(code: number = 0): never {
  * @returns {string}
  */
 export function cwd(): string {
-  const buf = new ArrayBuffer(4096);
-  const result = lib.symbols.getcwd(buf, 4096);
-  if (result === null) throw new Error('getcwd failed');
-  const bytes = new Uint8Array(buf);
-  const end = bytes.indexOf(0);
-  return decodeUtf8(bytes.subarray(0, end === -1 ? bytes.byteLength : end));
+  return getRealmCwd();
 }
 /**
  * Change the current working directory. Throws on failure.
  *
- * The change affects the whole current process and therefore all realms in the
- * process that consult process cwd. Use absolute paths for predictable results.
+ * The change belongs to the current Realm. Other Realms in the same process
+ * retain their own working directories, and child processes spawned without an
+ * explicit `cwd` inherit this Realm's value. Relative paths are resolved from
+ * the current Realm directory. The target must resolve to an existing readable
+ * directory.
  *
  * ```ts no_run
  * import { chdir, cwd } from 'fino:process';
@@ -855,8 +907,7 @@ export function cwd(): string {
  * @param {string} path
  */
 export function chdir(path: string): void {
-  const ret = Number(lib.symbols.chdir(cstr(path)));
-  if (ret !== 0) throw new Error(`chdir('${path}') failed`);
+  setRealmCwd(path);
 }
 /**
  * Send a signal to a process. Throws if the syscall fails.
@@ -1652,12 +1703,15 @@ export class Process {
    *
    * The command should be an executable path accepted by `posix_spawnp(3)`.
    * Arguments exclude `argv[0]`; the constructor prepends `command`. `opts.env`
-   * replaces the inherited environment snapshot, and `opts.cwd` is applied by
-   * libc spawn file actions when supported by the platform.
+   * replaces the inherited environment snapshot. `opts.cwd` is applied by
+   * libc spawn file actions when supported by the platform; when omitted, the
+   * child inherits the calling Realm's current working directory.
    *
    * Standard input, output, and error are always exposed as pipes on the
    * returned object. This constructor does not interpret Node-style `shell`,
    * `stdio`, `detached`, `ipc`, `uid`, or `gid` options.
+   * Ordinary children inherit no other parent descriptors. Strict sandbox
+   * launchers retain only their explicitly required bootstrap descriptors.
    *
    * ```ts no_run
    * import { Process } from 'fino:process';
@@ -1671,7 +1725,10 @@ export class Process {
    * @param {{ cwd?: string, env?: object }} [opts] Optional cwd and environment.
    */
   constructor(command: string, cmdArgs: string[], opts?: ProcessOptions) {
-    if (opts == null) opts = {};
+    opts = {
+      ...opts,
+      cwd: opts?.cwd ?? cwd(),
+    };
     if (cmdArgs == null) cmdArgs = [];
     if (opts.sandbox?.mode === 'strict') {
       validateSandboxOptions(opts.sandbox);
@@ -1734,21 +1791,25 @@ export class Process {
     const stdinBuf = new ArrayBuffer(8);
     const stdoutBuf = new ArrayBuffer(8);
     const stderrBuf = new ArrayBuffer(8);
-    if (Number(lib.symbols.pipe(stdinBuf)) < 0) throw new Error('pipe() failed for stdin');
-    if (Number(lib.symbols.pipe(stdoutBuf)) < 0) {
+    createProcessPipe(stdinBuf, 'stdin');
+    try {
+      createProcessPipe(stdoutBuf, 'stdout');
+    } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
       lib.symbols.close(stdinR);
       lib.symbols.close(stdinW);
-      throw new Error('pipe() failed for stdout');
+      throw error;
     }
-    if (Number(lib.symbols.pipe(stderrBuf)) < 0) {
+    try {
+      createProcessPipe(stderrBuf, 'stderr');
+    } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
       const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
       lib.symbols.close(stdinR);
       lib.symbols.close(stdinW);
       lib.symbols.close(stdoutR);
       lib.symbols.close(stdoutW);
-      throw new Error('pipe() failed for stderr');
+      throw error;
     }
     const [stdinR, stdinW] = readPipeFds(stdinBuf);
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
@@ -1788,7 +1849,9 @@ export class Process {
         Number(
           lib.symbols.posix_spawnattr_setflags(
             attrs,
-            POSIX_SPAWN_SETSIGDEF | POSIX_SPAWN_SETSIGMASK,
+            POSIX_SPAWN_SETSIGDEF |
+              POSIX_SPAWN_SETSIGMASK |
+              (os === 'darwin' ? POSIX_SPAWN_CLOEXEC_DEFAULT : 0),
           ),
         ),
         'posix_spawnattr_setflags',
@@ -1805,21 +1868,37 @@ export class Process {
         Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stderrW, 2)),
         'posix_spawn_file_actions_adddup2(stderr)',
       );
-      addCloseIfNeeded(actions, stdinR, 0);
-      addCloseIfNeeded(actions, stdoutW, 1);
-      addCloseIfNeeded(actions, stderrW, 2);
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)),
-        'posix_spawn_file_actions_addclose(parent stdin)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)),
-        'posix_spawn_file_actions_addclose(parent stdout)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
-        'posix_spawn_file_actions_addclose(parent stderr)',
-      );
+      const closeFrom = spawnCloseFromLib !== null && (_inheritFds?.length ?? 0) === 0;
+      if (closeFrom) {
+        addSpawnAction(
+          Number(spawnCloseFromLib.symbols.posix_spawn_file_actions_addclosefrom_np(actions, 3)),
+          'posix_spawn_file_actions_addclosefrom_np(3)',
+        );
+      } else {
+        addCloseIfNeeded(actions, stdinR, 0);
+        addCloseIfNeeded(actions, stdoutW, 1);
+        addCloseIfNeeded(actions, stderrW, 2);
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)),
+          'posix_spawn_file_actions_addclose(parent stdin)',
+        );
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)),
+          'posix_spawn_file_actions_addclose(parent stdout)',
+        );
+        addSpawnAction(
+          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
+          'posix_spawn_file_actions_addclose(parent stderr)',
+        );
+      }
+      if (spawnInheritLib !== null) {
+        for (const fd of _inheritFds ?? []) {
+          addSpawnAction(
+            Number(spawnInheritLib.symbols.posix_spawn_file_actions_addinherit_np(actions, fd)),
+            `posix_spawn_file_actions_addinherit_np(${fd})`,
+          );
+        }
+      }
       if (cwdBuf !== null) {
         if (spawnChdirLib === null) {
           throw new Error(
@@ -1865,7 +1944,6 @@ export class Process {
     // Keep CString buffers definitely live until after posix_spawnp returns.
     void argvBufs;
     void envpBufs;
-    void _inheritFds;
     return { pid: childPid, stdinFd: stdinW, stdoutFd: stdoutR, stderrFd: stderrR };
   }
   /**
@@ -1960,7 +2038,9 @@ export class Process {
    * - Linux: opens a pidfd via pidfd_open(2) and polls it with loop.readable()
    *          - the pidfd becomes readable the moment the child exits.
    *
-   * After the kernel signals exit, a single waitpid(pid, 0) reaps the zombie.
+   * After a kernel notification, `waitpid(pid, WNOHANG)` confirms and reaps the
+   * zombie. Spurious notifications are re-armed, so waiting never blocks the
+   * calling Realm's reactor thread.
    *
    * Calling `wait()` more than once is not supported because the first call
    * reaps the process. The promise rejects if the platform wait primitive
@@ -1979,20 +2059,33 @@ export class Process {
   async wait(): Promise<WaitResult> {
     if (this.#waitStarted) throw new Error(`Process ${this.#pid} has already been waited`);
     this.#waitStarted = true;
+    const statusBuf = new ArrayBuffer(4);
     if (isLinux) {
       // pidfd_open(pid, flags=0) returns a pollable file descriptor.
       const pidfd = Number(lib.symbols.syscall(SYS_PIDFD_OPEN, BigInt(this.#pid), 0n));
       if (pidfd < 0) throw new Error(`pidfd_open(${this.#pid}) failed: errno ${-pidfd}`);
-      await loop.readable(pidfd);
-      lib.symbols.close(pidfd);
+      try {
+        while (true) {
+          await loop.readable(pidfd);
+          const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
+          if (waited === this.#pid) break;
+          if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
+        }
+      } finally {
+        loop.removeRead(pidfd);
+        lib.symbols.close(pidfd);
+      }
     } else {
-      // macOS: EVFILT_PROC fires immediately when the child exits.
-      await loop.proc(this.#pid);
+      while (true) {
+        // macOS: EVFILT_PROC fires immediately when the child exits.
+        await loop.proc(this.#pid);
+        const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
+        if (waited === this.#pid) break;
+        if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
+      }
     }
-    // Reap the zombie and decode the exit status.
-    const statusBuf = new ArrayBuffer(4);
+    // Decode the status written by the successful non-blocking reap above.
     const statusView = new DataView(statusBuf);
-    lib.symbols.waitpid(this.#pid, statusBuf, 0);
     // Reap descendants the direct child left behind. A per-spawn cgroup takes
     // down its whole tree via cgroup.kill; otherwise the child was made a
     // process-group leader and kill(-pgid) reaps any orphans in that group.

@@ -4290,10 +4290,7 @@ export default function Page(props: DocsPageProps) {
 
     const indexPage = await fs.readFile(docsDir + '/index.html');
     t.ok(indexPage.includes('data-page-kind="index"'), 'the index page uses the same theme');
-    t.ok(
-      indexPage.includes('<p class="module-count">1</p>'),
-      'every page receives the whole site',
-    );
+    t.ok(indexPage.includes('<p class="module-count">1</p>'), 'every page receives the whole site');
   });
 
   it('reports a failing theme instead of writing broken pages', async (t) => {

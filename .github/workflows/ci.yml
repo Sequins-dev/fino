@@ -213,7 +213,7 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
 
   release-readiness:
     name: Release Readiness
@@ -262,4 +262,4 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test tests
+        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests

@@ -59,18 +59,19 @@
  *
  * The release contract is intentionally smaller than Node's `node:test` API:
  * TAP output, name filters, skip reasons, per-test metadata, duration
- * annotations, lifecycle hooks, and captured output are supported. `only`,
- * `todo`, per-test timeouts, concurrency controls, subtest creation from an
- * assertion object, and pluggable reporters are not part of this module.
+ * annotations, lifecycle hooks, captured output, and exclusive parallel groups
+ * are supported. `only`, `todo`, per-test timeouts, general intra-file
+ * concurrency, subtest creation from an assertion object, and pluggable
+ * reporters are not part of this module.
  *
  * ## Internal representation
  *
  * Both APIs share a tree of nodes:
  *
- *   Leaf:  { name, fn, children: null, skip: string|null }
+ *   Leaf:  { name, fn, children: null, skip: string|null, exclusive: boolean }
  *   Group: { name, kind: 'suite'|'describe', children: [],
  *            before, beforeEach, after, afterEach,
- *            skip: string|null }
+ *            skip: string|null, exclusive: boolean }
  *
  * `_current` points at the group being registered into (`null` = top level).
  * The unified runner `_runEntries(entries, depth, parentNode)` recurses the tree,
@@ -88,6 +89,7 @@ interface LeafNode {
   fn: (t: TestContext) => void | Promise<void>;
   children: null;
   skip: string | null;
+  exclusive: boolean;
 }
 interface GroupNode {
   name: string;
@@ -98,6 +100,7 @@ interface GroupNode {
   after: (() => void | Promise<void>) | null;
   afterEach: (() => void | Promise<void>) | null;
   skip: string | null;
+  exclusive: boolean;
 }
 type TestNode = LeafNode | GroupNode;
 type RunStatus = 'pass' | 'fail' | 'skip';
@@ -153,6 +156,45 @@ export interface RunOptions {
   durations?: boolean;
 }
 /**
+ * Opaque snapshot of registered tests created by `_prepareRun()`.
+ *
+ * The test command uses the `count` before execution to compose a root TAP
+ * plan. Prepared runs retain their test closures in the Realm where they were
+ * registered and can be consumed exactly once by `_runPrepared()`.
+ *
+ * @internal
+ */
+export interface PreparedTestRun {
+  /** Number of top-level TAP entries selected by the run options. */
+  readonly count: number;
+  /** Whether each root entry must run without another admitted test group. */
+  readonly exclusive: readonly boolean[];
+}
+
+/** Structured result from one top-level entry in a prepared run. @internal */
+export interface PreparedTestEntryResult {
+  /** Buffered TAP records, without a root plan, summary, or failure details. */
+  readonly output: ConsoleCaptureRecord[];
+  /** Structured failure details for aggregate formatting after the root summary. */
+  readonly diagnostics: PreparedTestDiagnostic[];
+  /** One when the entry passed, otherwise zero. */
+  readonly passed: number;
+  /** One when the entry failed, otherwise zero. */
+  readonly failed: number;
+  /** One when the entry was skipped, otherwise zero. */
+  readonly skipped: number;
+}
+
+/** Structured-clone-safe failure detail from one prepared top-level entry. @internal */
+interface PreparedTestDiagnostic {
+  /** Test or hook path identifying the failure. */
+  readonly title: string;
+  /** Preformatted error lines, grouped by thrown value. */
+  readonly errors: string[][];
+  /** Console records captured by the failing test or hook. */
+  readonly output: ConsoleCaptureRecord[];
+}
+/**
  * Value accepted by the `skip` registration option.
  *
  * `true` skips without a reason, and a string is printed as the TAP skip
@@ -163,7 +205,16 @@ export type SkipOption = boolean | string;
  * Options accepted by `test()`, `suite()`, `describe()`, and `it()`.
  */
 export type RegisterOptions = {
+  /** Skip this test or group, optionally with a TAP reason. */
   skip?: SkipOption;
+  /**
+   * Run the containing root group alone when the CLI uses `--parallel`.
+   *
+   * Use this for process-global state or strict scheduling assertions that
+   * cannot overlap unrelated Realm work. Nested entries make their containing
+   * top-level group exclusive because root groups are the admission unit.
+   */
+  exclusive?: boolean;
 };
 /**
  * Callback used by `test()` and `it()`.
@@ -185,6 +236,13 @@ export type HookFn = () => void | Promise<void>;
 const _tests: TestNode[] = [];
 /** The group node currently being registered into, or null for top-level. */
 let _current: GroupNode | null = null;
+interface PreparedTestRunState {
+  entries: TestNode[];
+  consumed: boolean[];
+}
+
+/** Test trees detached from registration and awaiting execution. */
+const _preparedRuns = new WeakMap<PreparedTestRun, PreparedTestRunState>();
 // ---------------------------------------------------------------------------
 // Test context metadata
 // ---------------------------------------------------------------------------
@@ -337,6 +395,7 @@ export function test(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?:
     fn,
     children: null,
     skip: _skipReason(opts),
+    exclusive: opts?.exclusive === true,
   });
 }
 /**
@@ -367,6 +426,7 @@ export function suite(name: string, optsOrFn: GroupFn | RegisterOptions, maybeFn
     after: null,
     afterEach: null,
     skip: _skipReason(opts),
+    exclusive: opts?.exclusive === true,
   };
   const prev = _current;
   _current = node;
@@ -409,6 +469,7 @@ export function describe(
     after: null,
     afterEach: null,
     skip: _skipReason(opts),
+    exclusive: opts?.exclusive === true,
   };
   const prev = _current;
   _current = node;
@@ -441,6 +502,7 @@ export function it(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?: T
     fn,
     children: null,
     skip: _skipReason(opts),
+    exclusive: opts?.exclusive === true,
   });
 }
 /**
@@ -702,7 +764,7 @@ async function _runLeaf(
         try {
           // Call via scheduleSync so the function executes outside the microtask
           // checkpoint — this allows spin() to drain microtasks correctly.
-          const result = await _scheduleSync(() => entry.fn(t));
+          await _scheduleSync(() => entry.fn(t));
         } catch (e) {
           bodyError = e;
         }
@@ -930,29 +992,111 @@ function _filterEntries(entries: TestNode[], filter: string, path: string[] = []
   return filtered;
 }
 // ---------------------------------------------------------------------------
-// Public entry point
+// Runner entry points
 // ---------------------------------------------------------------------------
 /**
- * Run all registered tests and print TAP-13 output.
+ * Detach the currently registered tests without executing their closures.
  *
- * Called automatically by the `fino test` command. User test files
- * only need to call `test()` / `suite()` / `describe()` — never `run()`.
+ * Filtering occurs while the snapshot is created, so `count` is the exact
+ * number of top-level TAP entries `_runPrepared()` will emit. The returned
+ * handle belongs to this Realm and can be consumed once.
  *
- * @throws {Error} If any test fails (causes the process to exit with code 1).
- *
- * ```ts no_run
- * import { run, test } from 'fino:test/test';
- *
- * test('manual runner', (t) => t.ok(true));
- * await run({ filter: 'manual' });
- * ```
+ * @internal
  */
-export async function run(options: RunOptions = {}): Promise<void> {
+export function _prepareRun(options: RunOptions = {}): PreparedTestRun {
+  const registered = _tests.splice(0, _tests.length);
+  const entries = options.filter ? _filterEntries(registered, options.filter) : registered;
+  const isExclusive = (entry: TestNode): boolean =>
+    entry.exclusive || (entry.children?.some(isExclusive) ?? false);
+  const prepared: PreparedTestRun = {
+    count: entries.length,
+    exclusive: entries.map(isExclusive),
+  };
+  _preparedRuns.set(prepared, {
+    entries,
+    consumed: entries.map(() => false),
+  });
+  return prepared;
+}
+
+/**
+ * Execute one top-level entry from a prepared registration snapshot.
+ *
+ * Each index can be consumed exactly once. Callers execute at most one entry
+ * from a prepared run at a time because entries share their Realm and module
+ * state. The result omits the local `1..1` plan because a coordinating parent
+ * owns the aggregate plan and numbering.
+ *
+ * @internal
+ */
+export async function _runPreparedEntry(
+  prepared: PreparedTestRun,
+  index: number,
+  options: RunOptions = {},
+): Promise<PreparedTestEntryResult> {
+  const state = _preparedRuns.get(prepared);
+  if (state === undefined) throw new Error('Prepared test run has already been consumed');
+  if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
+    throw new RangeError(`Prepared test entry index ${index} is out of range`);
+  }
+  if (state.consumed[index])
+    throw new Error(`Prepared test entry ${index} has already been consumed`);
+  state.consumed[index] = true;
+  if (state.consumed.every(Boolean)) _preparedRuns.delete(prepared);
+  const entry = state.entries[index]!;
+  const output: ConsoleCaptureRecord[] = [];
+  const showOutput = options.showOutput ?? 'failures';
+  const release = _pushConsoleCapture((record) => output.push(record));
+  let result: RunResult;
+  try {
+    result = await _runEntries(
+      {
+        showOutput,
+        durations: options.durations === true,
+      },
+      [entry],
+      0,
+      null,
+    );
+  } finally {
+    release();
+  }
+  const plan = output.findIndex((record) => record.fd === 1 && record.text === '1..1');
+  if (plan >= 0) output.splice(plan, 1);
+  return {
+    output,
+    diagnostics: result.diagnostics.map((diagnostic) => ({
+      title: diagnostic.title,
+      errors: diagnostic.errors.map(_formatErrorLines),
+      output: diagnostic.output,
+    })),
+    passed: result.passed,
+    failed: result.failed,
+    skipped: result.skipped,
+  };
+}
+
+/**
+ * Execute a prepared registration snapshot and print its standalone TAP
+ * document. The handle is consumed before execution begins and cannot be run
+ * again, including after a test failure.
+ *
+ * @internal
+ */
+export async function _runPrepared(
+  prepared: PreparedTestRun,
+  options: RunOptions = {},
+): Promise<void> {
+  const state = _preparedRuns.get(prepared);
+  if (state === undefined || state.consumed.some(Boolean)) {
+    throw new Error('Prepared test run has already been consumed');
+  }
+  _preparedRuns.delete(prepared);
+  const entries = state.entries;
   const showOutput = options.showOutput ?? 'failures';
   const durations = options.durations === true;
   const runStartMs = _nowMs();
   console.log('TAP version 13');
-  const entries = options.filter ? _filterEntries(_tests, options.filter) : _tests;
   const { passed, failed, skipped, diagnostics } = await _runEntries(
     {
       showOutput,
@@ -973,4 +1117,25 @@ export async function run(options: RunOptions = {}): Promise<void> {
     if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
     throw new Error(failed + ' test(s) failed');
   }
+}
+
+/**
+ * Run all registered tests and print TAP-13 output.
+ *
+ * Called automatically by the `fino test` command. User test files
+ * only need to call `test()` / `suite()` / `describe()` — never `run()`.
+ * A run consumes the currently registered entries, so another file can
+ * register and run a fresh tree afterwards in the same Realm.
+ *
+ * @throws {Error} If any test fails (causes the process to exit with code 1).
+ *
+ * ```ts no_run
+ * import { run, test } from 'fino:test/test';
+ *
+ * test('manual runner', (t) => t.ok(true));
+ * await run({ filter: 'manual' });
+ * ```
+ */
+export async function run(options: RunOptions = {}): Promise<void> {
+  await _runPrepared(_prepareRun(options), options);
 }

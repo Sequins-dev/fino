@@ -299,6 +299,7 @@ export class JobsService {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #ticking = false;
   #tickAgain = false;
+  #tickWaiters: Array<() => void> = [];
   #processors: JobProcessor[] = [];
   #inFlight = new Map<string, Promise<void>>();
   #inFlightByProcessor = new Map<JobProcessor, number>();
@@ -853,6 +854,7 @@ export class JobsService {
       );
     } finally {
       this.#ticking = false;
+      for (const resolve of this.#tickWaiters.splice(0)) resolve();
     }
     if (this.#closed) return;
     if (this.#tickAgain) {
@@ -1090,9 +1092,11 @@ export class JobsService {
     }
   }
   /**
-   * Stop the scheduler, drain in-flight dispatches, and close processors and
-   * the store. In-flight work that outlives `closeTimeout` stays claimed and
-   * is recovered by the lease sweep on the next start.
+   * Stop the scheduler, wait for an active scheduler pass, drain in-flight
+   * dispatches, and close processors and the store. Waiting for the scheduler
+   * pass prevents it from touching the database after close begins. In-flight
+   * work that outlives `closeTimeout` stays claimed and is recovered by the
+   * lease sweep on the next start.
    *
    * Idempotent: a second call resolves immediately. After `stop()` the service
    * is permanently closed — `push()` and `schedule()` throw, and `start()` is
@@ -1113,6 +1117,9 @@ export class JobsService {
     if (this.#timer !== null) {
       clearTimeout(this.#timer);
       this.#timer = null;
+    }
+    if (this.#ticking) {
+      await new Promise<void>((resolve) => this.#tickWaiters.push(resolve));
     }
     const drain = Promise.allSettled([...this.#inFlight.values()]);
     await Promise.race([drain, new Promise<void>((res) => setTimeout(res, this.#closeTimeout))]);
