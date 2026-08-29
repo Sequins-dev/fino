@@ -1,32 +1,85 @@
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
+import { parse as parseYaml } from 'fino:format/yaml';
+
+type WorkflowEnvironment = Record<string, string>;
+type WorkflowStep = {
+  name?: string;
+  run?: string;
+  env?: WorkflowEnvironment;
+};
+type WorkflowJob = {
+  needs?: string | string[];
+  'timeout-minutes'?: number;
+  env?: WorkflowEnvironment;
+  steps?: WorkflowStep[];
+};
+type Workflow = {
+  env?: WorkflowEnvironment;
+  jobs?: Record<string, WorkflowJob>;
+};
+
 const fs = new DiskFileSystem();
 const decoder = new TextDecoder();
-async function readText(path: string): Promise<string> {
-  return decoder.decode(await fs.readFile(path));
+
+async function readWorkflow(): Promise<Workflow> {
+  const source = decoder.decode(await fs.readFile('.github/workflows/ci.yml'));
+  return parseYaml(source) as Workflow;
 }
+
+function jobDefinition(workflow: Workflow, name: string): WorkflowJob {
+  const job = workflow.jobs?.[name];
+  if (!job) throw new Error(`CI workflow is missing the ${name} job`);
+  return job;
+}
+
 describe('CI workflow', () => {
   it('runs the complete parallel suite once on Linux and once on macOS', async (t) => {
-    const workflow = await readText('.github/workflows/ci.yml');
-    const fullRuns = workflow.match(
-      /run: FINO_REQUIRE_SQLITE=1 \.\/target\/debug\/fino test --parallel tests/g,
+    const workflow = await readWorkflow();
+    const jobs = Object.values(workflow.jobs ?? {});
+    const steps = jobs.flatMap((job) => job.steps ?? []);
+    const fullRuns = steps.filter(
+      (step) => step.run === 'FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests',
     );
-    t.equal(fullRuns?.length, 2, 'Linux and macOS each run the complete parallel suite');
+    t.equal(fullRuns.length, 2, 'Linux and macOS each run the complete parallel suite');
+
+    const environments = [
+      workflow.env,
+      ...jobs.flatMap((job) => [job.env, ...(job.steps ?? []).map((step) => step.env)]),
+    ];
     t.equal(
-      workflow.includes('FINO_TEST_CONCURRENCY:'),
+      environments.some((env) => env?.FINO_TEST_CONCURRENCY !== undefined),
       false,
       'CI retains the reactor-scaled default concurrency',
     );
   });
 
-  it('reuses the Linux build for linting', async (t) => {
-    const workflow = await readText('.github/workflows/ci.yml');
-    const lintJob = workflow.match(/\n  lint:\n([\s\S]*?)\n  linux-build:/)?.[1];
-    const linuxBuildJob = workflow.match(/\n  linux-build:\n([\s\S]*?)\n  macos-build:/)?.[1];
+  it('caps every full-suite test job at 15 minutes', async (t) => {
+    const workflow = await readWorkflow();
 
-    t.ok(lintJob?.includes('needs: linux-build'), 'lint waits for the Linux build');
-    t.equal(lintJob?.includes('cargo '), false, 'lint does not invoke Cargo');
-    t.ok(lintJob?.includes('Restore Linux build'), 'lint restores the built Fino binary');
-    t.ok(linuxBuildJob?.includes('run: cargo clippy'), 'the Linux build runs Rust lint');
+    for (const name of ['linux-tests', 'macos-tests']) {
+      t.equal(jobDefinition(workflow, name)['timeout-minutes'], 15);
+    }
+  });
+
+  it('reuses the Linux build for linting', async (t) => {
+    const workflow = await readWorkflow();
+    const lintJob = jobDefinition(workflow, 'lint');
+    const linuxBuildJob = jobDefinition(workflow, 'linux-build');
+
+    t.equal(lintJob.needs, 'linux-build', 'lint waits for the Linux build');
+    t.equal(
+      lintJob.steps?.some((step) => step.run?.startsWith('cargo ')),
+      false,
+      'lint does not invoke Cargo',
+    );
+    t.ok(
+      lintJob.steps?.some((step) => step.name === 'Restore Linux build'),
+      'lint restores the built Fino binary',
+    );
+    t.ok(
+      linuxBuildJob.steps?.some((step) => step.run === 'cargo clippy'),
+      'the Linux build runs Rust lint',
+    );
   });
 });
