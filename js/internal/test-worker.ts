@@ -15,6 +15,7 @@
 import { allowInternalForTests } from 'internal:loader-hooks';
 import { port } from 'fino:realm/self';
 import { runShutdownHooks } from 'internal:shutdown';
+import { finishRealmCoverage } from 'internal:coverage';
 import { installProcessExitHandler } from 'internal:process/exit';
 import type { ConsoleCaptureRecord } from 'internal:globals/console';
 import type { RunOptions } from '../test/test.ts';
@@ -57,6 +58,7 @@ export interface TestGroupCompletion {
 export interface TestFileCompletion {
   kind: 'fino:test:complete';
   shutdownError?: string;
+  coverageError?: string;
 }
 
 /** Parent acknowledgement that permits the worker Realm to exit. @internal */
@@ -164,13 +166,23 @@ export default async function runTestFile(
         : [{ exclusive: false }],
   } satisfies TestFileRegistration);
   if (remaining > 0) await finished;
-  let completion: TestFileCompletion;
+  let shutdownError: string | undefined;
   try {
     await runShutdownHooks();
-    completion = { kind: 'fino:test:complete' };
   } catch (error) {
-    completion = { kind: 'fino:test:complete', shutdownError: errorText(error) };
+    shutdownError = errorText(error);
   }
+  let coverageError: string | undefined;
+  try {
+    await finishRealmCoverage();
+  } catch (error) {
+    coverageError = errorText(error);
+  }
+  const completion: TestFileCompletion = {
+    kind: 'fino:test:complete',
+    ...(shutdownError === undefined ? {} : { shutdownError }),
+    ...(coverageError === undefined ? {} : { coverageError }),
+  };
   port.postMessage(completion);
   let ackTimeout: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([

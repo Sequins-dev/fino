@@ -103,6 +103,8 @@ interface PreparedParallelTest {
   completion: Promise<ParallelFileCompletion>;
 }
 
+const COMPLETED_REALM_GRACE_MS = 1_000;
+
 function errorText(error: unknown): string {
   return error instanceof Error ? (error.stack ?? error.message) : String(error);
 }
@@ -139,6 +141,7 @@ async function prepareParallelFile(
   let registered = false;
   let canStart = true;
   let workerCompletion: TestFileCompletion | undefined;
+  let completedRealmTimeout: ReturnType<typeof setTimeout> | undefined;
   let resolveRegistration!: (tests: TestFileRegistration['tests']) => void;
   const registration = new Promise<TestFileRegistration['tests']>((resolve) => {
     resolveRegistration = resolve;
@@ -177,6 +180,13 @@ async function prepareParallelFile(
     if (message?.kind === 'fino:test:complete') {
       workerCompletion = message;
       realm.port.postMessage({ kind: 'fino:test:complete-ack' } satisfies TestFileCompletionAck);
+      // The completion frame follows every result, shutdown hook, and coverage
+      // snapshot. Give ordinary host work a turn to drain, then release a Realm
+      // whose unrelated handles would otherwise keep the aggregate run alive.
+      completedRealmTimeout ??= setTimeout(
+        () => realm.terminate({ force: true }),
+        COMPLETED_REALM_GRACE_MS,
+      );
       return;
     }
     if (message?.kind !== 'fino:test:result') return;
@@ -194,6 +204,7 @@ async function prepareParallelFile(
     }
   });
   void completionOutcome.then((error) => {
+    if (completedRealmTimeout !== undefined) clearTimeout(completedRealmTimeout);
     if (error !== undefined) {
       finishRegistration([{ exclusive: false }], false);
       failPending(error);
@@ -203,6 +214,7 @@ async function prepareParallelFile(
   const fileCompletion = Promise.all([callOutcome, completionOutcome]).then(
     ([callResult, realmError]): ParallelFileCompletion => {
       signal.removeEventListener('abort', abort);
+      if (completedRealmTimeout !== undefined) clearTimeout(completedRealmTimeout);
       realm.port.removeEventListener('message', onMessage);
       if (workerCompletion !== undefined) {
         return {
@@ -385,6 +397,9 @@ async function runParallelTests(
         .then((completion) => {
           if (completion.shutdownError !== undefined) {
             lifecycleErrors.push(`${file.display} shutdown failed: ${completion.shutdownError}`);
+          }
+          if (completion.coverageError !== undefined) {
+            lifecycleErrors.push(`${file.display} coverage failed: ${completion.coverageError}`);
           }
           if (completion.callError !== undefined) {
             lifecycleErrors.push(`${file.display} worker failed: ${completion.callError}`);

@@ -379,6 +379,29 @@ describe('CLI commands: test', () => {
       t.equal((marker as unknown as string).length, 1, 'shutdown hook completed before CLI exit');
     });
   });
+  it('releases completed parallel test Realms with live handles', async (t) => {
+    await withTempProject(
+      {
+        'live-handle.test.ts': [
+          "import { test } from 'fino:test/test';",
+          'setInterval(() => {}, 60_000);',
+          "test('passes with a live handle', (t) => t.ok(true));",
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, stderr, result } = await runCli(
+          ['test', '--parallel', 'live-handle.test.ts'],
+          { cwd: dir, timeoutMs: 10_000 },
+        );
+        t.equal(result.code, 0, 'a residual handle does not keep the CLI alive');
+        t.equal(stderr, '', 'a residual handle does not produce diagnostics');
+        t.ok(stdout.includes('ok 1 - passes with a live handle'));
+        t.ok(stdout.includes('\n1..1\n'), 'the root plan is emitted');
+        t.ok(stdout.includes('# tests 1'), 'the root summary is emitted');
+      },
+    );
+  });
   it('acknowledges worker completion before allowing its Realm to exit', async (t) => {
     await withTempProject(
       {

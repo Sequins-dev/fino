@@ -84,6 +84,7 @@ export async function runCli(
   options: {
     env?: Record<string, string | undefined>;
     cwd?: string;
+    timeoutMs?: number;
   } = {},
 ): Promise<{
   stdout: string;
@@ -103,11 +104,21 @@ export async function runCli(
     cwd: options.cwd,
   });
   proc.stdin.close();
-  const [stdout, stderr, result] = await Promise.all([
-    readAll(proc.stdout),
-    readAll(proc.stderr),
-    proc.wait(),
-  ]);
+  const completion = Promise.all([readAll(proc.stdout), readAll(proc.stderr), proc.wait()]);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const [stdout, stderr, result] = await (options.timeoutMs === undefined
+    ? completion
+    : Promise.race([
+        completion,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            proc.kill();
+            reject(new Error(`CLI timed out after ${options.timeoutMs}ms`));
+          }, options.timeoutMs);
+        }),
+      ]).finally(() => {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }));
   return {
     stdout,
     stderr,

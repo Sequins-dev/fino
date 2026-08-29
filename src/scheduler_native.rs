@@ -194,6 +194,7 @@ impl Drop for ScheduledRealmState {
 }
 
 struct ScheduledRealmHandle {
+    owner: u32,
     tx: mpsc::Sender<crate::realm::thread::ThreadMessage>,
     rx: mpsc::Receiver<crate::realm::thread::ThreadMessage>,
     child_wake_write: RawFd,
@@ -1571,6 +1572,7 @@ fn create_scheduled_realm(
     scheduled_realms().lock().unwrap().insert(
         handle,
         ScheduledRealmHandle {
+            owner,
             tx: parent_tx,
             rx: parent_rx,
             child_wake_write,
@@ -1744,12 +1746,24 @@ fn force_scheduled_realm(
     mut rv: v8::ReturnValue,
 ) {
     let handle = handle_arg(scope, args.get(0));
-    let state = scheduled_realms()
+    let scheduled = scheduled_realms()
         .lock()
         .unwrap()
         .get(&handle)
-        .map(|realm| Arc::clone(&realm.state));
-    let forced = state.is_some_and(|state| state.force());
+        .map(|realm| (realm.owner, Arc::clone(&realm.state)));
+    let forced = scheduled.is_some_and(|(owner, state)| {
+        let forced = state.force();
+        if forced
+            && let Some(pool) = owner_pools()
+                .lock()
+                .unwrap()
+                .get(&owner)
+                .and_then(Weak::upgrade)
+        {
+            pool.signal(owner);
+        }
+        forced
+    });
     rv.set(v8::Boolean::new(scope, forced).into());
 }
 
