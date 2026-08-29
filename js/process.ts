@@ -98,7 +98,7 @@
  * ```
  */
 import { os, arch, args, env, execPath } from 'internal:process';
-import { dlopen, Pointer } from 'fino:ffi';
+import { dlopen } from 'fino:ffi';
 import { spawnStrictSandboxed } from './internal/security/sandbox/spawn.ts';
 import { killAndRemoveCgroup, cgroupCpuAvailable } from './internal/security/sandbox/cgroup.ts';
 import { landlockAvailable } from './internal/security/sandbox/landlock.ts';
@@ -110,6 +110,14 @@ import { getRealmCwd, setRealmCwd } from 'internal:process/cwd';
 import { interceptProcessExit } from 'internal:process/exit';
 import { FdReader, FdWriter } from './internal/stream.ts';
 import * as loop from './internal/runtime/loop.ts';
+import {
+  closeFd,
+  setFdNonblocking,
+  signalChild,
+  spawnPosix,
+  trySignalChild,
+  watchChildExit,
+} from './internal/process/spawn.ts';
 import { topic, Topic } from './context/topic.ts';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
@@ -538,15 +546,9 @@ export interface ProcessStats {
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const isLinux = os === 'linux';
 // fcntl(2) constants
-const F_GETFL = isLinux ? 3 : 3;
-const F_SETFL = 4;
 const F_SETFD = 2;
 const FD_CLOEXEC = 1;
-const O_NONBLOCK = isLinux ? 2048 : 4;
 const O_CLOEXEC = 0x80000;
-const WNOHANG = 1;
-// Linux syscall number for pidfd_open(2) - same on x86_64 and arm64.
-const SYS_PIDFD_OPEN = 434n;
 // Default signal for kill (also exported in signal constants below)
 const _SIGTERM = 15;
 // ---------------------------------------------------------------------------
@@ -565,68 +567,12 @@ const lib = dlopen(LIBC, {
     parameters: ['i32'],
     result: 'void',
   },
-  kill: {
-    parameters: ['i32', 'i32'],
-    result: 'i32',
-  },
   pipe: {
     parameters: ['buffer'],
     result: 'i32',
   },
-  close: {
-    parameters: ['i32'],
-    result: 'i32',
-  },
   fcntl: {
     parameters: ['i32', 'i32', 'i32'],
-    result: 'i32',
-  },
-  waitpid: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'i32',
-  },
-  syscall: {
-    parameters: ['i64', 'i64', 'i64'],
-    result: 'i64',
-  },
-  posix_spawnp: {
-    parameters: ['buffer', 'buffer', 'buffer', 'buffer', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_init: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_destroy: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_init: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_destroy: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_setsigdefault: {
-    parameters: ['buffer', 'buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_setsigmask: {
-    parameters: ['buffer', 'buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_setflags: {
-    parameters: ['buffer', 'u16'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_adddup2: {
-    parameters: ['buffer', 'i32', 'i32'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_addclose: {
-    parameters: ['buffer', 'i32'],
     result: 'i32',
   },
   getrusage: {
@@ -642,75 +588,11 @@ const pipe2Lib = isLinux
       },
     })
   : null;
-const spawnChdirLib = (() => {
-  try {
-    return dlopen(LIBC, {
-      posix_spawn_file_actions_addchdir_np: {
-        parameters: ['buffer', 'buffer'],
-        result: 'i32',
-      },
-    });
-  } catch (_) {
-    return null;
-  }
-})();
-const spawnInheritLib =
-  os === 'darwin'
-    ? dlopen(LIBC, {
-        posix_spawn_file_actions_addinherit_np: {
-          parameters: ['buffer', 'i32'],
-          result: 'i32',
-        },
-      })
-    : null;
-const spawnCloseFromLib = isLinux
-  ? (() => {
-      try {
-        return dlopen(LIBC, {
-          posix_spawn_file_actions_addclosefrom_np: {
-            parameters: ['buffer', 'i32'],
-            result: 'i32',
-          },
-        });
-      } catch (_) {
-        return null;
-      }
-    })()
-  : null;
 const RUSAGE_SELF = 0;
 let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-/** Encode a JS string as a null-terminated UTF-8 buffer. */
-function cstr(s: string): Uint8Array {
-  const enc = encodeUtf8(s);
-  const buf = new Uint8Array(enc.length + 1);
-  buf.set(enc);
-  return buf;
-}
-/**
- * Build a null-terminated array of C string pointers (char**) for posix_spawnp.
- * Returns { ptrBuf: ArrayBuffer, bufs: Uint8Array[] }.
- * Callers must keep `bufs` alive (in scope) through the spawn call so the
- * GC does not reclaim the backing memory before the syscall completes.
- */
-function buildCStringArray(strings: string[]): {
-  ptrBuf: ArrayBuffer;
-  bufs: Uint8Array[];
-} {
-  const bufs = strings.map(cstr);
-  const ptrBuf = new ArrayBuffer((bufs.length + 1) * 8);
-  const view = new DataView(ptrBuf);
-  for (let i = 0; i < bufs.length; i++) {
-    view.setBigUint64(i * 8, Pointer.addr(bufs[i]), true);
-  }
-  // Last 8 bytes remain zero - null pointer terminator.
-  return {
-    ptrBuf,
-    bufs,
-  };
-}
 /** Read the two int32 fds from a pipe() output buffer. */
 function readPipeFds(
   buf:
@@ -721,41 +603,6 @@ function readPipeFds(
 ): [number, number] {
   const view = new DataView(buf instanceof ArrayBuffer ? buf : buf.buffer);
   return [view.getInt32(0, true), view.getInt32(4, true)];
-}
-/** Set a file descriptor to non-blocking mode. */
-function setNonblocking(fd: number): void {
-  const flags = lib.symbols.fcntl(fd, F_GETFL, 0);
-  if (flags < 0) throw new Error(`fcntl(F_GETFL) failed on fd ${fd}`);
-  const rc = lib.symbols.fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-  if (rc < 0) throw new Error(`fcntl(F_SETFL) failed on fd ${fd}`);
-}
-// Opaque libc storage for posix_spawn_file_actions_t. The exact struct differs
-// by platform; this is intentionally larger than current Linux/macOS layouts.
-const POSIX_SPAWN_FILE_ACTIONS_BYTES = 512;
-// Opaque storage for posix_spawnattr_t. Darwin stores a pointer here while
-// glibc stores an inline struct, so keep this generously sized.
-const POSIX_SPAWN_ATTR_BYTES = 512;
-const SIGSET_BYTES = 128;
-const POSIX_SPAWN_SETSIGDEF = 0x0004;
-const POSIX_SPAWN_SETSIGMASK = 0x0008;
-const POSIX_SPAWN_CLOEXEC_DEFAULT = 0x4000;
-function addSpawnAction(rc: number, action: string): void {
-  if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);
-}
-function addCloseIfNeeded(actions: ArrayBuffer, fd: number, targetFd: number): void {
-  if (fd === targetFd) return;
-  addSpawnAction(
-    Number(lib.symbols.posix_spawn_file_actions_addclose(actions, fd)),
-    `posix_spawn_file_actions_addclose(${fd})`,
-  );
-}
-function addSignalToSet(set: ArrayBuffer, signo: number): void {
-  if (signo <= 0) return;
-  const bit = signo - 1;
-  const byteOffset = bit >> 3;
-  if (byteOffset >= set.byteLength) return;
-  const bytes = new Uint8Array(set);
-  bytes[byteOffset] |= 1 << (bit & 7);
 }
 function createProcessPipe(buf: ArrayBuffer, label: string): void {
   const rc = Number(
@@ -768,8 +615,8 @@ function createProcessPipe(buf: ArrayBuffer, label: string): void {
     Number(lib.symbols.fcntl(readFd, F_SETFD, FD_CLOEXEC)) < 0 ||
     Number(lib.symbols.fcntl(writeFd, F_SETFD, FD_CLOEXEC)) < 0
   ) {
-    lib.symbols.close(readFd);
-    lib.symbols.close(writeFd);
+    closeFd(readFd);
+    closeFd(writeFd);
     throw new Error(`fcntl(FD_CLOEXEC) failed for ${label}`);
   }
 }
@@ -925,8 +772,7 @@ export function chdir(path: string): void {
  * @param {number} signal
  */
 export function kill(targetPid: number, signal: number): void {
-  const ret = Number(lib.symbols.kill(targetPid, signal));
-  if (ret !== 0) throw new Error(`kill(${targetPid}, ${signal}) failed`);
+  signalChild(targetPid, signal);
 }
 // ---------------------------------------------------------------------------
 // process.stdin / stdout / stderr - lazy FdReader/FdWriter singletons
@@ -950,7 +796,7 @@ const _noop = () => {};
  */
 export function stdin(): FdReader {
   if (_stdin === null) {
-    setNonblocking(0);
+    setFdNonblocking(0);
     _stdin = new FdReader(0, _noop);
   }
   return _stdin;
@@ -970,7 +816,7 @@ export function stdin(): FdReader {
  */
 export function stdout(): FdWriter {
   if (_stdout === null) {
-    setNonblocking(1);
+    setFdNonblocking(1);
     _stdout = new FdWriter(1, _noop);
   }
   return _stdout;
@@ -990,7 +836,7 @@ export function stdout(): FdWriter {
  */
 export function stderr(): FdWriter {
   if (_stderr === null) {
-    setNonblocking(2);
+    setFdNonblocking(2);
     _stderr = new FdWriter(2, _noop);
   }
   return _stderr;
@@ -1745,13 +1591,13 @@ export class Process {
       );
       this.#pid = spawned.pid;
       this.#stdin = new FdWriter(spawned.stdinFd, function closeStdin() {
-        lib.symbols.close(spawned.stdinFd);
+        closeFd(spawned.stdinFd);
       });
       this.#stdout = new FdReader(spawned.stdoutFd, function closeStdout() {
-        lib.symbols.close(spawned.stdoutFd);
+        closeFd(spawned.stdoutFd);
       });
       this.#stderr = new FdReader(spawned.stderrFd, function closeStderr() {
-        lib.symbols.close(spawned.stderrFd);
+        closeFd(spawned.stderrFd);
       });
       this.#sandboxReport = spawned.report as unknown as ProcessSandboxReport;
       this.#cgroupPath = spawned.cgroupPath;
@@ -1763,13 +1609,13 @@ export class Process {
     const spawned = this.#spawnWithPipes(command, [command, ...cmdArgs], opts);
     this.#pid = spawned.pid;
     this.#stdin = new FdWriter(spawned.stdinFd, function closeStdin() {
-      lib.symbols.close(spawned.stdinFd);
+      closeFd(spawned.stdinFd);
     });
     this.#stdout = new FdReader(spawned.stdoutFd, function closeStdout() {
-      lib.symbols.close(spawned.stdoutFd);
+      closeFd(spawned.stdoutFd);
     });
     this.#stderr = new FdReader(spawned.stderrFd, function closeStderr() {
-      lib.symbols.close(spawned.stderrFd);
+      closeFd(spawned.stderrFd);
     });
     this.#sandboxReport = sandboxReport;
     this.#cgroupPath = undefined;
@@ -1796,8 +1642,8 @@ export class Process {
       createProcessPipe(stdoutBuf, 'stdout');
     } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
-      lib.symbols.close(stdinR);
-      lib.symbols.close(stdinW);
+      closeFd(stdinR);
+      closeFd(stdinW);
       throw error;
     }
     try {
@@ -1805,145 +1651,58 @@ export class Process {
     } catch (error) {
       const [stdinR, stdinW] = readPipeFds(stdinBuf);
       const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
-      lib.symbols.close(stdinR);
-      lib.symbols.close(stdinW);
-      lib.symbols.close(stdoutR);
-      lib.symbols.close(stdoutW);
+      closeFd(stdinR);
+      closeFd(stdinW);
+      closeFd(stdoutR);
+      closeFd(stdoutW);
       throw error;
     }
     const [stdinR, stdinW] = readPipeFds(stdinBuf);
     const [stdoutR, stdoutW] = readPipeFds(stdoutBuf);
     const [stderrR, stderrW] = readPipeFds(stderrBuf);
-    // Build posix_spawnp argv / envp while the backing buffers are still local.
-    const envVars = opts.env ?? env;
-    const envStrings = Object.entries(envVars).map(([k, v]) => `${k}=${v}`);
-    const { ptrBuf: argvBuf, bufs: argvBufs } = buildCStringArray(execArgv);
-    const { ptrBuf: envpBuf, bufs: envpBufs } = buildCStringArray(envStrings);
-    const commandBuf = cstr(command);
-    const cwdBuf = opts.cwd != null ? cstr(opts.cwd) : null;
-    const actions = new ArrayBuffer(POSIX_SPAWN_FILE_ACTIONS_BYTES);
-    const attrs = new ArrayBuffer(POSIX_SPAWN_ATTR_BYTES);
-    const childDefaultSignals = new ArrayBuffer(SIGSET_BYTES);
-    const childSignalMask = new ArrayBuffer(SIGSET_BYTES);
-    for (const signo of _childDefaultSignals) addSignalToSet(childDefaultSignals, signo);
-    let actionsInitialized = false;
-    let attrsInitialized = false;
     let childPid = -1;
     try {
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_init(actions)),
-        'posix_spawn_file_actions_init',
-      );
-      actionsInitialized = true;
-      addSpawnAction(Number(lib.symbols.posix_spawnattr_init(attrs)), 'posix_spawnattr_init');
-      attrsInitialized = true;
-      addSpawnAction(
-        Number(lib.symbols.posix_spawnattr_setsigdefault(attrs, childDefaultSignals)),
-        'posix_spawnattr_setsigdefault',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawnattr_setsigmask(attrs, childSignalMask)),
-        'posix_spawnattr_setsigmask',
-      );
-      addSpawnAction(
-        Number(
-          lib.symbols.posix_spawnattr_setflags(
-            attrs,
-            POSIX_SPAWN_SETSIGDEF |
-              POSIX_SPAWN_SETSIGMASK |
-              (os === 'darwin' ? POSIX_SPAWN_CLOEXEC_DEFAULT : 0),
-          ),
-        ),
-        'posix_spawnattr_setflags',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdinR, 0)),
-        'posix_spawn_file_actions_adddup2(stdin)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stdoutW, 1)),
-        'posix_spawn_file_actions_adddup2(stdout)',
-      );
-      addSpawnAction(
-        Number(lib.symbols.posix_spawn_file_actions_adddup2(actions, stderrW, 2)),
-        'posix_spawn_file_actions_adddup2(stderr)',
-      );
-      const closeFrom = spawnCloseFromLib !== null && (_inheritFds?.length ?? 0) === 0;
-      if (closeFrom) {
-        addSpawnAction(
-          Number(spawnCloseFromLib.symbols.posix_spawn_file_actions_addclosefrom_np(actions, 3)),
-          'posix_spawn_file_actions_addclosefrom_np(3)',
-        );
-      } else {
-        addCloseIfNeeded(actions, stdinR, 0);
-        addCloseIfNeeded(actions, stdoutW, 1);
-        addCloseIfNeeded(actions, stderrW, 2);
-        addSpawnAction(
-          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdinW)),
-          'posix_spawn_file_actions_addclose(parent stdin)',
-        );
-        addSpawnAction(
-          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stdoutR)),
-          'posix_spawn_file_actions_addclose(parent stdout)',
-        );
-        addSpawnAction(
-          Number(lib.symbols.posix_spawn_file_actions_addclose(actions, stderrR)),
-          'posix_spawn_file_actions_addclose(parent stderr)',
-        );
-      }
-      if (spawnInheritLib !== null) {
-        for (const fd of _inheritFds ?? []) {
-          addSpawnAction(
-            Number(spawnInheritLib.symbols.posix_spawn_file_actions_addinherit_np(actions, fd)),
-            `posix_spawn_file_actions_addinherit_np(${fd})`,
-          );
-        }
-      }
-      if (cwdBuf !== null) {
-        if (spawnChdirLib === null) {
-          throw new Error(
-            'cwd option requires posix_spawn_file_actions_addchdir_np, which is unavailable on this platform',
-          );
-        }
-        addSpawnAction(
-          Number(spawnChdirLib.symbols.posix_spawn_file_actions_addchdir_np(actions, cwdBuf)),
-          'posix_spawn_file_actions_addchdir_np',
-        );
-      }
-      const pidBuf = new ArrayBuffer(4);
-      const spawnRc = Number(
-        lib.symbols.posix_spawnp(pidBuf, commandBuf, actions, attrs, argvBuf, envpBuf),
-      );
-      if (spawnRc !== 0) throw new Error(`posix_spawnp('${command}') failed: errno ${spawnRc}`);
-      childPid = new DataView(pidBuf).getInt32(0, true);
+      childPid = spawnPosix({
+        command,
+        argv: execArgv,
+        env: (opts.env ?? env) as Record<string, string>,
+        cwd: opts.cwd,
+        defaultSignals: _childDefaultSignals,
+        closeOnExecDefault: true,
+        configure(actions) {
+          actions.dup2(stdinR, 0);
+          actions.dup2(stdoutW, 1);
+          actions.dup2(stderrW, 2);
+          const closedFrom = (_inheritFds?.length ?? 0) === 0 && actions.closeFrom(3);
+          if (!closedFrom) {
+            actions.closeIfNeeded(stdinR, 0);
+            actions.closeIfNeeded(stdoutW, 1);
+            actions.closeIfNeeded(stderrW, 2);
+            actions.close(stdinW);
+            actions.close(stdoutR);
+            actions.close(stderrR);
+          }
+          for (const fd of _inheritFds ?? []) actions.inherit(fd);
+        },
+      });
     } catch (err) {
-      lib.symbols.close(stdinR);
-      lib.symbols.close(stdinW);
-      lib.symbols.close(stdoutR);
-      lib.symbols.close(stdoutW);
-      lib.symbols.close(stderrR);
-      lib.symbols.close(stderrW);
+      closeFd(stdinR);
+      closeFd(stdinW);
+      closeFd(stdoutR);
+      closeFd(stdoutW);
+      closeFd(stderrR);
+      closeFd(stderrW);
       throw err;
-    } finally {
-      if (actionsInitialized) {
-        lib.symbols.posix_spawn_file_actions_destroy(actions);
-      }
-      if (attrsInitialized) {
-        lib.symbols.posix_spawnattr_destroy(attrs);
-      }
     }
     // ---- Parent process -------------------------------------------------
     // Close the child-side ends of each pipe.
-    lib.symbols.close(stdinR);
-    lib.symbols.close(stdoutW);
-    lib.symbols.close(stderrW);
+    closeFd(stdinR);
+    closeFd(stdoutW);
+    closeFd(stderrW);
     // Make the parent-side fds non-blocking for event-loop use.
-    setNonblocking(stdinW);
-    setNonblocking(stdoutR);
-    setNonblocking(stderrR);
-    // Keep CString buffers definitely live until after posix_spawnp returns.
-    void argvBufs;
-    void envpBufs;
+    setFdNonblocking(stdinW);
+    setFdNonblocking(stdoutR);
+    setFdNonblocking(stderrR);
     return { pid: childPid, stdinFd: stdinW, stdoutFd: stdoutR, stderrFd: stderrR };
   }
   /**
@@ -2059,33 +1818,7 @@ export class Process {
   async wait(): Promise<WaitResult> {
     if (this.#waitStarted) throw new Error(`Process ${this.#pid} has already been waited`);
     this.#waitStarted = true;
-    const statusBuf = new ArrayBuffer(4);
-    if (isLinux) {
-      // pidfd_open(pid, flags=0) returns a pollable file descriptor.
-      const pidfd = Number(lib.symbols.syscall(SYS_PIDFD_OPEN, BigInt(this.#pid), 0n));
-      if (pidfd < 0) throw new Error(`pidfd_open(${this.#pid}) failed: errno ${-pidfd}`);
-      try {
-        while (true) {
-          await loop.readable(pidfd);
-          const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
-          if (waited === this.#pid) break;
-          if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
-        }
-      } finally {
-        loop.removeRead(pidfd);
-        lib.symbols.close(pidfd);
-      }
-    } else {
-      while (true) {
-        // macOS: EVFILT_PROC fires immediately when the child exits.
-        await loop.proc(this.#pid);
-        const waited = Number(lib.symbols.waitpid(this.#pid, statusBuf, WNOHANG));
-        if (waited === this.#pid) break;
-        if (waited < 0) throw new Error(`waitpid(${this.#pid}) failed`);
-      }
-    }
-    // Decode the status written by the successful non-blocking reap above.
-    const statusView = new DataView(statusBuf);
+    const status = await watchChildExit(this.#pid);
     // Reap descendants the direct child left behind. A per-spawn cgroup takes
     // down its whole tree via cgroup.kill; otherwise the child was made a
     // process-group leader and kill(-pgid) reaps any orphans in that group.
@@ -2094,27 +1827,12 @@ export class Process {
     } else if (this.#descendantCleanup === 'processGroup') {
       // Negative pid targets the process group; ESRCH (no members) is expected
       // for a child that spawned nothing and is harmless.
-      lib.symbols.kill(-this.#pid, SIGKILL);
+      // ESRCH is expected when the process group has no remaining members.
+      trySignalChild(-this.#pid, SIGKILL);
     }
     this.#cgroupPath = undefined;
     this.#descendantCleanup = undefined;
-    const s = statusView.getInt32(0, true);
-    // WIFEXITED: low 7 bits are zero
-    if ((s & 127) === 0)
-      return {
-        code: (s >> 8) & 255,
-        signal: null,
-      };
-    // WIFSIGNALED: low 7 bits are non-zero and not 0x7f (stopped)
-    if ((s & 127) !== 127)
-      return {
-        code: null,
-        signal: s & 127,
-      };
-    return {
-      code: null,
-      signal: null,
-    };
+    return status;
   }
   /**
    * Send a signal to the child process.
@@ -2134,7 +1852,6 @@ export class Process {
    * @throws {Error} If `kill(2)` fails.
    */
   kill(signal: number = _SIGTERM): void {
-    const ret = Number(lib.symbols.kill(this.#pid, signal));
-    if (ret !== 0) throw new Error(`kill(${this.#pid}, ${signal}) failed`);
+    signalChild(this.#pid, signal);
   }
 }
