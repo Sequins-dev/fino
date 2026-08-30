@@ -171,6 +171,8 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:concurrent-task-channel",
         "internal/concurrent-task-channel"
     ),
+    source_builtin!("internal:async-channel", "internal/async-channel"),
+    source_builtin!("internal:chunk-buffer", "internal/chunk-buffer"),
     source_builtin!("internal:test-worker", "internal/test-worker"),
     source_builtin!("internal:tooling/files", "internal/tooling/files"),
     source_builtin!("internal:tooling/format", "internal/tooling/format"),
