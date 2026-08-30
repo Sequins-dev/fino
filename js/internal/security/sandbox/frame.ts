@@ -21,7 +21,9 @@
  *
  * Use this module only from the sandbox launcher/parent pair; it is not a
  * general-purpose IPC layer. There is no framing for partial JSON, no
- * backpressure, and no support for concurrent readers on one fd.
+ * backpressure, and no support for concurrent readers on one fd. Frame
+ * payloads are limited to 1 MiB on both encode and decode; an oversized peer
+ * length is rejected immediately after the header, before payload allocation.
  *
  * ```ts no_run
  *   import { writeFrame, readFrame } from 'internal:security/sandbox/frame';
@@ -43,6 +45,8 @@
 import { libc, errno } from './ffi.ts';
 const EINTR = 4;
 const EAGAIN = 11;
+/** Maximum UTF-8 JSON payload carried by one sandbox handshake frame. */
+export const MAX_SANDBOX_FRAME_BYTES = 1024 * 1024;
 /** Write exactly `buf.length` bytes to `fd`, retrying short writes. */
 function writeAll(fd: number, buf: Uint8Array): void {
   let offset = 0;
@@ -71,7 +75,7 @@ function readExactly(fd: number, length: number): Uint8Array | null {
   const out = new Uint8Array(length);
   let offset = 0;
   while (offset < length) {
-    const chunk = new Uint8Array(length - offset);
+    const chunk = out.subarray(offset);
     const n = Number(libc.symbols.read(fd, chunk, chunk.length));
     if (n < 0) {
       const e = errno();
@@ -82,7 +86,6 @@ function readExactly(fd: number, length: number): Uint8Array | null {
       if (offset === 0) return null;
       throw new Error('sandbox frame truncated by peer');
     }
-    out.set(chunk.subarray(0, n), offset);
     offset += n;
   }
   return out;
@@ -96,7 +99,9 @@ function readExactly(fd: number, length: number): Uint8Array | null {
  * existing bytes to {@link writeEncodedFrame}.
  *
  * `value` follows `JSON.stringify` semantics and may throw for unsupported
- * values such as `BigInt`.
+ * values such as `BigInt`. A UTF-8 payload larger than
+ * {@link MAX_SANDBOX_FRAME_BYTES} throws `RangeError` before the combined frame
+ * is allocated.
  *
  * ```ts no_run
  * import { encodeFrame, writeEncodedFrame } from 'internal:security/sandbox/frame';
@@ -110,6 +115,9 @@ function readExactly(fd: number, length: number): Uint8Array | null {
  */
 export function encodeFrame(value: unknown): Uint8Array {
   const payload = new TextEncoder().encode(JSON.stringify(value));
+  if (payload.byteLength > MAX_SANDBOX_FRAME_BYTES) {
+    throw new RangeError(`Sandbox frame payload exceeds ${MAX_SANDBOX_FRAME_BYTES} bytes`);
+  }
   const frame = new Uint8Array(4 + payload.length);
   new DataView(frame.buffer).setUint32(0, payload.length, true);
   frame.set(payload, 4);
@@ -164,10 +172,11 @@ export function writeFrame(fd: number, value: unknown): void {
  * launcher, the inherited socket is closed by exec and the next `readFrame`
  * observes EOF.
  *
- * Throws if the peer closes mid-frame — a header with no body, or a body
- * truncated before the declared length — and propagates any unrecoverable
- * `read` errno. Malformed JSON in a complete frame surfaces as a `JSON.parse`
- * error.
+ * Throws if the peer declares more than {@link MAX_SANDBOX_FRAME_BYTES}, before
+ * allocating or reading the payload. It also throws if the peer closes
+ * mid-frame — a header with no body, or a body truncated before the declared
+ * length — and propagates any unrecoverable `read` errno. Malformed JSON in a
+ * complete frame surfaces as a `JSON.parse` error.
  *
  * ```ts no_run
  *   import { readFrame } from 'internal:security/sandbox/frame';
@@ -185,6 +194,9 @@ export function readFrame(fd: number): unknown | null {
   const header = readExactly(fd, 4);
   if (header === null) return null;
   const length = new DataView(header.buffer, header.byteOffset, 4).getUint32(0, true);
+  if (length > MAX_SANDBOX_FRAME_BYTES) {
+    throw new RangeError(`Sandbox frame payload exceeds ${MAX_SANDBOX_FRAME_BYTES} bytes`);
+  }
   if (length === 0) return {};
   const payload = readExactly(fd, length);
   if (payload === null) throw new Error('sandbox frame header without body');
