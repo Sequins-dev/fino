@@ -31,7 +31,7 @@ async function elapsed(fn: () => Promise<unknown>): Promise<number> {
   await fn();
   return Date.now() - start;
 }
-describe('async FFI', () => {
+describe('async FFI', { exclusive: true }, () => {
   it('sync symbol still returns value directly', (t) => {
     const pid = libSync.symbols.getpid();
     t.ok(typeof pid === 'number' && pid > 0, 'sync getpid returns positive number');

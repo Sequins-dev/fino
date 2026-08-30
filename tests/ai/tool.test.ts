@@ -16,7 +16,7 @@ const schema = {
 };
 function makeCtx(overrides: Partial<ToolRunContext> = {}): ToolRunContext {
   return {
-    signal: AbortSignal.timeout(5e3),
+    signal: new AbortController().signal,
     toolCallId: 'call_1',
     step: 1,
     runId: 'run_1',

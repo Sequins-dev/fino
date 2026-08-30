@@ -1727,12 +1727,17 @@ describe('Request disturbed state', () => {
     t.equal(input.bodyUsed, false, 'lock-only failure does not mark the input body used');
   });
   it('fetching a Request synchronously consumes its non-empty body', async (t) => {
-    const input = new Request('http://127.0.0.1:9/', {
+    const input = new Request('http://127.0.0.1:25/', {
       method: 'POST',
       body: 'body',
     });
-    fetch(input).catch(() => {});
+    const fetchPromise = fetch(input);
     t.equal(input.bodyUsed, true, 'fetch marks the request body used before network completion');
+    await t.rejects(
+      () => fetchPromise,
+      TypeError,
+      'blocked-port fetch rejection is observed before the test completes',
+    );
     await t.rejects(
       () => input.text(),
       TypeError,

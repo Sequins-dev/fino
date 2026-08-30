@@ -8,7 +8,7 @@ use oxc_codegen::{Codegen, CodegenOptions};
 use oxc_parser::Parser;
 use oxc_semantic::SemanticBuilder;
 use oxc_span::SourceType;
-use oxc_transformer::{TransformOptions, Transformer, TypeScriptOptions};
+use oxc_transformer::{JsxOptions, TransformOptions, Transformer, TypeScriptOptions};
 
 fn main() {
     println!("cargo:rerun-if-changed=js/");
@@ -134,7 +134,7 @@ fn process_dir(src_root: &Path, src_dir: &Path, out_root: &Path) {
         } else {
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             match ext {
-                "ts" | "mts" => process_ts(src_root, &path, out_root),
+                "ts" | "mts" | "tsx" => process_ts(src_root, &path, out_root),
                 "mjs" => copy_mjs(src_root, &path, out_root),
                 _ => {}
             }
@@ -199,6 +199,10 @@ fn strip_types(path: &Path, source_text: &str) -> Result<TranspiledSource, Strin
 
     let options = TransformOptions {
         typescript: TypeScriptOptions::default(),
+        jsx: JsxOptions {
+            import_source: Some("fino:ui".to_string()),
+            ..JsxOptions::default()
+        },
         ..TransformOptions::default()
     };
 

@@ -19,7 +19,7 @@ function tempPath(): string {
   return `/tmp/fino-durable-jobs-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 
-describe('fino:jobs durable tasks', () => {
+describe('fino:jobs durable tasks', { exclusive: true }, () => {
   it('parks on sleep and the scheduler resumes it', async (t) => {
     const phases: string[] = [];
     const napper = durableTask({

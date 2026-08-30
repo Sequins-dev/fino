@@ -417,6 +417,62 @@ describe('fino:database/sqlite — transactions', () => {
     t.equal(rows!['n'], 0n, 'rolled back');
     await db.close();
   });
+  it('retries a busy immediate transaction before invoking its callback', async (t) => {
+    const fs = new DiskFileSystem();
+    const dbPath = '/tmp/fino-sqlite-busy-' + Math.floor(Math.random() * 1e9) + '.db';
+    const left = await Database.open(dbPath, { fs });
+    const right = await Database.open(dbPath, { fs });
+    let releaseLock!: () => void;
+    const lockReleased = new Promise<void>((resolve) => (releaseLock = resolve));
+    let reportLockAcquired!: () => void;
+    const lockAcquired = new Promise<void>((resolve) => (reportLockAcquired = resolve));
+    try {
+      await left.exec('CREATE TABLE t (v INTEGER)');
+      const holder = left._transaction('immediate', async () => {
+        reportLockAcquired();
+        await lockReleased;
+        await left.exec('INSERT INTO t VALUES (1)');
+      });
+      await lockAcquired;
+      let timedOutCalls = 0;
+      await t.rejects(
+        () =>
+          right._transaction(
+            'immediate',
+            async () => {
+              timedOutCalls++;
+            },
+            { busyTimeoutMs: 25 },
+          ),
+        /database is locked/,
+        'busy acquisition rejects at its deadline',
+      );
+      t.equal(timedOutCalls, 0, 'timed-out transaction never invokes its callback');
+      let contenderCalls = 0;
+      const contender = right._transaction(
+        'immediate',
+        async () => {
+          contenderCalls++;
+          await right.exec('INSERT INTO t VALUES (2)');
+        },
+        { busyTimeoutMs: 1000 },
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      t.equal(contenderCalls, 0, 'contender waits without invoking its callback');
+      releaseLock();
+      await Promise.all([holder, contender]);
+      t.equal(contenderCalls, 1, 'contender callback runs once after acquiring the lock');
+      const row = await left.prepare('SELECT SUM(v) AS sum FROM t').get();
+      t.equal(row!['sum'], 3n, 'both transactions committed');
+    } finally {
+      releaseLock();
+      await left.close();
+      await right.close();
+      try {
+        await fs.unlink(dbPath);
+      } catch {}
+    }
+  });
 });
 describe('fino:database/sqlite — Statement finalize', () => {
   it('Statement supports using disposal', async (t) => {

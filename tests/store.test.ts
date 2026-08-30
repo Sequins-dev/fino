@@ -198,20 +198,22 @@ describe('fino:store', () => {
     const left = await sqliteStore({ path, fs });
     const right = await sqliteStore({ path, fs });
     try {
-      await left.set('shared', 0);
-      const initial = await left.atomic.getEntry('shared');
-      const results = await Promise.all([
-        left.atomic.commit({
-          checks: [{ key: 'shared', ifVersion: initial!.version }],
-          writes: [{ key: 'shared', value: 1 }],
-        }),
-        right.atomic.commit({
-          checks: [{ key: 'shared', ifVersion: initial!.version }],
-          writes: [{ key: 'shared', value: 2 }],
-        }),
-      ]);
-      t.equal(results.filter(Boolean).length, 1, 'exactly one contender commits');
-      t.ok([1, 2].includes((await left.get<number>('shared'))!));
+      for (let round = 0; round < 16; round++) {
+        await left.set('shared', round);
+        const initial = await left.atomic.getEntry('shared');
+        const results = await Promise.all([
+          left.atomic.commit({
+            checks: [{ key: 'shared', ifVersion: initial!.version }],
+            writes: [{ key: 'shared', value: round * 2 + 1 }],
+          }),
+          right.atomic.commit({
+            checks: [{ key: 'shared', ifVersion: initial!.version }],
+            writes: [{ key: 'shared', value: round * 2 + 2 }],
+          }),
+        ]);
+        t.equal(results.filter(Boolean).length, 1, 'exactly one contender commits');
+        t.ok([round * 2 + 1, round * 2 + 2].includes((await left.get<number>('shared'))!));
+      }
     } finally {
       await left.close();
       await right.close();

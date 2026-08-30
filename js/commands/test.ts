@@ -408,8 +408,11 @@ async function runParallelTests(
       pendingFiles.set(file.display, test);
       void fileCompletion.finally(() => pendingFiles.delete(file.display));
       void test.completionReported.then((reported) => {
+        // This timer also keeps the coordinator Realm alive until the worker's
+        // final exit signal is delivered. A pending Promise alone does not keep
+        // the event loop referenced, and the acknowledgement clears the
+        // worker's own fallback timer before Realm.run() necessarily settles.
         const exitDiagnostic = loopTimeout(PARALLEL_REALM_EXIT_DIAGNOSTIC_MS);
-        exitDiagnostic.unref();
         void exitDiagnostic.then(() => {
           if (!pendingFiles.has(file.display)) return;
           write(

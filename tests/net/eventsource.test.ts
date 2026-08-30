@@ -505,19 +505,29 @@ describe('EventSource integration', () => {
   });
   it('HTTP 204 closes without reconnecting', async (t) => {
     let errorFired = false;
-    const server = serveHttp({ port: 0 }, async (_req) => new Response(null, { status: 204 }));
-    await new Promise<void>((resolve) => {
-      const es = new EventSource(`http://127.0.0.1:${server.port}/events`);
-      es.onerror = () => {
-        errorFired = true;
-      };
-      loop.timeout(200).then(() => {
-        t.equal(es.readyState, EventSource.CLOSED, 'CLOSED after 204');
-        t.equal(errorFired, false, 'no error event on graceful 204 close');
-        resolve();
-      });
+    let markRequestHandled!: () => void;
+    const requestHandled = new Promise<void>((resolve) => {
+      markRequestHandled = resolve;
     });
-    await server.close();
+    const server = serveHttp({ port: 0 }, async (_req) => {
+      markRequestHandled();
+      return new Response(null, { status: 204 });
+    });
+    const es = new EventSource(`http://127.0.0.1:${server.port}/events`);
+    es.onerror = () => {
+      errorFired = true;
+    };
+    try {
+      await requestHandled;
+      for (let attempt = 0; attempt < 500 && es.readyState !== EventSource.CLOSED; attempt++) {
+        await loop.timeout(10);
+      }
+      t.equal(es.readyState, EventSource.CLOSED, 'CLOSED after 204');
+      t.equal(errorFired, false, 'no error event on graceful 204 close');
+    } finally {
+      es.close();
+      await server.close();
+    }
   });
   it('wrong content-type causes fatal error (no reconnect)', async (t) => {
     let errorCount = 0;

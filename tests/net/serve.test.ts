@@ -62,7 +62,7 @@ async function readUntil(
     iter,
   };
 }
-describe('Request / Response basics', () => {
+describe('Request / Response basics', { exclusive: true }, () => {
   it('binds and serves on IPv6 loopback when available', async (t) => {
     let server: ReturnType<typeof serve> | null = null;
     try {
@@ -456,7 +456,7 @@ describe('Request / Response basics', () => {
     await server.close();
   });
 });
-describe('HTTP protocol conformance', () => {
+describe('HTTP protocol conformance', { exclusive: true }, () => {
   it('sends 100 Continue before reading an expected request body', async (t) => {
     let receivedBody = '';
     const server = serveHttp({ port: 0 }, async (req) => {
@@ -631,7 +631,7 @@ describe('HTTP protocol conformance', () => {
     await server.close();
   });
 });
-describe('Connection management', () => {
+describe('Connection management', { exclusive: true }, () => {
   it('graceful shutdown via server.close()', async (t) => {
     let handled = 0;
     const server = serveHttp({ port: 0 }, async () => {
