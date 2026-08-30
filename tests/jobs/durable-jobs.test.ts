@@ -19,6 +19,19 @@ function tempPath(): string {
   return `/tmp/fino-durable-jobs-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
 
+async function waitUntilWaiting(jobs: Jobs, id: string): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const job = (await jobs.get(id))!;
+    if (job.status === 'waiting') return;
+    if (['done', 'error', 'dead', 'cancelled'].includes(job.status)) {
+      throw new Error(`job reached ${job.status} before it parked`);
+    }
+    await loop.timeout(10);
+  }
+  throw new Error('job did not park within 5000ms');
+}
+
 describe('fino:jobs durable tasks', { exclusive: true }, () => {
   it('parks on sleep and the scheduler resumes it', async (t) => {
     const phases: string[] = [];
@@ -29,7 +42,7 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
           phases.push('before');
           return null;
         });
-        await ctx.sleep('nap', 150);
+        await ctx.sleep('nap', 1_000);
         await ctx.step('after', () => {
           phases.push('after');
           return null;
@@ -43,19 +56,8 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
       pollIntervalMs: 50,
     });
     const job = await jobs.push('napper', null);
-    const deadline = Date.now() + 3_000;
-    let sawWaiting = false;
-    while (Date.now() < deadline) {
-      const current = (await jobs.get(job.id))!;
-      if (current.status === 'waiting') {
-        sawWaiting = true;
-        break;
-      }
-      if (current.status === 'done') break;
-      await loop.timeout(10);
-    }
+    await waitUntilWaiting(jobs, job.id);
     const done = await jobs.wait(job.id, { timeoutMs: 10_000 });
-    t.ok(sawWaiting, 'job parked while sleeping');
     t.equal(done.status, 'done', 'scheduler resumed and completed the job');
     t.equal(phases.join(','), 'before,after', 'steps did not re-run across the park');
   });
@@ -73,12 +75,7 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
       pollIntervalMs: 50,
     });
     const job = await jobs.push('gate', null);
-    const deadline = Date.now() + 5_000;
-    while (Date.now() < deadline) {
-      const current = (await jobs.get(job.id))!;
-      if (current.status === 'waiting') break;
-      await loop.timeout(10);
-    }
+    await waitUntilWaiting(jobs, job.id);
     await jobs.signal(job.id, 'approve', { by: 'ada' });
     const done = await jobs.wait(job.id, { timeoutMs: 10_000 });
     t.equal(done.status, 'done', 'signalled job completed');
@@ -95,7 +92,7 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
             sideEffects.push('first');
             return null;
           });
-          await ctx.sleep('nap', 200);
+          await ctx.waitForSignal('resume');
           await ctx.step('second', () => {
             sideEffects.push('second');
             return null;
@@ -109,12 +106,7 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
       pollIntervalMs: 50,
     });
     const job = await first.push('restartable-job', null);
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      const current = (await first.get(job.id))!;
-      if (current.status === 'waiting') break;
-      await loop.timeout(10);
-    }
+    await waitUntilWaiting(first, job.id);
     // Simulate a process restart mid-park: stop everything, reopen on the
     // same file with a fresh task instance.
     await first.stop();
@@ -123,6 +115,7 @@ describe('fino:jobs durable tasks', { exclusive: true }, () => {
       tasks: [makeTask()],
       pollIntervalMs: 50,
     });
+    await second.signal(job.id, 'resume');
     const done = await second.wait(job.id, { timeoutMs: 10_000 });
     t.equal(done.status, 'done', 'parked job completed after restart');
     t.equal(sideEffects.join(','), 'first,second', 'completed step did not re-run');

@@ -9,7 +9,6 @@ import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
-import { startClusterOnAvailablePort } from './test-helpers.ts';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const remoteCallEntry = `file://${cwd()}/tests/cluster/fixtures/remote-call.ts`;
 const longRunningEntry = `file://${cwd()}/tests/realm/fixtures/long-running.ts`;
@@ -97,14 +96,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('startCluster + joinCluster route remote Realm.call over WebTransport', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    const port = await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-seed',
         tls: clusterTls,
       }),
-      'startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster',
     );
     let worker: Process | null = null;
     try {
@@ -126,16 +125,17 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('startCluster self-joins through the configured IPv6 hostname and path', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    const path = '/__fino_cluster_ipv6';
+    await withTimeout(
+      startCluster({
+        port: 0,
         hostname: '::1',
-        path: `/__fino_cluster_ipv6_${port}`,
+        path,
         nodeId: 'cluster-ipv6-self-join',
         tls: clusterTls,
       }),
-      'startCluster IPv6 self-join',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster IPv6 self-join',
     );
     const firstClose = leaveCluster();
     t.equal(leaveCluster(), firstClose, 'concurrent leaveCluster calls share shutdown');
@@ -147,24 +147,24 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
     await leaveCluster();
     await leaveCluster();
     const handlesBefore = loop._activeHandleCounts();
-    await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-restart',
         tls: clusterTls,
       }),
-      'first startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'first startCluster',
     );
     await leaveCluster();
-    await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-restart-2',
         tls: clusterTls,
       }),
-      'second startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'second startCluster',
     );
     await leaveCluster();
     t.ok(true, 'cluster state can be reused after leaveCluster');
@@ -178,20 +178,20 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('allows only one active cluster connection per process', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-single-active',
         tls: clusterTls,
       }),
-      'startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster',
     );
     try {
       await t.rejects(
         () =>
           startCluster({
-            port: port + 1,
+            port: 0,
             nodeId: 'cluster-second-active',
             tls: clusterTls,
           }),
@@ -204,14 +204,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('remote Realm.run settles after terminate()', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    const port = await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-terminate',
         tls: clusterTls,
       }),
-      'startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster',
     );
     let worker: Process | null = null;
     try {
@@ -240,14 +240,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
     const oldTimeout = env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
     env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = '50';
     env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '1000';
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    const port = await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-worker-loss',
         tls: clusterTls,
       }),
-      'startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster',
     );
     let worker: Process | null = null;
     const marker = `/tmp/fino-cluster-call-active-${Date.now()}-${Math.random()}`;
@@ -280,14 +280,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('leaveCluster rejects an active remote Realm.call', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = await startClusterOnAvailablePort(
-      (port) => ({
-        port,
+    const port = await withTimeout(
+      startCluster({
+        port: 0,
         nodeId: 'cluster-shutdown',
         tls: clusterTls,
       }),
-      'startCluster',
       CLUSTER_OPERATION_TIMEOUT_MS,
+      'startCluster',
     );
     let worker: Process | null = null;
     try {

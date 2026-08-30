@@ -104,8 +104,8 @@ export interface StartClusterOptions {
   /**
    * TCP/UDP port the seed HTTP/3 WebTransport server will listen on.
    *
-   * The port must be available on the local host. There is no default because
-   * the first cluster node must advertise a stable address to workers.
+   * The port must be available on the local host. Pass `0` to let the operating
+   * system select an ephemeral port; `startCluster()` returns the concrete port.
    *
    * ```ts no_run
    * import { startCluster } from 'fino:cluster';
@@ -280,17 +280,23 @@ export interface JoinClusterOptions {
  * loop keeps the server alive as long as there are connected peers.
  *
  * Throws if this process is already connected to a cluster. The function
- * resolves with `void` after the seed transport is listening and the local
- * worker client has connected to it.
+ * resolves with the concrete bound port after the seed transport is listening
+ * and the local worker client has connected to it. This equals `opts.port`
+ * unless the caller passed `0` to request an ephemeral port.
  *
  * ```ts no_run
  * import { startCluster, leaveCluster } from 'fino:cluster';
  *
- * await startCluster({ port: 9999, nodeId: 'seed-a' });
+ * const port = await startCluster({
+ *   port: 0,
+ *   nodeId: 'seed-a',
+ *   tls: { cert: './cert.pem', key: './key.pem' },
+ * });
+ * console.log(`cluster seed listening on ${port}`);
  * await leaveCluster();
  * ```
  */
-export async function startCluster(opts: StartClusterOptions): Promise<void> {
+export async function startCluster(opts: StartClusterOptions): Promise<number> {
   if (_client !== null || _seed !== null || _closing !== null) {
     throw new Error('fino:cluster — already connected to a cluster');
   }
@@ -306,11 +312,12 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
   _seed = new SeedServer(seedTransport);
   try {
     await _seed.start();
+    const port = seedTransport.port;
     // Also join as a worker (connect to self) - seeds participate as workers.
     const workerTransport = new WebTransportWorkerTransport(nodeId);
     const selfJoinHost = clusterSelfJoinHost(opts.hostname);
     await workerTransport.connect(
-      `https://${selfJoinHost}:${opts.port}${path}`,
+      `https://${selfJoinHost}:${port}${path}`,
       {
         cpu: 0,
         memory: 0,
@@ -319,6 +326,7 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     );
     _client = new ClusterClient(workerTransport, nodeId);
     _client.start();
+    return port;
   } catch (error) {
     await leaveCluster();
     throw error;

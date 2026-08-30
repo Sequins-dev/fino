@@ -10,10 +10,6 @@ import { Process, cwd, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 const remoteCallEntry = `file://${cwd()}/tests/cluster/fixtures/remote-call.ts`;
 const neverFnEntry = `file://${cwd()}/tests/realm/fixtures/never-fn.ts`;
-let nextPort = 39e3;
-function port(): number {
-  return nextPort++;
-}
 function decodeUtf8(b: ArrayBuffer | ArrayBufferView): string {
   return new TextDecoder().decode(b);
 }
@@ -70,20 +66,18 @@ bench('cluster public API references', (b) => {
 });
 bench('cluster loopback lifecycle', (b) => {
   b.measure('startCluster + leaveCluster', async () => {
-    const seedPort = port();
     await startCluster({
-      port: seedPort,
-      nodeId: `bench-seed-${seedPort}`,
+      port: 0,
+      nodeId: 'bench-seed',
     });
     await leaveCluster();
   });
 });
 bench('cluster remote realm', (b) => {
   b.measure('spawn and call remote worker', async () => {
-    const seedPort = port();
-    await startCluster({
-      port: seedPort,
-      nodeId: `bench-call-${seedPort}`,
+    const seedPort = await startCluster({
+      port: 0,
+      nodeId: 'bench-call',
     });
     let worker: Process | null = null;
     try {
@@ -99,10 +93,9 @@ bench('cluster remote realm', (b) => {
     }
   });
   b.measure('worker loss rejects active call', async () => {
-    const seedPort = port();
-    await startCluster({
-      port: seedPort,
-      nodeId: `bench-loss-${seedPort}`,
+    const seedPort = await startCluster({
+      port: 0,
+      nodeId: 'bench-loss',
     });
     let worker: Process | null = null;
     try {

@@ -379,6 +379,10 @@ export class WebTransportSeedTransport implements ClusterTransport {
     this.#options = options;
     this.#path = normalizePath(options.path);
   }
+  /** The configured port before `listen()`, then the concrete bound port. */
+  get port(): number {
+    return this.#server?.port ?? this.#options.port;
+  }
   /**
    * Start the HTTP/3 server and begin accepting worker WebTransport sessions.
    *
