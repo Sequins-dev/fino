@@ -480,7 +480,7 @@ describe('QUIC event classes', () => {
     t.ok(endpoint instanceof EventTarget, 'endpoint extends EventTarget');
   });
 });
-describe('QUIC hardening options', () => {
+describe('QUIC hardening options', { exclusive: true }, () => {
   it('uses Node-aligned transport defaults while keeping 0-RTT opt-in', (t) => {
     const endpoint = new QuicEndpoint();
     t.deepEqual(

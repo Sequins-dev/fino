@@ -456,7 +456,7 @@ describe('Request / Response basics', () => {
     await server.close();
   });
 });
-describe('HTTP protocol conformance', () => {
+describe('HTTP protocol conformance', { exclusive: true }, () => {
   it('sends 100 Continue before reading an expected request body', async (t) => {
     let receivedBody = '';
     const server = serveHttp({ port: 0 }, async (req) => {
