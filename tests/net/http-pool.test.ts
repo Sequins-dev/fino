@@ -473,7 +473,7 @@ describe('ALPN server-side negotiation', () => {
         },
       );
       const proto = tlsSock.negotiatedProtocol;
-      tlsSock.close();
+      await tlsSock.close();
       t.equal(proto, 'h2', `server negotiated h2 (got: ${proto})`);
     } finally {
       await server.close();
@@ -510,7 +510,7 @@ describe('ALPN server-side negotiation', () => {
           },
         );
         const proto = tlsSock.negotiatedProtocol;
-        tlsSock.close();
+        await tlsSock.close();
         t.equal(proto, 'http/1.1', `server negotiated http/1.1 (got: ${proto})`);
       } finally {
         await server.close();
