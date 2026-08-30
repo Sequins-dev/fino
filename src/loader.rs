@@ -175,6 +175,7 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:fixtures/tsx-builtin",
         "internal/fixtures/tsx-builtin"
     ),
+    source_builtin!("internal:fifo", "internal/fifo"),
     source_builtin!("internal:test-worker", "internal/test-worker"),
     source_builtin!("internal:tooling/files", "internal/tooling/files"),
     source_builtin!("internal:tooling/format", "internal/tooling/format"),

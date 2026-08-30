@@ -46,9 +46,8 @@
  * ## Concurrency safety
  *
  * `startDispatch` wraps dispatchStream errors so `Promise.all(inFlight)` in
- * the finally block never rejects. All drainWrite calls are serialized via the
- * drainChain promise-mutex - concurrent session_mem_send2 calls on the same
- * nghttp2_session* would be a data race.
+ * the finally block never rejects. A FIFO serializes all drainWrite calls because
+ * concurrent session_mem_send2 calls on the same nghttp2_session* would be a data race.
  *
  * ## Example
  *
@@ -71,6 +70,7 @@ import type { BufferedBytesReader } from '../../../stream.ts';
 import type { BytesWriter } from '../../../stream.ts';
 import type { ServerDriver, ServerHandler, ServerDriverOptions } from 'internal:net/http/driver';
 import { isConnectionTakeover } from 'internal:net/http/driver';
+import { Fifo } from 'internal:fifo';
 import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.ts';
@@ -800,7 +800,7 @@ interface H2ServerCtx {
 function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: number): H2ServerCtx {
   const streams = new Map<number, H2ServerStream>();
   const inFlight = new Set<Promise<void>>();
-  let drainChain: Promise<void> = Promise.resolve();
+  const drains = new Fifo();
   let receivedGoaway = false;
   // Set by setSession() before any closure runs.
   let session = null as unknown as Nghttp2Session;
@@ -824,8 +824,7 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       }
       await writer.flush();
     }
-    drainChain = drainChain.then(drainH2Writes, drainH2Writes);
-    return drainChain;
+    return drains.run(drainH2Writes);
   }
   function resetMalformedBody(stream: H2ServerStream, message: string): void {
     stream.cancelled = true;

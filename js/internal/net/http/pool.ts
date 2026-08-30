@@ -15,8 +15,8 @@
  * ## drainWrite serialization
  *
  * As in the per-request driver, concurrent `nghttp2_session_mem_send2` calls
- * on the same session are a data race. A `drainChain` promise mutex serializes
- * all drainWrite calls across both the recv loop and concurrent `send()` calls.
+ * on the same session are a data race. A FIFO serializes all drainWrite calls
+ * across both the recv loop and concurrent `send()` calls.
  *
  * ## GOAWAY handling
  *
@@ -55,6 +55,7 @@
  * @internal
  */
 import { buildWireResponse, Headers, Request, Response } from 'internal:net/http/wire';
+import { Fifo } from 'internal:fifo';
 import { Nghttp2Session } from './h2/session.ts';
 import type { H2StreamCallbacks } from './h2/session.ts';
 import { HttpBodyQueue, HttpStreamError } from './stream.ts';
@@ -198,7 +199,7 @@ export class H2PoolEntry {
    */
   #closed = false;
   /**
-   * Promise mutex serializing every `drainWrite` call.
+   * FIFO serializing every `drainWrite` call.
    *
    * Concurrent `nghttp2_session_mem_send2` calls on one session are a data race,
    * so all flushes from the receive loop and from `send()` are chained through
@@ -206,7 +207,7 @@ export class H2PoolEntry {
    *
    * @internal
    */
-  #drainChain: Promise<void> = Promise.resolve();
+  #drains = new Fifo();
   /**
    * Memoized promise for the in-progress or completed graceful close.
    *
@@ -311,8 +312,7 @@ export class H2PoolEntry {
       }
       await this.#writer.flush();
     };
-    this.#drainChain = this.#drainChain.then(drainH2PoolWrites, drainH2PoolWrites);
-    return this.#drainChain;
+    return this.#drains.run(drainH2PoolWrites);
   }
   // -------------------------------------------------------------------------
   // send() - submit a new request stream

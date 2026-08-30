@@ -55,6 +55,7 @@
  */
 import type { BufferedBytesReader, BytesWriter } from '../../../stream.ts';
 import type { ClientDriver, ClientDriverOptions } from 'internal:net/http/driver';
+import { Fifo } from 'internal:fifo';
 import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.ts';
@@ -190,8 +191,7 @@ export class H2ClientDriver implements ClientDriver {
     _opts: ClientDriverOptions,
   ): Promise<Response> {
     const streams = new Map<number, H2ClientStream>();
-    // Serialize all drainWrite calls - same race as server.ts.
-    let drainChain: Promise<void> = Promise.resolve();
+    const drains = new Fifo();
     function drainWrite(): Promise<void> {
       async function drainH2Writes() {
         do {
@@ -201,8 +201,7 @@ export class H2ClientDriver implements ClientDriver {
         } while (session.wantWrite());
         await writer.flush();
       }
-      drainChain = drainChain.then(drainH2Writes, drainH2Writes);
-      return drainChain;
+      return drains.run(drainH2Writes);
     }
     const callbacks: H2StreamCallbacks = {
       onBeginHeaders(streamId: number, isTrailers: boolean): void {

@@ -71,6 +71,7 @@
  * @internal
  */
 import { dlopen, Pointer } from 'fino:ffi';
+import { Fifo } from 'internal:fifo';
 import { os } from 'internal:process';
 import * as loop from 'internal:runtime/loop';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -161,58 +162,8 @@ function normalizeReadOptions(input?: number | BytesReadOptions): BytesReadOptio
   if (input.signal !== undefined) out.signal = input.signal;
   return out;
 }
-/**
- * Per-instance FIFO gate shared by readers and writers.
- *
- * The uncontended operation starts synchronously so buffer-only reads and
- * writes retain their low-overhead path. Once an operation returns a promise,
- * later work waits for it to settle. A rejection reaches its own caller but
- * does not poison the queue.
- *
- * @internal
- */
-class OperationQueue {
-  #tail: Promise<void> | null = null;
-  #pending = 0;
-  runSync(operation: () => void): void {
-    if (this.#pending > 0) throw new Error('Writer has pending asynchronous operations');
-    operation();
-  }
-  run<T>(operation: () => Promise<T>): Promise<T> {
-    this.#pending++;
-    let result: Promise<T>;
-    if (this.#tail === null) {
-      try {
-        result = Promise.resolve(operation());
-      } catch (error) {
-        result = Promise.reject(error);
-      }
-    } else {
-      result = this.#tail.then(operation, operation);
-    }
-    const settled = result.then(
-      (value) => {
-        this.#pending--;
-        return value;
-      },
-      (error) => {
-        this.#pending--;
-        throw error;
-      },
-    );
-    const tail = settled.then(
-      () => {},
-      () => {},
-    );
-    this.#tail = tail;
-    void tail.then(() => {
-      if (this.#tail === tail) this.#tail = null;
-    });
-    return settled;
-  }
-}
 interface ReaderQueueState {
-  queue: OperationQueue;
+  queue: Fifo;
   closed: () => boolean;
 }
 const readerQueues = new WeakMap<object, ReaderQueueState>();
@@ -226,7 +177,7 @@ function queueReaderOperation<R>(
   return state.queue.run(() => (state.closed() ? Promise.resolve(closedValue()) : operation()));
 }
 interface WriterQueueState {
-  queue: OperationQueue;
+  queue: Fifo;
   closed: () => boolean;
 }
 const writerQueues = new WeakMap<object, WriterQueueState>();
@@ -328,7 +279,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
   constructor(onClose: ReaderCloseCallback = () => {}) {
     this.#onClose = onClose;
     const implementation = this.read.bind(this);
-    readerQueues.set(this, { queue: new OperationQueue(), closed: () => this.#closed });
+    readerQueues.set(this, { queue: new Fifo(), closed: () => this.#closed });
     Object.defineProperty(this, 'read', {
       value: (...args: unknown[]) =>
         queueReaderOperation(
@@ -1636,7 +1587,7 @@ export abstract class Writer<T> {
     const close = this.close.bind(this);
     const writeSync = this.writeSync?.bind(this);
     const closeSync = this.closeSync?.bind(this);
-    const state = { queue: new OperationQueue(), closed: () => this.#closed };
+    const state = { queue: new Fifo(), closed: () => this.#closed };
     writerQueues.set(this, state);
     Object.defineProperty(this, 'write', {
       value: (value: T) => queueWriterOperation(this, () => write(value)),
