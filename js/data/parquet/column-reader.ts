@@ -31,7 +31,7 @@
  * @internal
  */
 import { ByteReader } from 'internal:format/thrift';
-import { PType, Encoding, PageType, ParquetError } from './types.ts';
+import { PType, Encoding, PageType, Compression, ParquetError } from './types.ts';
 import type { ColumnDescriptor } from './schema.ts';
 import { readPageHeader, type ColumnMetaData } from './metadata.ts';
 import { decodePlain, decodeDictionaryIndices } from './encoding.ts';
@@ -132,11 +132,17 @@ export function readColumnPages(
   let seen = 0;
   while (seen < totalLeaves) {
     const { header, end } = readPageHeader(bytes, offset);
+    if (header.compressedPageSize < 0 || header.uncompressedPageSize < 0) {
+      throw new ParquetError('Parquet page sizes must be non-negative');
+    }
+    if (end + header.compressedPageSize > bytes.byteLength) {
+      throw new ParquetError('truncated Parquet page body');
+    }
     const pageBytes = bytes.subarray(end, end + header.compressedPageSize);
     offset = end + header.compressedPageSize;
     if (header.type === PageType.DICTIONARY_PAGE) {
       const dh = header.dictionaryPageHeader!;
-      const uncompressed = decompressPage(meta.codec, pageBytes);
+      const uncompressed = decompressPage(meta.codec, pageBytes, header.uncompressedPageSize);
       dictionary = decodePlain(
         descriptor.physicalType,
         uncompressed,
@@ -147,7 +153,7 @@ export function readColumnPages(
     }
     if (header.type === PageType.DATA_PAGE) {
       const dph = header.dataPageHeader!;
-      const uncompressed = decompressPage(meta.codec, pageBytes);
+      const uncompressed = decompressPage(meta.codec, pageBytes, header.uncompressedPageSize);
       const reader = new ByteReader(uncompressed);
       let repLevels: number[] | null = null;
       let defLevels: number[] | null = null;
@@ -183,10 +189,19 @@ export function readColumnPages(
       const v2 = header.dataPageHeaderV2!;
       const repLen = v2.repetitionLevelsByteLength;
       const defLen = v2.definitionLevelsByteLength;
+      if (repLen < 0 || defLen < 0 || repLen + defLen > pageBytes.byteLength) {
+        throw new ParquetError('invalid Parquet data page v2 level lengths');
+      }
+      const expectedValueBytes = header.uncompressedPageSize - repLen - defLen;
+      if (expectedValueBytes < 0) {
+        throw new ParquetError('Parquet data page v2 levels exceed its uncompressed page size');
+      }
       const repBytes = pageBytes.subarray(0, repLen);
       const defBytes = pageBytes.subarray(repLen, repLen + defLen);
       const rawValues = pageBytes.subarray(repLen + defLen);
-      const valueBytes = v2.isCompressed ? decompressPage(meta.codec, rawValues) : rawValues;
+      const valueBytes = v2.isCompressed
+        ? decompressPage(meta.codec, rawValues, expectedValueBytes)
+        : decompressPage(Compression.UNCOMPRESSED, rawValues, expectedValueBytes);
       const repLevels =
         descriptor.maxRepetitionLevel > 0
           ? decodeRleHybrid(

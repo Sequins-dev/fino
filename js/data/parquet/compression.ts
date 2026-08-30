@@ -27,7 +27,7 @@
  *   const body = encodeDataPage(values);
  *   const compressed = compressPage(Compression.SNAPPY, body);
  *   // ... written as a page, later read back:
- *   const restored = decompressPage(Compression.SNAPPY, compressed);
+ *   const restored = decompressPage(Compression.SNAPPY, compressed, body.byteLength);
  * ```
  *
  * Codec list: https://github.com/apache/parquet-format/blob/master/Compression.md
@@ -72,31 +72,57 @@ export function isCodecSupported(codec: number): boolean {
 /**
  * Decompress a page body read from a column chunk.
  *
- * `codec` is the numeric `CompressionCodec` from the chunk's metadata and
+ * `codec` is the numeric `CompressionCodec` from the chunk's metadata,
  * `bytes` is the page payload after the page header (for DATA_PAGE_V2 with
- * `isCompressed`, only the values section — levels are never compressed).
+ * `isCompressed`, only the values section — levels are never compressed),
+ * and `expectedOutputBytes` is the decoded byte length declared by the page.
  * For UNCOMPRESSED the input is returned as-is, same reference, no copy;
  * otherwise a freshly allocated buffer holds the decompressed bytes.
  *
  * Throws `ParquetError` if the codec has no `fino:compress` mapping (LZO,
- * LZ4, LZ4_RAW, or an unknown id). Truncated or corrupt page data, or a
- * missing backend library, surfaces as an error from `fino:compress`.
+ * LZ4, LZ4_RAW, or an unknown id), the declared output length is invalid or
+ * does not match the decoded page, the page data is corrupt, or a backing
+ * compression library is unavailable. Omitting `expectedOutputBytes` retains
+ * the unbounded compatibility behavior for direct internal callers; readers
+ * must always pass the page header's declared size.
  *
  * ```ts no_run
  *   import { decompressPage } from 'internal:data/parquet/compression';
  *
  *   const raw = fileBytes.subarray(pageStart, pageStart + header.compressedPageSize);
- *   const body = decompressPage(chunkMeta.codec, raw);
+ *   const body = decompressPage(chunkMeta.codec, raw, header.uncompressedPageSize);
  * ```
  *
  * @internal
  */
-export function decompressPage(codec: number, bytes: Uint8Array): Uint8Array {
-  if (codec === Compression.UNCOMPRESSED) return bytes;
+export function decompressPage(
+  codec: number,
+  bytes: Uint8Array,
+  expectedOutputBytes?: number,
+): Uint8Array {
+  if (
+    expectedOutputBytes !== undefined &&
+    (!Number.isSafeInteger(expectedOutputBytes) || expectedOutputBytes < 0)
+  ) {
+    throw new ParquetError(`invalid Parquet page size ${expectedOutputBytes}`);
+  }
+  if (codec === Compression.UNCOMPRESSED) {
+    if (expectedOutputBytes !== undefined && bytes.byteLength !== expectedOutputBytes) {
+      throw new ParquetError(
+        `Parquet page decoded to ${bytes.byteLength} bytes; expected ${expectedOutputBytes}`,
+      );
+    }
+    return bytes;
+  }
   const format = CODEC_FORMAT[codec];
   if (format === undefined)
     throw new ParquetError(`unsupported Parquet compression codec ${codec}`);
-  return decompress(bytes, { format });
+  try {
+    return decompress(bytes, { format, expectedOutputBytes });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new ParquetError(`failed to decompress Parquet page: ${detail}`);
+  }
 }
 /**
  * Compress a page body before it is framed with a page header.
