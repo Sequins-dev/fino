@@ -495,12 +495,12 @@ async function runParallelTests(
  * carrying a scheme (`file://`, `fino:`, `internal:`) passes through
  * unchanged so built-in modules can be named directly on the command line.
  */
-function normalizeModuleSpecifier(path: string): string {
+function normalizeModuleSpecifier(path: string, base = cwd()): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
-  if (path.startsWith('./') || path.startsWith('../')) return `file://${cwd()}/${path}`;
+  if (path.startsWith('./') || path.startsWith('../')) return `file://${base}/${path}`;
   if (path.includes(':')) return path;
-  return `file://${cwd()}/./${path}`;
+  return `file://${base}/./${path}`;
 }
 /**
  * Whether a path follows the `*.test.ts` naming convention for test modules.
@@ -525,7 +525,7 @@ function isTestModuleFile(path: string): boolean {
  * pattern that matches nothing yields an empty list rather than throwing —
  * the command reports the error after all arguments are expanded.
  */
-async function expandArg(arg: string): Promise<string[]> {
+async function expandArg(arg: string, base = cwd()): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const isDir = arg.endsWith('/') || !/\.[^/]+$/.test(arg);
   if (!isGlob && !isDir) {
@@ -533,7 +533,6 @@ async function expandArg(arg: string): Promise<string[]> {
   }
   const fs = new DiskFileSystem();
   const pattern = isGlob ? arg : arg.replace(/\/$/, '') + '/**/*.test.ts';
-  const base = cwd();
   const results: string[] = [];
   for await (const entry of fs.glob(pattern, {
     cwd: base,
@@ -631,9 +630,10 @@ const command = new Task({
     }
     if (coveragePath !== undefined) await startCoverage(coveragePath);
     allowInternalForTests();
+    const base = ctx.cwd ?? cwd();
     const expandedFiles: string[] = [];
     for (const raw of testFiles) {
-      const expanded = await expandArg(String(raw));
+      const expanded = await expandArg(String(raw), base);
       expandedFiles.push(...expanded);
     }
     const importFiles = expandedFiles.some(isTestModuleFile)
@@ -658,7 +658,7 @@ const command = new Task({
       const seen = new Set<string>();
       const parallelFiles: ParallelTestFile[] = [];
       for (const file of importFiles) {
-        const specifier = normalizeModuleSpecifier(file);
+        const specifier = normalizeModuleSpecifier(file, base);
         if (seen.has(specifier)) continue;
         seen.add(specifier);
         parallelFiles.push({
@@ -668,7 +668,7 @@ const command = new Task({
       }
       output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
     } else {
-      for (const file of importFiles) await import(normalizeModuleSpecifier(file));
+      for (const file of importFiles) await import(normalizeModuleSpecifier(file, base));
       const { run } = await import('fino:test/test');
       output = await run(runOptions);
     }
