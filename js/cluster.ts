@@ -24,7 +24,7 @@
  * active cluster client to spawn onto a remote worker.
  *
  * Only one cluster connection per process is supported. Calling either
- * function when already connected throws.
+ * function while connected or while a previous connection is closing throws.
  *
  * Current release scope uses one trusted seed node. Seed election and cluster
  * authentication are not implemented in this release. Direct peer-to-peer
@@ -50,7 +50,7 @@
  * await startCluster({ port: 9999, nodeId: 'seed-a', tls: { cert: './cert.pem', key: './key.pem' } });
  * const realm = new Realm({ entry: './worker.ts', remote: true });
  * await realm.call('healthcheck');
- * leaveCluster();
+ * await leaveCluster();
  * ```
  */
 import {
@@ -86,6 +86,7 @@ export { ClusterPort };
 // ---------------------------------------------------------------------------
 let _client: ClusterClient | null = null;
 let _seed: SeedServer | null = null;
+let _closing: Promise<void> | null = null;
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -286,11 +287,11 @@ export interface JoinClusterOptions {
  * import { startCluster, leaveCluster } from 'fino:cluster';
  *
  * await startCluster({ port: 9999, nodeId: 'seed-a' });
- * leaveCluster();
+ * await leaveCluster();
  * ```
  */
 export async function startCluster(opts: StartClusterOptions): Promise<void> {
-  if (_client !== null) {
+  if (_client !== null || _seed !== null || _closing !== null) {
     throw new Error('fino:cluster — already connected to a cluster');
   }
   const nodeId = opts.nodeId ?? `seed-${opts.port}`;
@@ -303,20 +304,25 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
     h3: opts.h3 ?? true,
   });
   _seed = new SeedServer(seedTransport);
-  await _seed.start();
-  // Also join as a worker (connect to self) - seeds participate as workers.
-  const workerTransport = new WebTransportWorkerTransport(nodeId);
-  const selfJoinHost = clusterSelfJoinHost(opts.hostname);
-  await workerTransport.connect(
-    `https://${selfJoinHost}:${opts.port}${path}`,
-    {
-      cpu: 0,
-      memory: 0,
-    },
-    { tls: { rejectUnauthorized: false } },
-  );
-  _client = new ClusterClient(workerTransport, nodeId);
-  _client.start();
+  try {
+    await _seed.start();
+    // Also join as a worker (connect to self) - seeds participate as workers.
+    const workerTransport = new WebTransportWorkerTransport(nodeId);
+    const selfJoinHost = clusterSelfJoinHost(opts.hostname);
+    await workerTransport.connect(
+      `https://${selfJoinHost}:${opts.port}${path}`,
+      {
+        cpu: 0,
+        memory: 0,
+      },
+      { tls: { rejectUnauthorized: false } },
+    );
+    _client = new ClusterClient(workerTransport, nodeId);
+    _client.start();
+  } catch (error) {
+    await leaveCluster();
+    throw error;
+  }
 }
 /**
  * Connect to an existing seed and register this node as a worker.
@@ -333,11 +339,11 @@ export async function startCluster(opts: StartClusterOptions): Promise<void> {
  * import { joinCluster, leaveCluster } from 'fino:cluster';
  *
  * await joinCluster({ seed: 'https://127.0.0.1:9999/__fino_cluster', nodeId: 'worker-a' });
- * leaveCluster();
+ * await leaveCluster();
  * ```
  */
 export async function joinCluster(opts: JoinClusterOptions): Promise<void> {
-  if (_client !== null) {
+  if (_client !== null || _seed !== null || _closing !== null) {
     throw new Error('fino:cluster — already connected to a cluster');
   }
   const nodeId = opts.nodeId ?? `worker-${Math.random().toString(36).slice(2, 9)}`;
@@ -403,20 +409,31 @@ export function getCluster(): ClusterClient | null {
 /**
  * Disconnect from the cluster. Active remote realms are not terminated.
  *
- * The call is synchronous and idempotent. It stops the active worker client and
- * seed server, if present, then clears module-level cluster state. Remote
- * realm users should terminate or await their realms separately.
+ * The call is asynchronous and idempotent. It makes the active cluster
+ * unavailable immediately, then resolves after the worker client, seed server,
+ * WebTransport streams, and underlying HTTP/3/QUIC resources have closed.
+ * Concurrent calls share the same shutdown. Remote realm users should
+ * terminate or await their realms separately. The promise rejects if an
+ * underlying transport cannot complete its cleanup.
  *
  * ```ts no_run
  * import { startCluster, leaveCluster } from 'fino:cluster';
  *
  * await startCluster({ port: 9999 });
- * leaveCluster();
+ * await leaveCluster();
  * ```
  */
-export function leaveCluster(): void {
-  _client?.stop();
+export function leaveCluster(): Promise<void> {
+  if (_closing !== null) return _closing;
+  const client = _client;
+  const seed = _seed;
   _client = null;
-  _seed?.stop();
   _seed = null;
+  if (client === null && seed === null) return Promise.resolve();
+  const closing = Promise.all([client?.stop(), seed?.stop()]).then(() => {});
+  const tracked = closing.finally(() => {
+    if (_closing === tracked) _closing = null;
+  });
+  _closing = tracked;
+  return tracked;
 }

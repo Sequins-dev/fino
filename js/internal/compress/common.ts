@@ -120,7 +120,9 @@ export interface CompressOptions {
 /**
  * Options for one-shot or streaming decompression.
  *
- * Only `format` is accepted because decompression does not use a level.
+ * `maxOutputBytes` bounds decompressed output and `expectedOutputBytes`
+ * additionally requires an exact final size. Both limits are enforced across
+ * all chunks produced by a streaming decompressor.
  *
  * ```ts no_run
  * import type { DecompressOptions } from 'fino:compress';
@@ -138,6 +140,32 @@ export interface DecompressOptions {
    * ```
    */
   format: CompressionFormat;
+  /**
+   * Maximum number of decompressed bytes that may be produced.
+   *
+   * The default is unlimited for compatibility. The value must be a
+   * non-negative safe integer. A decompressor closes itself and throws
+   * `RangeError` before returning output that would cross the limit.
+   *
+   * ```ts no_run
+   * import type { DecompressOptions } from 'fino:compress';
+   * const options: DecompressOptions = { format: 'gzip', maxOutputBytes: 1024 };
+   * ```
+   */
+  maxOutputBytes?: number;
+  /**
+   * Exact decompressed byte length expected when the stream finishes.
+   *
+   * The value must be a non-negative safe integer no greater than
+   * `maxOutputBytes` when both are present. It also acts as the tighter output
+   * limit while decoding, so oversized output fails as soon as it is observed.
+   *
+   * ```ts no_run
+   * import type { DecompressOptions } from 'fino:compress';
+   * const options: DecompressOptions = { format: 'snappy', expectedOutputBytes: 4096 };
+   * ```
+   */
+  expectedOutputBytes?: number;
 }
 /**
  * Stateful compressor/decompressor interface shared by backends.
@@ -304,10 +332,32 @@ export function validateDecompressOptions(options: DecompressOptions): Decompres
   if (options === null || typeof options !== 'object') {
     throw new TypeError('decompress options must be an object');
   }
+  const maxOutputBytes = validateOutputByteCount(options.maxOutputBytes, 'maxOutputBytes');
+  const expectedOutputBytes = validateOutputByteCount(
+    options.expectedOutputBytes,
+    'expectedOutputBytes',
+  );
+  if (
+    maxOutputBytes !== undefined &&
+    expectedOutputBytes !== undefined &&
+    expectedOutputBytes > maxOutputBytes
+  ) {
+    throw new RangeError('expectedOutputBytes must be less than or equal to maxOutputBytes');
+  }
   return {
     ...options,
     format: validateFormat(options.format),
+    maxOutputBytes,
+    expectedOutputBytes,
   };
+}
+
+function validateOutputByteCount(value: number | undefined, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+  return value;
 }
 /**
  * Narrow a format to the zlib-backed subset for zlib operations.

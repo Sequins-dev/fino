@@ -73,7 +73,7 @@ class TestSeedTransport {
   async listen(): Promise<void> {
     this.listenCalled = true;
   }
-  close(): void {
+  async close(): Promise<void> {
     this.#handlers = [];
   }
 }
@@ -91,8 +91,8 @@ async function makeSeed(nodeId = 'seed-node'): Promise<{
     transport,
   };
 }
-function stopActiveSeed(): void {
-  _activeSeed?.stop();
+async function stopActiveSeed(): Promise<void> {
+  await _activeSeed?.stop();
   _activeSeed = null;
 }
 // ---------------------------------------------------------------------------

@@ -15,6 +15,7 @@
 import { allowInternalForTests } from 'internal:loader-hooks';
 import { port } from 'fino:realm/self';
 import { runShutdownHooks } from 'internal:shutdown';
+import { _activeHandleCounts } from 'internal:runtime/loop';
 import { installProcessExitHandler } from 'internal:process/exit';
 import type { ConsoleCaptureRecord } from 'internal:globals/console';
 import type { RunOptions } from '../test/test.ts';
@@ -57,6 +58,7 @@ export interface TestGroupCompletion {
 export interface TestFileCompletion {
   kind: 'fino:test:complete';
   shutdownError?: string;
+  activeHandles?: string;
 }
 
 /** Parent acknowledgement that permits the worker Realm to exit. @internal */
@@ -167,12 +169,21 @@ export default async function runTestFile(
   let completion: TestFileCompletion;
   try {
     await runShutdownHooks();
-    completion = { kind: 'fino:test:complete' };
+    completion = {
+      kind: 'fino:test:complete',
+      activeHandles: JSON.stringify(_activeHandleCounts()),
+    };
   } catch (error) {
-    completion = { kind: 'fino:test:complete', shutdownError: errorText(error) };
+    completion = {
+      kind: 'fino:test:complete',
+      shutdownError: errorText(error),
+      activeHandles: JSON.stringify(_activeHandleCounts()),
+    };
   }
   port.postMessage(completion);
   let ackTimeout: ReturnType<typeof setTimeout> | undefined;
+  // Keep this deadline referenced: after posting completion it is the sole
+  // guarantee that a lost parent acknowledgement cannot strand the worker.
   await Promise.race([
     completionAcknowledged,
     new Promise<void>((resolve) => {

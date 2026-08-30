@@ -400,6 +400,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:file", "file/fs"),
     source_builtin!("fino:file/path", "file/path"),
     source_builtin!("fino:file/watch", "file/watch"),
+    source_builtin!("fino:file/memory", "file/memory"),
     source_builtin!("fino:archive", "archive"),
     // cluster
     source_builtin!("internal:cluster/protocol", "internal/cluster/protocol"),

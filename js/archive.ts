@@ -45,7 +45,8 @@
  * - `ArchiveExtractOptions.maxEntries` and `maxTotalBytes` add caller-supplied
  *   extraction limits on top of the built-in per-entry decompressed-size limit.
  * - `tar.gz` relies on `fino:compress` gzip member validation for the wrapping
- *   stream, then applies the same tar validation as plain `.tar` archives.
+ *   stream, caps the decoded tar payload, then applies the same tar validation
+ *   as plain `.tar` archives.
  *
  * ## Safety model
  *
@@ -96,7 +97,7 @@ const ZIP_METHOD_STORE = 0;
 const ZIP_METHOD_DEFLATE = 8;
 const DEFAULT_MODE = 420;
 const DEFAULT_DIR_MODE = 493;
-// Max decompressed bytes per entry — guards against zip-bomb attacks.
+// Max decompressed bytes per entry, and for a whole in-memory tar.gz payload.
 const MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
 /**
  * Archive container format supported by `Archive`.
@@ -1104,7 +1105,12 @@ export class Archive {
       return;
     }
     let tarBytes = bytes;
-    if (this.#format === 'tar.gz') tarBytes = decompress(bytes, { format: 'gzip' });
+    if (this.#format === 'tar.gz') {
+      tarBytes = decompress(bytes, {
+        format: 'gzip',
+        maxOutputBytes: MAX_DECOMPRESSED_BYTES,
+      });
+    }
     for (const entry of parseTar(tarBytes)) this.#setEntry(entry);
   }
   /**
@@ -1596,14 +1602,21 @@ function parseZip(bytes: Uint8Array): LoadedArchiveEntry[] {
           return compressed;
         }
         if (method === ZIP_METHOD_DEFLATE) {
-          const decompressed = decompress(compressed, { format: 'deflate-raw' });
-          if (decompressed.byteLength > MAX_DECOMPRESSED_BYTES) {
+          if (size > MAX_DECOMPRESSED_BYTES) {
             throw new Error(
-              `Archive entry '${name}' decompressed to ${decompressed.byteLength} bytes, ` +
+              `Archive entry '${name}' is ${size} bytes, ` +
                 `exceeding the ${MAX_DECOMPRESSED_BYTES}-byte limit`,
             );
           }
-          if (decompressed.byteLength !== size) {
+          let decompressed: Uint8Array;
+          try {
+            decompressed = decompress(compressed, {
+              format: 'deflate-raw',
+              maxOutputBytes: MAX_DECOMPRESSED_BYTES,
+              expectedOutputBytes: size,
+            });
+          } catch (error) {
+            if (!(error instanceof RangeError)) throw error;
             throw new Error(`Invalid zip archive: size mismatch for '${name}'`);
           }
           if (crc32(decompressed) !== crc) {

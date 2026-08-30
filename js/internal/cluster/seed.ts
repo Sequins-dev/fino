@@ -30,7 +30,7 @@
  *
  * seed.start();
  * // Workers connect to https://127.0.0.1:8787/__fino_cluster and send HELLO.
- * seed.stop();
+ * await seed.stop();
  * ```
  *
  * @internal
@@ -238,17 +238,17 @@ export class SeedServer {
    * import { WebTransportSeedTransport } from 'internal:cluster/webtransport-transport';
    * import { SeedServer } from 'internal:cluster/seed';
    * const seed = new SeedServer(new WebTransportSeedTransport('__seed__', 8787));
-   * seed.stop();
+   * await seed.stop();
    * ```
    */
-  stop(): void {
+  async stop(): Promise<void> {
     if (this.#heartbeatTimer !== null) {
       clearInterval(this.#heartbeatTimer);
       this.#heartbeatTimer = null;
     }
     this.#portSequences.clear();
     this.#pendingRealmExits.clear();
-    this.#transport.close();
+    await this.#transport.close();
   }
   /**
    * Run one heartbeat timeout sweep for deterministic internal tests.
@@ -373,10 +373,7 @@ export class SeedServer {
           if (targetNodeId) this.#transport.send(targetNodeId, ready);
         }
         const pendingExit = this.#pendingRealmExits.get(msg.fromPort);
-        if (
-          pendingExit &&
-          this.#routedPortSequence(msg.fromPort) >= pendingExit.lastPortSeq
-        ) {
+        if (pendingExit && this.#routedPortSequence(msg.fromPort) >= pendingExit.lastPortSeq) {
           this.#pendingRealmExits.delete(msg.fromPort);
           this.#handleRealmExit(pendingExit);
         }

@@ -30,10 +30,10 @@
  * The release option surface is intentionally compact: `format` is required,
  * `level` is the only compression tuning option, and byte input must be a
  * `Uint8Array` or `ArrayBuffer`. Dictionaries, custom flush strategy, window
- * tuning, zlib constants, and public output-limit controls are not exposed.
- * Use one-shot `decompress()` only for trusted or externally bounded input.
- * For untrusted compressed data, prefer `Decompressor.transform()` and enforce
- * an application byte budget while consuming yielded chunks.
+ * tuning, and zlib constants are not exposed. Decompression accepts optional
+ * maximum and exact output byte limits. Limits default to unlimited for
+ * compatibility; callers handling untrusted or declared-size input should set
+ * one explicitly.
  *
  * ## Examples
  *
@@ -78,6 +78,7 @@
  */
 import {
   assertZlibFormat,
+  concat,
   validateCompressOptions,
   validateDecompressOptions,
   type ByteInput,
@@ -85,37 +86,28 @@ import {
   type CompressionTransform,
   type DecompressOptions,
 } from './internal/compress/common.ts';
-import {
-  zlibCompress,
-  zlibDecompress,
-  ZlibCompressor,
-  ZlibDecompressor,
-} from './internal/compress/zlib.ts';
+import { zlibCompress, ZlibCompressor, ZlibDecompressor } from './internal/compress/zlib.ts';
 import {
   brotliAvailable as internalBrotliAvailable,
   brotliCompress,
-  brotliDecompress,
   BrotliCompressor,
   BrotliDecompressor,
 } from './internal/compress/brotli.ts';
 import {
   zstdAvailable as internalZstdAvailable,
   zstdCompress,
-  zstdDecompress,
   ZstdCompressor,
   ZstdDecompressor,
 } from './internal/compress/zstd.ts';
 import {
   lz4Available as internalLz4Available,
   lz4Compress,
-  lz4Decompress,
   Lz4Compressor,
   Lz4Decompressor,
 } from './internal/compress/lz4.ts';
 import {
   snappyAvailable as internalSnappyAvailable,
   snappyCompress,
-  snappyDecompress,
   SnappyCompressor,
   SnappyDecompressor,
 } from './internal/compress/snappy.ts';
@@ -246,9 +238,8 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
  *
  * The input format must match `options.format`. The helper keeps the full
  * decompressed output in memory and throws when the stream is invalid,
- * truncated, or uses a format that is unavailable. It does not cap the
- * decompressed output size; callers should use streaming decompression when
- * handling untrusted or potentially large compressed input.
+ * truncated, uses a format that is unavailable, exceeds `maxOutputBytes`, or
+ * does not match `expectedOutputBytes`. Output limits default to unlimited.
  *
  * ```ts no_run
  * import { compress, decompress } from 'fino:compress';
@@ -259,12 +250,12 @@ export function compress(data: ByteInput, options: CompressOptions): Uint8Array 
  * ```
  */
 export function decompress(data: ByteInput, options: DecompressOptions): Uint8Array {
-  const opts = validateDecompressOptions(options);
-  if (opts.format === 'brotli') return brotliDecompress(data);
-  if (opts.format === 'zstd') return zstdDecompress(data);
-  if (opts.format === 'lz4') return lz4Decompress(data);
-  if (opts.format === 'snappy') return snappyDecompress(data);
-  return zlibDecompress(data, assertZlibFormat(opts.format));
+  const decompressor = new Decompressor(options);
+  try {
+    return concat([...decompressor.write(data), ...decompressor.finish()]);
+  } finally {
+    decompressor.close();
+  }
 }
 /**
  * Stateful compressor for chunked writes or async iterable transforms.
@@ -423,8 +414,8 @@ export class Compressor implements CompressionTransform {
  *
  * A decompressor may buffer partial frames internally. Always call `finish()`
  * after the last compressed chunk so truncated streams are detected and final
- * output is flushed. The decompressor does not enforce an output-size limit;
- * count returned chunk sizes in the caller when processing untrusted input.
+ * output is flushed. Optional maximum and exact byte limits apply across all
+ * writes and final output. Exceeding either limit closes the decompressor.
  *
  * ```ts no_run
  * import { Decompressor, compress } from 'fino:compress';
@@ -446,6 +437,9 @@ export class Decompressor implements CompressionTransform {
    * @internal
    */
   #impl: CompressionTransform;
+  #maxOutputBytes: number;
+  #expectedOutputBytes: number | undefined;
+  #outputBytes = 0;
   /**
    * Create a decompressor for the requested format.
    *
@@ -462,6 +456,8 @@ export class Decompressor implements CompressionTransform {
    */
   constructor(options: DecompressOptions) {
     const opts = validateDecompressOptions(options);
+    this.#maxOutputBytes = opts.maxOutputBytes ?? Number.MAX_SAFE_INTEGER;
+    this.#expectedOutputBytes = opts.expectedOutputBytes;
     this.#impl =
       opts.format === 'brotli'
         ? new BrotliDecompressor()
@@ -470,8 +466,27 @@ export class Decompressor implements CompressionTransform {
           : opts.format === 'lz4'
             ? new Lz4Decompressor()
             : opts.format === 'snappy'
-              ? new SnappyDecompressor()
+              ? new SnappyDecompressor(
+                  opts.expectedOutputBytes ?? opts.maxOutputBytes,
+                  opts.expectedOutputBytes === undefined ? 'maxOutputBytes' : 'expectedOutputBytes',
+                )
               : new ZlibDecompressor(assertZlibFormat(opts.format));
+  }
+
+  #accept(parts: Uint8Array[]): Uint8Array[] {
+    const limit = this.#expectedOutputBytes ?? this.#maxOutputBytes;
+    let total = this.#outputBytes;
+    for (const part of parts) {
+      if (part.byteLength > limit - total) {
+        this.close();
+        const name =
+          this.#expectedOutputBytes === undefined ? 'maxOutputBytes' : 'expectedOutputBytes';
+        throw new RangeError(`Decompressed output exceeds ${name} (${limit})`);
+      }
+      total += part.byteLength;
+    }
+    this.#outputBytes = total;
+    return parts;
   }
   /**
    * Decompress a chunk and return any output currently available.
@@ -490,7 +505,12 @@ export class Decompressor implements CompressionTransform {
    * ```
    */
   write(chunk: ByteInput): Uint8Array[] {
-    return this.#impl.write(chunk);
+    try {
+      return this.#accept(this.#impl.write(chunk));
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
   /**
    * Finish the decompression stream and return final output chunks.
@@ -508,7 +528,21 @@ export class Decompressor implements CompressionTransform {
    * ```
    */
   finish(): Uint8Array[] {
-    return this.#impl.finish();
+    try {
+      const parts = this.#accept(this.#impl.finish());
+      if (
+        this.#expectedOutputBytes !== undefined &&
+        this.#outputBytes !== this.#expectedOutputBytes
+      ) {
+        throw new RangeError(
+          `Decompressed ${this.#outputBytes} bytes; expectedOutputBytes is ${this.#expectedOutputBytes}`,
+        );
+      }
+      return parts;
+    } catch (error) {
+      this.close();
+      throw error;
+    }
   }
   /**
    * Transform an async iterable of compressed chunks into decompressed chunks.
@@ -532,7 +566,17 @@ export class Decompressor implements CompressionTransform {
    * ```
    */
   transform(source: AsyncIterable<ByteInput>): AsyncIterable<Uint8Array> {
-    return this.#impl.transform(source);
+    const decompressor = this;
+    return (async function* () {
+      try {
+        for await (const chunk of source) {
+          for (const part of decompressor.write(chunk)) yield part;
+        }
+        for (const part of decompressor.finish()) yield part;
+      } finally {
+        decompressor.close();
+      }
+    })();
   }
   /**
    * Release native decompression state.

@@ -1122,7 +1122,19 @@ export class JobsService {
       await new Promise<void>((resolve) => this.#tickWaiters.push(resolve));
     }
     const drain = Promise.allSettled([...this.#inFlight.values()]);
-    await Promise.race([drain, new Promise<void>((res) => setTimeout(res, this.#closeTimeout))]);
+    let closeTimer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      // Keep this deadline referenced: it bounds stop() even when an in-flight
+      // processor promise has no event-loop handle of its own.
+      await Promise.race([
+        drain,
+        new Promise<void>((resolve) => {
+          closeTimer = setTimeout(resolve, this.#closeTimeout);
+        }),
+      ]);
+    } finally {
+      if (closeTimer !== null) clearTimeout(closeTimer);
+    }
     for (const processor of this.#processors) {
       try {
         await processor.close();
