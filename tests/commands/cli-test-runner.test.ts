@@ -10,7 +10,7 @@ import type {
   TestGroupCompletion,
   TestGroupStart,
 } from '../../js/internal/test-worker.ts';
-import { runCli, runRootInProcess, withTempProject } from './cli-test-helpers.ts';
+import { poll, runCli, runRootInProcess, withTempProject } from './cli-test-helpers.ts';
 
 const DURATION_RE = String.raw`\d+(?:\.\d+)?(?:ns|us|ms|s|m|h)\b`;
 
@@ -393,6 +393,43 @@ describe('CLI commands: test', () => {
       t.ok(stdout.includes('ok 1 - registers cleanup'), 'test reports success after its hook');
       const marker = await fs.readFile(`${dir}/cleaned`);
       t.equal((marker as unknown as string).length, 1, 'shutdown hook completed before CLI exit');
+    });
+  });
+  it('keeps the coordinator referenced while a completed test Realm exits', async (t) => {
+    await withTempProject({}, async (dir, fs) => {
+      const marker = `${dir}/completion-reported`;
+      await fs.writeFile(
+        `${dir}/delayed-exit.test.ts`,
+        [
+          "import { test } from 'fino:test/test';",
+          "import { DiskFileSystem } from 'fino:file';",
+          "import { registerShutdownHook } from 'internal:shutdown';",
+          'const fs = new DiskFileSystem();',
+          'setTimeout(() => {}, 2_000);',
+          `registerShutdownHook(() => fs.writeFile(${JSON.stringify(marker)}, new Uint8Array([1])));`,
+          "test('reports before its Realm exits', (t) => t.ok(true));",
+          '',
+        ].join('\n') as never,
+      );
+      const baselineTimers = loop._activeHandleCounts().referencedTimers;
+      const command = runRootInProcess(['test', '--parallel', 'delayed-exit.test.ts'], {
+        cwd: dir,
+      });
+      try {
+        await poll(async () => {
+          try {
+            await fs.lstat(marker);
+          } catch {
+            return false;
+          }
+          return loop._activeHandleCounts().referencedTimers > baselineTimers;
+        }, 1_000);
+        t.ok(true, 'the exit diagnostic keeps the coordinator event loop referenced');
+      } finally {
+        const { stderr, result } = await command;
+        t.equal(result.code, 0, 'the delayed test Realm exits successfully');
+        t.equal(stderr, '', 'the delayed exit does not report a lifecycle error');
+      }
     });
   });
   it('acknowledges worker completion before allowing its Realm to exit', async (t) => {

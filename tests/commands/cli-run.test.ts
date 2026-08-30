@@ -204,15 +204,6 @@ describe('CLI commands: run', () => {
     t.equal(stderr, '', 'run command script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'run command imported and executed the script');
   });
-  it('resolves run scripts from the invocation cwd', async (t) => {
-    await withTempProject({ 'entry.ts': 'export const value = 1;\n' }, async (dir) => {
-      const { stderr, result } = await runRootInProcess(['run', 'entry.ts'], {
-        cwd: dir,
-      });
-      t.equal(result.code, 0, 'context-relative run exits successfully');
-      t.equal(stderr, '', 'context-relative run does not write stderr');
-    });
-  });
   it('exposes root script arguments through process argv after --', async (t) => {
     await withTempProject(
       {

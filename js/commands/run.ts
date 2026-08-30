@@ -25,7 +25,7 @@
  * await runCommand.parse(['./server.ts']);
  * ```
  */
-import { Task, type TaskContext } from '../task.ts';
+import { Task } from '../task.ts';
 import { cwd, env } from '../process.ts';
 import { Realm } from '../realm/index.ts';
 import { runApp } from '../internal/orchestrator/index.ts';
@@ -65,13 +65,13 @@ function fileUrlFromPath(path: string): string {
  * `file://` URLs directly; relative paths — with or without a leading `./` —
  * resolve against the current working directory first.
  */
-function normalizeScriptSpecifier(script: string, base = cwd()): string {
+function normalizeScriptSpecifier(script: string): string {
   if (script.startsWith('file://')) return script;
   if (script.startsWith('/')) return fileUrlFromPath(script);
   if (script.startsWith('./') || script.startsWith('../'))
-    return fileUrlFromPath(`${base}/${script}`);
+    return fileUrlFromPath(`${cwd()}/${script}`);
   if (script.includes(':')) return script;
-  return fileUrlFromPath(`${base}/./${script}`);
+  return fileUrlFromPath(`${cwd()}/./${script}`);
 }
 /**
  * Parsed CLI input consumed by the run task.
@@ -126,12 +126,12 @@ function cliOtlpEndpoint(input: RunInput): string | undefined {
  * await runCommand.run({ script: './example.ts' });
  * ```
  */
-async function runScriptTask(input: RunInput, ctx: TaskContext): Promise<unknown> {
+async function runScriptTask(input: RunInput): Promise<unknown> {
   const script = input.script;
   if (script === undefined) throw new Error('fino run: no script specified');
-  const entry = normalizeScriptSpecifier(String(script), ctx.cwd ?? cwd());
   const watchMode = input.watch === true;
   if (watchMode) {
+    const entry = normalizeScriptSpecifier(String(script));
     const endpoint = cliOtlpEndpoint(input);
     const realm = new Realm({
       entry,
@@ -144,6 +144,7 @@ async function runScriptTask(input: RunInput, ctx: TaskContext): Promise<unknown
     );
     return realm.run();
   }
+  const entry = normalizeScriptSpecifier(String(script));
   const endpoint = cliOtlpEndpoint(input);
   if (!endpoint) return runApp({ entry });
   return runApp({

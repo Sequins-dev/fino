@@ -408,8 +408,11 @@ async function runParallelTests(
       pendingFiles.set(file.display, test);
       void fileCompletion.finally(() => pendingFiles.delete(file.display));
       void test.completionReported.then((reported) => {
+        // This timer also keeps the coordinator Realm alive until the worker's
+        // final exit signal is delivered. A pending Promise alone does not keep
+        // the event loop referenced, and the acknowledgement clears the
+        // worker's own fallback timer before Realm.run() necessarily settles.
         const exitDiagnostic = loopTimeout(PARALLEL_REALM_EXIT_DIAGNOSTIC_MS);
-        exitDiagnostic.unref();
         void exitDiagnostic.then(() => {
           if (!pendingFiles.has(file.display)) return;
           write(
@@ -495,12 +498,12 @@ async function runParallelTests(
  * carrying a scheme (`file://`, `fino:`, `internal:`) passes through
  * unchanged so built-in modules can be named directly on the command line.
  */
-function normalizeModuleSpecifier(path: string, base = cwd()): string {
+function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
-  if (path.startsWith('./') || path.startsWith('../')) return `file://${base}/${path}`;
+  if (path.startsWith('./') || path.startsWith('../')) return `file://${cwd()}/${path}`;
   if (path.includes(':')) return path;
-  return `file://${base}/./${path}`;
+  return `file://${cwd()}/./${path}`;
 }
 /**
  * Whether a path follows the `*.test.ts` naming convention for test modules.
@@ -525,7 +528,7 @@ function isTestModuleFile(path: string): boolean {
  * pattern that matches nothing yields an empty list rather than throwing —
  * the command reports the error after all arguments are expanded.
  */
-async function expandArg(arg: string, base = cwd()): Promise<string[]> {
+async function expandArg(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const isDir = arg.endsWith('/') || !/\.[^/]+$/.test(arg);
   if (!isGlob && !isDir) {
@@ -533,6 +536,7 @@ async function expandArg(arg: string, base = cwd()): Promise<string[]> {
   }
   const fs = new DiskFileSystem();
   const pattern = isGlob ? arg : arg.replace(/\/$/, '') + '/**/*.test.ts';
+  const base = cwd();
   const results: string[] = [];
   for await (const entry of fs.glob(pattern, {
     cwd: base,
@@ -630,10 +634,9 @@ const command = new Task({
     }
     if (coveragePath !== undefined) await startCoverage(coveragePath);
     allowInternalForTests();
-    const base = ctx.cwd ?? cwd();
     const expandedFiles: string[] = [];
     for (const raw of testFiles) {
-      const expanded = await expandArg(String(raw), base);
+      const expanded = await expandArg(String(raw));
       expandedFiles.push(...expanded);
     }
     const importFiles = expandedFiles.some(isTestModuleFile)
@@ -658,7 +661,7 @@ const command = new Task({
       const seen = new Set<string>();
       const parallelFiles: ParallelTestFile[] = [];
       for (const file of importFiles) {
-        const specifier = normalizeModuleSpecifier(file, base);
+        const specifier = normalizeModuleSpecifier(file);
         if (seen.has(specifier)) continue;
         seen.add(specifier);
         parallelFiles.push({
@@ -668,7 +671,7 @@ const command = new Task({
       }
       output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
     } else {
-      for (const file of importFiles) await import(normalizeModuleSpecifier(file, base));
+      for (const file of importFiles) await import(normalizeModuleSpecifier(file));
       const { run } = await import('fino:test/test');
       output = await run(runOptions);
     }

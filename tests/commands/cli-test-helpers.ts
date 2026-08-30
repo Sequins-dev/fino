@@ -1,6 +1,6 @@
 /** Shared helpers for CLI command integration tests. */
 import type { Assert } from 'fino:test/assert';
-import { Process, env, execPath } from 'fino:process';
+import { chdir, cwd, Process, env, execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import rootCommand from 'internal:commands/root';
@@ -211,11 +211,10 @@ export async function runRootInProcess(
     signal: number | null;
   };
 }> {
+  const previousCwd = cwd();
   try {
-    const result = await rootCommand.parse(
-      args,
-      options.cwd === undefined ? {} : { cwd: options.cwd },
-    );
+    if (options.cwd !== undefined) chdir(options.cwd);
+    const result = await rootCommand.parse(args);
     return {
       stdout: typeof result === 'string' ? result : '',
       stderr: '',
@@ -234,5 +233,7 @@ export async function runRootInProcess(
         signal: null,
       },
     };
+  } finally {
+    if (options.cwd !== undefined) chdir(previousCwd);
   }
 }

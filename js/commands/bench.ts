@@ -33,12 +33,12 @@ import { DiskFileSystem } from '../file/fs.ts';
  * URLs directly; relative and bare paths are resolved against the current
  * working directory first.
  */
-function normalizeModuleSpecifier(path: string, base = cwd()): string {
+function normalizeModuleSpecifier(path: string): string {
   if (path.startsWith('file://')) return path;
   if (path.startsWith('/')) return `file://${path}`;
-  if (path.startsWith('./') || path.startsWith('../')) return `file://${base}/${path}`;
+  if (path.startsWith('./') || path.startsWith('../')) return `file://${cwd()}/${path}`;
   if (path.includes(':')) return path;
-  return `file://${base}/./${path}`;
+  return `file://${cwd()}/./${path}`;
 }
 /**
  * Expand a single CLI argument into benchmark files to import.
@@ -49,7 +49,7 @@ function normalizeModuleSpecifier(path: string, base = cwd()): string {
  * unchanged so the loader keeps handling them. Expanded matches are sorted for
  * a deterministic run order.
  */
-async function expandArg(arg: string, base = cwd()): Promise<string[]> {
+async function expandArg(arg: string): Promise<string[]> {
   const isGlob = arg.includes('*') || arg.includes('?') || arg.includes('{');
   const isDir = arg.endsWith('/') || !/\.[^/]+$/.test(arg);
   if (!isGlob && !isDir) {
@@ -57,6 +57,7 @@ async function expandArg(arg: string, base = cwd()): Promise<string[]> {
   }
   const fs = new DiskFileSystem();
   const pattern = isGlob ? arg : arg.replace(/\/$/, '') + '/**/*.bench.ts';
+  const base = cwd();
   const results: string[] = [];
   for await (const entry of fs.glob(pattern, {
     cwd: base,
@@ -106,12 +107,11 @@ const command = new Task({
     if (benchFiles.length === 0) {
       throw new Error('fino bench: no benchmark files specified');
     }
-    const base = ctx.cwd ?? cwd();
     const importedFiles: string[] = [];
     for (const raw of benchFiles) {
-      const expanded = await expandArg(String(raw), base);
+      const expanded = await expandArg(String(raw));
       for (const file of expanded) {
-        await import(normalizeModuleSpecifier(file, base));
+        await import(normalizeModuleSpecifier(file));
         importedFiles.push(file);
       }
     }
