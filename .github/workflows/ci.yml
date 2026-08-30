@@ -184,7 +184,7 @@ jobs:
   linux-tests:
     name: Linux Tests
     runs-on: blacksmith-2vcpu-ubuntu-2404
-    timeout-minutes: 30
+    timeout-minutes: 15
     needs: linux-build
     env:
       FINO_REQUIRE_H2: "1"
@@ -242,6 +242,7 @@ jobs:
   macos-tests:
     name: macOS Tests
     runs-on: blacksmith-6vcpu-macos-15
+    timeout-minutes: 15
     needs: macos-build
     steps:
       - name: Check out repository
