@@ -233,9 +233,9 @@ class RecordingBufferedWriter extends BufferedBytesWriter {
 }
 class CountingWriteBufferedWriter extends RecordingBufferedWriter {
   writeCalls = 0;
-  protected override async writeValue(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+  override async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     this.writeCalls++;
-    await super.writeValue(data);
+    await super.write(data);
   }
 }
 describe('Reader', () => {
@@ -244,7 +244,7 @@ describe('Reader', () => {
     const releases: Array<(value: number | null) => void> = [];
     class OrderedReader extends Reader<number> {
       #index = 0;
-      protected async readValue(): Promise<number | null> {
+      async read(): Promise<number | null> {
         const index = ++this.#index;
         started.push(index);
         return new Promise<number | null>((resolve) => releases.push(resolve));
@@ -277,7 +277,7 @@ describe('Reader', () => {
           cancelActive();
         });
       }
-      protected async readValue(): Promise<number | null> {
+      async read(): Promise<number | null> {
         const index = ++this.#index;
         started.push(index);
         if (index > 1) return index;
@@ -304,7 +304,7 @@ describe('Writer', () => {
     const started: number[] = [];
     const releases: Array<() => void> = [];
     class OrderedWriter extends Writer<number> {
-      protected async writeValue(value: number): Promise<void> {
+      async write(value: number): Promise<void> {
         started.push(value);
         await new Promise<void>((resolve) => releases.push(resolve));
       }
@@ -331,7 +331,7 @@ describe('Writer', () => {
       constructor() {
         super(() => events.push('close'));
       }
-      protected async writeValue(value: number): Promise<void> {
+      async write(value: number): Promise<void> {
         events.push(`write ${value} start`);
         await new Promise<void>((resolve) => {
           release = resolve;
@@ -358,14 +358,14 @@ describe('Writer', () => {
     const events: string[] = [];
     let release!: () => void;
     class FlushingWriter extends Writer<number> {
-      protected async writeValue(value: number): Promise<void> {
+      async write(value: number): Promise<void> {
         events.push(`write ${value} start`);
         await new Promise<void>((resolve) => {
           release = resolve;
         });
         events.push(`write ${value} end`);
       }
-      protected async flushWriter(): Promise<void> {
+      override async flush(): Promise<void> {
         events.push('flush');
       }
     }
@@ -382,14 +382,14 @@ describe('Writer', () => {
     const seen: number[] = [];
     let release!: () => void;
     class MixedWriter extends Writer<number> {
-      protected async writeValue(value: number): Promise<void> {
+      async write(value: number): Promise<void> {
         seen.push(value);
         await new Promise<void>((resolve) => {
           release = resolve;
         });
       }
       writeSync(value: number): void {
-        this.writeSyncOperation(() => seen.push(value));
+        seen.push(value);
       }
     }
     const writer = new MixedWriter();

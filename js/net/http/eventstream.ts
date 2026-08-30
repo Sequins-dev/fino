@@ -165,7 +165,7 @@ export class EventSourceReader extends Reader<SseEvent> {
    * }
    * ```
    */
-  protected async readValue(): Promise<SseEvent | null> {
+  async read(): Promise<SseEvent | null> {
     if (this.#gen === null) this.#gen = this.#parse();
     const result = await this.#gen.next();
     return result.done ? null : result.value;
@@ -275,7 +275,7 @@ export class EventSourceWriter extends Writer<SseEventOptions> {
    * await events.write({ event: 'update', data: 'line 1\nline 2', id: '42' });
    * ```
    */
-  protected async writeValue(opts: SseEventOptions): Promise<void> {
+  async write(opts: SseEventOptions): Promise<void> {
     let frame = '';
     if (opts.event !== undefined && opts.event !== null) {
       frame += 'event: ' + String(opts.event) + '\n';

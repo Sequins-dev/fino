@@ -211,12 +211,38 @@ class OperationQueue {
     return settled;
   }
 }
+interface ReaderQueueState {
+  queue: OperationQueue;
+  closed: () => boolean;
+}
+const readerQueues = new WeakMap<object, ReaderQueueState>();
+function queueReaderOperation<R>(
+  reader: object,
+  operation: () => Promise<R>,
+  closedValue: () => R,
+): Promise<R> {
+  const state = readerQueues.get(reader)!;
+  if (state.closed()) return Promise.resolve(closedValue());
+  return state.queue.run(() => (state.closed() ? Promise.resolve(closedValue()) : operation()));
+}
+interface WriterQueueState {
+  queue: OperationQueue;
+  closed: () => boolean;
+}
+const writerQueues = new WeakMap<object, WriterQueueState>();
+function queueWriterOperation<R>(writer: object, operation: () => Promise<R>): Promise<R> {
+  const state = writerQueues.get(writer)!;
+  if (state.closed()) return Promise.reject(new Error('Writer is closed'));
+  return state.queue.run(operation);
+}
+function queueWriterClose(writer: object, operation: () => Promise<void>): Promise<void> {
+  return writerQueues.get(writer)!.queue.run(operation);
+}
 /**
  * Abstract base class for asynchronous producers.
  *
- * Subclasses implement `readValue()` and return either the next value or `null`
- * for EOF. The public `read()` method admits one source operation at a time in
- * call order. The base class also provides idempotent asynchronous close
+ * Subclasses implement `read()` and return either the next value or `null` for
+ * EOF. The base class admits calls one at a time in call order and also provides idempotent asynchronous close
  * handling and the async iterator protocol. `close()` awaits the optional
  * `onClose` callback, so callers should always await it when resources are
  * involved.
@@ -225,7 +251,7 @@ class OperationQueue {
  * import { Reader } from 'fino:stream';
  * class OnceReader extends Reader {
  *   value = 'hello';
- *   async readValue() {
+ *   async read() {
  *     const value = this.value;
  *     this.value = null;
  *     return value;
@@ -260,7 +286,6 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    * @internal
    */
   #closed = false;
-  #operations = new OperationQueue();
   #closePromise: Promise<void> | null = null;
   /**
    * Private property `#onClose` used by `Reader`.
@@ -293,7 +318,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader(() => console.log('closed'));
    * await reader.close();
    * ```
@@ -302,6 +327,16 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    */
   constructor(onClose: ReaderCloseCallback = () => {}) {
     this.#onClose = onClose;
+    const implementation = this.read.bind(this);
+    readerQueues.set(this, { queue: new OperationQueue(), closed: () => this.#closed });
+    Object.defineProperty(this, 'read', {
+      value: (...args: unknown[]) =>
+        queueReaderOperation(
+          this,
+          () => (implementation as (...values: unknown[]) => Promise<T | null>)(...args),
+          () => null,
+        ),
+    });
   }
   /**
    * Whether the reader has been closed.
@@ -311,7 +346,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * console.log(reader.closed);
    * await reader.close();
@@ -324,48 +359,21 @@ export abstract class Reader<T> implements AsyncIterator<T> {
     return this.#closed;
   }
   /**
-   * Pull the next value from the underlying source.
+   * Produce the next value from the stream.
    *
-   * Subclasses implement this hook instead of overriding `read()`. The base
-   * class invokes it only while this reader owns the FIFO turn. Return `null`
-   * to signal EOF; `undefined` remains an ordinary value for generic readers.
+   * Subclasses return `null` to signal EOF. The base class automatically wraps
+   * the implementation with this reader's FIFO; subclasses do not manage
+   * ordering themselves.
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * console.log(await new EmptyReader().read());
    * ```
    *
-   * @returns The next source value, or `null` on EOF.
+   * @returns The next value, or `null` on EOF.
    */
-  protected abstract readValue(): Promise<T | null>;
-  /**
-   * Admit a specialized reader operation to this reader's FIFO.
-   *
-   * Byte readers use this for compound operations that must retain ownership
-   * across several source pulls. If close begins before queued work starts,
-   * `closedValue` is returned without entering the source.
-   *
-   * @internal
-   */
-  protected readOperation<R>(operation: () => Promise<R>, closedValue: () => R): Promise<R> {
-    if (this.#closed) return Promise.resolve(closedValue());
-    const run = (): Promise<R> => (this.#closed ? Promise.resolve(closedValue()) : operation());
-    return this.#operations.run(run);
-  }
-  /**
-   * Produce the next value from the stream.
-   *
-   * Concurrent calls enter `readValue()` one at a time in invocation order.
-   * Reads queued when `close()` begins resolve to `null` without touching the
-   * source, as do reads made after close.
-   */
-  read(): Promise<T | null> {
-    return this.readOperation(
-      () => this.readValue(),
-      () => null,
-    );
-  }
+  abstract read(): Promise<T | null>;
   /**
    * Close the reader and run its close callback once.
    *
@@ -375,7 +383,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * await reader.close();
    * await reader.close();
@@ -405,7 +413,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * const result = await new EmptyReader().next();
    * console.log(result.done);
    * ```
@@ -433,7 +441,7 @@ export abstract class Reader<T> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async readValue() { return null; } }
+   * class EmptyReader extends Reader { async read() { return null; } }
    * const reader = new EmptyReader();
    * console.log(reader[Symbol.asyncIterator]() === reader);
    * ```
@@ -587,14 +595,8 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    *
    * @returns A byte chunk, or `null` on EOF.
    */
-  protected readValue(): Promise<Uint8Array | null> {
-    return this.#readBytes();
-  }
   read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
-    return this.readOperation(
-      () => this.#readBytes(options),
-      () => null,
-    );
+    return this.#readBytes(options);
   }
   async #readBytes(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
     const readOptions = normalizeReadOptions(options);
@@ -673,7 +675,8 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns Exactly `n` bytes, or `null` if EOF arrives first.
    */
   readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#readExactly(n, options),
       () => null,
     );
@@ -720,7 +723,8 @@ export abstract class BytesReader extends Reader<Uint8Array> {
    * @returns One byte as a number, or `null` on EOF.
    */
   readByte(options?: BytesReadOptions): Promise<number | null> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#readByte(options),
       () => null,
     );
@@ -763,7 +767,8 @@ export abstract class BytesReader extends Reader<Uint8Array> {
     max: number = 1 << 20,
     options?: BytesReadOptions,
   ): Promise<Uint8Array | null> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#readUntil(delim, max, options),
       () => null,
     );
@@ -1062,7 +1067,8 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @returns A non-consuming copy of available bytes.
    */
   peek(n: number): Promise<Uint8Array> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#peek(n),
       () => new Uint8Array(0),
     );
@@ -1206,7 +1212,8 @@ export abstract class BufferedBytesReader extends BytesReader {
    * @returns Exactly `n` bytes, or `null` if EOF arrives first.
    */
   override readExactly(n: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#readExactlyBuffered(n, options),
       () => null,
     );
@@ -1246,7 +1253,8 @@ export abstract class BufferedBytesReader extends BytesReader {
     max: number = 1 << 20,
     options?: BytesReadOptions,
   ): Promise<Uint8Array | null> {
-    return this.readOperation(
+    return queueReaderOperation(
+      this,
       () => this.#readUntilBuffered(delim, max, options),
       () => null,
     );
@@ -1543,8 +1551,8 @@ export class FdReader extends BufferedBytesReader {
 /**
  * Abstract base class for asynchronous consumers.
  *
- * Subclasses implement `writeValue(value)`. The public `write()` method admits
- * one sink operation at a time in call order. `flush()` is a FIFO barrier and
+ * Subclasses implement `write(value)`. Calls are admitted one at a time in
+ * call order. `flush()` is a FIFO barrier and
  * `close()` stops new admissions, drains earlier work, runs the subclass close
  * hook, and then awaits the optional cleanup callback.
  *
@@ -1552,7 +1560,7 @@ export class FdReader extends BufferedBytesReader {
  * import { Writer } from 'fino:stream';
  * class ArrayWriter extends Writer {
  *   values = [];
- *   async writeValue(value) { this.values.push(value); }
+ *   async write(value) { this.values.push(value); }
  * }
  * const writer = new ArrayWriter();
  * await writer.write('hello');
@@ -1583,7 +1591,6 @@ export abstract class Writer<T> {
    * @internal
    */
   #closed = false;
-  #operations = new OperationQueue();
   #closePromise: Promise<void> | null = null;
   /**
    * Private property `#onClose` used by `Writer`.
@@ -1615,7 +1622,7 @@ export abstract class Writer<T> {
    *
    * ```js
    * import { Writer } from 'fino:stream';
-   * class NullWriter extends Writer { async writeValue(_value) {} }
+   * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter(() => console.log('closed'));
    * await writer.close();
    * ```
@@ -1624,6 +1631,46 @@ export abstract class Writer<T> {
    */
   constructor(onClose: () => void | Promise<void> = () => {}) {
     this.#onClose = onClose;
+    const write = this.write.bind(this);
+    const flush = this.flush.bind(this);
+    const close = this.close.bind(this);
+    const writeSync = this.writeSync?.bind(this);
+    const closeSync = this.closeSync?.bind(this);
+    const state = { queue: new OperationQueue(), closed: () => this.#closed };
+    writerQueues.set(this, state);
+    Object.defineProperty(this, 'write', {
+      value: (value: T) => queueWriterOperation(this, () => write(value)),
+    });
+    Object.defineProperty(this, 'flush', {
+      value: () => queueWriterOperation(this, flush),
+    });
+    Object.defineProperty(this, 'close', {
+      value: () => {
+        if (this.#closePromise !== null) return this.#closePromise;
+        this.#closed = true;
+        this.#closePromise = queueWriterClose(this, close);
+        return this.#closePromise;
+      },
+    });
+    if (writeSync !== undefined) {
+      Object.defineProperty(this, 'writeSync', {
+        value: (...args: unknown[]) => {
+          if (this.#closed) throw new Error('Writer is closed');
+          state.queue.runSync(() => (writeSync as (...values: unknown[]) => void)(...args));
+        },
+      });
+    }
+    if (closeSync !== undefined) {
+      Object.defineProperty(this, 'closeSync', {
+        value: () => {
+          if (this.#closed) return;
+          state.queue.runSync(() => {
+            this.#closed = true;
+            closeSync();
+          });
+        },
+      });
+    }
   }
   /**
    * Whether the writer has been closed.
@@ -1633,7 +1680,7 @@ export abstract class Writer<T> {
    *
    * ```js
    * import { Writer } from 'fino:stream';
-   * class NullWriter extends Writer { async writeValue(_value) {} }
+   * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter();
    * await writer.close();
    * console.log(writer.closed);
@@ -1645,17 +1692,16 @@ export abstract class Writer<T> {
     return this.#closed;
   }
   /**
-   * Write one value to the underlying sink.
+   * Write one value to the sink.
    *
-   * Subclasses implement this hook instead of overriding `write()`. The base
-   * class invokes it only while this writer owns the FIFO turn. Rejection is
-   * reported to this operation's caller and later admitted operations continue.
+   * Subclasses implement this method normally. The base class automatically
+   * wraps it with per-instance FIFO ordering.
    *
    * ```js
    * import { Writer } from 'fino:stream';
    * class ArrayWriter extends Writer {
    *   values = [];
-   *   async writeValue(value) { this.values.push(value); }
+   *   async write(value) { this.values.push(value); }
    * }
    * await new ArrayWriter().write('x');
    * ```
@@ -1663,53 +1709,17 @@ export abstract class Writer<T> {
    * @param value Value to write.
    * @returns A promise that resolves after the value is accepted.
    */
-  protected abstract writeValue(value: T): Promise<void>;
-  /**
-   * Admit a specialized asynchronous operation to this writer's FIFO.
-   *
-   * Byte writers use this to keep compound operations such as `writev()`
-   * atomic relative to ordinary writes. Operations after close are rejected.
-   *
-   * @internal
-   */
-  protected writeOperation<R>(operation: () => Promise<R>): Promise<R> {
-    if (this.#closed) return Promise.reject(new Error('Writer is closed'));
-    return this.#enqueue(operation);
-  }
-  /**
-   * Run a synchronous writer operation only when no async turn is pending.
-   *
-   * Optional synchronous writer capabilities use this guard so they cannot
-   * overtake an admitted asynchronous operation.
-   *
-   * @internal
-   */
-  protected writeSyncOperation(operation: () => void): void {
-    if (this.#closed) throw new Error('Writer is closed');
-    this.#operations.runSync(operation);
-  }
-  #enqueue<R>(operation: () => Promise<R>): Promise<R> {
-    return this.#operations.run(operation);
-  }
-  /**
-   * Write one value in FIFO order.
-   *
-   * Overlapping calls enter `writeValue()` one at a time in invocation order.
-   * Calls made after `close()` begins reject with `Writer is closed`.
-   */
-  write(value: T): Promise<void> {
-    return this.writeOperation(() => this.writeValue(value));
-  }
+  abstract write(value: T): Promise<void>;
   /**
    * Write one value synchronously when the writer supports synchronous
    * acceptance.
    *
    * This method is an optional capability for hot paths that must not yield
    * between producing bytes and updating native state. Implementations should
-   * call `writeSyncOperation()` so pending asynchronous work cannot be
-   * overtaken, then either accept the value completely or throw. The base
-   * `Writer` does not provide a fallback because calling async `write()` from a
-   * sync-only path would hide an ordering bug.
+   * either accept the value completely or throw. The base automatically
+   * prevents it from overtaking pending asynchronous work. `Writer` does not
+   * provide a fallback because calling async `write()` from a sync-only path
+   * would hide an ordering bug.
    *
    * ```js
    * import { Writer } from 'fino:stream';
@@ -1730,7 +1740,7 @@ export abstract class Writer<T> {
    * import { Writer } from 'fino:stream';
    * class ArrayWriter extends Writer {
    *   values = [];
-   *   async writeValue(value) { this.values.push(value); }
+   *   async write(value) { this.values.push(value); }
    * }
    * const writer = new ArrayWriter();
    * await writer.pipe(['a', 'b']);
@@ -1750,22 +1760,13 @@ export abstract class Writer<T> {
    *
    * ```js
    * import { Writer } from 'fino:stream';
-   * class NullWriter extends Writer { async writeValue(_value) {} }
+   * class NullWriter extends Writer { async write(_value) {} }
    * await new NullWriter().flush();
    * ```
    *
    * @returns A promise that resolves after pending data is flushed.
    */
-  protected async flushWriter(): Promise<void> {}
-  /**
-   * Flush internally buffered data after all earlier writes.
-   *
-   * The base hook is a no-op for unbuffered writers. Buffered subclasses flush
-   * pending data from `flushWriter()` while holding the FIFO turn.
-   */
-  flush(): Promise<void> {
-    return this.writeOperation(() => this.flushWriter());
-  }
+  async flush(): Promise<void> {}
   /**
    * Close the writer and run its close callback once.
    *
@@ -1775,7 +1776,7 @@ export abstract class Writer<T> {
    *
    * ```js
    * import { Writer } from 'fino:stream';
-   * class NullWriter extends Writer { async writeValue(_value) {} }
+   * class NullWriter extends Writer { async write(_value) {} }
    * const writer = new NullWriter();
    * await writer.close();
    * await writer.close();
@@ -1783,27 +1784,9 @@ export abstract class Writer<T> {
    *
    * @returns A promise that resolves after cleanup.
    */
-  close(): Promise<void> {
-    if (this.#closePromise !== null) return this.#closePromise;
-    this.#closed = true;
-    this.#closePromise = this.#enqueue(async () => {
-      try {
-        await this.closeWriter();
-      } finally {
-        await this.#onClose();
-      }
-    });
-    return this.#closePromise;
+  async close(): Promise<void> {
+    await this.#onClose();
   }
-  /**
-   * Finish subclass-owned state before the cleanup callback runs.
-   *
-   * Buffered writers override this hook to emit pending data. The hook runs
-   * after every operation admitted before `close()`.
-   *
-   * @internal
-   */
-  protected async closeWriter(): Promise<void> {}
   /**
    * Close the writer synchronously when the writer supports synchronous close.
    *
@@ -1887,7 +1870,7 @@ export abstract class BytesWriter extends Writer<ArrayBuffer | ArrayBufferView> 
    * @param data Bytes to write.
    * @returns A promise that resolves after all bytes are accepted.
    */
-  protected async writeValue(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+  async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     const arr = ArrayBuffer.isView(data)
       ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
       : new Uint8Array(data);
@@ -1916,7 +1899,7 @@ export abstract class BytesWriter extends Writer<ArrayBuffer | ArrayBufferView> 
    * @returns A promise that resolves after all selected vectors are written.
    */
   writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
-    return this.writeOperation(async () => {
+    return queueWriterOperation(this, async () => {
       for (let i = 0; i < count; i++) {
         const v = vecs[i];
         if (v && v.byteLength > 0) await this.doWrite(v);
@@ -2135,7 +2118,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * @returns A promise that resolves after all selected vectors are buffered or flushed.
    */
   writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
-    return this.writeOperation(async () => {
+    return queueWriterOperation(this, async () => {
       for (let i = 0; i < count; i++) {
         const v = vecs[i];
         if (!v || v.byteLength === 0) continue;
@@ -2190,7 +2173,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    *
    * @returns A promise that resolves after pending bytes are emitted.
    */
-  protected override async flushWriter(): Promise<void> {
+  override async flush(): Promise<void> {
     await this._flushHeld();
   }
   /**
@@ -2234,8 +2217,9 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * @returns A promise that resolves after pending bytes are flushed.
    * @internal
    */
-  protected override async closeWriter(): Promise<void> {
+  override async close(): Promise<void> {
     await this._flushHeld();
+    await super.close();
   }
 }
 // ---------------------------------------------------------------------------
@@ -2407,20 +2391,18 @@ export class FdWriter extends BufferedBytesWriter {
    * @internal
    */
   flushSync(): void {
-    this.writeSyncOperation(() => {
-      const pending = this._takePending();
-      if (pending === null) return;
-      let off = 0;
-      while (off < pending.byteLength) {
-        const slice = off === 0 ? pending : pending.subarray(off);
-        const n = lib.symbols.write(this.#fd, slice, slice.byteLength) as number;
-        if (n > 0) {
-          off += n;
-          continue;
-        }
-        break;
+    const pending = this._takePending();
+    if (pending === null) return;
+    let off = 0;
+    while (off < pending.byteLength) {
+      const slice = off === 0 ? pending : pending.subarray(off);
+      const n = lib.symbols.write(this.#fd, slice, slice.byteLength) as number;
+      if (n > 0) {
+        off += n;
+        continue;
       }
-    });
+      break;
+    }
   }
   /**
    * Flush all bytes in `buf` with `write(2)`.
@@ -2478,7 +2460,7 @@ export class FdWriter extends BufferedBytesWriter {
    * @internal
    */
   writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
-    if (count === 0) return this.writeOperation(async () => {});
+    if (count === 0) return queueWriterOperation(this, async () => {});
     if (count > MAX_IOV)
       return Promise.reject(new Error(`writev: too many vectors (max ${MAX_IOV})`));
     let totalLen = 0;
@@ -2494,7 +2476,7 @@ export class FdWriter extends BufferedBytesWriter {
     // precede it and the gather loop itself: the iovec block and the cursor
     // array are per-writer scratch, so a second writev running against them
     // concurrently would rewrite this one's vectors mid-syscall.
-    return this.writeOperation(async () => {
+    return queueWriterOperation(this, async () => {
       await this._flushHeld();
       const cursors = this.#cursors;
       cursors.fill(0, 0, count);
@@ -2643,7 +2625,7 @@ export class PipeWriter<T> extends Writer<T> {
    *
    * @internal
    */
-  protected override async writeValue(value: T): Promise<void> {
+  async write(value: T): Promise<void> {
     this.#buf.push(value);
   }
   /**
@@ -2713,7 +2695,7 @@ export class PipeReader<T> extends Reader<T> {
    *
    * @internal
    */
-  protected override readValue(): Promise<T | null> {
+  read(): Promise<T | null> {
     return this.#buf.read();
   }
 }
