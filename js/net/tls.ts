@@ -676,30 +676,7 @@ export class TlsSocket extends Socket {
    * @internal
    */
   #negotiatedProtocol: string | null;
-  // Bound reference to super.close() for use inside split() closures,
-  // where `super` is not lexically accessible.
-  /**
-   * Private property `#superClose` used by `TlsSocket`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #superClose = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#superClose;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #superClose: () => void;
+  #tlsClosed = false;
   /**
    * Wrap an established TLS session.
    *
@@ -716,7 +693,6 @@ export class TlsSocket extends Socket {
     this.#ssl = ssl;
     this.#sslCtx = sslCtx;
     this.#negotiatedProtocol = openssl.sslGetAlpnSelected(ssl);
-    this.#superClose = () => super.close();
   }
   /**
    * The ALPN protocol negotiated during the TLS handshake, or `null` if none.
@@ -785,18 +761,10 @@ export class TlsSocket extends Socket {
    */
   split(): [TlsReader, TlsWriter] {
     const ssl = this.#ssl;
-    const sslCtx = this.#sslCtx;
-    const superClose = this.#superClose;
     let closeCount = 0;
-    const fd = this.fd;
-    const onBothClosed = function onBothClosed() {
+    const onBothClosed = () => {
       if (++closeCount < 2) return;
-      try {
-        openssl.sslShutdown(ssl);
-      } catch (_) {}
-      openssl.sslFree(ssl);
-      if (sslCtx) openssl.sslCtxFree(sslCtx);
-      superClose();
+      this.#closeTls();
     };
     return [new TlsReader(ssl, this.fd, onBothClosed), new TlsWriter(ssl, this.fd, onBothClosed)];
   }
@@ -809,12 +777,20 @@ export class TlsSocket extends Socket {
    * ```
    */
   close() {
-    if (this.closed) return;
+    this.#closeTls();
+  }
+  /** Release the shared SSL session, context, and descriptor exactly once. */
+  #closeTls(): void {
+    if (this.#tlsClosed) return;
+    this.#tlsClosed = true;
     try {
       openssl.sslShutdown(this.#ssl);
     } catch (_) {}
     openssl.sslFree(this.#ssl);
-    if (this.#sslCtx) openssl.sslCtxFree(this.#sslCtx);
+    if (this.#sslCtx) {
+      openssl.sslCtxFree(this.#sslCtx);
+      this.#sslCtx = null;
+    }
     super.close();
   }
   /**

@@ -9,6 +9,8 @@ import {
   BytesWriter,
   FdReader,
   FdWriter,
+  Reader,
+  Writer,
 } from 'fino:stream';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const F_GETFL = 3;
@@ -231,12 +233,198 @@ class RecordingBufferedWriter extends BufferedBytesWriter {
 }
 class CountingWriteBufferedWriter extends RecordingBufferedWriter {
   writeCalls = 0;
-  override async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+  protected override async writeValue(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     this.writeCalls++;
-    await super.write(data);
+    await super.writeValue(data);
   }
 }
+describe('Reader', () => {
+  it('runs overlapping reads one at a time in call order', async (t) => {
+    const started: number[] = [];
+    const releases: Array<(value: number | null) => void> = [];
+    class OrderedReader extends Reader<number> {
+      #index = 0;
+      protected async readValue(): Promise<number | null> {
+        const index = ++this.#index;
+        started.push(index);
+        return new Promise<number | null>((resolve) => releases.push(resolve));
+      }
+    }
+    const reader = new OrderedReader();
+    const reads = [reader.read(), reader.read(), reader.read()];
+    await Promise.resolve();
+    t.deepEqual(started, [1], 'only the first read enters the source');
+    releases.shift()!(10);
+    t.equal(await reads[0], 10, 'the first caller receives the first value');
+    await Promise.resolve();
+    t.deepEqual(started, [1, 2], 'the second read starts after the first settles');
+    releases.shift()!(20);
+    t.equal(await reads[1], 20, 'the second caller receives the second value');
+    await Promise.resolve();
+    t.deepEqual(started, [1, 2, 3], 'the third read starts after the second settles');
+    releases.shift()!(30);
+    t.equal(await reads[2], 30, 'the third caller receives the third value');
+  });
+  it('closes an active read and does not start queued reads', async (t) => {
+    const started: number[] = [];
+    let cancelActive!: () => void;
+    let closeCount = 0;
+    class ClosingReader extends Reader<number> {
+      #index = 0;
+      constructor() {
+        super(() => {
+          closeCount++;
+          cancelActive();
+        });
+      }
+      protected async readValue(): Promise<number | null> {
+        const index = ++this.#index;
+        started.push(index);
+        if (index > 1) return index;
+        await new Promise<void>((resolve) => {
+          cancelActive = resolve;
+        });
+        return null;
+      }
+    }
+    const reader = new ClosingReader();
+    const first = reader.read();
+    const second = reader.read();
+    await Promise.resolve();
+    await Promise.all([reader.close(), reader.close()]);
+    t.equal(await first, null, 'the active read settles at EOF');
+    t.equal(await second, null, 'the queued read settles without touching the source');
+    t.deepEqual(started, [1], 'close prevents a queued source operation from starting');
+    t.equal(await reader.read(), null, 'reads after close remain at EOF');
+    t.equal(closeCount, 1, 'cleanup runs once');
+  });
+});
+describe('Writer', () => {
+  it('runs overlapping writes one at a time in call order', async (t) => {
+    const started: number[] = [];
+    const releases: Array<() => void> = [];
+    class OrderedWriter extends Writer<number> {
+      protected async writeValue(value: number): Promise<void> {
+        started.push(value);
+        await new Promise<void>((resolve) => releases.push(resolve));
+      }
+    }
+    const writer = new OrderedWriter();
+    const writes = [writer.write(1), writer.write(2), writer.write(3)];
+    await Promise.resolve();
+    t.deepEqual(started, [1], 'only the first write enters the sink');
+    releases.shift()!();
+    await writes[0];
+    await Promise.resolve();
+    t.deepEqual(started, [1, 2], 'the second write starts after the first settles');
+    releases.shift()!();
+    await writes[1];
+    await Promise.resolve();
+    t.deepEqual(started, [1, 2, 3], 'the third write starts after the second settles');
+    releases.shift()!();
+    await writes[2];
+  });
+  it('closes after admitted writes and rejects later writes', async (t) => {
+    const events: string[] = [];
+    let release!: () => void;
+    class ClosingWriter extends Writer<number> {
+      constructor() {
+        super(() => events.push('close'));
+      }
+      protected async writeValue(value: number): Promise<void> {
+        events.push(`write ${value} start`);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        events.push(`write ${value} end`);
+      }
+    }
+    const writer = new ClosingWriter();
+    const write = writer.write(1);
+    await Promise.resolve();
+    const close = writer.close();
+    t.equal(writer.closed, true, 'close stops admitting writes immediately');
+    await t.rejects(() => writer.write(2), /closed/, 'a later write is rejected');
+    t.deepEqual(events, ['write 1 start'], 'cleanup waits for the admitted write');
+    release();
+    await Promise.all([write, close]);
+    t.deepEqual(
+      events,
+      ['write 1 start', 'write 1 end', 'close'],
+      'cleanup runs after the admitted write settles',
+    );
+  });
+  it('runs flush as a barrier behind earlier writes', async (t) => {
+    const events: string[] = [];
+    let release!: () => void;
+    class FlushingWriter extends Writer<number> {
+      protected async writeValue(value: number): Promise<void> {
+        events.push(`write ${value} start`);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        events.push(`write ${value} end`);
+      }
+      protected async flushWriter(): Promise<void> {
+        events.push('flush');
+      }
+    }
+    const writer = new FlushingWriter();
+    const write = writer.write(1);
+    const flush = writer.flush();
+    await Promise.resolve();
+    t.deepEqual(events, ['write 1 start'], 'flush does not overlap the write');
+    release();
+    await Promise.all([write, flush]);
+    t.deepEqual(events, ['write 1 start', 'write 1 end', 'flush'], 'flush runs next');
+  });
+  it('rejects a synchronous write while async work owns the FIFO', async (t) => {
+    const seen: number[] = [];
+    let release!: () => void;
+    class MixedWriter extends Writer<number> {
+      protected async writeValue(value: number): Promise<void> {
+        seen.push(value);
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      writeSync(value: number): void {
+        this.writeSyncOperation(() => seen.push(value));
+      }
+    }
+    const writer = new MixedWriter();
+    const pending = writer.write(1);
+    t.throws(() => writer.writeSync(2), /pending/, 'sync work cannot overtake an async write');
+    release();
+    await pending;
+    writer.writeSync(3);
+    t.deepEqual(seen, [1, 3], 'sync work runs when the FIFO becomes idle');
+  });
+});
 describe('BytesReader', () => {
+  it('keeps a compound read in one FIFO turn', async (t) => {
+    const requests: number[] = [];
+    let releaseFirst!: () => void;
+    class ControlledBytesReader extends BytesReader {
+      protected async doRead(maxBytes: number): Promise<Uint8Array | null> {
+        requests.push(maxBytes);
+        if (requests.length === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return new Uint8Array([requests.length]);
+      }
+    }
+    const reader = new ControlledBytesReader();
+    const exact = reader.readExactly(2);
+    const next = reader.read({ maxBytes: 4 });
+    await Promise.resolve();
+    t.deepEqual(requests, [2], 'the later read cannot enter during readExactly');
+    releaseFirst();
+    await Promise.all([exact, next]);
+    t.deepEqual(requests, [2, 1, 4], 'readExactly retains every source turn it needs');
+  });
   it('readAtMost limits returned bytes and preserves the remainder', async (t) => {
     const reader = new MemoryBytesReader([new Uint8Array([1, 2, 3, 4])]);
     const first = await reader.readAtMost(2);
@@ -369,6 +557,17 @@ describe('BytesWriter', () => {
       writer.chunks.map((chunk) => [...chunk]),
       [[1], [2, 3]],
       'writev skips empty vectors and honors count',
+    );
+  });
+  it('keeps writev in one FIFO turn', async (t) => {
+    const writer = new MemoryBytesWriter();
+    const batch = writer.writev([new Uint8Array([1]), new Uint8Array([2])]);
+    const single = writer.write(new Uint8Array([3]));
+    await Promise.all([batch, single]);
+    t.deepEqual(
+      writer.chunks.map((chunk) => [...chunk]),
+      [[1], [2], [3]],
+      'a later write cannot interleave between vectors',
     );
   });
   it('close() is idempotent and rejects writes after close', async (t) => {
@@ -611,6 +810,33 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
         [...received.subarray(received.byteLength - 32)],
         [...payload.subarray(payload.byteLength - 32)],
         'large write suffix matches',
+      );
+    } finally {
+      await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+  it('FdWriter close drains a write already waiting on backpressure', async (t) => {
+    const pipe = makePipe();
+    const writer = new FdWriter(pipe.writeFd, () => pipe.closeWrite());
+    const payload = patternedBytes(96 * 1024);
+    try {
+      const fillerBytes = fillPipe(pipe.writeFd);
+      t.ok(fillerBytes > 0, 'pipe was filled before close');
+      let done = false;
+      const write = writer.write(payload);
+      const close = writer.close().then(() => {
+        done = true;
+      });
+      const drained: Uint8Array[] = [];
+      await drainUntilDone(pipe.readFd, () => done, drained);
+      await withTimeout(Promise.all([write, close]), 'fd writer close drain');
+      drained.push(...(await drainToEof(pipe.readFd)));
+      t.equal(
+        concat(drained).subarray(fillerBytes).byteLength,
+        payload.byteLength,
+        'close waits for every admitted byte',
       );
     } finally {
       await writer.close().catch(() => {});

@@ -2181,23 +2181,24 @@ export class QuicBytesWriter extends BytesWriter {
     super(onClose);
     this.#stream = stream;
   }
-  override async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+  protected override async writeValue(data: ArrayBuffer | ArrayBufferView): Promise<void> {
     this.#stream[quicStreamInternals.assertWritableSide]();
-    await super.write(data);
+    await super.writeValue(data);
   }
   writeSync(data: ArrayBuffer | ArrayBufferView, owned = false): void {
     this.#stream[quicStreamInternals.assertWritableSide]();
-    if (this.closed) throw new Error('Writer is closed');
-    const buf =
-      data instanceof Uint8Array
-        ? data
-        : ArrayBuffer.isView(data)
-          ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
-          : new Uint8Array(data);
-    // `owned` means the caller handed us a fresh buffer it will not reuse (the
-    // H3 drain allocates one per write), so we can retain it without slicing.
-    this.#writeChunk(buf, owned);
-    this.#flushPending();
+    this.writeSyncOperation(() => {
+      const buf =
+        data instanceof Uint8Array
+          ? data
+          : ArrayBuffer.isView(data)
+            ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+            : new Uint8Array(data);
+      // `owned` means the caller handed us a fresh buffer it will not reuse (the
+      // H3 drain allocates one per write), so we can retain it without slicing.
+      this.#writeChunk(buf, owned);
+      this.#flushPending();
+    });
   }
   protected async doWrite(buf: Uint8Array): Promise<void> {
     this.#writeChunk(buf, false);
@@ -2213,24 +2214,18 @@ export class QuicBytesWriter extends BytesWriter {
     this.#fin = false;
     void super.close();
   }
-  override async close(): Promise<void> {
-    if (this.closed) return;
-    if (!this.#stream[quicStreamInternals.hasWritableSide]()) {
-      await super.close();
-      return;
-    }
+  protected override async closeWriter(): Promise<void> {
+    if (!this.#stream[quicStreamInternals.hasWritableSide]()) return;
     this.#fin = true;
     this.#flushPending();
-    await super.close();
   }
   closeSync(): void {
     if (this.closed) return;
-    if (!this.#stream[quicStreamInternals.hasWritableSide]()) {
-      void super.close();
-      return;
-    }
-    this.#fin = true;
-    this.#flushPending();
+    this.writeSyncOperation(() => {
+      if (!this.#stream[quicStreamInternals.hasWritableSide]()) return;
+      this.#fin = true;
+      this.#flushPending();
+    });
     void super.close();
   }
   #scheduleFlush(): void {

@@ -574,11 +574,12 @@ export function readable(fd: number, forToken?: number): Promise<number> {
  *
  * Like `readable()`, the watch is one-shot, a second watch for the same
  * descriptor replaces the first and strands it, and the descriptor therefore
- * belongs to one waiter at a time — `BufferedBytesWriter` serializes its
- * emissions for exactly this reason. Scheduler-hosted isolates delegate only
- * this readiness wait; they still retry and perform the write themselves. It is
- * typically used to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket.
- * Use `removeWrite()` to abandon a pending watch.
+ * belongs to one waiter at a time. Fino's base `Writer` contract serializes
+ * operations, so descriptor-backed implementations retain sole ownership while
+ * waiting. Scheduler-hosted isolates delegate only this readiness wait; they
+ * still retry and perform the write themselves. It is typically used to wait
+ * out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket. Use `removeWrite()` to
+ * abandon a pending watch.
  *
  * ```ts no_run
  * import * as loop from 'internal:runtime/loop';

@@ -493,6 +493,9 @@ export class H1ServerDriver implements ServerDriver {
         !parserDone &&
         !connectionFailed &&
         bodyDrainCount === 0 &&
+        // Only the active pump may inspect already-buffered pipelined requests
+        // while a handler might still transfer reader ownership via takeover.
+        (readPumpActive || inFlight === 0) &&
         nextSeq < stopAfterSeq &&
         queuedCount() < maxConcurrent
       );
