@@ -208,6 +208,7 @@ type MemoryRecord = {
 };
 
 class StoreCommitConflict extends Error {}
+const SQLITE_STORE_BUSY_TIMEOUT_MS = 5000;
 
 const defaultClock: StoreClock = { now: () => Date.now() };
 
@@ -467,7 +468,7 @@ class SqliteStoreImpl implements SqliteStore {
 
   static async open(options: SqliteStoreOptions): Promise<SqliteStoreImpl> {
     const db = await Database.open(options.path, { fs: options.fs });
-    await db.exec('PRAGMA busy_timeout=5000');
+    await db.exec(`PRAGMA busy_timeout=${SQLITE_STORE_BUSY_TIMEOUT_MS}`);
     await db.exec(`CREATE TABLE IF NOT EXISTS fino_store_entries (
       namespace TEXT NOT NULL,
       key TEXT NOT NULL,
@@ -577,7 +578,7 @@ class SqliteStoreImpl implements SqliteStore {
       expiresAt: write.ttlMs === undefined ? null : this.#clock.now() + normalizedTtl(write.ttlMs),
     }));
     try {
-      await this.#db.transaction(async () => {
+      const applyMutation = async () => {
         const expired = this.#db.prepare(
           `DELETE FROM fino_store_entries
            WHERE namespace = ? AND key = ? AND expires_at IS NOT NULL AND expires_at <= ?`,
@@ -643,6 +644,9 @@ class SqliteStoreImpl implements SqliteStore {
           remove.finalize();
           put.finalize();
         }
+      };
+      await this.#db._transaction('immediate', applyMutation, {
+        busyTimeoutMs: SQLITE_STORE_BUSY_TIMEOUT_MS,
       });
     } catch (error) {
       if (error instanceof StoreCommitConflict) return null;

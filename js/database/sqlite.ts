@@ -1,7 +1,10 @@
 /**
  * fino:database/sqlite — SQLite database access via system libsqlite3.
  *
- * SQLite C API reference: https://www.sqlite.org/c3ref/intro.html
+ * Useful references:
+ *
+ * - SQLite C API: https://www.sqlite.org/c3ref/intro.html
+ * - SQLite transactions: https://www.sqlite.org/lang_transaction.html
  *
  * Uses dlopen to load the system-installed `libsqlite3`. The re-exported
  * `sqliteAvailable` flag reports whether those bindings loaded, so code that
@@ -63,6 +66,7 @@ import {
   readCStr,
   dbErrMsg,
   SQLITE_OK,
+  SQLITE_BUSY,
   SQLITE_ROW,
   SQLITE_DONE,
   SQLITE_INTEGER,
@@ -153,6 +157,24 @@ export interface DatabaseOptions {
    * `bigint`.
    */
   safeIntegers?: boolean;
+}
+
+type TransactionMode = 'deferred' | 'immediate' | 'exclusive';
+type TransactionOptions = { busyTimeoutMs?: number };
+const TRANSACTION_BEGIN: Record<TransactionMode, string> = {
+  deferred: 'BEGIN',
+  immediate: 'BEGIN IMMEDIATE',
+  exclusive: 'BEGIN EXCLUSIVE',
+};
+const TRANSACTION_RETRY_DELAY_MS = 10;
+
+class SqliteError extends Error {
+  readonly code: number;
+
+  constructor(message: string, code: number) {
+    super(message);
+    this.code = code;
+  }
 }
 // ---------------------------------------------------------------------------
 // Type mapping helpers
@@ -866,7 +888,7 @@ export class Database {
       const rc = (await s.sqlite3_exec(this.#ptr, sqlBuf, null, null, null)) as number;
       void sqlBuf;
       if (rc !== SQLITE_OK) {
-        throw new Error(`sqlite3_exec: ${dbErrMsg(this.#ptr)}`);
+        throw new SqliteError(`sqlite3_exec: ${dbErrMsg(this.#ptr)}`, rc);
       }
     });
   }
@@ -925,6 +947,54 @@ export class Database {
     this.#statements.delete(stmt);
   }
   /**
+   * Run `fn` in a transaction with an explicit SQLite locking mode.
+   *
+   * Callers that know they will write can use `immediate` so lock contention
+   * is resolved when the transaction starts instead of during a later write.
+   * When `options.busyTimeoutMs` is positive, a busy lock acquisition retries
+   * asynchronously until that deadline; `fn` is still invoked at most once.
+   * The public `transaction()` helper preserves SQLite's default `deferred`
+   * behavior.
+   *
+   * @internal
+   */
+  async _transaction<T>(
+    mode: TransactionMode,
+    fn: () => Promise<T>,
+    options: TransactionOptions = {},
+  ): Promise<T> {
+    this.#checkOpen();
+    const configuredTimeout = options.busyTimeoutMs ?? 0;
+    const busyTimeoutMs = Number.isFinite(configuredTimeout)
+      ? Math.max(0, Math.floor(configuredTimeout))
+      : 0;
+    const deadline = Date.now() + busyTimeoutMs;
+    while (true) {
+      try {
+        await this.exec(TRANSACTION_BEGIN[mode]);
+        break;
+      } catch (error) {
+        const remainingMs = deadline - Date.now();
+        if (!(error instanceof SqliteError) || error.code !== SQLITE_BUSY || remainingMs <= 0) {
+          throw error;
+        }
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.min(TRANSACTION_RETRY_DELAY_MS, remainingMs)),
+        );
+      }
+    }
+    try {
+      const result = await fn();
+      await this.exec('COMMIT');
+      return result;
+    } catch (err) {
+      try {
+        await this.exec('ROLLBACK');
+      } catch {}
+      throw err;
+    }
+  }
+  /**
    * Run `fn` inside a BEGIN/COMMIT transaction. Rolls back on throw.
    *
    * The transaction starts with `BEGIN`, commits if `fn` resolves, and attempts
@@ -944,18 +1014,7 @@ export class Database {
    * ```
    */
   async transaction<T>(fn: () => Promise<T>): Promise<T> {
-    this.#checkOpen();
-    await this.exec('BEGIN');
-    try {
-      const result = await fn();
-      await this.exec('COMMIT');
-      return result;
-    } catch (err) {
-      try {
-        await this.exec('ROLLBACK');
-      } catch {}
-      throw err;
-    }
+    return this._transaction('deferred', fn);
   }
   /**
    * Whether the current sqlite build supports extension loading and sqlite-vec
