@@ -1,22 +1,24 @@
 /**
- * fino:tty/tui — terminal host renderer for `fino:ui` components.
+ * fino:tty/tui — terminal render target for `fino:ui` components.
  *
- * This module is the first host for the portable `fino:ui` core. It provides
- * terminal component primitives, deterministic frame rendering for tests, and a
- * small fullscreen live renderer. The layout engine is intentionally a Fino
- * subset: row/column direction, fixed sizes, flex spacers, gap, padding,
- * borders, simple alignment, wrapping, and clipping.
+ * The terminal is a retained-mode host: the `fino:ui` reconciler maintains a
+ * node tree here, a flexbox-subset layout engine measures and paints it into
+ * styled-cell frames (`fino:tty/frame`), and ANSI bytes exist only at the wire
+ * edge. Live rendering diffs frames row-wise, so screen writes stay
+ * proportional to what changed.
  *
- * V1 is terminal-only and POSIX-oriented. It includes raw keyboard input and
- * SGR mouse events for fullscreen apps, but it does not implement DOM/HTML
- * output, React hooks, or inline terminal regions.
+ * Primitives are host-neutral: `Box` (flexbox layout, padding, margin,
+ * borders), `Text` (styled runs, wrapping, caret), `Spacer`, `Input`,
+ * `Button`, `List`, `ScrollView`, and `Layer` (content painted above the
+ * normal flow). All accept style props (`color`, `background`, `bold`, …)
+ * resolved against `fino:tty/style` tokens during layout.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
  * import { Box, Text, renderFrame } from 'fino:tty/tui';
  *
  * const frame = renderFrame(
- *   <Box border padding={1}><Text>Hello</Text></Box>,
+ *   <Box border padding={1}><Text color="cyan">Hello</Text></Box>,
  *   { width: 20, height: 3 },
  * );
  * ```
@@ -25,16 +27,16 @@ import {
   h,
   Fragment,
   createRoot,
+  createRenderer,
   createSignal,
   batch,
-  type Child,
   type Props,
   type Root,
   type Sink,
   type VNode,
 } from 'fino:ui';
 import { writeStdout } from '../tty.ts';
-import { stdin } from '../process.ts';
+import { stdin, signal as processSignal } from '../process.ts';
 import { timeout as loopTimeout } from '../internal/runtime/loop.ts';
 import {
   disableAutoWrap,
@@ -48,74 +50,82 @@ import {
   showCursor,
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
+import { layout as layoutPrimitives, measure as measurePrimitives } from 'internal:tty/layout';
+import type { BorderStyle, Constraints, LayoutNode, Measured, WrapMode } from 'internal:tty/layout';
+import { createTerminalRoot, terminalHost } from 'internal:tty/host';
+import { TuiDispatcher } from 'internal:tty/events';
+import { holdSpinnerClock, lowerTui } from 'internal:tty/lower';
+import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
+import type { Frame } from 'fino:tty/frame';
+import type { Color } from 'fino:tty/style';
 export { h, Fragment, createSignal, batch };
-type Direction = 'row' | 'column';
-type Align = 'start' | 'center' | 'end';
-type TuiKind = 'box' | 'text' | 'spacer' | 'input' | 'button' | 'list' | 'scrollview';
-type BackgroundColor =
-  | 'black'
-  | 'red'
-  | 'green'
-  | 'yellow'
-  | 'blue'
-  | 'magenta'
-  | 'cyan'
-  | 'white'
-  | 'brightBlack';
-interface InternalNode extends VNode {
-  type: TuiKind;
+export type { BorderStyle, Constraints, Measured, WrapMode };
+
+/**
+ * Measure a tree against constraints.
+ *
+ * Components are lowered for the terminal first, so a caller measures what the
+ * terminal will actually paint rather than the semantic tree that describes it.
+ * An already-lowered tree passes through untouched.
+ */
+export function measure(node: VNode | LayoutNode | string, constraints: Constraints): Measured {
+  return measurePrimitives(typeof node === 'string' ? node : lowerTui(node as VNode), constraints);
 }
-/** Props accepted by `Box`. */
-export interface BoxProps extends Props {
-  width?: number;
-  height?: number;
-  flex?: number;
-  direction?: Direction;
-  gap?: number;
-  padding?: number;
-  paddingX?: number;
-  paddingY?: number;
-  border?: boolean;
-  align?: Align;
-  background?: BackgroundColor;
-  children?: Child;
+
+/**
+ * Lay a tree out into a frame, lowering it for the terminal first.
+ */
+export function layout(node: VNode | LayoutNode, constraints: Constraints): Frame {
+  return layoutPrimitives(lowerTui(node as VNode), constraints);
 }
-/** Props accepted by `Text`. */
-export interface TextProps extends Props {
-  wrap?: boolean;
-  align?: Align;
-  background?: BackgroundColor;
-  children?: Child;
-}
-/** Props accepted by `Spacer`. */
-export interface SpacerProps extends Props {
-  width?: number;
-  height?: number;
-  flex?: number;
-}
-/** Props accepted by `Input`. */
-export interface InputProps extends Props {
-  value?: string;
-  placeholder?: string;
-  focused?: boolean;
-  background?: BackgroundColor;
-}
+/**
+ * The host-neutral primitives are defined by `fino:ui/components`; this
+ * module re-exports them so terminal apps import one place, and implements
+ * their terminal behavior in the layout engine and dispatcher.
+ */
+export {
+  Box,
+  Text,
+  Spacer,
+  Input,
+  Layer,
+  Clickable,
+  Scroll,
+  Scroll as ScrollView,
+  Rule,
+} from 'fino:ui/components';
+export type {
+  StyleProps,
+  FlexChildProps,
+  BoxProps,
+  TextProps,
+  SpacerProps,
+  InputProps,
+  LayerProps,
+  ClickableProps,
+  ScrollProps,
+  ScrollProps as ScrollViewProps,
+  RuleProps,
+} from 'fino:ui/components';
 /** Props accepted by `Button`. */
 export interface ButtonProps extends Props {
   label?: string;
   focused?: boolean;
+  background?: Color;
 }
 /** Props accepted by `List`. */
 export interface ListProps extends Props {
   items: string[];
   selectedIndex?: number;
 }
-/** Props accepted by `ScrollView`. */
-export interface ScrollViewProps extends Props {
-  width?: number;
-  height?: number;
-  offset?: number;
-  children?: Child;
+/** Focus control surface exposed by a live TUI app. */
+export interface TuiFocus {
+  /** Signal carrying the focused node's `id`, for components to render focus. */
+  readonly focusedId: { get(): string | null };
+  next(): boolean;
+  prev(): boolean;
+  focus(id: string): boolean;
+  blur(): void;
 }
 /** Options for deterministic terminal snapshot rendering. */
 export interface RenderFrameOptions {
@@ -140,6 +150,10 @@ export interface TuiApp {
   update(element: VNode): void;
   stop(): void;
   input?: TuiInput;
+  /** The most recently painted frame. */
+  frame(): Frame | null;
+  /** Focus traversal and state for the retained tree. */
+  focus: TuiFocus;
 }
 /** Keyboard event decoded from terminal input. */
 export interface TuiKeyEvent {
@@ -164,33 +178,13 @@ export interface TuiMouseEvent {
 /** Terminal input event consumed by TUI applications. */
 export type TuiEvent = TuiKeyEvent | TuiMouseEvent;
 const decoder = new TextDecoder();
-/** Terminal box container with row/column layout, padding, gap, and borders. */
-export function Box(props: BoxProps): VNode {
-  return h('box', props) as InternalNode;
-}
-/** Terminal text node with optional wrapping. */
-export function Text(props: TextProps): VNode {
-  return h('text', props) as InternalNode;
-}
-/** Flexible or fixed empty space inside a `Box`. */
-export function Spacer(props: SpacerProps): VNode {
-  return h('spacer', props) as InternalNode;
-}
-/** Single-line text input primitive for terminal forms. */
-export function Input(props: InputProps): VNode {
-  return h('input', props) as InternalNode;
-}
 /** Push button primitive rendered as bracketed terminal text. */
 export function Button(props: ButtonProps): VNode {
-  return h('button', props) as InternalNode;
+  return h('button', props);
 }
 /** Vertical list primitive with a selected row marker. */
 export function List(props: ListProps): VNode {
-  return h('list', props) as InternalNode;
-}
-/** Clipped viewport over child content. */
-export function ScrollView(props: ScrollViewProps): VNode {
-  return h('scrollview', props) as InternalNode;
+  return h('list', props);
 }
 function keyEvent(key: string, extra: Partial<TuiKeyEvent> = {}): TuiKeyEvent {
   return {
@@ -248,7 +242,21 @@ function decodeCsi(sequence: string): TuiEvent | null {
       shift,
     };
   }
-  const tilde = /^\x1b\[(\d+)~$/.exec(sequence);
+  const modified = /^\x1b\[1;(\d+)([A-DHF])$/.exec(sequence);
+  if (modified) {
+    const name = (
+      {
+        A: 'up',
+        B: 'down',
+        C: 'right',
+        D: 'left',
+        H: 'home',
+        F: 'end',
+      } as Record<string, string>
+    )[modified[2]!]!;
+    return keyEvent(name, modifierBits(Number(modified[1])));
+  }
+  const tilde = /^\x1b\[(\d+)(?:;(\d+))?~$/.exec(sequence);
   if (tilde) {
     const name = (
       {
@@ -259,33 +267,63 @@ function decodeCsi(sequence: string): TuiEvent | null {
         '6': 'pagedown',
       } as Record<string, string>
     )[tilde[1]!];
-    if (name) return keyEvent(name);
+    if (name) {
+      return keyEvent(name, tilde[2] !== undefined ? modifierBits(Number(tilde[2])) : {});
+    }
   }
   return null;
 }
+// xterm modifier parameter: value - 1 is a bitfield of 1=shift, 2=alt, 4=ctrl.
+function modifierBits(parameter: number): Partial<TuiKeyEvent> {
+  const bits = parameter - 1;
+  const extra: Partial<TuiKeyEvent> = {};
+  if (bits & 1) extra.shift = true;
+  if (bits & 2) extra.alt = true;
+  if (bits & 4) extra.ctrl = true;
+  return extra;
+}
 /**
- * Decode one terminal input byte chunk into TUI input events.
+ * Whether `text` from `at` onwards is the start of an escape sequence that has
+ * not finished arriving.
  *
- * The decoder understands printable UTF-8, common control keys, arrow/function
- * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
- * coordinates are converted to zero-based `x`/`y` values.
+ * A terminal writes `ESC [ B` in one call, but the tty hands those bytes to the
+ * line discipline one at a time, so a reader that is already awake can see the
+ * prefix and nothing else. Anything that could still become a sequence — a bare
+ * `ESC`, or a CSI whose parameters have arrived but whose final byte has not —
+ * is held for the next chunk rather than decoded as the keys it is made of.
  */
-export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
-  const text = decoder.decode(bytes);
+function pendingEscape(text: string, at: number): boolean {
+  return /^\x1b(?:\[[\d;<]*)?$/.test(text.slice(at));
+}
+/**
+ * Decode terminal input text into TUI input events.
+ *
+ * `streaming` decides what happens to a trailing partial sequence: held back as
+ * `rest` for the next chunk, or — for a caller decoding one complete buffer —
+ * decoded as the bare `ESC` it looks like.
+ */
+function decodeInputText(text: string, streaming: boolean): { events: TuiEvent[]; rest: string } {
   const events: TuiEvent[] = [];
   for (let i = 0; i < text.length; ) {
     const ch = text[i]!;
     if (ch === '\x1B') {
       const sgr = /^\x1b\[<\d+;\d+;\d+[Mm]/.exec(text.slice(i));
-      const csi = sgr ?? /^\x1b\[(?:\d+~|[A-Za-z])/.exec(text.slice(i));
+      const csi = sgr ?? /^\x1b\[(?:\d+(?:;\d+)?~|(?:\d+;\d+)?[A-Za-z])/.exec(text.slice(i));
       if (csi) {
         const event = decodeCsi(csi[0]);
         if (event) events.push(event);
         i += csi[0].length;
         continue;
       }
+      if (streaming && pendingEscape(text, i)) return { events, rest: text.slice(i) };
       if (i + 1 < text.length) {
-        events.push(keyEvent(text[i + 1]!, { alt: true }));
+        const following = text.charCodeAt(i + 1);
+        // macOS Terminal sends ESC+DEL for option-delete.
+        if (following === 127 || following === 8) {
+          events.push(keyEvent('backspace', { alt: true }));
+        } else {
+          events.push(keyEvent(text[i + 1]!, { alt: true }));
+        }
         i += 2;
         continue;
       }
@@ -304,29 +342,91 @@ export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
     else events.push(keyEvent(ch, { text: ch }));
     i++;
   }
-  return events;
+  return { events, rest: '' };
+}
+/**
+ * Decode one terminal input byte chunk into TUI input events.
+ *
+ * The decoder understands printable UTF-8, common control keys, arrow/function
+ * CSI sequences, and SGR mouse reporting (`CSI < code ; x ; y M/m`). SGR mouse
+ * coordinates are converted to zero-based `x`/`y` values.
+ *
+ * The chunk is taken to be complete, so a sequence that is only half here is
+ * decoded as the characters it is made of. `TuiInput` reads from a live
+ * terminal, where that is not a safe assumption, and reassembles instead.
+ */
+export function decodeTuiInput(bytes: Uint8Array): TuiEvent[] {
+  return decodeInputText(decoder.decode(bytes), false).events;
 }
 /** Options for creating a raw terminal input reader. */
 export interface TuiInputOptions {
   mouse?: boolean;
 }
+/**
+ * How long a half-arrived escape sequence is held waiting for the rest.
+ *
+ * The wait exists because `ESC` is both the start of every arrow, function and
+ * mouse sequence and a key in its own right, so a lone `ESC` is only knowable
+ * as Escape once nothing follows it. Long enough to reassemble a sequence the
+ * tty split across two reads, short enough that Escape still feels immediate.
+ */
+const ESCAPE_HOLD_MS = 25;
 /** Raw terminal input reader for keyboard and mouse events. */
 export class TuiInput {
   #restoreRaw: (() => void) | null;
   #closed = false;
   #queue: TuiEvent[] = [];
+  // Trailing bytes of a sequence that has not finished arriving, and the read
+  // they are waiting on. The read is kept rather than abandoned when the hold
+  // expires: a second `stdin().read()` would post a second readability watch on
+  // the same descriptor, and the loop only keeps one.
+  #partial = '';
+  #pendingRead: Promise<Uint8Array | null> | null = null;
+  #stream = new TextDecoder();
   constructor(options: TuiInputOptions = {}) {
     this.#restoreRaw = enterRawMode(0);
     void writeStdout(options.mouse === false ? '' : enterMouseMode());
+  }
+  /** Decode whatever is held back as the literal keys it is made of. */
+  #flushPartial(): void {
+    if (this.#partial.length === 0) return;
+    const held = this.#partial;
+    this.#partial = '';
+    this.#queue.push(...decodeInputText(held, false).events);
   }
   /** Read the next decoded keyboard or mouse event from stdin. */
   async read(): Promise<TuiEvent | null> {
     while (!this.#closed) {
       const queued = this.#queue.shift();
       if (queued) return queued;
-      const bytes = await stdin().read();
-      if (bytes === null) return null;
-      this.#queue.push(...decodeTuiInput(bytes));
+      this.#pendingRead ??= stdin().read();
+      let bytes: Uint8Array | null;
+      if (this.#partial.length > 0) {
+        const hold = loopTimeout(ESCAPE_HOLD_MS);
+        const settled = await Promise.race([
+          this.#pendingRead.then((value) => ({ value })),
+          hold.then(() => null),
+        ]);
+        if (settled === null) {
+          // Nothing followed: it was the Escape key, not a truncated sequence.
+          this.#flushPartial();
+          continue;
+        }
+        hold.cancel();
+        bytes = settled.value;
+      } else {
+        bytes = await this.#pendingRead;
+      }
+      this.#pendingRead = null;
+      if (bytes === null) {
+        if (this.#partial.length === 0) return null;
+        this.#flushPartial();
+        continue;
+      }
+      const chunk = this.#partial + this.#stream.decode(bytes, { stream: true });
+      const { events, rest } = decodeInputText(chunk, true);
+      this.#partial = rest;
+      this.#queue.push(...events);
     }
     return null;
   }
@@ -406,284 +506,36 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
   }
   return fallback;
 }
-function numberProp(props: Props, name: string, fallback: number): number {
-  const value = props[name];
-  return typeof value === 'number' && Number.isFinite(value)
-    ? Math.max(0, Math.floor(value))
-    : fallback;
+/**
+ * Copy `text` to the system clipboard via an OSC 52 clipboard-set request —
+ * the terminal-native mechanism most modern emulators honor (iTerm2, kitty,
+ * WezTerm, tmux with `set-clipboard on`, …). Fire-and-forget: the terminal
+ * applies it silently, with no confirmation reported back to the app, and
+ * emulators that don't support OSC 52 simply ignore the sequence.
+ *
+ * ```ts no_run
+ * import { copyToClipboard } from 'fino:tty/tui';
+ * copyToClipboard('kubectl get pods -A');
+ * ```
+ */
+export function copyToClipboard(text: string): void {
+  const bytes = new TextEncoder().encode(text);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  void writeStdout(`\x1b]52;c;${btoa(binary)}\x07`);
 }
-function stringProp(props: Props, name: string, fallback: string): string {
-  const value = props[name];
-  return typeof value === 'string' ? value : fallback;
-}
-function boolProp(props: Props, name: string, fallback: boolean): boolean {
-  const value = props[name];
-  return typeof value === 'boolean' ? value : fallback;
-}
-function spaces(width: number): string {
-  return ' '.repeat(Math.max(0, width));
-}
-const ANSI_RE = /\x1b\[[0-9;?]*[A-Za-z]/g;
-function hasAnsi(text: string): boolean {
-  return /\x1b\[/.test(text);
-}
-function visibleLength(text: string): number {
-  return Array.from(text.replace(ANSI_RE, '')).length;
-}
-function fit(text: string, width: number): string {
-  const chars = Array.from(text);
-  return chars.slice(0, width).join('').padEnd(width, ' ');
-}
-function fitAnsi(text: string, width: number): string {
-  if (!hasAnsi(text)) return fit(text, width);
-  return text + spaces(width - visibleLength(text));
-}
-function backgroundCode(background: unknown): string | null {
-  switch (background) {
-    case 'black':
-      return '40';
-    case 'red':
-      return '41';
-    case 'green':
-      return '42';
-    case 'yellow':
-      return '43';
-    case 'blue':
-      return '44';
-    case 'magenta':
-      return '45';
-    case 'cyan':
-      return '46';
-    case 'white':
-      return '47';
-    case 'brightBlack':
-      return '100';
-    default:
-      return null;
-  }
-}
-function styleLine(line: string, props: Props): string {
-  const bg = backgroundCode(props.background);
-  return bg === null ? line : `\x1b[${bg}m${line}\x1b[0m`;
-}
-function blank(width: number, height: number): string[] {
-  return Array.from({ length: Math.max(0, height) }, () => spaces(width));
-}
-function overlay(base: string[], lines: string[], x: number, y: number): void {
-  for (let row = 0; row < lines.length; row++) {
-    const target = y + row;
-    if (target < 0 || target >= base.length) continue;
-    const line = base[target] ?? '';
-    const source = lines[row] ?? '';
-    const width = line.length;
-    if (x >= width) continue;
-    const left = line.slice(0, Math.max(0, x));
-    const middle = hasAnsi(source)
-      ? fitAnsi(source, Math.max(0, width - x))
-      : source.slice(0, Math.max(0, width - x));
-    const middleWidth = hasAnsi(middle) ? visibleLength(middle) : middle.length;
-    const right = line.slice(Math.min(width, x + middleWidth));
-    base[target] = left + middle + right;
-  }
-}
-function textContent(node: VNode): string {
-  let out = '';
-  for (const child of node.children) {
-    out += typeof child === 'string' ? child : textContent(child);
-  }
-  return out;
-}
-function wrapText(text: string, width: number, wrap: boolean): string[] {
-  if (width <= 0) return [];
-  if (!wrap) return [fit(text, width)];
-  const chars = Array.from(text);
-  const lines: string[] = [];
-  for (let index = 0; index < chars.length; index += width) {
-    lines.push(fit(chars.slice(index, index + width).join(''), width));
-  }
-  return lines.length === 0 ? [spaces(width)] : lines;
-}
-function intrinsicWidth(child: VNode | string): number {
-  if (typeof child === 'string') return Array.from(child).length;
-  const explicit = child.props.width;
-  if (typeof explicit === 'number') return Math.max(0, Math.floor(explicit));
-  switch (child.type) {
-    case 'text':
-      return Math.max(1, Array.from(textContent(child)).length);
-    case 'spacer':
-      return numberProp(child.props, 'width', 0);
-    case 'input':
-      return Math.max(
-        1,
-        Array.from(stringProp(child.props, 'value', stringProp(child.props, 'placeholder', '')))
-          .length + 2,
-      );
-    case 'button':
-      return Array.from(stringProp(child.props, 'label', '')).length + 4;
-    case 'list': {
-      const items = Array.isArray(child.props.items) ? (child.props.items as string[]) : [];
-      return items.reduce((max, item) => Math.max(max, Array.from(item).length + 2), 0);
-    }
-    default:
-      return 0;
-  }
-}
-function intrinsicHeight(child: VNode | string): number {
-  if (typeof child === 'string') return 1;
-  const explicit = child.props.height;
-  if (typeof explicit === 'number') return Math.max(0, Math.floor(explicit));
-  switch (child.type) {
-    case 'list':
-      return Array.isArray(child.props.items) ? (child.props.items as string[]).length : 0;
-    case 'scrollview':
-      return numberProp(child.props, 'height', 1);
-    default:
-      return 1;
-  }
-}
-function renderTextNode(node: VNode, width: number, height: number): string[] {
-  const lines = wrapText(textContent(node), width, boolProp(node.props, 'wrap', false));
-  return blank(width, height).map((line, index) => styleLine(lines[index] ?? line, node.props));
-}
-function renderList(node: VNode, width: number, height: number): string[] {
-  const items = Array.isArray(node.props.items) ? (node.props.items as string[]) : [];
-  const selectedIndex = numberProp(node.props, 'selectedIndex', 0);
-  return blank(width, height).map((line, index) => {
-    const item = items[index];
-    if (item === undefined) return line;
-    const prefix = index === selectedIndex ? '> ' : '  ';
-    return fit(prefix + item, width);
+/**
+ * Lay a tree out into a styled-cell frame without touching a terminal.
+ *
+ * This is the one-shot path: the tree is laid out fresh with no retained
+ * state. Pass the result to `frameToAnsi()`/`frameToScreen()` from
+ * `fino:tty/frame`, or use `renderFrame()` for the padded-string form.
+ */
+export function layoutFrame(element: VNode, options: RenderFrameOptions): Frame {
+  return layoutPrimitives(lowerTui(element), {
+    width: Math.max(0, Math.floor(options.width)),
+    height: Math.max(0, Math.floor(options.height)),
   });
-}
-function renderLeaf(node: VNode, width: number, height: number): string[] {
-  switch (node.type) {
-    case 'text':
-      return renderTextNode(node, width, height);
-    case 'spacer':
-      return blank(width, height);
-    case 'input': {
-      const value = stringProp(node.props, 'value', stringProp(node.props, 'placeholder', ''));
-      return [
-        styleLine(
-          fit((boolProp(node.props, 'focused', false) ? '> ' : '  ') + value, width),
-          node.props,
-        ),
-        ...blank(width, height - 1),
-      ];
-    }
-    case 'button': {
-      const label = stringProp(node.props, 'label', textContent(node));
-      const prefix = boolProp(node.props, 'focused', false) ? '> ' : '';
-      return [fit(`${prefix}[ ${label} ]`, width), ...blank(width, height - 1)];
-    }
-    case 'list':
-      return renderList(node, width, height);
-    default:
-      return renderBox(node, width, height);
-  }
-}
-function renderColumn(
-  children: (VNode | string)[],
-  width: number,
-  height: number,
-  gap: number,
-): string[] {
-  const out = blank(width, height);
-  let y = 0;
-  for (const child of children) {
-    if (y >= height) break;
-    const childHeight = Math.min(
-      height - y,
-      typeof child !== 'string' && child.type === 'text' && boolProp(child.props, 'wrap', false)
-        ? height - y
-        : intrinsicHeight(child),
-    );
-    const lines =
-      typeof child === 'string' ? [fit(child, width)] : renderElement(child, width, childHeight);
-    overlay(out, lines, 0, y);
-    y += childHeight + gap;
-  }
-  return out;
-}
-function renderRow(
-  children: (VNode | string)[],
-  width: number,
-  height: number,
-  gap: number,
-): string[] {
-  const out = blank(width, height);
-  const gaps = Math.max(0, children.length - 1) * gap;
-  let fixed = 0;
-  let flex = 0;
-  for (const child of children) {
-    if (typeof child !== 'string' && child.type === 'spacer') {
-      flex += numberProp(child.props, 'flex', 0);
-      fixed += numberProp(child.props, 'width', 0);
-    } else {
-      fixed += intrinsicWidth(child);
-    }
-  }
-  let remaining = Math.max(0, width - fixed - gaps);
-  let x = 0;
-  for (const child of children) {
-    if (x >= width) break;
-    let childWidth = intrinsicWidth(child);
-    if (typeof child !== 'string' && child.type === 'spacer') {
-      const weight = numberProp(child.props, 'flex', 0);
-      const share = flex > 0 ? Math.floor((remaining * weight) / flex) : 0;
-      childWidth += share;
-      remaining -= share;
-      flex -= weight;
-    }
-    childWidth = Math.min(childWidth, width - x);
-    const lines =
-      typeof child === 'string'
-        ? [fit(child, childWidth)]
-        : renderElement(child, childWidth, height);
-    overlay(out, lines, x, 0);
-    x += childWidth + gap;
-  }
-  return out;
-}
-function renderBox(node: VNode, width: number, height: number): string[] {
-  const border = boolProp(node.props, 'border', false);
-  const padding = numberProp(node.props, 'padding', 0);
-  const paddingX = numberProp(node.props, 'paddingX', padding);
-  const paddingY = numberProp(node.props, 'paddingY', padding);
-  const gap = numberProp(node.props, 'gap', 0);
-  const direction = stringProp(node.props, 'direction', 'column') === 'row' ? 'row' : 'column';
-  const out = blank(width, height);
-  if (width <= 0 || height <= 0) return out;
-  if (border && width >= 2 && height >= 2) {
-    out[0] = '+' + '-'.repeat(Math.max(0, width - 2)) + '+';
-    for (let row = 1; row < height - 1; row++) out[row] = '|' + spaces(width - 2) + '|';
-    out[height - 1] = '+' + '-'.repeat(Math.max(0, width - 2)) + '+';
-  }
-  const insetX = (border ? 1 : 0) + paddingX;
-  const insetY = (border ? 1 : 0) + paddingY;
-  const contentWidth = Math.max(0, width - insetX * 2);
-  const contentHeight = Math.max(0, height - insetY * 2);
-  const children = node.children as (VNode | string)[];
-  const content =
-    direction === 'row'
-      ? renderRow(children, contentWidth, contentHeight, gap)
-      : renderColumn(children, contentWidth, contentHeight, gap);
-  overlay(out, content, insetX, insetY);
-  return out.map((line) => styleLine(line, node.props));
-}
-function renderElement(node: VNode, width: number, height: number): string[] {
-  if (node.type === 'box') return renderBox(node, width, height);
-  if (node.type === 'scrollview') {
-    const offset = numberProp(node.props, 'offset', 0);
-    const inner = renderColumn(
-      node.children as (VNode | string)[],
-      width,
-      Math.max(height + offset, height),
-      0,
-    );
-    return blank(width, height).map((line, index) => inner[index + offset] ?? line);
-  }
-  return renderLeaf(node, width, height);
 }
 /**
  * Render an element tree to a deterministic terminal frame.
@@ -692,27 +544,14 @@ function renderElement(node: VNode, width: number, height: number): string[] {
  * each line is padded or clipped to `width` cells.
  */
 export function renderFrame(element: VNode, options: RenderFrameOptions): string {
-  const width = Math.max(0, Math.floor(options.width));
-  const height = Math.max(0, Math.floor(options.height));
-  return renderElement(element, width, height)
-    .slice(0, height)
-    .map((line) => fitAnsi(line, width))
-    .join('\n');
-}
-function renderScreen(element: VNode, options: RenderFrameOptions): string {
-  const lines = renderFrame(element, options).split('\n');
-  let out = '';
-  for (let row = 0; row < lines.length; row++) {
-    out += `\x1b[${row + 1};1H${lines[row]}`;
-  }
-  return out;
+  return frameToAnsi(layoutFrame(element, options));
 }
 /**
- * Sink that turns each committed tree into a terminal frame.
+ * Sink that turns each committed tree into a terminal frame string.
  *
- * The frame is a complete screen image rather than a diff, so this is a snapshot
- * sink like `htmlSink()`. Pair it with `renderStatic()` to capture one frame, or
- * with `createRoot()` to drive a live screen from signals.
+ * The frame is a complete screen image rather than a diff, so this is a
+ * snapshot sink like `htmlSink()`. Pair it with `renderStatic()` to capture
+ * one frame, or with `createRoot()` to drive a live screen from signals.
  *
  * ```ts no_run
  * import { createRoot } from 'fino:ui';
@@ -729,14 +568,47 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
   };
 }
 /**
+ * Sink that reconciles each committed tree into a retained terminal node tree
+ * and returns the laid-out `Frame`.
+ *
+ * Unlike `frameSink()`, consecutive commits reuse the mounted tree, so
+ * unchanged subtrees keep their measurement caches. Use this when the caller
+ * needs the structured frame — cursor placement, hit regions — rather than
+ * encoded text.
+ */
+export function terminalSink(options: RenderFrameOptions): Sink<Frame> {
+  const root = createTerminalRoot();
+  const renderer = createRenderer(terminalHost());
+  return {
+    commit(tree: VNode): Frame {
+      renderer.render(lowerTui(tree), root);
+      const node = root.children[0];
+      if (!node) {
+        return {
+          width: options.width,
+          height: options.height,
+          rows: [],
+          cursor: null,
+          hits: [],
+        };
+      }
+      return layoutPrimitives(node, {
+        width: Math.max(0, Math.floor(options.width)),
+        height: Math.max(0, Math.floor(options.height)),
+      });
+    },
+  };
+}
+/**
  * Render a fullscreen terminal app and return a lifecycle handle.
  *
- * This enters the alternate screen, hides the cursor, writes the current frame,
- * and restores terminal state from `stop()`. Width and height default to the
- * current terminal size when available.
+ * This enters the alternate screen, hides the cursor, and paints frames
+ * through the retained host with row-level diffing — only rows whose encoded
+ * form changed are rewritten. When a frame places a caret (`Text caret` or a
+ * focused `Input`), the terminal cursor is shown there.
  *
- * Passing a function instead of a tree makes the app reactive: every signal read
- * while rendering becomes a dependency, and the screen repaints when one
+ * Passing a function instead of a tree makes the app reactive: every signal
+ * read while rendering becomes a dependency, and the screen repaints when one
  * changes. `update()` remains available for callers that drive frames
  * themselves, and takes over from the reactive root when used.
  *
@@ -753,33 +625,77 @@ export function frameSink(options: RenderFrameOptions): Sink<string> {
 export function render(element: VNode | (() => VNode), options: RenderOptions = {}): TuiApp {
   let stopped = false;
   const size = queryTerminalSize();
-  const width = options.width ?? size.width;
-  const height = options.height ?? size.height;
+  let width = options.width ?? size.width;
+  let height = options.height ?? size.height;
+  let lastTree: VNode | null = null;
   const input =
     options.input || options.onEvent ? createTuiInput({ mouse: options.mouse ?? true }) : undefined;
-  let frame = '';
-  function paint(): void {
-    if (stopped) return;
-    const lines = frame.split('\n');
-    let out = '';
-    for (let row = 0; row < lines.length; row++) out += `\x1b[${row + 1};1H${lines[row]}`;
-    void writeStdout(out);
-  }
+  const hostRoot = createTerminalRoot();
+  const renderer = createRenderer(terminalHost());
+  const dispatcher = new TuiDispatcher(hostRoot);
+  let lastFrame: Frame | null = null;
+  let cursorShown = false;
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
-  const sink: Sink<string> = {
-    commit(tree: VNode): string {
-      frame = renderFrame(tree, { width, height });
-      paint();
+  const sink: Sink<Frame> = {
+    commit(tree: VNode): Frame {
+      lastTree = tree;
+      renderer.render(lowerTui(tree), hostRoot);
+      const node = hostRoot.children[0];
+      const frame = node
+        ? layoutPrimitives(node, { width, height })
+        : { width, height, rows: [], cursor: null, hits: [] };
+      if (!stopped) {
+        let out = frameToScreen(frame, lastFrame);
+        if (frame.cursor) {
+          out += `\x1b[${frame.cursor.row + 1};${frame.cursor.column + 1}H`;
+          if (!cursorShown) out += showCursor();
+          cursorShown = true;
+        } else if (cursorShown) {
+          out += hideCursor();
+          cursorShown = false;
+        }
+        if (out.length > 0) void writeStdout(out);
+      }
+      lastFrame = frame;
       return frame;
     },
   };
+  // Spinners animate off one shared clock that only runs while an app is
+  // live; releasing this is what lets the process idle after `stop()`.
+  const releaseSpinnerClock = holdSpinnerClock();
   // A tree renders once; a thunk keeps its signal dependencies live. Both go
   // through the same sink, so the paint path does not fork.
-  let root: Root<string> | null = null;
+  let root: Root<Frame> | null = null;
   if (typeof element === 'function') root = createRoot(element, sink);
   else sink.commit(element);
+  // The viewport tracks the terminal unless the caller pinned a size.
+  const winch =
+    options.width !== undefined && options.height !== undefined
+      ? null
+      : processSignal('SIGWINCH').subscribe(() => {
+          if (stopped) return;
+          const next = queryTerminalSize();
+          const nextWidth = options.width ?? next.width;
+          const nextHeight = options.height ?? next.height;
+          if (nextWidth === width && nextHeight === height) return;
+          width = nextWidth;
+          height = nextHeight;
+          lastFrame = null;
+          void writeStdout('\x1B[2J');
+          if (lastTree) sink.commit(lastTree);
+        });
   const app: TuiApp = {
     input,
+    focus: {
+      focusedId: dispatcher.focusedId,
+      next: () => dispatcher.focusNext(),
+      prev: () => dispatcher.focusPrev(),
+      focus: (id: string) => dispatcher.focusId(id),
+      blur: () => dispatcher.blur(),
+    },
+    frame(): Frame | null {
+      return lastFrame;
+    },
     update(next: VNode): void {
       root?.dispose();
       root = null;
@@ -787,18 +703,23 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     },
     stop(): void {
       if (stopped) return;
+      winch?.dispose();
       root?.dispose();
       root = null;
       stopped = true;
+      releaseSpinnerClock();
       input?.close();
       void writeStdout(enableAutoWrap() + showCursor() + exitMouseMode() + exitAlternateScreen());
     },
   };
-  if (input && options.onEvent) {
+  if (input) {
     void (async () => {
       while (!stopped) {
         const event = await input.read();
         if (event === null) break;
+        // Handlers on the tree see the event first; `onEvent` receives only
+        // what no handler consumed.
+        if (dispatcher.dispatch(event)) continue;
         await options.onEvent?.(event, app);
       }
     })();

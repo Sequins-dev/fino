@@ -13,7 +13,14 @@
  * SSE event used by other hosts. If any element carries a `data-fi-view`
  * attribute it opens a long-lived `EventSource` to `/_fino/live`; the first
  * event is the current render, followed by later renders or navigation
- * instructions.
+ * instructions. A `data-fi-scroll` container (a virtualized list) has no
+ * native change event to hook, so its scroll offset is bridged by hand: a
+ * debounced listener converts `scrollTop` to a row offset via the
+ * container's `data-fi-row-height` and submits it like any other
+ * value-bearing control. A `[data-fi-copy]` button (a `Code` block's copy
+ * affordance) is handled entirely client-side and never touches the action
+ * collector — the clipboard API needs a user gesture, so a server round
+ * trip cannot write to it.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -340,8 +347,8 @@ async function readSse(response) {
   }
 }
 
-function submitAction(form) {
-  const fields = new FormData(form);
+function submitAction(form, submitter) {
+  const fields = new FormData(form, submitter && form.contains(submitter) ? submitter : undefined);
   const action = form.__finoAction || {
     url: form.action,
     view: fields.get('_view'),
@@ -389,7 +396,74 @@ document.addEventListener('submit', (event) => {
   if (form.dataset.fiBusy !== undefined) return;
   const confirmation = (form.__finoAction || {}).confirm;
   if (confirmation && !globalThis.confirm(confirmation)) return;
+  void submitAction(form, event.submitter);
+});
+
+// Forms marked data-fi-change submit when any of their controls change, so
+// checkboxes, selects, and text inputs act without a dedicated submit button.
+document.addEventListener('change', (event) => {
+  const control = event.target;
+  const form = control && control.form;
+  if (!(form instanceof HTMLFormElement) || !form.dataset.fiAction) return;
+  if (form.dataset.fiChange === undefined) return;
+  if (form.dataset.fiBusy !== undefined) return;
   void submitAction(form);
+});
+
+// Virtual-list containers (data-fi-scroll) have no form control to fire a
+// native change event, so scrolling is bridged by hand: debounce the scroll
+// a little so a drag or momentum fling posts once it settles, convert the
+// pixel scrollTop into a row offset with the container's own
+// data-fi-row-height, stash it in the form's hidden "value" field, and submit
+// like any other value-bearing control. The scroll event does not bubble, so
+// the listener has to run on the capture phase at the document.
+document.addEventListener(
+  'scroll',
+  (event) => {
+    const el = event.target;
+    if (!(el instanceof Element) || el.dataset.fiScroll === undefined) return;
+    const form = el.closest('form[data-fi-action]');
+    if (!(form instanceof HTMLFormElement)) return;
+    if (el.__fiScrollTimer) clearTimeout(el.__fiScrollTimer);
+    el.__fiScrollTimer = setTimeout(() => {
+      el.__fiScrollTimer = null;
+      if (form.dataset.fiBusy !== undefined) return;
+      const rowHeight = Number(el.dataset.fiRowHeight) || 1;
+      const field = form.elements.namedItem('value');
+      if (field) field.value = String(Math.max(0, Math.round(el.scrollTop / rowHeight)));
+      void submitAction(form);
+    }, 60);
+  },
+  true,
+);
+
+// Code blocks' copy button (fino:ui/components' Code, copyable: true) copies
+// client-side: the clipboard API needs a user gesture and a server round
+// trip cannot write to it. Never routed through the action collector. Reads
+// the button's nearest ".ui-code" figure and copies its <code> element's
+// textContent, so the source is not duplicated into a data-* attribute.
+document.addEventListener('click', (event) => {
+  const target = event.target;
+  const button = target instanceof Element ? target.closest('[data-fi-copy]') : null;
+  if (!button) return;
+  const code = button.closest('.ui-code')?.querySelector('code');
+  if (!code || !navigator.clipboard) return;
+  // Line numbers live inside <code>, so copy the content spans when present
+  // — otherwise the clipboard would carry "1const a = 1;2const b = 2;".
+  const parts = code.querySelectorAll('.ui-code-content');
+  const text = parts.length
+    ? Array.from(parts).map((part) => part.textContent || '').join(String.fromCharCode(10))
+    : code.textContent || '';
+  navigator.clipboard.writeText(text).then(() => {
+    const label = button.textContent;
+    button.textContent = 'Copied';
+    button.classList.add('is-copied');
+    clearTimeout(button.__fiCopyTimer);
+    button.__fiCopyTimer = setTimeout(() => {
+      button.textContent = label;
+      button.classList.remove('is-copied');
+    }, 1500);
+  }, () => {});
 });
 
 function connectLive() {

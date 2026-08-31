@@ -542,8 +542,12 @@ export function _untrackAtomicsWaiter(): void {
  * estimated to be available.
  *
  * The watch is one-shot: call `readable()` again for each read. Registering a
- * second watch for the same descriptor replaces the earlier resolver. The
- * thread reactor receives only the descriptor, interest, owner, and promise
+ * second watch for the same descriptor replaces the earlier resolver, whose
+ * promise is then left unsettled forever. That is deliberate — it is what keeps
+ * a watch on a closed descriptor from waking once the kernel hands its number
+ * to something else — so **one owner per descriptor**: a caller that could have
+ * two reads in flight has to serialize them itself, or the earlier one hangs.
+ * The thread reactor receives only the descriptor, interest, owner, and promise
  * token. The subsequent read and all buffer ownership remain in this realm.
  * Use `removeRead()` to abandon a pending watch.
  *
@@ -568,9 +572,11 @@ export function readable(fd: number, forToken?: number): Promise<number> {
 /**
  * Resolve the next time `fd` becomes writable.
  *
- * Like `readable()`, the watch is one-shot and a second watch for the same
- * descriptor replaces the first. Scheduler-hosted isolates delegate only this
- * readiness wait; they still retry and perform the write themselves. It is
+ * Like `readable()`, the watch is one-shot, a second watch for the same
+ * descriptor replaces the first and strands it, and the descriptor therefore
+ * belongs to one waiter at a time — `BufferedBytesWriter` serializes its
+ * emissions for exactly this reason. Scheduler-hosted isolates delegate only
+ * this readiness wait; they still retry and perform the write themselves. It is
  * typically used to wait out `EAGAIN`/`EWOULDBLOCK` on a non-blocking socket.
  * Use `removeWrite()` to abandon a pending watch.
  *

@@ -54,9 +54,14 @@ const lib = (() => {
         parameters: ['buffer'],
         result: 'void',
       },
+      // ioctl is variadic: without the variadic marshaling the trailing
+      // argument is passed in a register the callee never reads (macOS
+      // arm64 puts variadic arguments on the stack), so TIOCGWINSZ silently
+      // fails and every size query falls back to 80x24.
       ioctl: {
         parameters: ['i32', 'u64', 'buffer'],
         result: 'i32',
+        variadic: 2,
       },
     });
   } catch (_) {

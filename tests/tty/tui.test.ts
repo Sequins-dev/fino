@@ -33,9 +33,16 @@ describe('fino:tty/tui renderFrame', () => {
     );
     t.equal(
       frame,
-      ['+--------+', '|        |', '| A    B |', '|        |', '+--------+'].join('\n'),
+      ['┌────────┐', '│        │', '│ A    B │', '│        │', '└────────┘'].join('\n'),
       'row layout fills available width',
     );
+  });
+  it('keeps ascii borders reachable', (t) => {
+    const frame = renderFrame(h(Box, { border: 'ascii' }, h(Text, null, 'x')), {
+      width: 5,
+      height: 3,
+    });
+    t.equal(frame, ['+---+', '|x  |', '+---+'].join('\n'), 'ascii border style');
   });
   it('wraps and clips text inside fixed frames', (t) => {
     const frame = renderFrame(
@@ -52,10 +59,17 @@ describe('fino:tty/tui renderFrame', () => {
         height: 3,
       },
     );
+    t.equal(frame, ['hello   ', 'world   ', '        '].join('\n'), 'wrap means word wrap');
+  });
+  it('still hard-chops with wrap="char"', (t) => {
+    const frame = renderFrame(
+      h(Box, { width: 8, height: 3 }, h(Text, { wrap: 'char' }, 'hello world')),
+      { width: 8, height: 3 },
+    );
     t.equal(
       frame,
       ['hello wo', 'rld     ', '        '].join('\n'),
-      'wrapped text is clipped to the frame',
+      'char wrap breaks at exact cell boundaries',
     );
   });
   it('renders terminal controls with focus order markers', (t) => {
@@ -175,6 +189,59 @@ describe('fino:tty/tui input decoding', () => {
         },
       ],
       'shift-tab',
+    );
+  });
+  it('decodes modified arrows, home/end, delete, and option-delete', (t) => {
+    const enc = (text: string): Uint8Array => new TextEncoder().encode(text);
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2D')),
+      [{ type: 'key', key: 'left', shift: true }],
+      'shift-left',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;3D')),
+      [{ type: 'key', key: 'left', alt: true }],
+      'alt-left',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;4C')),
+      [{ type: 'key', key: 'right', shift: true, alt: true }],
+      'shift-alt-right',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;5C')),
+      [{ type: 'key', key: 'right', ctrl: true }],
+      'ctrl-right',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2H')),
+      [{ type: 'key', key: 'home', shift: true }],
+      'shift-home',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[1;2F')),
+      [{ type: 'key', key: 'end', shift: true }],
+      'shift-end',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[3;3~')),
+      [{ type: 'key', key: 'delete', alt: true }],
+      'alt-delete',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B[3~')),
+      [{ type: 'key', key: 'delete' }],
+      'plain delete still decodes',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1B\x7F')),
+      [{ type: 'key', key: 'backspace', alt: true }],
+      'ESC+DEL is option-delete',
+    );
+    t.deepEqual(
+      decodeTuiInput(enc('\x1Bb')),
+      [{ type: 'key', key: 'b', alt: true }],
+      'ESC b stays the alt-b word convention',
     );
   });
   it('decodes SGR mouse events', (t) => {

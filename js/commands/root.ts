@@ -37,6 +37,7 @@ import docCommand from './doc.ts';
 import fmtCommand from './fmt.ts';
 import lintCommand from './lint.ts';
 import replCommand from './repl.ts';
+import previewCommand from './preview.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
 /**
@@ -142,6 +143,7 @@ const command = new Task({
     lintCommand,
     taskCommand,
     replCommand,
+    previewCommand,
   ],
 });
 export { command as default };

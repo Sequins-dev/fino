@@ -28,7 +28,7 @@ describe('TypeScript performance deck', () => {
       'callout copy uses open spacing and moderate weight',
     );
   });
-  it('organizes the architecture story into five substantial chapters', async (t) => {
+  it('organizes the architecture preview into five substantial chapters', async (t) => {
     const source = new TextDecoder().decode(
       await fs.readFile('./demos/typescript-performance.mdx'),
     );

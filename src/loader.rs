@@ -155,6 +155,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/lint", "commands/lint"),
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
+    source_builtin!("fino:commands/preview", "commands/preview"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/coverage", "commands/coverage"),
@@ -220,6 +221,143 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:globals/global", "globals/global"),
     source_builtin!("internal:ui/web/client", "internal/ui/web/client"),
+    // internal: the fino:ui/components catalog, one module per component
+    // family. `fino:ui/components` is the public entry point over them.
+    source_builtin!(
+        "internal:ui/components/primitives",
+        "ui/components/primitives"
+    ),
+    source_builtin!("internal:ui/components/layout", "ui/components/layout"),
+    source_builtin!("internal:ui/components/forms", "ui/components/forms"),
+    source_builtin!(
+        "internal:ui/components/text-edit",
+        "ui/components/text-edit"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure",
+        "ui/components/disclosure"
+    ),
+    source_builtin!("internal:ui/components/menu", "ui/components/menu"),
+    source_builtin!("internal:ui/components/overlay", "ui/components/overlay"),
+    source_builtin!("internal:ui/components/feedback", "ui/components/feedback"),
+    source_builtin!(
+        "internal:ui/components/navigation",
+        "ui/components/navigation"
+    ),
+    source_builtin!("internal:ui/components/icons", "ui/components/icons"),
+    source_builtin!("internal:ui/components/data", "ui/components/data"),
+    source_builtin!("internal:ui/components/virtual", "ui/components/virtual"),
+    source_builtin!(
+        "internal:ui/components/typography",
+        "ui/components/typography"
+    ),
+    source_builtin!("internal:ui/components/display", "ui/components/display"),
+    source_builtin!("internal:ui/components/pickers", "ui/components/pickers"),
+    source_builtin!("internal:ui/components/charts", "ui/components/charts"),
+    source_builtin!(
+        "internal:ui/components/html-runtime",
+        "ui/components/html-runtime"
+    ),
+    source_builtin!(
+        "internal:ui/components/feedback.tui",
+        "ui/components/feedback.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.tui",
+        "ui/components/navigation.tui"
+    ),
+    source_builtin!("internal:ui/components/data.tui", "ui/components/data.tui"),
+    source_builtin!(
+        "internal:ui/components/virtual.tui",
+        "ui/components/virtual.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/charts.tui",
+        "ui/components/charts.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/pickers.tui",
+        "ui/components/pickers.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/overlay.tui",
+        "ui/components/overlay.tui"
+    ),
+    source_builtin!("internal:ui/components/menu.tui", "ui/components/menu.tui"),
+    source_builtin!(
+        "internal:ui/components/disclosure.tui",
+        "ui/components/disclosure.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.tui",
+        "ui/components/forms.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/layout.tui",
+        "ui/components/layout.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.tui",
+        "ui/components/typography.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.tui",
+        "ui/components/display.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/icons.tui",
+        "ui/components/icons.tui"
+    ),
+    // internal: preview previews, one file beside each component module.
+    source_builtin!("internal:ui/preview", "internal/ui/preview"),
+    source_builtin!(
+        "internal:ui/components/layout.preview",
+        "ui/components/layout.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/forms.preview",
+        "ui/components/forms.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/indicators.preview",
+        "ui/components/indicators.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/feedback.preview",
+        "ui/components/feedback.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/navigation.preview",
+        "ui/components/navigation.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/disclosure.preview",
+        "ui/components/disclosure.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/overlay.preview",
+        "ui/components/overlay.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/data.preview",
+        "ui/components/data.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/typography.preview",
+        "ui/components/typography.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.preview",
+        "ui/components/display.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/pickers.preview",
+        "ui/components/pickers.preview"
+    ),
+    source_builtin!(
+        "internal:ui/components/charts.preview",
+        "ui/components/charts.preview"
+    ),
     // internal: compression
     source_builtin!("internal:compress/common", "internal/compress/common"),
     source_builtin!("internal:compress/zlib", "internal/compress/zlib"),
@@ -300,8 +438,20 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:ui/web/state", "ui/web/state"),
     source_builtin!("fino:ui/jsx-runtime", "ui/jsx-runtime"),
     source_builtin!("fino:ui/slides", "ui/slides"),
+    source_builtin!("fino:ui/components", "ui/components"),
+    source_builtin!("fino:ui/components/theme", "ui/components/theme"),
+    source_builtin!("fino:ui/components/html", "ui/components/html"),
+    source_builtin!("fino:ui/preview", "ui/preview"),
     source_builtin!("fino:tty", "tty"),
     source_builtin!("internal:tty/bindings", "internal/tty/bindings"),
+    source_builtin!("fino:tty/style", "tty/style"),
+    source_builtin!("fino:tty/frame", "tty/frame"),
+    source_builtin!("internal:tty/width", "internal/tty/width"),
+    source_builtin!("internal:tty/layout", "internal/tty/layout"),
+    source_builtin!("internal:tty/host", "internal/tty/host"),
+    source_builtin!("internal:tty/events", "internal/tty/events"),
+    source_builtin!("internal:tty/lower", "internal/tty/lower"),
+    source_builtin!("internal:tty/vt", "internal/tty/vt"),
     source_builtin!("fino:tty/tui", "tty/tui"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
@@ -684,6 +834,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:test/assert", "test/assert"),
     source_builtin!("fino:test/test", "test/test"),
     source_builtin!("fino:test/bench", "test/bench"),
+    source_builtin!("fino:test/pty", "test/pty"),
     source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
     // util

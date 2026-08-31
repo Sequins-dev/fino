@@ -1803,6 +1803,135 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    */
   static readonly #COALESCE_LIMIT = 65536;
   /**
+   * Tail of the chain that serializes concurrent callers.
+   *
+   * A writer owns one descriptor and one coalesce buffer, and neither survives
+   * being shared: two emissions in flight interleave their partial writes into
+   * garbage and post two `EAGAIN` waits for one readiness event, while a caller
+   * that suspends waiting for buffer room lets later callers fill that room
+   * ahead of it and comes back out of order. Callers that do not await their
+   * writes — a terminal painting frames, a logger — routinely overlap, so the
+   * ordering is enforced here rather than asked of them.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #outbound = Promise.resolve();
+   *
+   *   readInternalState() {
+   *     return this.#outbound;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
+  #outbound: Promise<void> = Promise.resolve();
+  /**
+   * Number of operations queued on `#outbound` but not yet finished.
+   *
+   * While this is zero nothing can run between a synchronous check and the
+   * buffer write that follows it, which is what lets the uncontended caller
+   * skip the chain entirely.
+   *
+   * @example
+   * ```ts no_run
+   * class IncludePrivateExample {
+   *   #queued = 0;
+   *
+   *   readInternalState() {
+   *     return this.#queued;
+   *   }
+   * }
+   * ```
+   *
+   * @internal
+   */
+  #queued = 0;
+  /**
+   * Run `work` after everything queued before it.
+   *
+   * Failures do not break the chain: the next queued operation runs either way,
+   * and the error reaches only the caller that queued the failing one.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'fino:stream';
+   * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
+   * await new Sink().write(new Uint8Array([1]));
+   * ```
+   *
+   * @param work Operation to serialize behind the pending ones.
+   * @returns A promise that settles with `work`.
+   * @internal
+   */
+  protected _serialize<T>(work: () => Promise<T>): Promise<T> {
+    this.#queued += 1;
+    const settle = (): void => {
+      this.#queued -= 1;
+    };
+    const run = this.#outbound.then(work, work);
+    this.#outbound = run.then(settle, settle);
+    return run;
+  }
+  /**
+   * Whether no other caller holds the buffer or the descriptor.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'fino:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(_buf) {}
+   *   idle() { return this._idle(); }
+   * }
+   * console.log(new Sink().idle());
+   * ```
+   *
+   * @returns True when the chain is empty.
+   * @internal
+   */
+  protected _idle(): boolean {
+    return this.#queued === 0;
+  }
+  /**
+   * Emit the coalesce buffer without queueing.
+   *
+   * Only for callers that already hold the queue, since it neither waits for
+   * earlier work nor keeps later work out.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'fino:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(_buf) {}
+   *   drain() { return this._serialize(() => this._flushHeld()); }
+   * }
+   * await new Sink().drain();
+   * ```
+   *
+   * @returns A promise that resolves after pending bytes are emitted.
+   * @internal
+   */
+  protected async _flushHeld(): Promise<void> {
+    const slice = this._takePending();
+    if (slice === null) return;
+    await this.doFlush(slice);
+  }
+  /**
+   * Coalesce or emit one buffer, assuming the queue is already held.
+   *
+   * @param buf Bytes to write.
+   * @returns A promise that resolves after bytes are buffered or emitted.
+   */
+  async #writeHeld(buf: Uint8Array): Promise<void> {
+    if (buf.byteLength >= this.#buf.byteLength) {
+      // Bypass: write is large enough that coalescing doesn't help.
+      await this._flushHeld();
+      return this.doFlush(buf);
+    }
+    if (!this._directAccumulate(buf)) {
+      await this._flushHeld();
+      this._directAccumulate(buf);
+    }
+  }
+  /**
    * Create a buffered byte writer.
    *
    * `bufferSize` defaults to 64 KiB. A smaller buffer flushes more often; a
@@ -1826,9 +1955,9 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   /**
    * Flush a coalesced byte slice to the underlying resource.
    *
-   * Implementations must emit all bytes in `buf` or throw. The slice is backed
-   * by the writer's internal buffer and should not be retained after the promise
-   * resolves.
+   * Implementations must emit all bytes in `buf` or throw. Calls are serialized
+   * per writer, so an implementation that suspends on backpressure keeps the
+   * descriptor to itself until it returns.
    *
    * ```js
    * import { BufferedBytesWriter } from 'fino:stream';
@@ -1874,6 +2003,10 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * pending bytes are flushed. Smaller buffers are copied into the internal
    * buffer, flushing first if needed.
    *
+   * An uncontended caller whose bytes fit copies them in synchronously; anyone
+   * who would have to wait for room instead takes a turn on the writer's queue,
+   * so bytes leave in call order however many callers overlap.
+   *
    * ```js
    * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
@@ -1883,17 +2016,11 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * @param buf Bytes to write.
    * @returns A promise that resolves after bytes are buffered or flushed.
    */
-  protected async doWrite(buf: Uint8Array): Promise<void> {
-    if (buf.byteLength >= this.#buf.byteLength) {
-      // Bypass: write is large enough that coalescing doesn't help.
-      await this.flush();
-      return this.doFlush(buf);
+  protected doWrite(buf: Uint8Array): Promise<void> {
+    if (this._idle() && buf.byteLength < this.#buf.byteLength && this._directAccumulate(buf)) {
+      return Promise.resolve();
     }
-    if (this.#pending + buf.byteLength > this.#buf.byteLength) {
-      await this.flush();
-    }
-    this.#buf.set(buf, this.#pending);
-    this.#pending += buf.byteLength;
+    return this._serialize(() => this.#writeHeld(buf));
   }
   /**
    * Write multiple byte buffers through the coalescing buffer.
@@ -1914,19 +2041,44 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    */
   async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
     if (this.closed) throw new Error('Writer is closed');
-    for (let i = 0; i < count; i++) {
+    const start = this._idle() ? this._accumulatePrefix(vecs, count) : 0;
+    if (start === count) return;
+    await this._serialize(async () => {
+      for (let i = start; i < count; i++) {
+        const v = vecs[i];
+        if (!v || v.byteLength === 0) continue;
+        await this.#writeHeld(v);
+      }
+    });
+  }
+  /**
+   * Copy as many leading vectors into the coalesce buffer as fit.
+   *
+   * Only for the uncontended path: it neither flushes nor waits, so it stops at
+   * the first vector that does not fit and leaves the rest to the queue.
+   *
+   * ```js
+   * import { BufferedBytesWriter } from 'fino:stream';
+   * class Sink extends BufferedBytesWriter {
+   *   async doFlush(_buf) {}
+   *   prefix(vecs) { return this._accumulatePrefix(vecs, vecs.length); }
+   * }
+   * console.log(new Sink().prefix([new Uint8Array([1])]));
+   * ```
+   *
+   * @param vecs Byte vectors to accumulate.
+   * @param count Number of vectors from `vecs` to consider.
+   * @returns Index of the first vector that did not fit, or `count`.
+   * @internal
+   */
+  protected _accumulatePrefix(vecs: Uint8Array[], count: number): number {
+    let i = 0;
+    for (; i < count; i++) {
       const v = vecs[i];
       if (!v || v.byteLength === 0) continue;
-      if (v.byteLength >= this.#buf.byteLength) {
-        await this.flush();
-        await this.doFlush(v);
-        continue;
-      }
-      if (!this._directAccumulate(v)) {
-        await this.flush();
-        this._directAccumulate(v);
-      }
+      if (v.byteLength >= this.#buf.byteLength || !this._directAccumulate(v)) break;
     }
+    return i;
   }
   /**
    * Synchronously copy `buf` into the coalesce buffer.
@@ -1959,6 +2111,11 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Calling `flush()` with no pending bytes is a no-op. Errors from `doFlush()`
    * reject the returned promise and the pending count has already been reset.
    *
+   * The pending bytes are taken as a copy: `doFlush()` can suspend on
+   * backpressure, and the coalesce buffer it was handed would otherwise be
+   * refilled from offset zero by the next write while those bytes were still
+   * on their way out.
+   *
    * ```js
    * import { BufferedBytesWriter } from 'fino:stream';
    * class Sink extends BufferedBytesWriter { async doFlush(_buf) {} }
@@ -1970,10 +2127,8 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * @returns A promise that resolves after pending bytes are emitted.
    */
   async flush(): Promise<void> {
-    if (this.#pending === 0) return;
-    const slice = this.#buf.subarray(0, this.#pending);
-    this.#pending = 0;
-    await this.doFlush(slice);
+    if (this._idle() && this.#pending === 0) return;
+    await this._serialize(() => this._flushHeld());
   }
   /**
    * Return the buffered bytes (a copy) and reset the pending count.
@@ -2003,7 +2158,9 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Flush pending bytes, then close the writer.
    *
    * The method is idempotent. If flushing throws, the close callback still runs
-   * through the `finally` block and the flush error is rethrown.
+   * through the `finally` block and the flush error is rethrown. The flush takes
+   * its turn at the back of the writer's queue, so writes nobody awaited are on
+   * their way out before the resource goes.
    *
    * ```js
    * import { BufferedBytesWriter } from 'fino:stream';
@@ -2268,63 +2425,61 @@ export class FdWriter extends BufferedBytesWriter {
     for (let i = 0; i < count; i++) totalLen += vecs[i]!.byteLength;
     if (totalLen <= COALESCE_LIMIT) {
       // Fast path: accumulate synchronously into the coalesce buffer — no Promises
-      // until the buffer is full and a flush is needed (rare for typical responses).
-      for (let i = 0; i < count; i++) {
-        const v = vecs[i];
-        if (!v || v.byteLength === 0) continue;
-        if (!this._directAccumulate(v)) {
-          await this.flush();
-          this._directAccumulate(v);
-        }
-      }
-      return;
+      // until the buffer is full and a flush is needed (rare for typical responses),
+      // or until another caller already holds the writer.
+      return super.writev(vecs, count);
     }
-    // Slow path: scatter/gather writev(2) — zero copy for large writes.
-    // Flush the coalesce buffer first so bytes stay ordered.
-    await this.flush();
-    const cursors = this.#cursors;
-    cursors.fill(0, 0, count);
-    const view = this.#iovView;
-    while (true) {
-      let iovcnt = 0;
-      for (let i = 0; i < count; i++) {
-        const vec = vecs[i]!;
-        const cursor = cursors[i]!;
-        const rem = vec.byteLength - cursor;
-        if (rem <= 0) continue;
-        const off = iovcnt * IOVEC_SIZE;
-        view.setBigUint64(off, Pointer.addr(vec) + BigInt(cursor), true);
-        view.setBigUint64(off + 8, BigInt(rem), true);
-        iovcnt++;
-      }
-      if (iovcnt === 0) break;
-      const n = lib.symbols.writev(this.#fd, this.#iovBuf, iovcnt) as number;
-      if (n < 0) {
-        if (getErrno() === EAGAIN) {
+    // Slow path: scatter/gather writev(2) — zero copy for large writes. Takes
+    // one turn on the queue covering both the coalesce flush that has to
+    // precede it and the gather loop itself: the iovec block and the cursor
+    // array are per-writer scratch, so a second writev running against them
+    // concurrently would rewrite this one's vectors mid-syscall.
+    await this._serialize(async () => {
+      await this._flushHeld();
+      const cursors = this.#cursors;
+      cursors.fill(0, 0, count);
+      const view = this.#iovView;
+      while (true) {
+        let iovcnt = 0;
+        for (let i = 0; i < count; i++) {
+          const vec = vecs[i]!;
+          const cursor = cursors[i]!;
+          const rem = vec.byteLength - cursor;
+          if (rem <= 0) continue;
+          const off = iovcnt * IOVEC_SIZE;
+          view.setBigUint64(off, Pointer.addr(vec) + BigInt(cursor), true);
+          view.setBigUint64(off + 8, BigInt(rem), true);
+          iovcnt++;
+        }
+        if (iovcnt === 0) break;
+        const n = lib.symbols.writev(this.#fd, this.#iovBuf, iovcnt) as number;
+        if (n < 0) {
+          if (getErrno() === EAGAIN) {
+            await loop.writable(this.#fd);
+            continue;
+          }
+          throw new Error('writev failed');
+        }
+        if (n === 0) {
           await loop.writable(this.#fd);
           continue;
         }
-        throw new Error('writev failed');
-      }
-      if (n === 0) {
-        await loop.writable(this.#fd);
-        continue;
-      }
-      let rem = n;
-      for (let i = 0; i < count && rem > 0; i++) {
-        const vec = vecs[i]!;
-        const cursor = cursors[i]!;
-        const avail = vec.byteLength - cursor;
-        if (avail <= 0) continue;
-        if (rem >= avail) {
-          cursors[i] = cursor + avail;
-          rem -= avail;
-        } else {
-          cursors[i] = cursor + rem;
-          rem = 0;
+        let rem = n;
+        for (let i = 0; i < count && rem > 0; i++) {
+          const vec = vecs[i]!;
+          const cursor = cursors[i]!;
+          const avail = vec.byteLength - cursor;
+          if (avail <= 0) continue;
+          if (rem >= avail) {
+            cursors[i] = cursor + avail;
+            rem -= avail;
+          } else {
+            cursors[i] = cursor + rem;
+            rem = 0;
+          }
         }
       }
-    }
+    });
   }
 }
 // ---------------------------------------------------------------------------

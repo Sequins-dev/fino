@@ -5,6 +5,9 @@ import {
   createSignal,
   batch,
   createRenderer,
+  defineRenderTarget,
+  lowerTree,
+  mapRenderTargetLowering,
   type Child,
   type HostAdapter,
   type Props,
@@ -36,19 +39,69 @@ describe('fino:ui vnode construction', () => {
       'jsxs delegates to h',
     );
   });
-  it('invokes function components with normalized children', (t) => {
+  it('stores function components instead of invoking them', (t) => {
     function Label(props: { prefix: string; children?: Child[] }) {
       return h('text', null, props.prefix, props.children?.[0]);
     }
     const vnode = h(Label, { prefix: '>' }, 'name');
-    t.equal(vnode.type, 'text', 'function component output is returned');
-    t.deepEqual(vnode.children, ['>', 'name'], 'children are passed through props');
+    t.equal(vnode.type, Label, 'the component itself is the node type');
+    t.deepEqual(vnode.props, { prefix: '>' }, 'props are normalized as usual');
+    t.deepEqual(vnode.children, ['name'], 'children stay on the node');
+  });
+  it('invokes a stored component with normalized children when lowered', (t) => {
+    function Label(props: { prefix: string; children?: Child[] }) {
+      return h('text', null, props.prefix, props.children?.[0]);
+    }
+    const lowered = lowerTree(h(Label, { prefix: '>' }, 'name'), 'test:plain');
+    t.equal(lowered.type, 'text', 'the component ran during lowering');
+    t.deepEqual(lowered.children, ['>', 'name'], 'children are passed through props');
   });
   it('preserves the caller key through a function component', (t) => {
     function Item() {
       return h('row', { key: 'implementation-key' });
     }
-    t.equal(h(Item, { key: 'instance-key' }).key, 'instance-key');
+    t.equal(lowerTree(h(Item, { key: 'instance-key' }), 'test:plain').key, 'instance-key');
+  });
+  it('lets a render target substitute its own lowering for a component', (t) => {
+    function Label(props: { prefix: string }) {
+      return h('text', null, props.prefix);
+    }
+    // Registered by the *target*, not by whoever wrote Label — that is the
+    // point: a target lowers components it did not author.
+    mapRenderTargetLowering(Label, 'test:shout', (props: { prefix: string }) =>
+      h('loud', null, props.prefix.toUpperCase()),
+    );
+    const node = h(Label, { prefix: 'hi' });
+    t.equal(lowerTree(node, 'test:plain').type, 'text', 'other targets keep the default');
+    const shouted = lowerTree(node, 'test:shout');
+    t.equal(shouted.type, 'loud', 'the registered lowering replaced the default');
+    t.deepEqual(shouted.children, ['HI'], 'the lowering saw the same props');
+  });
+  it('lowers host element names generically for a target', (t) => {
+    mapRenderTargetLowering('article', 'test:boxed', (props: { children?: Child[] }) =>
+      h('box', { border: true }, ...((props.children ?? []) as Child[])),
+    );
+    const lowered = lowerTree(h('article', null, 'body'), 'test:boxed');
+    t.equal(lowered.type, 'box', 'the element name resolved through the registry');
+    t.deepEqual(lowered.children, ['body'], 'children carried across');
+  });
+  it('refuses a node the target has no lowering for', (t) => {
+    defineRenderTarget('test:strict', { primitives: ['ink'] });
+    t.throws(
+      () => lowerTree(h('article', null, 'body'), 'test:strict'),
+      /No 'test:strict' lowering for 'article'/,
+      'the primitive floor names both the node and the target',
+    );
+  });
+  it('stops a lowering that never reaches a primitive', (t) => {
+    function Loop() {
+      return h(Loop, null);
+    }
+    t.throws(
+      () => lowerTree(h(Loop, null), 'test:plain'),
+      /did not reach a primitive/,
+      'the depth cap catches a lowering that emits its own type',
+    );
   });
 });
 describe('fino:ui signals', () => {
