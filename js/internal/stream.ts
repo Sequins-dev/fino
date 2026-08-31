@@ -7,6 +7,9 @@
  *     Generic async producers/consumers of any value type T. Provide the async
  *     iterator protocol, pipe(), async close(), and one FIFO operation queue per
  *     instance. Overlapping calls never enter a source or sink concurrently.
+ *     Channel connects one Reader and Writer as a zero-capacity rendezvous:
+ *     each write remains pending until one read accepts it. UnboundedChannel is
+ *     the explicit producer-ahead specialization.
  *
  *   BytesReader extends Reader<Uint8Array>
  *   BytesWriter extends Writer<ArrayBuffer | ArrayBufferView>
@@ -63,7 +66,7 @@
  * or extend BufferedBytesWriter and implement doFlush(). The structural API,
  * coalescing, and async-iterator protocol are all inherited.
  *
- * ```js
+ * ```ts no_run
  * import { BufferedBytesReader } from 'fino:stream';
  * console.log(typeof BufferedBytesReader.over);
  * ```
@@ -2518,24 +2521,39 @@ export class FdWriter extends BufferedBytesWriter {
 // ---------------------------------------------------------------------------
 // Channel<T> — connected Writer/Reader pair sharing an in-memory buffer
 // ---------------------------------------------------------------------------
-// Shared internal state between the two halves — not exported.
-class PipeBuf<T> {
-  buf: T[] = [];
-  idx = 0;
+// Shared internal state contract between channel halves — not exported.
+interface ChannelState<T> {
+  push(value: T): Promise<void>;
+  end(): void;
+  fail(error: unknown): void;
+  read(): Promise<T | null>;
+  cancelWaiters(): void;
+}
+class RendezvousChannelState<T> implements ChannelState<T> {
   done = false;
+  readerClosed = false;
   hasErr = false;
   err: unknown;
+  pendingWrite: {
+    value: T;
+    resolve: () => void;
+    reject: (error: unknown) => void;
+  } | null = null;
   waiters: Array<{
     resolve: (v: T | null) => void;
     reject: (e: unknown) => void;
   }> = [];
-  push(value: T): void {
+  push(value: T): Promise<void> {
+    if (this.readerClosed) return Promise.reject(new Error('Channel reader is closed'));
+    if (this.hasErr) return Promise.reject(this.err);
     const w = this.waiters.shift();
     if (w) {
       w.resolve(value);
-    } else {
-      this.buf.push(value);
+      return Promise.resolve();
     }
+    return new Promise<void>((resolve, reject) => {
+      this.pendingWrite = { value, resolve, reject };
+    });
   }
   end(): void {
     if (this.done) return;
@@ -2547,14 +2565,22 @@ class PipeBuf<T> {
   fail(err: unknown): void {
     this.hasErr = true;
     this.err = err;
+    const write = this.pendingWrite;
+    this.pendingWrite = null;
+    write?.reject(err);
     const ws = this.waiters;
     this.waiters = [];
     for (const w of ws) w.reject(err);
   }
   read(): Promise<T | null> {
-    if (this.idx < this.buf.length) return Promise.resolve(this.buf[this.idx++]!);
-    if (this.done) return Promise.resolve(null);
+    const write = this.pendingWrite;
+    if (write !== null) {
+      this.pendingWrite = null;
+      write.resolve();
+      return Promise.resolve(write.value);
+    }
     if (this.hasErr) return Promise.reject(this.err);
+    if (this.done) return Promise.resolve(null);
     return new Promise<T | null>((resolve, reject) => {
       this.waiters.push({
         resolve,
@@ -2563,20 +2589,90 @@ class PipeBuf<T> {
     });
   }
   cancelWaiters(): void {
+    this.readerClosed = true;
+    const write = this.pendingWrite;
+    this.pendingWrite = null;
+    write?.reject(new Error('Channel reader is closed'));
     const ws = this.waiters;
     this.waiters = [];
     for (const w of ws) w.resolve(null);
   }
 }
+interface ChannelNode<T> {
+  value: T;
+  next: ChannelNode<T> | null;
+}
+class UnboundedChannelState<T> implements ChannelState<T> {
+  #head: ChannelNode<T> | null = null;
+  #tail: ChannelNode<T> | null = null;
+  #done = false;
+  #readerClosed = false;
+  #hasError = false;
+  #error: unknown;
+  #waiters: Array<{
+    resolve: (value: T | null) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  push(value: T): Promise<void> {
+    if (this.#readerClosed) return Promise.reject(new Error('Channel reader is closed'));
+    if (this.#hasError) return Promise.reject(this.#error);
+    const waiter = this.#waiters.shift();
+    if (waiter !== undefined) {
+      waiter.resolve(value);
+      return Promise.resolve();
+    }
+    const node = { value, next: null };
+    if (this.#tail === null) {
+      this.#head = node;
+    } else {
+      this.#tail.next = node;
+    }
+    this.#tail = node;
+    return Promise.resolve();
+  }
+  end(): void {
+    if (this.#done) return;
+    this.#done = true;
+    const waiters = this.#waiters;
+    this.#waiters = [];
+    for (const waiter of waiters) waiter.resolve(null);
+  }
+  fail(error: unknown): void {
+    this.#hasError = true;
+    this.#error = error;
+    const waiters = this.#waiters;
+    this.#waiters = [];
+    for (const waiter of waiters) waiter.reject(error);
+  }
+  read(): Promise<T | null> {
+    const node = this.#head;
+    if (node !== null) {
+      this.#head = node.next;
+      if (this.#head === null) this.#tail = null;
+      return Promise.resolve(node.value);
+    }
+    if (this.#hasError) return Promise.reject(this.#error);
+    if (this.#done) return Promise.resolve(null);
+    return new Promise<T | null>((resolve, reject) => {
+      this.#waiters.push({ resolve, reject });
+    });
+  }
+  cancelWaiters(): void {
+    this.#readerClosed = true;
+    this.#head = null;
+    this.#tail = null;
+    const waiters = this.#waiters;
+    this.#waiters = [];
+    for (const waiter of waiters) waiter.resolve(null);
+  }
+}
 /**
- * Writer end of a `Channel`.
+ * Writer endpoint shared by channel implementations.
  *
- * `write()` enqueues a value for the reader, `close()` signals EOF, and
- * `fail(err)` propagates an error to the reader. A value written while a reader
- * is blocked in `read()` is handed straight to that pending read; otherwise it
- * queues in the shared FIFO buffer. Writes after `close()` are silently dropped,
- * which lets a producer over-run a consumer that has already stopped without
- * raising.
+ * The containing channel determines acceptance: `Channel` holds a write until
+ * a reader accepts it, while `UnboundedChannel` accepts it into a FIFO buffer.
+ * `close()` signals EOF after admitted writes, and `fail(error)` propagates a
+ * terminal error. Closing the reader rejects writes it has not accepted.
  *
  * Instances are obtained from a `Channel`, never constructed directly.
  *
@@ -2584,16 +2680,15 @@ class PipeBuf<T> {
  * import { Channel } from 'fino:stream';
  *
  * const ch = new Channel<number>();
- * const writer = ch.writer;
- * await writer.write(1);
- * await writer.write(2);
- * await writer.close();
+ * const write = ch.writer.write(1);
+ * console.log(await ch.reader.read());
+ * await write;
  * ```
  *
  * @internal
  */
 export class PipeWriter<T> extends Writer<T> {
-  #buf: PipeBuf<T>;
+  #buf: ChannelState<T>;
   /**
    * Bind the writer to a shared pipe buffer.
    *
@@ -2603,21 +2698,21 @@ export class PipeWriter<T> extends Writer<T> {
    *
    * @internal
    */
-  constructor(buf: PipeBuf<T>) {
+  constructor(buf: ChannelState<T>) {
     super(() => buf.end());
     this.#buf = buf;
   }
   /**
-   * Enqueue a value for the connected reader.
+   * Send a value to the connected reader.
    *
-   * Resolves immediately: this channel applies no backpressure and never blocks
-   * the producer. If the reader is currently awaiting a value, it receives this
-   * one directly; otherwise the value is appended to the buffer.
+   * For a rendezvous channel, the promise resolves when a matching read accepts
+   * the value. For an unbounded channel, it resolves once the value enters the
+   * internal buffer. It rejects after the reader closes or the channel fails.
    *
    * @internal
    */
-  async write(value: T): Promise<void> {
-    this.#buf.push(value);
+  write(value: T): Promise<void> {
+    return this.#buf.push(value);
   }
   /**
    * Signal an error to the connected reader.
@@ -2641,14 +2736,13 @@ export class PipeWriter<T> extends Writer<T> {
   }
 }
 /**
- * Reader end of a `Channel`.
+ * Reader endpoint shared by channel implementations.
  *
- * Values are delivered in the order they were written. `read()` returns the
- * next buffered value, or waits when the buffer is empty, resolving with `null`
- * once the writer closes or rejecting if the writer called `fail()`. As a
- * `Reader<T>` it also supports `for await` iteration and `pipe()`. Closing the
- * reader cancels any waiting reads (resolving them with EOF) and releases the
- * shared buffer.
+ * Values are delivered in write order. `read()` accepts the next rendezvous or
+ * buffered value, waits when none is available, returns `null` after the writer
+ * closes, and rejects after `fail(error)`. As a `Reader<T>` it supports
+ * `for await` iteration. Closing it resolves waiting reads with EOF, rejects
+ * unread rendezvous writes, and releases buffered values.
  *
  * Instances are obtained from a `Channel`, never constructed directly.
  *
@@ -2656,15 +2750,16 @@ export class PipeWriter<T> extends Writer<T> {
  * import { Channel } from 'fino:stream';
  *
  * const ch = new Channel<string>();
- * void ch.writer.write('a');
+ * const write = ch.writer.write('a');
+ * console.log(await ch.reader.read());
+ * await write;
  * void ch.writer.close();
- * for await (const v of ch.reader) console.log(v); // "a"
  * ```
  *
  * @internal
  */
 export class PipeReader<T> extends Reader<T> {
-  #buf: PipeBuf<T>;
+  #buf: ChannelState<T>;
   /**
    * Bind the reader to a shared pipe buffer.
    *
@@ -2674,15 +2769,16 @@ export class PipeReader<T> extends Reader<T> {
    *
    * @internal
    */
-  constructor(buf: PipeBuf<T>) {
+  constructor(buf: ChannelState<T>) {
     super(() => buf.cancelWaiters());
     this.#buf = buf;
   }
   /**
    * Pull the next value from the channel.
    *
-   * Returns a buffered value when one is available, otherwise waits until the
-   * writer produces a value, closes (resolving `null`), or fails (rejecting).
+   * Accepts a pending write or returns a buffered value when one is available.
+   * Otherwise it waits until the writer produces a value, closes (resolving
+   * `null`), or fails (rejecting).
    *
    * @internal
    */
@@ -2691,30 +2787,35 @@ export class PipeReader<T> extends Reader<T> {
   }
 }
 /**
- * In-memory connected Writer/Reader pair.
+ * Zero-capacity in-memory Writer/Reader pair.
  *
- * The `writer` and `reader` share a FIFO buffer. Write values with
- * `writer.write(v)`, signal EOF with `writer.close()`, or propagate
- * an error with `writer.fail(err)`. The `reader` is a standard
- * `Reader<T>` — iterate with `for await` or `reader.read()`.
+ * Each `writer.write(value)` remains pending until one `reader.read()` accepts
+ * that value. Overlapping reads and writes pair in FIFO order, providing
+ * back-pressure without retaining producer-ahead values. `writer.close()`
+ * signals EOF after admitted writes are consumed. Closing the reader rejects
+ * unread writes, and `writer.fail(error)` rejects pending operations.
  *
- * ```js
+ * Use `UnboundedChannel` only when producers must run ahead of consumers and
+ * unbounded memory growth is acceptable.
+ *
+ * ```ts no_run
  * import { Channel } from 'fino:stream';
  * const ch = new Channel();
- * void ch.writer.write(1); void ch.writer.write(2); void ch.writer.close();
- * for await (const v of ch.reader) console.log(v); // 1, 2
+ * const consume = (async () => {
+ *   for await (const value of ch.reader) console.log(value);
+ * })();
+ * await ch.writer.write(1);
+ * await ch.writer.write(2);
+ * await ch.writer.close();
+ * await consume;
  * ```
- *
- * @internal
  */
 export class Channel<T> {
   /**
    * Producer half of the channel.
    *
-   * Use `writer.write(v)` to enqueue values, `writer.close()` to signal EOF, and
-   * `writer.fail(err)` to surface an error to the reader.
-   *
-   * @internal
+   * `write(value)` waits for the reader to accept the value. `close()` signals
+   * EOF after admitted values, and `fail(error)` surfaces a terminal error.
    */
   readonly writer: PipeWriter<T>;
   /**
@@ -2722,21 +2823,48 @@ export class Channel<T> {
    *
    * A standard `Reader<T>`: iterate it with `for await`, drive it with
    * `reader.read()`, or feed another `Writer` with `writer.pipe(reader)`.
-   *
-   * @internal
    */
   readonly reader: PipeReader<T>;
   /**
-   * Create a connected writer/reader pair over a fresh in-memory buffer.
+   * Create a connected zero-capacity writer/reader pair.
    *
-   * The two halves share one FIFO buffer, so values written on `writer` become
-   * readable on `reader` in order.
-   *
-   * @internal
+   * The two halves share rendezvous state but no value buffer. Reads and writes
+   * pair in FIFO order.
    */
   constructor() {
-    const buf = new PipeBuf<T>();
+    const buf = new RendezvousChannelState<T>();
     this.writer = new PipeWriter(buf);
     this.reader = new PipeReader(buf);
+  }
+}
+/**
+ * Unbounded in-memory Writer/Reader pair.
+ *
+ * Writes resolve after appending to an internal linked FIFO, without waiting
+ * for a reader. Reads remove values from the head in constant time. The queue
+ * has no capacity limit, so a producer can retain arbitrary memory if it
+ * outpaces its consumer. Writer close drains accepted values before EOF;
+ * reader close releases unread values.
+ *
+ * ```ts no_run
+ * import { UnboundedChannel } from 'fino:stream';
+ *
+ * const channel = new UnboundedChannel<number>();
+ * await channel.writer.write(1);
+ * await channel.writer.write(2);
+ * await channel.writer.close();
+ * for await (const value of channel.reader) console.log(value);
+ * ```
+ */
+export class UnboundedChannel<T> {
+  /** Writer that accepts values into the unbounded FIFO. */
+  readonly writer: PipeWriter<T>;
+  /** Reader that removes accepted values in FIFO order. */
+  readonly reader: PipeReader<T>;
+  /** Create an empty unbounded channel. */
+  constructor() {
+    const state = new UnboundedChannelState<T>();
+    this.writer = new PipeWriter(state);
+    this.reader = new PipeReader(state);
   }
 }

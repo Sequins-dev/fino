@@ -8,9 +8,11 @@ import {
   BufferedBytesWriter,
   BytesReader,
   BytesWriter,
+  Channel,
   FdReader,
   FdWriter,
   Reader,
+  UnboundedChannel,
   Writer,
 } from 'fino:stream';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
@@ -291,7 +293,7 @@ describe('Reader', () => {
     const reader = new ClosingReader();
     const first = reader.read();
     const second = reader.read();
-    await Promise.resolve();
+    await delay(0);
     await Promise.all([reader.close(), reader.close()]);
     t.equal(await first, null, 'the active read settles at EOF');
     t.equal(await second, null, 'the queued read settles without touching the source');
@@ -400,6 +402,105 @@ describe('Writer', () => {
     await pending;
     writer.writeSync(3);
     t.deepEqual(seen, [1, 3], 'sync work runs when the FIFO becomes idle');
+  });
+});
+describe('Channel', () => {
+  it('holds each write until a reader accepts its value', async (t) => {
+    const channel = new Channel<number>();
+    let settled = false;
+    const write = channel.writer.write(1).then(() => {
+      settled = true;
+    });
+
+    await delay(0);
+    t.equal(settled, false, 'an unread value applies backpressure');
+    t.equal(await channel.reader.read(), 1, 'the reader receives the written value');
+    await write;
+    t.equal(settled, true, 'the write settles after the matching read');
+  });
+
+  it('pairs overlapping reads and writes in FIFO order', async (t) => {
+    const channel = new Channel<number>();
+    const settled: number[] = [];
+    const writes = [1, 2, 3].map((value) =>
+      channel.writer.write(value).then(() => settled.push(value)),
+    );
+
+    await delay(0);
+    t.deepEqual(settled, [], 'no write settles before consumption');
+    t.equal(await channel.reader.read(), 1, 'the first read receives the first write');
+    await writes[0];
+    t.deepEqual(settled, [1], 'only the consumed write settles');
+    t.deepEqual(
+      await Promise.all([channel.reader.read(), channel.reader.read()]),
+      [2, 3],
+      'later reads preserve write order',
+    );
+    await Promise.all(writes);
+    t.deepEqual(settled, [1, 2, 3], 'writes settle in handoff order');
+  });
+
+  it('rejects unread writes when the reader closes', async (t) => {
+    const channel = new Channel<number>();
+    const first = channel.writer.write(1);
+    const second = channel.writer.write(2);
+
+    await channel.reader.close();
+    await t.rejects(() => first, /reader.*closed/i, 'the active write is rejected');
+    await t.rejects(() => second, /reader.*closed/i, 'the queued write is rejected');
+  });
+
+  it('delivers admitted writes before writer close reaches EOF', async (t) => {
+    const channel = new Channel<number>();
+    const write = channel.writer.write(1);
+    const close = channel.writer.close();
+
+    t.equal(await channel.reader.read(), 1, 'the admitted value is delivered');
+    await Promise.all([write, close]);
+    t.equal(await channel.reader.read(), null, 'EOF follows the admitted value');
+  });
+
+  it('propagates failure to pending readers and writes', async (t) => {
+    const readChannel = new Channel<number>();
+    const read = readChannel.reader.read();
+    readChannel.writer.fail(new Error('read failure'));
+    await t.rejects(() => read, /read failure/);
+
+    const writeChannel = new Channel<number>();
+    const write = writeChannel.writer.write(1);
+    writeChannel.writer.fail(new Error('write failure'));
+    await t.rejects(() => write, /write failure/);
+  });
+
+  it('does not replace a terminal failure with clean EOF', async (t) => {
+    const channel = new Channel<number>();
+    channel.writer.fail(new Error('terminal failure'));
+    await channel.writer.close();
+
+    await t.rejects(() => channel.reader.read(), /terminal failure/);
+  });
+});
+describe('UnboundedChannel', () => {
+  it('accepts writes before reads and preserves FIFO order', async (t) => {
+    const channel = new UnboundedChannel<number>();
+    await Promise.all([channel.writer.write(1), channel.writer.write(2), channel.writer.write(3)]);
+
+    t.deepEqual(
+      await Promise.all([channel.reader.read(), channel.reader.read(), channel.reader.read()]),
+      [1, 2, 3],
+      'buffered values retain write order',
+    );
+  });
+
+  it('drains accepted values before writer close produces EOF', async (t) => {
+    const channel = new UnboundedChannel<number>();
+    await channel.writer.write(1);
+    await channel.writer.write(2);
+    await channel.writer.close();
+
+    t.equal(await channel.reader.read(), 1);
+    t.equal(await channel.reader.read(), 2);
+    t.equal(await channel.reader.read(), null);
   });
 });
 describe('BytesReader', () => {
