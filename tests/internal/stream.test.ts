@@ -2,6 +2,7 @@ import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
+import * as loop from 'internal:runtime/loop';
 import {
   BufferedBytesReader,
   BufferedBytesWriter,
@@ -743,6 +744,31 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
     } finally {
       await reader.close();
       await writer.close().catch(() => {});
+      pipe.closeRead();
+      pipe.closeWrite();
+    }
+  });
+  it('FdReader close cancels a pending readability watch', async (t) => {
+    const pipe = makePipe();
+    const reader = new FdReader(pipe.readFd, () => pipe.closeRead());
+    const baselineReads = loop._activeHandleCounts().reads;
+    try {
+      const pending = reader.readAtMost(1);
+      await delay(5);
+      t.equal(
+        loop._activeHandleCounts().reads,
+        baselineReads + 1,
+        'the empty pipe installs one read watch',
+      );
+      await reader.close();
+      t.equal(await withTimeout(pending, 'closed fd reader'), null, 'the pending read reaches EOF');
+      t.equal(
+        loop._activeHandleCounts().reads,
+        baselineReads,
+        'close removes the pending read watch',
+      );
+    } finally {
+      await reader.close();
       pipe.closeRead();
       pipe.closeWrite();
     }

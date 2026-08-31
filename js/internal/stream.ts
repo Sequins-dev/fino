@@ -1420,6 +1420,8 @@ export class FdReader extends BufferedBytesReader {
    * @internal
    */
   #readBeforeReady: boolean;
+  /** Resolve the currently pending readiness wait as EOF during close. */
+  #cancelPendingRead: (() => void) | null = null;
   /**
    * Create a reader for an existing file descriptor.
    *
@@ -1438,7 +1440,11 @@ export class FdReader extends BufferedBytesReader {
    * @internal
    */
   constructor(fd: number, onClose: () => void | Promise<void>) {
-    super(onClose);
+    super(async () => {
+      loop.removeRead(fd);
+      this.#cancelPendingRead?.();
+      await onClose();
+    });
     this.#fd = fd;
     const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
     this.#readBeforeReady = os === 'linux' && flags >= 0 && (flags & O_NONBLOCK) !== 0;
@@ -1461,6 +1467,24 @@ export class FdReader extends BufferedBytesReader {
   get fd(): number {
     return this.#fd;
   }
+  /** Wait for readability while allowing `close()` to settle the wait as EOF. */
+  #waitReadable(): Promise<number | null> {
+    return new Promise<number | null>((resolve) => {
+      let settled = false;
+      this.#cancelPendingRead = () => {
+        if (settled) return;
+        settled = true;
+        this.#cancelPendingRead = null;
+        resolve(null);
+      };
+      void loop.readable(this.#fd).then((available) => {
+        if (settled) return;
+        settled = true;
+        this.#cancelPendingRead = null;
+        resolve(available);
+      });
+    });
+  }
   /**
    * Pull one descriptor chunk for the buffered reader.
    *
@@ -1482,8 +1506,9 @@ export class FdReader extends BufferedBytesReader {
       if (this.closed) return null;
       if (this.#fd < 0) throw new Error('read failed');
       if (!this.#readBeforeReady && this.#avail <= 0) {
-        this.#avail = await loop.readable(this.#fd);
-        if (this.closed) return null;
+        const available = await this.#waitReadable();
+        if (available === null) return null;
+        this.#avail = available;
       }
       const n = lib.symbols.read(this.#fd, this.#readBuf, 65536) as number;
       if (n > 0) {
@@ -1494,8 +1519,9 @@ export class FdReader extends BufferedBytesReader {
       }
       if (n === 0) return null;
       if (getErrno() !== EAGAIN) return null;
-      this.#avail = await loop.readable(this.#fd);
-      if (this.closed) return null;
+      const available = await this.#waitReadable();
+      if (available === null) return null;
+      this.#avail = available;
     }
   }
 }
