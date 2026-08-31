@@ -90,6 +90,10 @@ const lib = dlopen(LIBC, {
     parameters: ['i32', 'buffer', 'i32'],
     result: 'i32',
   },
+  fcntl: {
+    parameters: ['i32', 'i32', 'i32'],
+    result: 'i32',
+  },
   [errnoFn]: {
     parameters: [],
     result: 'pointer',
@@ -98,6 +102,8 @@ const lib = dlopen(LIBC, {
 // iovec layout on 64-bit: { void *iov_base (8 bytes), size_t iov_len (8 bytes) }
 const IOVEC_SIZE = 16;
 const MAX_IOV = 16;
+const F_GETFL = 3;
+const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
 function getErrno(): number {
   return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
 }
@@ -1395,31 +1401,25 @@ export class FdReader extends BufferedBytesReader {
    * @internal
    */
   #readView: Uint8Array = new Uint8Array(this.#readBuf);
-  // Bytes kqueue reported available at last EVFILT_READ event. When > 0 we can
-  // skip the next loop.readable() call because the kernel already told us data
-  // is present. Reset to 0 after each read() or on unexpected EAGAIN.
   /**
-   * Private property `#avail` used by `FdReader`.
+   * Bytes reported available by the last readiness event.
    *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #avail = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#avail;
-   *   }
-   * }
-   * ```
+   * A positive count lets readiness-first platforms consume the remainder of
+   * an event without installing another one-shot watch.
    *
    * @internal
    */
   #avail: number = 0;
+  /**
+   * Whether this descriptor can be read safely before installing a watch.
+   *
+   * Linux nonblocking descriptors use the usual read-until-`EAGAIN` pattern so
+   * data that arrived before watch registration cannot be stranded. Blocking
+   * descriptors and macOS retain readiness-first behavior.
+   *
+   * @internal
+   */
+  #readBeforeReady: boolean;
   /**
    * Create a reader for an existing file descriptor.
    *
@@ -1440,6 +1440,8 @@ export class FdReader extends BufferedBytesReader {
   constructor(fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#fd = fd;
+    const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
+    this.#readBeforeReady = os === 'linux' && flags >= 0 && (flags & O_NONBLOCK) !== 0;
   }
   /**
    * Raw borrowed file descriptor.
@@ -1479,7 +1481,7 @@ export class FdReader extends BufferedBytesReader {
     while (true) {
       if (this.closed) return null;
       if (this.#fd < 0) throw new Error('read failed');
-      if (this.#avail <= 0) {
+      if (!this.#readBeforeReady && this.#avail <= 0) {
         this.#avail = await loop.readable(this.#fd);
         if (this.closed) return null;
       }
@@ -1492,7 +1494,8 @@ export class FdReader extends BufferedBytesReader {
       }
       if (n === 0) return null;
       if (getErrno() !== EAGAIN) return null;
-      this.#avail = 0;
+      this.#avail = await loop.readable(this.#fd);
+      if (this.closed) return null;
     }
   }
 }
