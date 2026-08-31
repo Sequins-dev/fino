@@ -38,22 +38,8 @@ describe('Fifo', () => {
     t.equal(await recovered, 42);
   });
 
-  it('runs synchronous tasks only while no asynchronous task is pending', async (t) => {
+  it('exposes only asynchronous FIFO admission', (t) => {
     const fifo = new Fifo();
-    const values: number[] = [];
-    fifo.runSync(() => values.push(1));
-    let release!: () => void;
-    const pending = fifo.run(
-      () =>
-        new Promise<void>((resolve) => {
-          release = resolve;
-        }),
-    );
-
-    t.throws(() => fifo.runSync(() => values.push(2)), /pending asynchronous tasks/);
-    release();
-    await pending;
-    fifo.runSync(() => values.push(3));
-    t.deepEqual(values, [1, 3]);
+    t.equal('runSync' in fifo, false);
   });
 });

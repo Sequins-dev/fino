@@ -185,12 +185,23 @@ function queueReaderOperation<R>(
 interface WriterQueueState {
   queue: Fifo;
   closed: () => boolean;
+  pending: number;
 }
 const writerQueues = new WeakMap<object, WriterQueueState>();
 function queueWriterOperation<R>(writer: object, operation: () => Promise<R>): Promise<R> {
   const state = writerQueues.get(writer)!;
   if (state.closed()) return Promise.reject(new Error('Writer is closed'));
-  return state.queue.run(operation);
+  state.pending++;
+  return state.queue.run(operation).then(
+    (value) => {
+      state.pending--;
+      return value;
+    },
+    (error) => {
+      state.pending--;
+      throw error;
+    },
+  );
 }
 function queueWriterClose(writer: object, operation: () => Promise<void>): Promise<void> {
   return writerQueues.get(writer)!.queue.run(operation);
@@ -1616,7 +1627,7 @@ export abstract class Writer<T> {
     const close = this.close.bind(this);
     const writeSync = this.writeSync?.bind(this);
     const closeSync = this.closeSync?.bind(this);
-    const state = { queue: new Fifo(), closed: () => this.#closed };
+    const state = { queue: new Fifo(), closed: () => this.#closed, pending: 0 };
     writerQueues.set(this, state);
     Object.defineProperty(this, 'write', {
       value: (value: T) => queueWriterOperation(this, () => write(value)),
@@ -1636,7 +1647,8 @@ export abstract class Writer<T> {
       Object.defineProperty(this, 'writeSync', {
         value: (...args: unknown[]) => {
           if (this.#closed) throw new Error('Writer is closed');
-          state.queue.runSync(() => (writeSync as (...values: unknown[]) => void)(...args));
+          if (state.pending > 0) throw new Error('Writer has pending asynchronous operations');
+          (writeSync as (...values: unknown[]) => void)(...args);
         },
       });
     }
@@ -1644,10 +1656,9 @@ export abstract class Writer<T> {
       Object.defineProperty(this, 'closeSync', {
         value: () => {
           if (this.#closed) return;
-          state.queue.runSync(() => {
-            this.#closed = true;
-            closeSync();
-          });
+          if (state.pending > 0) throw new Error('Writer has pending asynchronous operations');
+          this.#closed = true;
+          closeSync();
         },
       });
     }
