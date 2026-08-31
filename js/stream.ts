@@ -1,10 +1,13 @@
 /**
- * fino:stream — generic, byte-specialized, and buffered async I/O abstractions.
+ * fino:stream — channel-backed readers, writers, and byte I/O endpoints.
  *
  * This public facade re-exports the stream primitives implemented by
  * `internal:stream` so application code and internal modules share the same
- * class identities. Use these classes when building custom byte readers,
- * coalescing writers, or fd-backed adapters.
+ * class identities. Reader and Writer are stable endpoint facades; their
+ * shared state owns delivery order, back-pressure, closure, and failure.
+ * Channel is a zero-capacity rendezvous, while UnboundedChannel is the
+ * explicit producer-ahead specialization. Transform values with async
+ * iterables and wrap the result with Reader.from().
  *
  * `FdReader` and `FdWriter` borrow nonblocking POSIX descriptors. They retry
  * short reads/writes and wait through `EAGAIN` with the runtime platform loop
@@ -15,7 +18,7 @@
  * import { BufferedBytesReader, BytesReader } from 'fino:stream';
  *
  * class EmptyBytes extends BytesReader {
- *   protected async doRead() {
+ *   protected async doReadInto() {
  *     return null;
  *   }
  * }
@@ -24,4 +27,19 @@
  * console.log(await reader.peek(1));
  * ```
  */
-export * from 'internal:stream';
+export {
+  BufferedBytesChannel,
+  BufferedBytesReader,
+  BufferedBytesWriter,
+  BytesReader,
+  BytesChannel,
+  BytesWriter,
+  Channel,
+  FdReader,
+  FdWriter,
+  Reader,
+  UnboundedBytesChannel,
+  UnboundedChannel,
+  Writer,
+} from 'internal:stream';
+export type { BytesReadOptions, ReaderCloseCallback } from 'internal:stream';

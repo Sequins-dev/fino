@@ -349,28 +349,6 @@ export class TlsReader extends BufferedBytesReader {
   #fd: number;
   #needsReadable = false;
   /**
-   * Private property `#readBuf` used by `TlsReader`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #readBuf = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#readBuf;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #readBuf: ArrayBuffer = new ArrayBuffer(65536);
-  /**
    * Wrap OpenSSL state and a non-blocking fd as a TLS reader.
    *
    * The reader does not own the SSL pointer by itself; the close callback
@@ -401,7 +379,7 @@ export class TlsReader extends BufferedBytesReader {
     await super.close();
   }
   /**
-   * Generated-doc-visible method `doPull`.
+   * Generated-doc-visible method `doPullInto`.
    *
    * This implementation detail is included when documentation is built with
    * `--include-private`. It describes state or helper behavior used by the
@@ -411,16 +389,16 @@ export class TlsReader extends BufferedBytesReader {
    * @example
    * ```ts no_run
    * const includePrivateExample = {
-   *   doPull() {
-   *     return 'doPull';
+   *   doPullInto() {
+   *     return null;
    *   },
    * };
-   * includePrivateExample.doPull();
+   * includePrivateExample.doPullInto(new Uint8Array(1));
    * ```
    *
    * @internal
    */
-  protected async doPull(): Promise<Uint8Array | null> {
+  protected async doPullInto(buffer: Uint8Array): Promise<number | null> {
     while (true) {
       if (this.closed) return null;
       if (this.#needsReadable && openssl.sslPending(this.#ssl) <= 0) {
@@ -428,12 +406,10 @@ export class TlsReader extends BufferedBytesReader {
         if (this.closed) return null;
       }
       this.#needsReadable = false;
-      const n = openssl.sslRead(this.#ssl, this.#readBuf, 65536);
+      const n = openssl.sslRead(this.#ssl, buffer, buffer.byteLength);
       if (n > 0) {
         this.#needsReadable = openssl.sslPending(this.#ssl) <= 0;
-        const out = new Uint8Array(n);
-        out.set(new Uint8Array(this.#readBuf, 0, n));
-        return out;
+        return n;
       }
       if (n === 0) return null;
       const err = openssl.sslGetError(this.#ssl, n);
