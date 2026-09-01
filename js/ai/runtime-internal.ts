@@ -593,9 +593,10 @@ export interface RetryOptions {
   maxDelayMs?: number;
   /**
    * Overrides which errors are retryable. By default only `ModelError`s with
-   * status 429 or 5xx are retried.
+   * status 429 or 5xx are retried. Model implementations that throw another
+   * JavaScript value are normalized to `Error` before this predicate runs.
    */
-  retryOn?: (err: unknown) => boolean;
+  retryOn?: (error: Error) => boolean;
 }
 /**
  * Minimal sink a history strategy can use to emit durable memory.
@@ -1000,9 +1001,12 @@ function subUsage(a: Usage, b: Usage): Usage {
       : {}),
   };
 }
-function defaultRetryable(err: unknown): boolean {
+function defaultRetryable(err: Error): boolean {
   if (err instanceof ModelError) return err.status === 429 || err.status >= 500;
   return false;
+}
+function normalizeThrown(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
 }
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -1135,7 +1139,7 @@ export class AgentRuntime {
     const maxDelayMs = this.#retry?.maxDelayMs ?? 3e4;
     const retryOn = this.#retry?.retryOn;
     const models = [this.#model, ...this.#fallback];
-    let lastErr: unknown;
+    let lastErr: Error | null = null;
     for (const activeModel of models) {
       if (activeModel !== this.#model) {
         onEvent?.({
@@ -1171,10 +1175,11 @@ export class AgentRuntime {
               event: ev,
             });
           }
-        } catch (err) {
-          if (midStream) throw err;
-          lastErr = err;
-          const retryable = retryOn ? retryOn(err) : defaultRetryable(err);
+        } catch (thrown) {
+          const error = normalizeThrown(thrown);
+          if (midStream) throw error;
+          lastErr = error;
+          const retryable = retryOn ? retryOn(error) : defaultRetryable(error);
           if (retryable && attempt < maxRetries) continue;
           break;
         }
@@ -1757,7 +1762,8 @@ export class AgentRuntime {
             part,
             result,
           };
-        } catch (err) {
+        } catch (thrown) {
+          const error = normalizeThrown(thrown);
           const toolElapsed = (Date.now() - toolT0) / 1e3;
           getMeterProvider()
             .getMeter('fino.ai')
@@ -1768,26 +1774,26 @@ export class AgentRuntime {
             .record(toolElapsed, {
               'gen_ai.operation.name': 'execute_tool',
               'gen_ai.tool.name': part.name,
-              'error.type': (err as Error)?.name ?? 'Error',
+              'error.type': error.name,
             });
-          toolSpan.recordException?.(err);
-          toolSpan.setAttribute('error.type', (err as Error)?.name ?? 'Error');
+          toolSpan.recordException?.(error);
+          toolSpan.setAttribute('error.type', error.name);
           toolSpan.end({
             status: {
               code: 'ERROR',
-              message: String(err),
+              message: error.message,
             },
           });
-          if ((err as Error)?.name !== 'SuspendSignal') {
+          if (error.name !== 'SuspendSignal') {
             onEvent?.({
               type: 'tool_error',
               stepIndex: state.stepIndex,
               id: part.id,
               name: part.name,
-              message: (err as Error)?.message ?? String(err),
+              message: error.message,
             });
           }
-          throw err;
+          throw error;
         }
       }),
     );
@@ -2307,40 +2313,49 @@ export class AgentRuntime {
     };
     return runContext.runWithValue(runState, doApprove);
   }
-  #runWithOutput(
+  async #runWithOutput(
     state: AgentState,
     onEvent: ((ev: AgentEvent) => void) | undefined,
   ): Promise<AgentResult> {
-    if (!this.#output) {
-      return this.#runLoop(state, onEvent, this.#tools, this.#baseToolDefs, this.#toolChoice);
-    }
-    const supportsNative = this.#model.capabilities?.structuredOutput?.native === true;
-    if (this.#structuredOutputMode === 'native' && supportsNative) {
-      const responseFormat: ResponseFormat = {
-        type: 'json_schema',
-        name: 'response',
-        schema: this.#output,
-      };
-      return this.#runLoop(state, onEvent, new Map(), [], 'none', responseFormat).then((r) => {
+    try {
+      if (!this.#output) {
+        return await this.#runLoop(
+          state,
+          onEvent,
+          this.#tools,
+          this.#baseToolDefs,
+          this.#toolChoice,
+        );
+      }
+      const supportsNative = this.#model.capabilities?.structuredOutput?.native === true;
+      if (this.#structuredOutputMode === 'native' && supportsNative) {
+        const responseFormat: ResponseFormat = {
+          type: 'json_schema',
+          name: 'response',
+          schema: this.#output,
+        };
+        const result = await this.#runLoop(state, onEvent, new Map(), [], 'none', responseFormat);
         try {
           return {
-            ...r,
-            object: JSON.parse(r.text),
+            ...result,
+            object: JSON.parse(result.text),
           };
         } catch {
           throw new Error('Model returned invalid JSON for native structured output');
         }
-      });
+      }
+      return await this.#runLoop(
+        state,
+        onEvent,
+        this.#tools,
+        this.#baseToolDefs,
+        this.#toolChoice,
+        undefined,
+        this.#output,
+      );
+    } catch (error) {
+      throw normalizeThrown(error);
     }
-    return this.#runLoop(
-      state,
-      onEvent,
-      this.#tools,
-      this.#baseToolDefs,
-      this.#toolChoice,
-      undefined,
-      this.#output,
-    );
   }
   /**
    * Run the loop to completion and return the final result.
@@ -2431,13 +2446,13 @@ export class AgentRuntime {
         void w.close();
         return r;
       },
-      (err) => {
+      (err: Error) => {
         state.set((current) => ({
           ...current,
           status: 'error',
           currentTool: null,
         }));
-        void w.close(err instanceof Error ? err : new Error(String(err)));
+        void w.close(err);
         throw err;
       },
     );

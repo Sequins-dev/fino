@@ -423,6 +423,55 @@ describe('Agent runtime', () => {
     t.ok(types.includes('step_end'), 'step end event emitted');
     t.ok(types.includes('final'), 'final event emitted');
   });
+  it('normalizes model rejections once before closing the event channel', async (t) => {
+    const model: Model = {
+      name: 'rejecting-model',
+      dimensions: 0,
+      stream(): ModelStream {
+        async function* events(): AsyncIterable<StreamEvent> {
+          throw 'model exploded';
+        }
+        return new ModelStreamImpl(events());
+      },
+      async generate() {
+        throw new Error('use stream');
+      },
+      async embed() {
+        return [];
+      },
+    };
+    let retryError: unknown;
+    const stream = agent({
+      model,
+      retry: {
+        retryOn(error) {
+          retryError = error;
+          return false;
+        },
+      },
+    }).stream({ messages: [{ role: 'user', content: 'hi' }] });
+    let resultError: unknown;
+    try {
+      await stream.result;
+    } catch (error) {
+      resultError = error;
+    }
+    let readerError: unknown;
+    try {
+      for await (const _event of stream.reader) {
+      }
+    } catch (error) {
+      readerError = error;
+    }
+    t.ok(resultError instanceof Error, 'the owned model boundary normalizes thrown values');
+    t.equal((resultError as Error).message, 'model exploded');
+    t.equal(retryError, resultError, 'retry policy receives the normalized model Error');
+    t.equal(
+      readerError,
+      resultError,
+      'the result and event reader receive the same Error instance',
+    );
+  });
   it('pre-aborted signal throws immediately', async (t) => {
     const h = agent({ model: scriptModel([endTurnEvents('hi')]) });
     const controller = new AbortController();
