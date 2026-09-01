@@ -2437,7 +2437,7 @@ export class AgentRuntime {
           status: 'error',
           currentTool: null,
         }));
-        w.fail(err);
+        void w.close(err instanceof Error ? err : new Error(String(err)));
         throw err;
       },
     );

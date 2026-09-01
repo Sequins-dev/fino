@@ -465,10 +465,16 @@ class SimulatedStreamReader implements AsyncIterable<Uint8Array> {
       | {
           maxBytes?: number;
         },
-  ): Promise<Uint8Array | null> {
-    if (this.#closed) return Promise.resolve(null);
+  ): Promise<{ done: false; value: Uint8Array } | { done: true; value: undefined }> {
+    if (this.#closed) return Promise.resolve({ done: true, value: undefined });
     const maxBytes = typeof input === 'number' ? input : input?.maxBytes;
-    return this.#queue.read(maxBytes ?? 65536);
+    return this.#queue
+      .read(maxBytes ?? 65536)
+      .then((chunk) =>
+        chunk === null
+          ? { done: true as const, value: undefined }
+          : { done: false as const, value: chunk },
+      );
   }
   async close(): Promise<void> {
     if (this.#closed) return;
@@ -477,12 +483,12 @@ class SimulatedStreamReader implements AsyncIterable<Uint8Array> {
   }
   async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
     for (;;) {
-      const chunk = await this.read();
-      if (chunk === null) {
+      const result = await this.read();
+      if (result.done) {
         await this.close();
         return;
       }
-      yield chunk;
+      yield result.value;
     }
   }
 }

@@ -32,8 +32,9 @@ async function readAll(
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
-    const chunk = await pipe.pumpUntil(stream.reader.read());
-    if (chunk === null) break;
+    const result = await pipe.pumpUntil(stream.reader.read());
+    if (result.done) break;
+    const chunk = result.value;
     chunks.push(chunk);
     total += chunk.byteLength;
   }
@@ -90,13 +91,13 @@ describe('QUIC stream state conformance', () => {
       });
       serverStream.stopSending(123);
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read())).value!),
         'in-flight-before-stop',
         'in-flight data remains readable',
       );
-      t.equal(
+      t.deepEqual(
         await pipe.pumpUntil(serverStream.reader.read()),
-        null,
+        { done: true, value: undefined },
         'local read side ends after STOP_SENDING',
       );
       await pipe.pumpUntil(stopSending);
@@ -187,7 +188,7 @@ describe('QUIC stream state conformance', () => {
       );
       t.equal(resetEvent.errorCode, 702, 'reset event carries the in-flight reset code');
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read())).value!),
         'reset-crossing-data',
         'in-flight data that arrived before RESET remains readable',
       );
@@ -212,13 +213,13 @@ describe('QUIC stream state conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(serverStream.reader.read())).value!),
         'fin-before-reset',
         'peer receives data before FIN',
       );
-      t.equal(
+      t.deepEqual(
         await pipe.pumpUntil(serverStream.reader.read()),
-        null,
+        { done: true, value: undefined },
         'peer observes EOF before late reset',
       );
       clientStream.reset(703);
@@ -228,9 +229,9 @@ describe('QUIC stream state conformance', () => {
         'fin-before-reset'.length,
         'late reset does not erase the FIN final size',
       );
-      t.equal(
+      t.deepEqual(
         await serverStream.reader.read(),
-        null,
+        { done: true, value: undefined },
         'late reset after FIN does not turn EOF into an error',
       );
     } finally {
@@ -265,15 +266,15 @@ describe('QUIC stream state conformance', () => {
       );
       let received = 0;
       while (received < payload.byteLength) {
-        const chunk = await pipe.pumpUntil(serverStream.reader.read());
-        if (chunk === null) break;
-        received += chunk.byteLength;
+        const result = await pipe.pumpUntil(serverStream.reader.read());
+        if (result.done) break;
+        received += result.value.byteLength;
       }
       await pipe.pumpUntil(write.promise, 5e3);
       await clientStream.writer.close();
-      t.equal(
+      t.deepEqual(
         await pipe.pumpUntil(serverStream.reader.read()),
-        null,
+        { done: true, value: undefined },
         'peer receives FIN after stream-level credit drains queued data',
       );
       await pipe.runUntilSettled();
@@ -309,13 +310,13 @@ describe('QUIC stream state conformance', () => {
       t.equal(fourth.settled(), false, 'fourth unidirectional stream waits for MAX_STREAMS credit');
       const firstPeerStream = await pipe.pumpUntil(serverStreams[0]!);
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(firstPeerStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(firstPeerStream.reader.read())).value!),
         'uni-0',
         'peer receives one unidirectional stream',
       );
-      t.equal(
+      t.deepEqual(
         await pipe.pumpUntil(firstPeerStream.reader.read()),
-        null,
+        { done: true, value: undefined },
         'peer consumes FIN and returns stream credit',
       );
       const fourthStream = await pipe.pumpUntil(fourth.promise);
@@ -323,7 +324,7 @@ describe('QUIC stream state conformance', () => {
       await fourthStream.writer.close();
       const fourthPeerStream = await pipe.pumpUntil(server.acceptStream());
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(fourthPeerStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(fourthPeerStream.reader.read())).value!),
         'uni-3',
         'fourth unidirectional stream opens after credit return',
       );

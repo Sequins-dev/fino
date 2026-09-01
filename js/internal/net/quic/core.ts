@@ -2165,7 +2165,11 @@ export class QuicBytesReader extends BytesReader {
       read(options) {
         const maxBytes = typeof options === 'number' ? options : (options?.maxBytes ?? 65536);
         const signal = typeof options === 'number' ? undefined : options?.signal;
-        return stream[quicStreamInternals.readIncoming](maxBytes, signal);
+        return stream[quicStreamInternals.readIncoming](maxBytes, signal).then((chunk) =>
+          chunk === null
+            ? { done: true as const, value: undefined }
+            : { done: false as const, value: chunk },
+        );
       },
       async readInto(buffer, options) {
         const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -2173,9 +2177,9 @@ export class QuicBytesReader extends BytesReader {
           destination.byteLength,
           options?.signal,
         );
-        if (chunk === null) return null;
+        if (chunk === null) return { done: true, value: undefined };
         destination.set(chunk);
-        return chunk.byteLength;
+        return { done: false, value: chunk.byteLength };
       },
       closeReader: onClose,
     };
@@ -2232,7 +2236,11 @@ class QuicBytesWritableState implements BytesWritableState {
   commit(bytesWritten: number): void {
     const reservation = this.#reservation;
     if (reservation === null) throw new Error('No active write reservation');
-    if (!Number.isInteger(bytesWritten) || bytesWritten < 0 || bytesWritten > reservation.byteLength)
+    if (
+      !Number.isInteger(bytesWritten) ||
+      bytesWritten < 0 ||
+      bytesWritten > reservation.byteLength
+    )
       throw new RangeError('commit exceeds reserved capacity');
     this.#reservation = null;
     this.#writeChunk(reservation.subarray(0, bytesWritten), true);
@@ -2257,13 +2265,6 @@ class QuicBytesWritableState implements BytesWritableState {
   }
   flush(): Promise<void> {
     return Promise.resolve();
-  }
-  fail(error: unknown): void {
-    if (this.#error !== null) return;
-    this.#error = error;
-    this.#pending = [];
-    this.#reservation = null;
-    this.#stopped = true;
   }
   #scheduleFlush(): void {
     if (this.#flushScheduled) return;

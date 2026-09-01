@@ -208,7 +208,8 @@ async function rawH3RequestOutcome(
     void (async () => {
       try {
         while (true) {
-          const bytes = (await stream.reader.read()) as Uint8Array | null;
+          const result = await stream.reader.read();
+          const bytes = result.done ? null : result.value;
           const fin = bytes === null;
           clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
           if (fin) break;
@@ -234,7 +235,8 @@ async function rawH3RequestOutcome(
   void (async () => {
     try {
       while (true) {
-        const bytes = (await requestStream.reader.read()) as Uint8Array | null;
+        const result = await requestStream.reader.read();
+        const bytes = result.done ? null : result.value;
         const fin = bytes === null;
         clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
         if (fin) break;
@@ -477,7 +479,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
             if (stream.direction === 'bidirectional')
               serverSession.addQuicStream(sid, stream.writer);
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
+              const result = await stream.reader.read();
+              const bytes = result.done ? null : result.value;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2221,7 +2224,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
+              const result = await stream.reader.read();
+              const bytes = result.done ? null : result.value;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2310,7 +2314,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
+              const result = await stream.reader.read();
+              const bytes = result.done ? null : result.value;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2397,7 +2402,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
         void (async () => {
           try {
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
+              const result = await stream.reader.read();
+              const bytes = result.done ? null : result.value;
               const fin = bytes === null;
               clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;
@@ -2427,7 +2433,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       void (async () => {
         try {
           while (true) {
-            const bytes = (await connectStream.reader.read()) as Uint8Array | null;
+            const result = await connectStream.reader.read();
+            const bytes = result.done ? null : result.value;
             const fin = bytes === null;
             clientSession.readStream(connectSid, bytes ?? new Uint8Array(0), fin);
             if (fin) break;
@@ -2562,7 +2569,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
+              const result = await stream.reader.read();
+              const bytes = result.done ? null : result.value;
               const fin = bytes === null;
               serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
               if (fin) break;

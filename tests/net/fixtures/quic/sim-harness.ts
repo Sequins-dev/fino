@@ -237,9 +237,9 @@ export class QuicPipe {
     await clientStream.writer.write(encodeUtf8(message));
     await clientStream.writer.close();
     const serverStream = await this.pumpUntil(serverStreamPromise);
-    const data = await serverStream.reader.read();
-    if (data === null) throw new Error('server stream closed before data arrived');
-    return decodeUtf8(data);
+    const result = await serverStream.reader.read();
+    if (result.done) throw new Error('server stream closed before data arrived');
+    return decodeUtf8(result.value);
   }
   setLink(from: QuicAddress, to: QuicAddress, options: SimulatedLinkOptions): void {
     this.net.setLink(from, to, options);

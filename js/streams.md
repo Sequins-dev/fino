@@ -8,6 +8,21 @@ the pull side and a `Writer<T>` is the acceptance side. The two endpoints are
 small facades over shared state; that state owns ordering, capacity, closure,
 and failure. Callers only use `read()`, `write()`, `flush()`, and `close()`.
 
+Every direct read returns an iterator-shaped result:
+
+```ts no_run
+const result = await reader.read();
+if (result.done) {
+  // Clean end of stream.
+} else {
+  use(result.value);
+}
+```
+
+This makes every `T` deliverable, including `null` and `undefined`, without an
+out-of-band sentinel. It is also the same shape used by `for await`, so direct
+pulls and async iteration express completion identically.
+
 This separation matters for I/O. A socket receive path can own a private byte
 state and feed it from `read(2)` while exposing only its `Reader<Uint8Array>`.
 The transmit path can expose only a `Writer<ArrayBuffer | ArrayBufferView>` and
@@ -68,7 +83,8 @@ ordinary composable JavaScript.
 operations. A byte write does not imply one equally sized byte read. Readers
 can request a bounded chunk, exactly N bytes, one byte, or bytes through a
 delimiter; `readInto(buffer)` fills reusable caller storage and reports the
-number of bytes written. Writers accept any `ArrayBuffer` or view. The byte
+number of bytes written in a `ReadResult<number>`. Writers accept any
+`ArrayBuffer` or view. The byte
 state preserves the byte sequence while satisfying those independently sized
 operations.
 
@@ -109,7 +125,8 @@ than additional methods on the public `Reader` or `Writer` facade. Closing a
 state releases an uncommitted reservation without publishing it.
 
 `read(n)` always returns stable caller-owned bytes. It allocates an `n`-byte
-destination, reads into it, and returns the filled prefix; later channel
+destination, reads into it, and returns the filled prefix as the result value;
+later channel
 operations cannot mutate that result. `readInto(view)` instead borrows the
 caller's exact view only until its promise settles. It copies buffered bytes
 into that storage and can consume across multiple segments immediately, which
@@ -123,3 +140,23 @@ attempt; capacity controls aggregate buffering and back-pressure.
 Most protocol layers should therefore remain unbuffered async-iterable
 transforms over memory already admitted by the I/O state. Buffer once at the
 resource boundary, then compose pull-driven processing downstream.
+
+## Directional closure
+
+`writer.close()` is clean completion. It rejects new writes, lets committed
+values or bytes drain in FIFO order, and only then completes; subsequent reads
+return `{ done: true, value: undefined }`. `writer.close(error)` follows the
+same drain rule, then rejects the next read with that error instead of
+reporting clean completion. There is no separate failure method because an
+error still terminates the writer.
+
+`reader.close()` is clean early cancellation by the consumer. Pending and
+future reads complete as done, while blocked and future producer operations
+reject with `ChannelCancelledError`. `reader.close(error)` uses the same
+directional cancellation but rejects pending reads and propagates that exact
+error to the writer. Buffered data that the reader abandons is discarded; any
+writer close still waiting for it to drain rejects with the cancellation.
+
+An uncommitted reserved byte region is never data. Closing the writer releases
+it, and `commit(0)` publishes neither a value nor EOF; the read remains pending
+for a later non-empty commit or terminal close.

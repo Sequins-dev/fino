@@ -194,11 +194,15 @@ describe('internal:net/provider conformance — simulated implementation', () =>
       const [clientReader, clientWriter] = client.split();
       const [serverReader, serverWriter] = server.split();
       await clientWriter.write(bytes('ping'));
-      t.equal(text(await serverReader.read()), 'ping');
+      t.equal(text((await serverReader.read()).value), 'ping');
       await serverWriter.write(bytes('pong'));
-      t.equal(text(await clientReader.read()), 'pong');
+      t.equal(text((await clientReader.read()).value), 'pong');
       await clientWriter.close();
-      t.equal(await serverReader.read(), null, 'closing writer produces EOF for peer reader');
+      t.deepEqual(
+        await serverReader.read(),
+        { done: true, value: undefined },
+        'closing writer produces EOF for peer reader',
+      );
       client.close();
       client.close();
       t.equal(client.closed, true, 'connection close is idempotent');
@@ -317,12 +321,16 @@ describe('internal:net/provider conformance — OS socket adapter', { exclusive:
       t.throws(() => client.split(), /already been split/, 'connection split is single-use');
       await clientWriter.write(bytes('ping'));
       await clientWriter.flush();
-      t.equal(text(await serverReader.read()), 'ping');
+      t.equal(text((await serverReader.read()).value), 'ping');
       await serverWriter.write(bytes('pong'));
       await serverWriter.flush();
-      t.equal(text(await clientReader.read()), 'pong');
+      t.equal(text((await clientReader.read()).value), 'pong');
       await clientWriter.close();
-      t.equal(await serverReader.read(), null, 'closing writer produces EOF for peer reader');
+      t.deepEqual(
+        await serverReader.read(),
+        { done: true, value: undefined },
+        'closing writer produces EOF for peer reader',
+      );
       client.close();
       client.close();
       t.equal(client.closed, true, 'connection close is idempotent');

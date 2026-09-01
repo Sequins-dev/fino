@@ -113,7 +113,22 @@ function getErrno(): number {
  * invokes it at most once, and `close()` rejects if the callback throws or
  * returns a rejected promise.
  */
-export type ReaderCloseCallback = () => void | Promise<void>;
+/** Result of a reader pull: either one delivered value or clean end-of-stream. */
+export type ReadResult<T> = { done: false; value: T } | { done: true; value: undefined };
+const READ_DONE: ReadResult<never> = Object.freeze({ done: true, value: undefined });
+function readResult<T>(value: T): ReadResult<T> {
+  return { done: false, value };
+}
+/** Error reported to a producer when its paired reader terminates early. */
+export class ChannelCancelledError extends Error {
+  constructor(message = 'Channel reader closed before delivery completed') {
+    super(message);
+    this.name = 'ChannelCancelledError';
+  }
+}
+export type ReaderCloseCallback = (error?: Error) => void | Promise<void>;
+/** Cleanup callback invoked when a `Writer` closes. */
+export type WriterCloseCallback = (error?: Error) => void | Promise<void>;
 /**
  * Options for byte-reader pull operations.
  *
@@ -233,22 +248,21 @@ class ChannelSequence {
 }
 /** Internal state consumed by the public `Reader` facade. */
 export interface ReadableState<T, Options = void> {
-  read(options?: Options): Promise<T | null>;
-  closeReader(): void | Promise<void>;
+  read(options?: Options): Promise<ReadResult<T>>;
+  closeReader(error?: Error): void | Promise<void>;
 }
 /** Internal state consumed by the public `Writer` facade. */
 export interface WritableState<T> {
   write(value: T): Promise<void>;
   flush(): Promise<void>;
-  closeWriter(): Promise<void>;
-  fail(error: unknown): void;
+  closeWriter(error?: Error): Promise<void>;
 }
 /** Internal byte-readable state used by `BytesReader`. */
 export interface BytesReadableState extends ReadableState<Uint8Array, number | BytesReadOptions> {
   readInto(
     buffer: ArrayBufferView,
     options?: Omit<BytesReadOptions, 'maxBytes'>,
-  ): Promise<number | null>;
+  ): Promise<ReadResult<number>>;
 }
 /** Internal byte-writable state with direct writable-region acquisition. */
 export interface BytesWritableState extends WritableState<ArrayBuffer | ArrayBufferView> {
@@ -259,7 +273,7 @@ export interface BytesWritableState extends WritableState<ArrayBuffer | ArrayBuf
 interface ByteReadRequest {
   buffer: Uint8Array;
   returnsBytes: boolean;
-  resolve(value: Uint8Array | number | null): void;
+  resolve(value: ReadResult<Uint8Array | number>): void;
   reject(error: unknown): void;
 }
 
@@ -280,48 +294,50 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
   }> = [];
   #active: ByteReadRequest | null = null;
   #readerClosed = false;
+  #readerError: Error | null = null;
   #writerClosed = false;
-  #error: unknown = null;
+  #writerError: Error | null = null;
 
-  read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
+  read(options?: number | BytesReadOptions): Promise<ReadResult<Uint8Array>> {
     const maxBytes = normalizeReadOptions(options).maxBytes ?? 65536;
-    if (maxBytes === 0) return Promise.resolve(new Uint8Array(0));
+    if (maxBytes === 0) return Promise.resolve(readResult(new Uint8Array(0)));
     const buffer = new Uint8Array(maxBytes);
     return new Promise((resolve, reject) => {
       this.#enqueue({
         buffer,
         returnsBytes: true,
-        resolve: (value) => resolve(value as Uint8Array | null),
+        resolve: (value) => resolve(value as ReadResult<Uint8Array>),
         reject,
       });
     });
   }
 
-  readInto(buffer: ArrayBufferView): Promise<number | null> {
+  readInto(buffer: ArrayBufferView): Promise<ReadResult<number>> {
     if (!ArrayBuffer.isView(buffer))
       return Promise.reject(new TypeError('readInto buffer must be a view'));
     const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    if (destination.byteLength === 0) return Promise.resolve(0);
+    if (destination.byteLength === 0) return Promise.resolve(readResult(0));
     return new Promise((resolve, reject) => {
       this.#enqueue({
         buffer: destination,
         returnsBytes: false,
-        resolve: (value) => resolve(value as number | null),
+        resolve: (value) => resolve(value as ReadResult<number>),
         reject,
       });
     });
   }
 
   #enqueue(request: ByteReadRequest): void {
-    if (this.#error !== null) return request.reject(this.#error);
-    if (this.#readerClosed || this.#writerClosed) return request.resolve(null);
+    if (this.#writerError !== null) return request.reject(this.#writerError);
+    if (this.#readerClosed || this.#writerClosed)
+      return request.resolve(READ_DONE as ReadResult<Uint8Array | number>);
     this.#reads.push(request);
     this.#pump();
   }
 
   reserve(): Promise<Uint8Array> {
-    if (this.#error !== null) return Promise.reject(this.#error);
-    if (this.#readerClosed) return Promise.reject(new Error('Reader is closed'));
+    if (this.#writerError !== null) return Promise.reject(this.#writerError);
+    if (this.#readerClosed) return Promise.reject(this.#readerError ?? new ChannelCancelledError());
     if (this.#writerClosed) return Promise.reject(new Error('Writer is closed'));
     return new Promise((resolve, reject) => {
       this.#reserves.push({ resolve, reject });
@@ -336,7 +352,14 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
     if (bytesWritten > request.buffer.byteLength)
       throw new RangeError('commit exceeds reserved capacity');
     this.#active = null;
-    request.resolve(request.returnsBytes ? request.buffer.subarray(0, bytesWritten) : bytesWritten);
+    if (bytesWritten === 0) {
+      this.#reads.unshift(request);
+      this.#pump();
+      return;
+    }
+    request.resolve(
+      readResult(request.returnsBytes ? request.buffer.subarray(0, bytesWritten) : bytesWritten),
+    );
     this.#pump();
   }
 
@@ -371,38 +394,39 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
     return Promise.resolve();
   }
 
-  closeReader(): void {
+  closeReader(error?: Error): void {
     if (this.#readerClosed) return;
     this.#readerClosed = true;
-    const error = new Error('Reader is closed');
-    for (const request of this.#reads.splice(0)) request.resolve(null);
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
+    this.#readerError = error ?? null;
+    const reason = error ?? new ChannelCancelledError();
+    for (const request of this.#reads.splice(0)) {
+      if (error === undefined) request.resolve(READ_DONE);
+      else request.reject(error);
+    }
+    for (const reserve of this.#reserves.splice(0)) reserve.reject(reason);
     if (this.#active !== null) {
-      this.#active.reject(error);
+      this.#active.reject(reason);
       this.#active = null;
     }
   }
 
-  closeWriter(): Promise<void> {
+  closeWriter(error?: Error): Promise<void> {
     if (this.#writerClosed) return Promise.resolve();
     this.#writerClosed = true;
-    const error = new Error('Writer is closed');
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
-    if (this.#active === null) {
-      for (const request of this.#reads.splice(0)) request.resolve(null);
+    this.#writerError = error ?? null;
+    const reason = error ?? new Error('Writer is closed');
+    for (const reserve of this.#reserves.splice(0)) reserve.reject(reason);
+    if (this.#active !== null) {
+      const request = this.#active;
+      this.#active = null;
+      if (error === undefined) request.resolve(READ_DONE);
+      else request.reject(error);
+    }
+    for (const request of this.#reads.splice(0)) {
+      if (error === undefined) request.resolve(READ_DONE);
+      else request.reject(error);
     }
     return Promise.resolve();
-  }
-
-  fail(error: unknown): void {
-    if (this.#error !== null) return;
-    this.#error = error;
-    for (const request of this.#reads.splice(0)) request.reject(error);
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
-    if (this.#active !== null) {
-      this.#active.reject(error);
-      this.#active = null;
-    }
   }
 }
 
@@ -422,8 +446,10 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   #reserves: Array<{ resolve(buffer: Uint8Array): void; reject(error: unknown): void }> = [];
   #reservation: ByteSegment | null = null;
   #readerClosed = false;
+  #readerError: Error | null = null;
   #writerClosed = false;
-  #error: unknown = null;
+  #writerError: Error | null = null;
+  #closeWaiters: Array<{ resolve(): void; reject(error: unknown): void }> = [];
 
   constructor(capacity: number = 65536, options: { growable?: boolean } = {}) {
     capacity = normalizeMaxBytes(capacity, 'capacity');
@@ -444,30 +470,32 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
     this.#pumpReserves();
   }
 
-  read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
+  read(options?: number | BytesReadOptions): Promise<ReadResult<Uint8Array>> {
     const maxBytes = normalizeReadOptions(options).maxBytes ?? 65536;
-    if (maxBytes === 0) return Promise.resolve(new Uint8Array(0));
+    if (maxBytes === 0) return Promise.resolve(readResult(new Uint8Array(0)));
+    if (this.#readerClosed) return Promise.resolve(READ_DONE);
     return new Promise((resolve, reject) => {
       this.#reads.push({
         buffer: new Uint8Array(maxBytes),
         returnsBytes: true,
-        resolve: (value) => resolve(value as Uint8Array | null),
+        resolve: (value) => resolve(value as ReadResult<Uint8Array>),
         reject,
       });
       this.#pumpReads();
     });
   }
 
-  readInto(buffer: ArrayBufferView): Promise<number | null> {
+  readInto(buffer: ArrayBufferView): Promise<ReadResult<number>> {
     if (!ArrayBuffer.isView(buffer))
       return Promise.reject(new TypeError('readInto buffer must be a view'));
     const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    if (destination.byteLength === 0) return Promise.resolve(0);
+    if (destination.byteLength === 0) return Promise.resolve(readResult(0));
+    if (this.#readerClosed) return Promise.resolve(READ_DONE);
     return new Promise((resolve, reject) => {
       this.#reads.push({
         buffer: destination,
         returnsBytes: false,
-        resolve: (value) => resolve(value as number | null),
+        resolve: (value) => resolve(value as ReadResult<number>),
         reject,
       });
       this.#pumpReads();
@@ -475,8 +503,8 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   }
 
   reserve(): Promise<Uint8Array> {
-    if (this.#error !== null) return Promise.reject(this.#error);
-    if (this.#readerClosed) return Promise.reject(new Error('Reader is closed'));
+    if (this.#writerError !== null) return Promise.reject(this.#writerError);
+    if (this.#readerClosed) return Promise.reject(this.#readerError ?? new ChannelCancelledError());
     if (this.#writerClosed) return Promise.reject(new Error('Writer is closed'));
     return new Promise((resolve, reject) => {
       this.#reserves.push({ resolve, reject });
@@ -520,7 +548,7 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
           this.#committed.shift();
           this.#recycle(segment);
         }
-        request.resolve(request.buffer.subarray(0, n));
+        request.resolve(readResult(request.buffer.subarray(0, n)));
         continue;
       }
       let written = 0;
@@ -535,10 +563,14 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
           this.#recycle(segment);
         }
       }
-      request.resolve(written);
+      request.resolve(readResult(written));
     }
     if (this.#writerClosed && this.#reservation === null && this.#committed.length === 0) {
-      for (const request of this.#reads.splice(0)) request.resolve(null);
+      for (const request of this.#reads.splice(0)) {
+        if (this.#writerError === null) request.resolve(READ_DONE);
+        else request.reject(this.#writerError);
+      }
+      for (const waiter of this.#closeWaiters.splice(0)) waiter.resolve();
     }
   }
 
@@ -560,37 +592,39 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
     return Promise.resolve();
   }
 
-  closeReader(): void {
+  closeReader(error?: Error): void {
     if (this.#readerClosed) return;
     this.#readerClosed = true;
-    const error = new Error('Reader is closed');
-    for (const request of this.#reads.splice(0)) request.resolve(null);
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
+    this.#readerError = error ?? null;
+    const reason = error ?? new ChannelCancelledError();
+    for (const request of this.#reads.splice(0)) {
+      if (error === undefined) request.resolve(READ_DONE);
+      else request.reject(error);
+    }
+    for (const reserve of this.#reserves.splice(0)) reserve.reject(reason);
     if (this.#reservation !== null) {
       const segment = this.#reservation;
       this.#reservation = null;
       this.#recycle(segment);
     }
+    this.#committed = [];
+    for (const waiter of this.#closeWaiters.splice(0)) waiter.reject(reason);
   }
 
-  closeWriter(): Promise<void> {
+  closeWriter(error?: Error): Promise<void> {
     if (this.#writerClosed) return Promise.resolve();
     this.#writerClosed = true;
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(new Error('Writer is closed'));
+    this.#writerError = error ?? null;
+    for (const reserve of this.#reserves.splice(0))
+      reserve.reject(error ?? new Error('Writer is closed'));
     if (this.#reservation !== null) {
       const segment = this.#reservation;
       this.#reservation = null;
       this.#recycle(segment);
     }
     this.#pumpReads();
-    return Promise.resolve();
-  }
-
-  fail(error: unknown): void {
-    if (this.#error !== null) return;
-    this.#error = error;
-    for (const request of this.#reads.splice(0)) request.reject(error);
-    for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
+    if (this.#committed.length === 0) return Promise.resolve();
+    return new Promise((resolve, reject) => this.#closeWaiters.push({ resolve, reject }));
   }
 }
 
@@ -614,7 +648,9 @@ export class UnboundedBytesChannelState extends BufferedBytesChannelState {
  *   async read() {
  *     const value = this.value;
  *     this.value = null;
- *     return value;
+ *     return value === null
+ *       ? { done: true, value: undefined }
+ *       : { done: false, value };
  *   }
  * }
  * const reader = new OnceReader();
@@ -679,17 +715,18 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * const reader = new EmptyReader(() => console.log('closed'));
+   * const reader = new Reader(() => console.log('closed'));
    * await reader.close();
    * ```
    *
-   * @param onClose Optional cleanup callback.
+   * @param stateOrClose Shared state or an optional cleanup callback.
    */
   constructor(stateOrClose: ReadableState<T, Options> | ReaderCloseCallback = () => {}) {
     this.#state = typeof stateOrClose === 'function' ? null : stateOrClose;
     this.#onClose =
-      typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeReader();
+      typeof stateOrClose === 'function'
+        ? stateOrClose
+        : (error) => stateOrClose.closeReader(error);
     if (this.#state === null)
       readerQueues.set(this, { queue: new ChannelSequence(), closed: () => this.#closed });
   }
@@ -699,10 +736,11 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
     return new Reader<T>({
       async read() {
         const result = await iterator.next();
-        return result.done ? null : result.value;
+        return result.done ? READ_DONE : readResult(result.value);
       },
-      async closeReader() {
-        await iterator.return?.();
+      async closeReader(error) {
+        if (error !== undefined) await iterator.throw?.(error);
+        else await iterator.return?.();
       },
     });
   }
@@ -714,8 +752,7 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * const reader = new EmptyReader();
+   * const reader = Reader.from((async function* () {})());
    * console.log(reader.closed);
    * await reader.close();
    * console.log(reader.closed);
@@ -727,18 +764,18 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
     return this.#closed;
   }
   /**
-   * Pull the next value from the state. `null` signals EOF.
+   * Pull the next value from the state as an explicit iterator result.
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * console.log(await new EmptyReader().read());
+   * const reader = Reader.from((async function* () {})());
+   * console.log(await reader.read());
    * ```
    *
-   * @returns The next value, or `null` on EOF.
+   * @returns A value result, or a result with `done: true` at clean EOF.
    */
-  read(options?: Options): Promise<T | null> {
-    if (this.#closed) return Promise.resolve(null);
+  read(options?: Options): Promise<ReadResult<T>> {
+    if (this.#closed) return Promise.resolve(READ_DONE);
     if (this.#state === null) return Promise.reject(new Error('Reader has no channel state'));
     return this.#state.read(options);
   }
@@ -747,23 +784,24 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
    *
    * Multiple calls are safe; only the first one invokes `onClose`. The method
    * does not call `read()` and does not require EOF. Callback failures reject
-   * the returned promise.
+   * the returned promise. On channel-backed readers, an omitted error is clean
+   * early cancellation; providing an error propagates that error upstream.
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * const reader = new EmptyReader();
+   * const reader = Reader.from((async function* () {})());
    * await reader.close();
    * await reader.close();
    * ```
    *
+   * @param error Optional consumer failure to propagate to the writer.
    * @returns A promise that resolves after cleanup.
    */
-  close(): Promise<void> {
+  close(error?: Error): Promise<void> {
     if (this.#closePromise !== null) return this.#closePromise;
     this.#closed = true;
     try {
-      this.#closePromise = Promise.resolve(this.#onClose());
+      this.#closePromise = Promise.resolve(this.#onClose(error));
     } catch (error) {
       this.#closePromise = Promise.reject(error);
     }
@@ -775,32 +813,25 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
   /**
    * Advance the async iterator.
    *
-   * `next()` calls `read()`. When `read()` returns `null`, the reader is closed
-   * and the iterator result is `{ done: true }`. Source errors or close callback
+   * `next()` calls `read()`. When `read()` returns a done result, the reader is
+   * closed. Source errors or close callback
    * errors reject the returned promise.
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * const result = await new EmptyReader().next();
+   * const reader = Reader.from((async function* () {})());
+   * const result = await reader.next();
    * console.log(result.done);
    * ```
    *
    * @returns The next iterator result.
    */
   async next(): Promise<IteratorResult<T>> {
-    const v = await this.read();
-    if (v === null) {
+    const result = await this.read();
+    if (result.done) {
       await this.close();
-      return {
-        done: true,
-        value: undefined,
-      };
     }
-    return {
-      done: false,
-      value: v,
-    };
+    return result;
   }
   /**
    * Return this reader as its own async iterator.
@@ -809,8 +840,7 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
    *
    * ```js
    * import { Reader } from 'fino:stream';
-   * class EmptyReader extends Reader { async read() { return null; } }
-   * const reader = new EmptyReader();
+   * const reader = Reader.from((async function* () {})());
    * console.log(reader[Symbol.asyncIterator]() === reader);
    * ```
    *
@@ -879,7 +909,11 @@ export class BytesReader extends Reader<Uint8Array> {
   #stash: Uint8Array | null = null;
   #byteState: BytesReadableState | null;
   constructor(stateOrClose: BytesReadableState | ReaderCloseCallback = () => {}) {
-    super(typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeReader());
+    super(
+      typeof stateOrClose === 'function'
+        ? stateOrClose
+        : (error) => stateOrClose.closeReader(error),
+    );
     this.#byteState = typeof stateOrClose === 'function' ? null : stateOrClose;
   }
   /**
@@ -900,8 +934,14 @@ export class BytesReader extends Reader<Uint8Array> {
    * @param buffer Destination storage supplied by the caller.
    * @returns Number of bytes written, or `null` on EOF.
    */
-  protected doReadInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<number | null> {
-    if (this.#byteState !== null) return this.#byteState.readInto(buffer, options);
+  protected async doReadInto(
+    buffer: Uint8Array,
+    options?: BytesReadOptions,
+  ): Promise<number | null> {
+    if (this.#byteState !== null) {
+      const result = await this.#byteState.readInto(buffer, options);
+      return result.done ? null : result.value;
+    }
     throw new Error('BytesReader has no byte state');
   }
   /**
@@ -968,7 +1008,8 @@ export class BytesReader extends Reader<Uint8Array> {
    * The default request size is 64 KiB, but subclasses may return fewer bytes.
    * Any bytes stashed by an earlier partial structural read are returned before
    * the underlying `doReadInto()` hook is called. The returned allocation is
-   * owned by the caller and remains stable across later reads. `null` means EOF.
+   * owned by the caller and remains stable across later reads. A result with
+   * `done: true` means EOF.
    *
    * ```js
    * import { BytesReader } from 'fino:stream';
@@ -978,24 +1019,24 @@ export class BytesReader extends Reader<Uint8Array> {
    * console.log(await new EmptyBytes().read());
    * ```
    *
-   * @returns A byte chunk, or `null` on EOF.
+   * @returns An owned byte chunk result, or a done result on EOF.
    */
-  read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
+  read(options?: number | BytesReadOptions): Promise<ReadResult<Uint8Array>> {
     return queueReaderOperation(
       this,
       () => this.#readBytes(options),
-      () => null,
+      () => READ_DONE,
     );
   }
-  async #readBytes(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
+  async #readBytes(options?: number | BytesReadOptions): Promise<ReadResult<Uint8Array>> {
     const readOptions = normalizeReadOptions(options);
     const maxBytes = readOptions.maxBytes ?? 65536;
-    if (maxBytes === 0) return new Uint8Array(0);
+    if (maxBytes === 0) return readResult(new Uint8Array(0));
     const buffer = new Uint8Array(maxBytes);
     const n = await this.#fetchInto(buffer, readOptions);
-    if (n === null) return null;
+    if (n === null) return READ_DONE;
     if (n > 0) this.onConsume(n);
-    return buffer.subarray(0, n);
+    return readResult(buffer.subarray(0, n));
   }
   /**
    * Read at most `maxBytes` bytes.
@@ -1005,12 +1046,12 @@ export class BytesReader extends Reader<Uint8Array> {
    *
    * @param maxBytes Maximum returned byte count.
    * @param options Optional abort signal.
-   * @returns A byte chunk, or `null` on EOF.
+   * @returns An owned byte chunk result, or a done result on EOF.
    */
   readAtMost(
     maxBytes: number,
     options: Omit<BytesReadOptions, 'maxBytes'> = {},
-  ): Promise<Uint8Array | null> {
+  ): Promise<ReadResult<Uint8Array>> {
     return this.read({
       ...options,
       maxBytes,
@@ -1022,7 +1063,8 @@ export class BytesReader extends Reader<Uint8Array> {
    * The reader borrows the exact view, including its offset and length, until
    * the returned promise settles. The caller must not mutate or reuse that
    * region while the read is pending; the reader does not retain it afterward.
-   * Returns the number of bytes written, or `null` on EOF, and never writes
+   * Returns the number of bytes written in a value result, or a done result on
+   * EOF, and never writes
    * more than `buffer.byteLength`.
    *
    * The view's byte offset and length are preserved, allowing slices of pooled
@@ -1030,30 +1072,32 @@ export class BytesReader extends Reader<Uint8Array> {
    *
    * @param buffer Destination buffer view.
    * @param options Optional abort signal.
-   * @returns Number of bytes copied, or `null` on EOF.
+   * @returns A written-byte-count result, or a done result on EOF.
    */
   readInto(
     buffer: ArrayBufferView,
     options: Omit<BytesReadOptions, 'maxBytes'> = {},
-  ): Promise<number | null> {
+  ): Promise<ReadResult<number>> {
     if (!ArrayBuffer.isView(buffer)) throw new TypeError('readInto buffer must be a view');
     const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    if (destination.byteLength === 0) return 0;
+    if (destination.byteLength === 0) return Promise.resolve(readResult(0));
     return queueReaderOperation(
       this,
       async () => {
-        const n =
+        const result =
           this.#stash === null && this.#byteState !== null
             ? await this.#byteState.readInto(destination, options)
-            : await this.#fetchInto(destination, options);
-        if (n !== null) {
+            : readResult(await this.#fetchInto(destination, options));
+        if (!result.done) {
+          const n = result.value;
+          if (n === null) return READ_DONE;
           if (n < 0 || n > destination.byteLength)
             throw new RangeError('doReadInto returned invalid length');
           if (n > 0) this.onConsume(n);
         }
-        return n;
+        return result as ReadResult<number>;
       },
-      () => null,
+      () => READ_DONE,
     );
   }
   /**
@@ -1370,8 +1414,9 @@ export abstract class BufferedBytesReader extends BytesReader {
    */
   static over(source: BytesReader): BufferedBytesReader {
     return new (class WrappedBufferedReader extends BufferedBytesReader {
-      protected doPullInto(buffer: Uint8Array): Promise<number | null> {
-        return source.readInto(buffer);
+      protected async doPullInto(buffer: Uint8Array): Promise<number | null> {
+        const result = await source.readInto(buffer);
+        return result.done ? null : result.value;
       }
     })(() => source.close());
   }
@@ -2010,7 +2055,7 @@ export class Writer<T> {
    *
    * @internal
    */
-  #onClose: () => void | Promise<void>;
+  #onClose: WriterCloseCallback;
   #state: WritableState<T> | null;
   /**
    * Create a writer with an optional close callback.
@@ -2027,10 +2072,12 @@ export class Writer<T> {
    *
    * @param onClose Optional cleanup callback.
    */
-  constructor(stateOrClose: WritableState<T> | (() => void | Promise<void>) = () => {}) {
+  constructor(stateOrClose: WritableState<T> | WriterCloseCallback = () => {}) {
     this.#state = typeof stateOrClose === 'function' ? null : stateOrClose;
     this.#onClose =
-      typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeWriter();
+      typeof stateOrClose === 'function'
+        ? stateOrClose
+        : (error) => stateOrClose.closeWriter(error);
     if (this.#state === null) {
       const state = { queue: new ChannelSequence(), closed: () => this.#closed, pending: 0 };
       writerQueues.set(this, state);
@@ -2140,7 +2187,8 @@ export class Writer<T> {
    *
    * Multiple calls return the same cleanup promise. New operations are rejected
    * immediately; operations admitted earlier drain in FIFO order before the
-   * subclass close hook and cleanup callback run.
+   * subclass close hook and cleanup callback run. Providing an error closes the
+   * stream after that drain and makes the reader reject at the terminal point.
    *
    * ```js
    * import { Writer } from 'fino:stream';
@@ -2150,25 +2198,21 @@ export class Writer<T> {
    * await writer.close();
    * ```
    *
+   * @param error Optional producer failure to surface after admitted data.
    * @returns A promise that resolves after cleanup.
    */
-  close(): Promise<void> {
+  close(error?: Error): Promise<void> {
     if (this.#closePromise !== null) return this.#closePromise;
     this.#closed = true;
     try {
       this.#closePromise =
         this.#state === null
-          ? queueWriterClose(this, () => Promise.resolve(this.#onClose()))
-          : Promise.resolve(this.#onClose());
+          ? queueWriterClose(this, () => Promise.resolve(this.#onClose(error)))
+          : Promise.resolve(this.#onClose(error));
     } catch (error) {
       this.#closePromise = Promise.reject(error);
     }
     return this.#closePromise;
-  }
-  /** Fail the shared channel state. */
-  fail(error: unknown): void {
-    if (this.#state === null) throw error;
-    this.#state.fail(error);
   }
   /**
    * Close the writer synchronously when the writer supports synchronous close.
@@ -2214,8 +2258,12 @@ export class Writer<T> {
  */
 export class BytesWriter extends Writer<ArrayBuffer | ArrayBufferView> {
   #byteState: BytesWritableState | null;
-  constructor(stateOrClose: BytesWritableState | (() => void | Promise<void>) = () => {}) {
-    super(typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeWriter());
+  constructor(stateOrClose: BytesWritableState | WriterCloseCallback = () => {}) {
+    super(
+      typeof stateOrClose === 'function'
+        ? stateOrClose
+        : (error) => stateOrClose.closeWriter(error),
+    );
     this.#byteState = typeof stateOrClose === 'function' ? null : stateOrClose;
   }
   /**
@@ -2995,33 +3043,32 @@ export class FdWriter extends BufferedBytesWriter {
 // Shared internal state contract between channel halves — not exported.
 interface ChannelState<T> extends ReadableState<T>, WritableState<T> {
   push(value: T): Promise<void>;
-  end(): void;
-  fail(error: unknown): void;
-  read(): Promise<T | null>;
-  cancelWaiters(): void;
+  end(error?: Error): void;
+  read(): Promise<ReadResult<T>>;
+  cancelWaiters(error?: Error): void;
 }
 class RendezvousChannelState<T> implements ChannelState<T> {
   done = false;
   closing = false;
   readerClosed = false;
-  hasErr = false;
-  err: unknown;
+  readerError: Error | null = null;
+  writerError: Error | null = null;
   writes: Array<{
     value: T;
     resolve: () => void;
     reject: (error: unknown) => void;
   }> = [];
-  closeWaiters: Array<() => void> = [];
+  closeWaiters: Array<{ resolve(): void; reject(error: unknown): void }> = [];
   waiters: Array<{
-    resolve: (v: T | null) => void;
+    resolve: (v: ReadResult<T>) => void;
     reject: (e: unknown) => void;
   }> = [];
   push(value: T): Promise<void> {
-    if (this.readerClosed) return Promise.reject(new Error('Channel reader is closed'));
-    if (this.hasErr) return Promise.reject(this.err);
+    if (this.readerClosed) return Promise.reject(this.readerError ?? new ChannelCancelledError());
+    if (this.closing) return Promise.reject(new Error('Writer is closed'));
     const w = this.waiters.shift();
     if (w) {
-      w.resolve(value);
+      w.resolve(readResult(value));
       return Promise.resolve();
     }
     return new Promise<void>((resolve, reject) => {
@@ -3034,17 +3081,24 @@ class RendezvousChannelState<T> implements ChannelState<T> {
   flush(): Promise<void> {
     return Promise.resolve();
   }
-  closeWriter(): Promise<void> {
+  closeWriter(error?: Error): Promise<void> {
+    if (this.closing)
+      return this.done
+        ? Promise.resolve()
+        : new Promise<void>((resolve, reject) => this.closeWaiters.push({ resolve, reject }));
     this.closing = true;
+    this.writerError = error ?? null;
     this.#finishClose();
     if (this.done) return Promise.resolve();
-    return new Promise<void>((resolve) => this.closeWaiters.push(resolve));
+    return new Promise<void>((resolve, reject) => this.closeWaiters.push({ resolve, reject }));
   }
-  closeReader(): void {
-    this.cancelWaiters();
+  closeReader(error?: Error): void {
+    this.cancelWaiters(error);
   }
-  end(): void {
+  end(error?: Error): void {
+    if (this.closing) return;
     this.closing = true;
+    this.writerError = error ?? null;
     this.#finishClose();
   }
   #finishClose(): void {
@@ -3052,46 +3106,46 @@ class RendezvousChannelState<T> implements ChannelState<T> {
     this.done = true;
     const ws = this.waiters;
     this.waiters = [];
-    for (const w of ws) w.resolve(null);
+    for (const w of ws) {
+      if (this.writerError === null) w.resolve(READ_DONE);
+      else w.reject(this.writerError);
+    }
     const closes = this.closeWaiters;
     this.closeWaiters = [];
-    for (const close of closes) close();
+    for (const close of closes) close.resolve();
   }
-  fail(err: unknown): void {
-    this.hasErr = true;
-    this.err = err;
-    const writes = this.writes;
-    this.writes = [];
-    for (const write of writes) write.reject(err);
-    const ws = this.waiters;
-    this.waiters = [];
-    for (const w of ws) w.reject(err);
-  }
-  read(): Promise<T | null> {
+  read(): Promise<ReadResult<T>> {
     const write = this.writes.shift();
     if (write !== undefined) {
       write.resolve();
       this.#finishClose();
-      return Promise.resolve(write.value);
+      return Promise.resolve(readResult(write.value));
     }
-    if (this.hasErr) return Promise.reject(this.err);
-    if (this.done) return Promise.resolve(null);
-    return new Promise<T | null>((resolve, reject) => {
+    if (this.done)
+      return this.writerError === null
+        ? Promise.resolve(READ_DONE)
+        : Promise.reject(this.writerError);
+    return new Promise<ReadResult<T>>((resolve, reject) => {
       this.waiters.push({
         resolve,
         reject,
       });
     });
   }
-  cancelWaiters(): void {
+  cancelWaiters(error?: Error): void {
     this.readerClosed = true;
+    this.readerError = error ?? null;
+    const reason = error ?? new ChannelCancelledError();
     const writes = this.writes;
     this.writes = [];
-    for (const write of writes) write.reject(new Error('Channel reader is closed'));
-    this.#finishClose();
+    for (const write of writes) write.reject(reason);
+    for (const close of this.closeWaiters.splice(0)) close.reject(reason);
     const ws = this.waiters;
     this.waiters = [];
-    for (const w of ws) w.resolve(null);
+    for (const w of ws) {
+      if (error === undefined) w.resolve(READ_DONE);
+      else w.reject(error);
+    }
   }
 }
 interface ChannelNode<T> {
@@ -3102,19 +3156,20 @@ class UnboundedChannelState<T> implements ChannelState<T> {
   #head: ChannelNode<T> | null = null;
   #tail: ChannelNode<T> | null = null;
   #done = false;
+  #writerError: Error | null = null;
   #readerClosed = false;
-  #hasError = false;
-  #error: unknown;
+  #readerError: Error | null = null;
+  #closeWaiters: Array<{ resolve(): void; reject(error: unknown): void }> = [];
   #waiters: Array<{
-    resolve: (value: T | null) => void;
+    resolve: (value: ReadResult<T>) => void;
     reject: (error: unknown) => void;
   }> = [];
   push(value: T): Promise<void> {
-    if (this.#readerClosed) return Promise.reject(new Error('Channel reader is closed'));
-    if (this.#hasError) return Promise.reject(this.#error);
+    if (this.#readerClosed) return Promise.reject(this.#readerError ?? new ChannelCancelledError());
+    if (this.#done) return Promise.reject(new Error('Writer is closed'));
     const waiter = this.#waiters.shift();
     if (waiter !== undefined) {
-      waiter.resolve(value);
+      waiter.resolve(readResult(value));
       return Promise.resolve();
     }
     const node = { value, next: null };
@@ -3132,47 +3187,54 @@ class UnboundedChannelState<T> implements ChannelState<T> {
   flush(): Promise<void> {
     return Promise.resolve();
   }
-  closeWriter(): Promise<void> {
-    this.end();
-    return Promise.resolve();
+  closeWriter(error?: Error): Promise<void> {
+    this.end(error);
+    if (this.#head === null) return Promise.resolve();
+    return new Promise((resolve, reject) => this.#closeWaiters.push({ resolve, reject }));
   }
-  closeReader(): void {
-    this.cancelWaiters();
+  closeReader(error?: Error): void {
+    this.cancelWaiters(error);
   }
-  end(): void {
+  end(error?: Error): void {
     if (this.#done) return;
     this.#done = true;
+    this.#writerError = error ?? null;
     const waiters = this.#waiters;
     this.#waiters = [];
-    for (const waiter of waiters) waiter.resolve(null);
+    if (this.#head !== null) return;
+    for (const waiter of waiters) {
+      if (error === undefined) waiter.resolve(READ_DONE);
+      else waiter.reject(error);
+    }
   }
-  fail(error: unknown): void {
-    this.#hasError = true;
-    this.#error = error;
-    const waiters = this.#waiters;
-    this.#waiters = [];
-    for (const waiter of waiters) waiter.reject(error);
-  }
-  read(): Promise<T | null> {
+  read(): Promise<ReadResult<T>> {
     const node = this.#head;
     if (node !== null) {
       this.#head = node.next;
       if (this.#head === null) this.#tail = null;
-      return Promise.resolve(node.value);
+      if (this.#head === null && this.#done)
+        for (const waiter of this.#closeWaiters.splice(0)) waiter.resolve();
+      return Promise.resolve(readResult(node.value));
     }
-    if (this.#hasError) return Promise.reject(this.#error);
-    if (this.#done) return Promise.resolve(null);
-    return new Promise<T | null>((resolve, reject) => {
+    if (this.#writerError !== null) return Promise.reject(this.#writerError);
+    if (this.#done) return Promise.resolve(READ_DONE);
+    return new Promise<ReadResult<T>>((resolve, reject) => {
       this.#waiters.push({ resolve, reject });
     });
   }
-  cancelWaiters(): void {
+  cancelWaiters(error?: Error): void {
     this.#readerClosed = true;
+    this.#readerError = error ?? null;
+    const reason = error ?? new ChannelCancelledError();
     this.#head = null;
     this.#tail = null;
+    for (const waiter of this.#closeWaiters.splice(0)) waiter.reject(reason);
     const waiters = this.#waiters;
     this.#waiters = [];
-    for (const waiter of waiters) waiter.resolve(null);
+    for (const waiter of waiters) {
+      if (error === undefined) waiter.resolve(READ_DONE);
+      else waiter.reject(error);
+    }
   }
 }
 /**
@@ -3182,7 +3244,8 @@ class UnboundedChannelState<T> implements ChannelState<T> {
  * that value. Overlapping reads and writes pair in FIFO order, providing
  * back-pressure without retaining producer-ahead values. `writer.close()`
  * signals EOF after admitted writes are consumed. Closing the reader rejects
- * unread writes, and `writer.fail(error)` rejects pending operations.
+ * unread writes. `writer.close(error)` drains admitted values and then surfaces
+ * the terminal error to the reader.
  *
  * Use `UnboundedChannel` only when producers must run ahead of consumers and
  * unbounded memory growth is acceptable.
@@ -3204,7 +3267,8 @@ export class Channel<T> {
    * Producer half of the channel.
    *
    * `write(value)` waits for the reader to accept the value. `close()` signals
-   * EOF after admitted values, and `fail(error)` surfaces a terminal error.
+   * EOF after admitted values. `close(error)` drains them and then surfaces a
+   * terminal error.
    */
   readonly writer: Writer<T>;
   /**

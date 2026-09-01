@@ -12,6 +12,10 @@ import {
 import { QUIC_V2, makeVersionNegotiationPacket } from './fixtures/quic/packet-craft.ts';
 import { parseQuicHeader } from './fixtures/quic/packet-parse.ts';
 const QUIC_V1 = 1;
+async function readBytes(promise: Promise<IteratorResult<Uint8Array>>): Promise<Uint8Array | null> {
+  const result = await promise;
+  return result.done ? null : result.value;
+}
 function writeU32BE(buf: Uint8Array, offset: number, value: number): void {
   new DataView(buf.buffer, buf.byteOffset, buf.byteLength).setUint32(offset, value, false);
 }
@@ -201,7 +205,7 @@ async function readStreamBytes(
   const chunks: Uint8Array[] = [];
   let total = 0;
   for (;;) {
-    const chunk = await pipe.pumpUntil(stream.reader.read());
+    const chunk = await pipe.pumpUntil(readBytes(stream.reader.read()));
     if (chunk === null) break;
     chunks.push(chunk);
     total += chunk.byteLength;
@@ -1124,7 +1128,7 @@ describe('QUIC simulator conformance', () => {
       const stream = await earlyConnection.openBidirectionalStream();
       await stream.writer.write(encodeUtf8('early-write-starts-handshake'));
       const serverStream = await pipe.pumpUntil(serverStreamAccepted);
-      const data = await pipe.pumpUntil(serverStream.reader.read());
+      const data = await pipe.pumpUntil(readBytes(serverStream.reader.read()));
       t.equal(
         decodeUtf8(data!),
         'early-write-starts-handshake',
@@ -1241,8 +1245,8 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       pipe.advance(4);
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
-      const first = await serverStream.reader.read();
-      const second = await serverStream.reader.read();
+      const first = await readBytes(serverStream.reader.read());
+      const second = await readBytes(serverStream.reader.read());
       t.equal(
         `${decodeUtf8(first!)}${second === null ? '' : decodeUtf8(second)}`,
         'simulated stream',
@@ -1265,7 +1269,7 @@ describe('QUIC simulator conformance', () => {
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       const chunks: string[] = [];
       for (;;) {
-        const chunk = await pipe.pumpUntil(serverStream.reader.read());
+        const chunk = await pipe.pumpUntil(readBytes(serverStream.reader.read()));
         if (chunk === null) break;
         chunks.push(decodeUtf8(chunk));
       }
@@ -1530,7 +1534,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       const pathEvent = await pipe.pumpUntil(pathValidation);
-      const data = await serverStream.reader.read();
+      const data = await readBytes(serverStream.reader.read());
       t.equal(decodeUtf8(data!), 'after-nat-rebind', 'stream data survives NAT rebinding');
       t.equal(pathEvent.result, 'success', 'peer path validation succeeds for the rebound address');
       t.equal(
@@ -1586,7 +1590,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.write(encodeUtf8('after-active-migration'));
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
-      const data = await serverStream.reader.read();
+      const data = await readBytes(serverStream.reader.read());
       t.equal(decodeUtf8(data!), 'after-active-migration', 'stream data survives active migration');
       t.ok(
         pipe
@@ -1636,7 +1640,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'after-failed-migration',
         'stream data continues over the fallback path',
       );
@@ -1674,7 +1678,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'after-preferred-address',
         'stream data survives preferred-address migration',
       );
@@ -1718,7 +1722,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'without-preferred-address',
         'stream data is delivered without preferred-address migration',
       );
@@ -1776,7 +1780,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'after-failed-preferred-address',
         'stream data continues on the original server path after preferred-address failure',
       );
@@ -1811,7 +1815,7 @@ describe('QUIC simulator conformance', () => {
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
       const chunks: string[] = [];
       for (;;) {
-        const chunk = await pipe.pumpUntil(serverStream.reader.read());
+        const chunk = await pipe.pumpUntil(readBytes(serverStream.reader.read()));
         if (chunk === null) break;
         chunks.push(decodeUtf8(chunk));
       }
@@ -2062,14 +2066,14 @@ describe('QUIC simulator conformance', () => {
       const reset = once(serverStream, 'reset');
       const stopSending = once(serverStream, 'stopsending');
       serverStream.stopSending(55);
-      const preserved = await pipe.pumpUntil(serverStream.reader.read());
+      const preserved = await pipe.pumpUntil(readBytes(serverStream.reader.read()));
       t.equal(
         decodeUtf8(preserved!),
         'cancel-me',
         'STOP_SENDING preserves bytes already received before local readable shutdown',
       );
       t.equal(
-        await pipe.pumpUntil(serverStream.reader.read()),
+        await pipe.pumpUntil(readBytes(serverStream.reader.read())),
         null,
         'local readable side ends after queued bytes are consumed',
       );
@@ -2125,12 +2129,12 @@ describe('QUIC simulator conformance', () => {
       const localStopSending = once(clientStream, 'stopsending');
       clientStream.stopSending(66);
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(clientStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(readBytes(clientStream.reader.read())))!),
         'server-push',
         'queued receive-only bytes remain readable',
       );
       t.equal(
-        await pipe.pumpUntil(clientStream.reader.read()),
+        await pipe.pumpUntil(readBytes(clientStream.reader.read())),
         null,
         'receive-only stream ends after STOP_SENDING',
       );
@@ -2141,12 +2145,10 @@ describe('QUIC simulator conformance', () => {
         66,
         'local receive-only STOP_SENDING event exposes the application code',
       );
-      await serverStream.writer.write(encodeUtf8('after-unidirectional-stop'));
-      await pipe.runUntilSettled();
       await t.rejects(
-        () => serverStream.writer.write(encodeUtf8('after-unidirectional-stop-again')),
+        () => serverStream.writer.write(encodeUtf8('after-unidirectional-stop')),
         /closed|stop sending/i,
-        'peer send-only writer rejects after STOP_SENDING is drained',
+        'peer send-only writer rejects after STOP_SENDING is received',
       );
     } finally {
       await pipe.close();
@@ -2163,7 +2165,7 @@ describe('QUIC simulator conformance', () => {
       await readyStream.writer.close();
       const readyServerStream = await pipe.pumpUntil(readyServerStreamPromise);
       t.equal(
-        decodeUtf8((await readyServerStream.reader.read())!),
+        decodeUtf8((await readBytes(readyServerStream.reader.read()))!),
         'ready',
         'server reads 1-RTT data before key update',
       );
@@ -2176,7 +2178,7 @@ describe('QUIC simulator conformance', () => {
       await postStream.writer.close();
       const postServerStream = await pipe.pumpUntil(postServerStreamPromise);
       t.equal(
-        decodeUtf8((await postServerStream.reader.read())!),
+        decodeUtf8((await readBytes(postServerStream.reader.read()))!),
         'after-key-update',
         'stream traffic works after the controlled key update',
       );
@@ -2198,7 +2200,7 @@ describe('QUIC simulator conformance', () => {
       await postStream.writer.close();
       const postServerStream = await pipe.pumpUntil(postServerStreamPromise);
       t.equal(
-        decodeUtf8((await postServerStream.reader.read())!),
+        decodeUtf8((await readBytes(postServerStream.reader.read()))!),
         'after-peer-key-update',
         'stream traffic works after a peer-initiated key update',
       );
@@ -2340,7 +2342,7 @@ describe('QUIC simulator conformance', () => {
       await activeStream.writer.write(encodeUtf8('still-active'));
       const activeServerStream = await pipe.pumpUntil(activeServerStreamPromise);
       t.equal(
-        decodeUtf8((await activeServerStream.reader.read())!),
+        decodeUtf8((await readBytes(activeServerStream.reader.read()))!),
         'still-active',
         'unrelated streams remain usable after stream idle timeout',
       );
@@ -2600,7 +2602,7 @@ describe('QUIC simulator conformance', () => {
       await clientStream.writer.write(encodeUtf8('post-migration-routing'));
       await clientStream.writer.close();
       const serverStream = await pipe.pumpUntil(serverStreamPromise);
-      const data = await pipe.pumpUntil(serverStream.reader.read());
+      const data = await pipe.pumpUntil(readBytes(serverStream.reader.read()));
       t.equal(
         decodeUtf8(data!),
         'post-migration-routing',

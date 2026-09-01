@@ -17,9 +17,9 @@ const conn = await endpoint.accept();
 const stream = await conn.acceptStream();
 const chunks: Uint8Array[] = [];
 for (;;) {
-  const chunk = await stream.reader.read();
-  if (chunk === null) break;
-  chunks.push(chunk);
+  const result = await stream.reader.read();
+  if (result.done) break;
+  chunks.push(result.value);
 }
 const total = chunks.reduce((n, chunk) => n + chunk.byteLength, 0);
 const request = new Uint8Array(total);

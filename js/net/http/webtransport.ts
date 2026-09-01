@@ -872,7 +872,8 @@ export class WebTransport {
     );
   }
   async #routeIncomingStream(stream: any, firstChunk?: Uint8Array): Promise<void> {
-    const first = firstChunk ?? (await stream.reader.read());
+    const firstResult = firstChunk === undefined ? await stream.reader.read() : null;
+    const first = firstChunk ?? (firstResult?.done ? undefined : firstResult?.value);
     if (!(first instanceof Uint8Array) || this.#sessionStreamId === null) return;
     let decoded;
     try {
@@ -975,7 +976,7 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 function wrapReceiveStream(
   reader: {
-    read(): Promise<Uint8Array | null>;
+    read(): Promise<{ done: false; value: Uint8Array } | { done: true; value: undefined }>;
   },
   firstChunk?: Uint8Array,
 ): WebTransportReceiveStream {
@@ -990,11 +991,12 @@ function wrapReceiveStream(
         controller.enqueue(chunk);
         return;
       }
-      const chunk = await reader.read();
-      if (chunk === null) {
+      const result = await reader.read();
+      if (result.done) {
         controller.close();
         return;
       }
+      const chunk = result.value;
       bytesRead += chunk.byteLength;
       controller.enqueue(chunk);
     },

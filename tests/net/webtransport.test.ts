@@ -89,7 +89,12 @@ class FakeH3Connection extends EventTarget {
 }
 class FakeQuicStream {
   readonly written: Uint8Array[] = [];
-  readonly reader = { read: async () => null as Uint8Array | null };
+  readonly reader = {
+    read: async () =>
+      ({ done: true, value: undefined }) as
+        | { done: false; value: Uint8Array }
+        | { done: true; value: undefined },
+  };
   readonly writer = {
     write: async (chunk: Uint8Array) => {
       this.written.push(chunk);
@@ -188,10 +193,10 @@ describe('WebTransport over HTTP/3 public API', () => {
     );
     const incoming = readOne(wt.incomingBidirectionalStreams);
     const wrong = new FakeQuicStream('bidirectional');
-    wrong.reader.read = async () => new Uint8Array([64, 65, 3]);
+    wrong.reader.read = async () => ({ done: false, value: new Uint8Array([64, 65, 3]) });
     connection.emitStream(wrong);
     const right = new FakeQuicStream('bidirectional');
-    right.reader.read = async () => new Uint8Array([64, 65, 2]);
+    right.reader.read = async () => ({ done: false, value: new Uint8Array([64, 65, 2]) });
     connection.emitStream(right);
     const next = await incoming;
     t.equal(next.done, false);

@@ -35,6 +35,7 @@ export {
   BytesChannel,
   BytesWriter,
   Channel,
+  ChannelCancelledError,
   FdReader,
   FdWriter,
   Reader,
@@ -42,4 +43,9 @@ export {
   UnboundedChannel,
   Writer,
 } from 'internal:stream';
-export type { BytesReadOptions, ReaderCloseCallback } from 'internal:stream';
+export type {
+  BytesReadOptions,
+  ReaderCloseCallback,
+  ReadResult,
+  WriterCloseCallback,
+} from 'internal:stream';

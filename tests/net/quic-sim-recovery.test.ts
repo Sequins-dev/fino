@@ -18,7 +18,7 @@ describe('QUIC simulator recovery conformance', () => {
       await warmup.writer.close();
       const warmupServerStream = await pipe.pumpUntil(warmupAccepted);
       t.equal(
-        decodeUtf8((await pipe.pumpUntil(warmupServerStream.reader.read()))!),
+        decodeUtf8((await pipe.pumpUntil(warmupServerStream.reader.read())).value!),
         'ready-for-key-update',
         '1-RTT traffic is established before key updates',
       );
@@ -43,9 +43,9 @@ describe('QUIC simulator recovery conformance', () => {
         const serverStream = await pipe.pumpUntil(accepted);
         let received = 0;
         for (;;) {
-          const chunk = await pipe.pumpUntil(serverStream.reader.read(), 4e3);
-          if (chunk === null) break;
-          received += chunk.byteLength;
+          const result = await pipe.pumpUntil(serverStream.reader.read(), 4e3);
+          if (result.done) break;
+          received += result.value.byteLength;
         }
         t.equal(
           received,
@@ -96,9 +96,9 @@ describe('QUIC simulator recovery conformance', () => {
       const serverStream = await pipe.pumpUntil(accepted);
       let received = 0;
       for (;;) {
-        const chunk = await pipe.pumpUntil(serverStream.reader.read());
-        if (chunk === null) break;
-        received += chunk.byteLength;
+        const result = await pipe.pumpUntil(serverStream.reader.read());
+        if (result.done) break;
+        received += result.value.byteLength;
       }
       await pipe.runUntilSettled();
       t.equal(received, 256 * 1024, 'stream recovers after a temporary blackhole');

@@ -15,14 +15,18 @@ if (!sqliteAvailable) {
 }
 
 async function readAll(stream: {
-  read(max: number): Promise<ArrayBuffer | ArrayBufferView | null>;
+  read(
+    max: number,
+  ): Promise<
+    { done: false; value: ArrayBuffer | ArrayBufferView } | { done: true; value: undefined }
+  >;
 }): Promise<string> {
   const decoder = new TextDecoder();
   let out = '';
   while (true) {
-    const chunk = await stream.read(65536);
-    if (chunk === null) break;
-    out += decoder.decode(chunk, { stream: true });
+    const result = await stream.read(65536);
+    if (result.done) break;
+    out += decoder.decode(result.value, { stream: true });
   }
   return out;
 }

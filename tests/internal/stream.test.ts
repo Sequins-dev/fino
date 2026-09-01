@@ -19,6 +19,7 @@ import {
   FdReader,
   FdWriter,
   Reader,
+  type ReadResult,
   UnboundedBytesChannel,
   UnboundedChannel,
   Writer,
@@ -156,6 +157,10 @@ function patternedBytes(length: number): Uint8Array {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
+async function readValue<T>(read: Promise<ReadResult<T>>): Promise<T | null> {
+  const result = await read;
+  return result.done ? null : result.value;
+}
 async function withTimeout<T>(promise: Promise<T>, label: string, ms = 2e3): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -256,6 +261,17 @@ class CountingWriteBufferedWriter extends RecordingBufferedWriter {
   }
 }
 describe('Reader', () => {
+  it('returns explicit iterator results from read()', async (t) => {
+    const reader = Reader.from(
+      (async function* () {
+        yield null;
+      })(),
+    );
+
+    t.deepEqual(await reader.read(), { done: false, value: null });
+    t.deepEqual(await reader.read(), { done: true, value: undefined });
+  });
+
   it('uses an async iterable as its pull state and closes it once', async (t) => {
     let closed = 0;
     const reader = Reader.from(
@@ -269,9 +285,9 @@ describe('Reader', () => {
       })(),
     );
 
-    t.equal(await reader.read(), 1);
+    t.equal(await readValue(reader.read()), 1);
     await Promise.all([reader.close(), reader.close()]);
-    t.equal(await reader.read(), null, 'reads after close remain at EOF');
+    t.equal(await readValue(reader.read()), null, 'reads after close remain at EOF');
     t.equal(closed, 1, 'the iterable is closed once');
   });
 });
@@ -285,23 +301,45 @@ describe('Writer', () => {
       async flush() {
         events.push('flush');
       },
-      async closeWriter() {
-        events.push('close');
-      },
-      fail(error) {
-        events.push(`fail ${String(error)}`);
+      async closeWriter(error) {
+        events.push(error === undefined ? 'close' : `close ${error.message}`);
       },
     });
 
     await writer.write(1);
     await writer.flush();
-    writer.fail('broken');
-    await Promise.all([writer.close(), writer.close()]);
+    const failure = new Error('broken');
+    await Promise.all([writer.close(failure), writer.close(failure)]);
     await t.rejects(() => writer.write(2), /closed/, 'a later write is rejected');
-    t.deepEqual(events, ['write 1', 'flush', 'fail broken', 'close']);
+    t.deepEqual(events, ['write 1', 'flush', 'close broken']);
   });
 });
 describe('Channel', () => {
+  it('closes with a downstream error after committed values drain', async (t) => {
+    const channel = new UnboundedChannel<number>();
+    const failure = new Error('producer failed');
+    await channel.writer.write(1);
+
+    const close = channel.writer.close(failure);
+    t.deepEqual(await channel.reader.read(), { done: false, value: 1 });
+    await close;
+    await t.rejects(() => channel.reader.read(), /producer failed/);
+  });
+
+  it('propagates reader close errors to blocked writers', async (t) => {
+    const channel = new Channel<number>();
+    const write = channel.writer.write(1);
+    const failure = new Error('consumer failed');
+
+    await channel.reader.close(failure);
+
+    await t.rejects(
+      () => write,
+      (error) => error === failure,
+      'the producer receives the consumer failure unchanged',
+    );
+  });
+
   it('uses stable Reader and Writer prototype methods', (t) => {
     const channel = new Channel<number>();
 
@@ -329,7 +367,11 @@ describe('Channel', () => {
     const reader = Reader.from(double(source()));
 
     t.deepEqual(
-      [await reader.read(), await reader.read(), await reader.read()],
+      [
+        await readValue(reader.read()),
+        await readValue(reader.read()),
+        await readValue(reader.read()),
+      ],
       [2, 4, null],
       'the Reader facade pulls transformed values from the iterable',
     );
@@ -344,7 +386,7 @@ describe('Channel', () => {
 
     await delay(0);
     t.equal(settled, false, 'an unread value applies backpressure');
-    t.equal(await channel.reader.read(), 1, 'the reader receives the written value');
+    t.equal(await readValue(channel.reader.read()), 1, 'the reader receives the written value');
     await write;
     t.equal(settled, true, 'the write settles after the matching read');
   });
@@ -358,11 +400,11 @@ describe('Channel', () => {
 
     await delay(0);
     t.deepEqual(settled, [], 'no write settles before consumption');
-    t.equal(await channel.reader.read(), 1, 'the first read receives the first write');
+    t.equal(await readValue(channel.reader.read()), 1, 'the first read receives the first write');
     await writes[0];
     t.deepEqual(settled, [1], 'only the consumed write settles');
     t.deepEqual(
-      await Promise.all([channel.reader.read(), channel.reader.read()]),
+      await Promise.all([readValue(channel.reader.read()), readValue(channel.reader.read())]),
       [2, 3],
       'later reads preserve write order',
     );
@@ -385,27 +427,29 @@ describe('Channel', () => {
     const write = channel.writer.write(1);
     const close = channel.writer.close();
 
-    t.equal(await channel.reader.read(), 1, 'the admitted value is delivered');
+    t.equal(await readValue(channel.reader.read()), 1, 'the admitted value is delivered');
     await Promise.all([write, close]);
-    t.equal(await channel.reader.read(), null, 'EOF follows the admitted value');
+    t.equal(await readValue(channel.reader.read()), null, 'EOF follows the admitted value');
   });
 
   it('propagates failure to pending readers and writes', async (t) => {
     const readChannel = new Channel<number>();
     const read = readChannel.reader.read();
-    readChannel.writer.fail(new Error('read failure'));
+    const readClose = readChannel.writer.close(new Error('read failure'));
     await t.rejects(() => read, /read failure/);
+    await readClose;
 
     const writeChannel = new Channel<number>();
     const write = writeChannel.writer.write(1);
-    writeChannel.writer.fail(new Error('write failure'));
-    await t.rejects(() => write, /write failure/);
+    const writeClose = writeChannel.writer.close(new Error('write failure'));
+    t.equal(await readValue(writeChannel.reader.read()), 1);
+    await Promise.all([write, writeClose]);
+    await t.rejects(() => writeChannel.reader.read(), /write failure/);
   });
 
   it('does not replace a terminal failure with clean EOF', async (t) => {
     const channel = new Channel<number>();
-    channel.writer.fail(new Error('terminal failure'));
-    await channel.writer.close();
+    await channel.writer.close(new Error('terminal failure'));
 
     await t.rejects(() => channel.reader.read(), /terminal failure/);
   });
@@ -416,7 +460,11 @@ describe('UnboundedChannel', () => {
     await Promise.all([channel.writer.write(1), channel.writer.write(2), channel.writer.write(3)]);
 
     t.deepEqual(
-      await Promise.all([channel.reader.read(), channel.reader.read(), channel.reader.read()]),
+      await Promise.all([
+        readValue(channel.reader.read()),
+        readValue(channel.reader.read()),
+        readValue(channel.reader.read()),
+      ]),
       [1, 2, 3],
       'buffered values retain write order',
     );
@@ -426,11 +474,11 @@ describe('UnboundedChannel', () => {
     const channel = new UnboundedChannel<number>();
     await channel.writer.write(1);
     await channel.writer.write(2);
-    await channel.writer.close();
-
-    t.equal(await channel.reader.read(), 1);
-    t.equal(await channel.reader.read(), 2);
-    t.equal(await channel.reader.read(), null);
+    const close = channel.writer.close();
+    t.equal(await readValue(channel.reader.read()), 1);
+    t.equal(await readValue(channel.reader.read()), 2);
+    await close;
+    t.equal(await readValue(channel.reader.read()), null);
   });
 });
 describe('BytesReader', () => {
@@ -438,21 +486,21 @@ describe('BytesReader', () => {
     const storage = new Uint8Array(2);
     let value = 0;
     const state = {
-      read(): Promise<Uint8Array> {
+      read(): Promise<ReadResult<Uint8Array>> {
         storage.fill(++value);
-        return Promise.resolve(storage);
+        return Promise.resolve({ done: false, value: storage });
       },
-      readInto(buffer: ArrayBufferView): Promise<number> {
+      readInto(buffer: ArrayBufferView): Promise<ReadResult<number>> {
         const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
         destination.fill(++value);
-        return Promise.resolve(destination.byteLength);
+        return Promise.resolve({ done: false, value: destination.byteLength });
       },
       closeReader() {},
     };
     const reader = new BytesReader(state);
 
-    const first = await reader.read(2);
-    const second = await reader.read(2);
+    const first = await readValue(reader.read(2));
+    const second = await readValue(reader.read(2));
 
     t.deepEqual([...first!], [1, 1]);
     t.deepEqual([...second!], [2, 2]);
@@ -490,8 +538,8 @@ describe('BytesReader', () => {
   });
   it('readAtMost limits returned bytes and preserves the remainder', async (t) => {
     const reader = new MemoryBytesReader([new Uint8Array([1, 2, 3, 4])]);
-    const first = await reader.readAtMost(2);
-    const second = await reader.read();
+    const first = await readValue(reader.readAtMost(2));
+    const second = await readValue(reader.read());
     t.deepEqual([...first!], [1, 2], 'readAtMost returns at most the requested bytes');
     t.deepEqual([...second!], [3, 4], 'remaining bytes are readable later');
     t.deepEqual(reader.consumed, [2, 2], 'consume hook follows delivered byte counts');
@@ -500,16 +548,20 @@ describe('BytesReader', () => {
     const reader = new MemoryBytesReader([new Uint8Array([1, 2])]);
     t.equal(await reader.readExactly(4), null, 'short EOF does not produce a partial result');
     t.deepEqual(reader.consumed, [], 'short read does not report consumption');
-    t.deepEqual([...(await reader.read())!], [1, 2], 'partial bytes are replayed after short EOF');
+    t.deepEqual(
+      [...(await readValue(reader.read()))!],
+      [1, 2],
+      'partial bytes are replayed after short EOF',
+    );
     t.deepEqual(reader.consumed, [2], 'replayed bytes report consumption when delivered');
   });
   it('readInto fills caller storage without over-consuming', async (t) => {
     const reader = new MemoryBytesReader([new Uint8Array([10, 11, 12])]);
     const out = new Uint8Array(2);
-    const n = await reader.readInto(out);
+    const n = await readValue(reader.readInto(out));
     t.equal(n, 2, 'readInto returns the byte count copied');
     t.deepEqual([...out], [10, 11], 'readInto writes into caller storage');
-    t.deepEqual([...(await reader.read())!], [12], 'tail byte remains readable');
+    t.deepEqual([...(await readValue(reader.read()))!], [12], 'tail byte remains readable');
     t.deepEqual(reader.consumed, [2, 1], 'consume hook matches copied and later delivered bytes');
   });
   it('uses destination-filling reads for read() and readInto()', async (t) => {
@@ -525,9 +577,9 @@ describe('BytesReader', () => {
     }
 
     const reader = new DestinationReader();
-    const first = await reader.read({ maxBytes: 8 });
+    const first = await readValue(reader.read({ maxBytes: 8 }));
     const destination = new Uint8Array(4);
-    const secondLength = await reader.readInto(destination);
+    const secondLength = await readValue(reader.readInto(destination));
     t.deepEqual([...first!], [1], 'read returns only the filled prefix');
     t.equal(reader.destinations[0]?.byteLength, 8, 'read allocates the requested capacity once');
     t.equal(secondLength, 1, 'readInto returns the filled byte count');
@@ -553,10 +605,14 @@ describe('BytesReader', () => {
     arena.fill(255);
     const view = new DataView(arena.buffer, 3, 2);
     const reader = new MemoryBytesReader([new Uint8Array([7, 8, 9])]);
-    const n = await reader.readInto(view);
+    const n = await readValue(reader.readInto(view));
     t.equal(n, 2, 'readInto reports bytes written into a DataView');
     t.deepEqual([...arena], [255, 255, 255, 7, 8, 255, 255, 255], 'only the view region changes');
-    t.deepEqual([...(await reader.read())!], [9], 'bytes beyond the view remain readable');
+    t.deepEqual(
+      [...(await readValue(reader.read()))!],
+      [9],
+      'bytes beyond the view remain readable',
+    );
   });
   it('supports abortable pending reads without consuming future bytes', async (t) => {
     const reader = new PendingBytesReader();
@@ -688,6 +744,32 @@ describe('BytesWriter', () => {
   });
 });
 describe('BytesChannelState', () => {
+  it('keeps a read pending across an empty commit', async (t) => {
+    const state = new BytesChannelState();
+    let settled = false;
+    const read = state.readInto(new Uint8Array(2)).then((result) => {
+      settled = true;
+      return result;
+    });
+    await state.reserve();
+    state.commit(0);
+    await delay(0);
+    t.equal(settled, false, 'zero bytes publish neither data nor EOF');
+
+    const region = await state.reserve();
+    region[0] = 7;
+    state.commit(1);
+    t.deepEqual(await read, { done: false, value: 1 });
+  });
+
+  it('settles an active read when the writer closes', async (t) => {
+    const state = new BytesChannelState();
+    const read = state.readInto(new Uint8Array(4));
+    await state.reserve();
+    await state.closeWriter();
+    t.deepEqual(await read, { done: true, value: undefined });
+  });
+
   it('reserves exactly the destination supplied by readInto', async (t) => {
     const state = new BytesChannelState();
     const backing = new Uint8Array(6);
@@ -700,7 +782,7 @@ describe('BytesChannelState', () => {
     t.equal(region.byteLength, target.byteLength, 'writer receives the exact view length');
     region.set([1, 2, 3]);
     state.commit(3);
-    t.equal(await read, 3);
+    t.deepEqual(await read, { done: false, value: 3 });
     t.deepEqual([...backing], [0, 1, 2, 3, 0, 0]);
   });
 
@@ -712,7 +794,7 @@ describe('BytesChannelState', () => {
     region.set([4, 5]);
     state.commit(2);
 
-    const bytes = await read;
+    const bytes = await readValue(read);
     t.deepEqual([...bytes!], [4, 5]);
     t.equal(bytes!.buffer, region.buffer, 'read returns a view over its original allocation');
   });
@@ -723,19 +805,19 @@ describe('byte channel endpoints', () => {
     const channel = new BytesChannel();
     const read = channel.reader.read(3);
     const write = channel.writer.write(new Uint8Array([1, 2, 3]));
-    t.deepEqual([...(await read)!], [1, 2, 3]);
+    t.deepEqual([...(await readValue(read))!], [1, 2, 3]);
     await write;
   });
 
   it('uses the same endpoint types for fixed and unbounded buffering', async (t) => {
     const fixed = new BufferedBytesChannel(4);
     await fixed.writer.write(new Uint8Array([1, 2]));
-    t.deepEqual([...(await fixed.reader.read())!], [1, 2]);
+    t.deepEqual([...(await readValue(fixed.reader.read()))!], [1, 2]);
 
     const unbounded = new UnboundedBytesChannel(2);
     await unbounded.writer.write(new Uint8Array([3, 4, 5]));
     t.deepEqual(
-      [...(await unbounded.reader.read())!],
+      [...(await readValue(unbounded.reader.read()))!],
       [3, 4, 5],
       'owned read fills across internal segments',
     );
@@ -745,6 +827,54 @@ describe('byte channel endpoints', () => {
 });
 
 describe('BufferedBytesChannelState', () => {
+  it('drains committed bytes before surfacing writer completion or failure', async (t) => {
+    for (const failure of [undefined, new Error('byte source failed')]) {
+      const state = new BufferedBytesChannelState(4);
+      const region = await state.reserve();
+      region.set([1, 2]);
+      state.commit(2);
+      let closed = false;
+      const close = state.closeWriter(failure).then(() => {
+        closed = true;
+      });
+      await delay(0);
+      t.equal(closed, false, 'close waits for committed bytes');
+      t.deepEqual(await state.read({ maxBytes: 4 }), {
+        done: false,
+        value: new Uint8Array([1, 2]),
+      });
+      await close;
+      if (failure === undefined) {
+        t.deepEqual(await state.read(), { done: true, value: undefined });
+      } else {
+        await t.rejects(
+          () => state.read(),
+          (error) => error === failure,
+        );
+      }
+    }
+  });
+
+  it('reports reader cancellation to pending close and future reservations', async (t) => {
+    const state = new BufferedBytesChannelState(4);
+    const region = await state.reserve();
+    region[0] = 1;
+    state.commit(1);
+    const close = state.closeWriter();
+    const failure = new Error('consumer abandoned bytes');
+
+    state.closeReader(failure);
+
+    await t.rejects(
+      () => close,
+      (error) => error === failure,
+    );
+    await t.rejects(
+      () => state.reserve(),
+      (error) => error === failure,
+    );
+  });
+
   it('read(n) returns stable owned bytes and immediately releases channel storage', async (t) => {
     const state = new BufferedBytesChannelState(4);
     const region = await state.reserve();
@@ -752,11 +882,11 @@ describe('BufferedBytesChannelState', () => {
     region.set([1, 2, 3, 99]);
     state.commit(3);
 
-    const bytes = await state.read({ maxBytes: 2 });
+    const bytes = await readValue(state.read({ maxBytes: 2 }));
     t.deepEqual([...bytes!], [1, 2], 'read returns at most the requested bytes');
 
     const remainder = new Uint8Array(1);
-    t.equal(await state.readInto(remainder), 1);
+    t.equal(await readValue(state.readInto(remainder)), 1);
     t.deepEqual([...remainder], [3]);
     const reused = await state.reserve();
     t.equal(reused.buffer, region.buffer, 'the channel can immediately reuse its segment');
@@ -771,7 +901,11 @@ describe('BufferedBytesChannelState', () => {
     await state.reserve();
     const read = state.read();
     await state.closeWriter();
-    t.equal(await read, null, 'an abandoned writable region does not prevent EOF');
+    t.deepEqual(
+      await read,
+      { done: true, value: undefined },
+      'an abandoned writable region does not prevent EOF',
+    );
     t.throws(() => state.commit(1), /No active/, 'the abandoned reservation is invalid');
   });
 
@@ -787,8 +921,8 @@ describe('BufferedBytesChannelState', () => {
     t.equal(first.byteLength, 3);
     t.equal(second.byteLength, 3);
     t.ok(first.buffer !== second.buffer, 'producer-ahead storage appends another segment');
-    t.deepEqual([...(await state.read())!], [1, 2, 3]);
-    t.deepEqual([...(await state.read())!], [4, 5]);
+    t.deepEqual([...(await readValue(state.read()))!], [1, 2, 3]);
+    t.deepEqual([...(await readValue(state.read()))!], [4, 5]);
   });
 
   it('readInto fills arbitrary views across committed segments', async (t) => {
@@ -804,7 +938,7 @@ describe('BufferedBytesChannelState', () => {
     const backing = new Uint8Array(6);
     const target = new DataView(backing.buffer, 1, 4);
 
-    t.equal(await state.readInto(target), 4);
+    t.equal(await readValue(state.readInto(target)), 4);
     t.deepEqual([...backing], [0, 1, 2, 3, 4, 0]);
   });
 });
@@ -937,9 +1071,9 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
     try {
       await writer.write(new TextEncoder().encode('abcdef'));
       await writer.close();
-      const first = await reader.readAtMost(2);
-      const second = await reader.readAtMost(16);
-      const eof = await reader.readAtMost(1);
+      const first = await readValue(reader.readAtMost(2));
+      const second = await readValue(reader.readAtMost(16));
+      const eof = await readValue(reader.readAtMost(1));
       t.equal(new TextDecoder().decode(first!), 'ab', 'readAtMost returns only requested bytes');
       t.equal(
         new TextDecoder().decode(second!),
@@ -963,13 +1097,17 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
       await delay(5);
       await writer.write(new TextEncoder().encode('ping'));
       await writer.close();
-      const chunk = await pending;
+      const chunk = await readValue(pending);
       t.equal(
         new TextDecoder().decode(chunk!),
         'ping',
         'pending read resolves after data is written',
       );
-      t.equal(await reader.readAtMost(1), null, 'reader observes EOF after writer closes');
+      t.equal(
+        await readValue(reader.readAtMost(1)),
+        null,
+        'reader observes EOF after writer closes',
+      );
     } finally {
       await reader.close();
       await writer.close().catch(() => {});
@@ -990,7 +1128,11 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
         'the empty pipe installs one read watch',
       );
       await reader.close();
-      t.equal(await withTimeout(pending, 'closed fd reader'), null, 'the pending read reaches EOF');
+      t.deepEqual(
+        await withTimeout(pending, 'closed fd reader'),
+        { done: true, value: undefined },
+        'the pending read reaches EOF',
+      );
       t.equal(
         loop._activeHandleCounts().reads,
         baselineReads,
@@ -1015,7 +1157,7 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
           part.byteLength,
           'raw pipe write accepts one reader chunk',
         );
-        const receivedPart = await pending;
+        const receivedPart = await readValue(pending);
         t.deepEqual([...receivedPart!], [...part], 'FdReader delivers each large-transfer chunk');
       }
       pipe.closeWrite();
@@ -1031,7 +1173,11 @@ describe('FdReader / FdWriter', { exclusive: true }, () => {
         [...payload.subarray(payload.byteLength - 16)],
         'large transfer preserves suffix bytes',
       );
-      t.equal(await reader.readAtMost(1), null, 'reader reaches EOF after large transfer');
+      t.equal(
+        await readValue(reader.readAtMost(1)),
+        null,
+        'reader reaches EOF after large transfer',
+      );
     } finally {
       await reader.close();
       pipe.closeRead();

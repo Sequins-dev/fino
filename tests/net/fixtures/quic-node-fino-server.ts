@@ -26,7 +26,7 @@ try {
   if (scenario === 'keyupdate') connection.initiateKeyUpdate();
   const stream = await connection.acceptStream();
   const data = await stream.reader.read();
-  const body = `fino:${connection.alpnProtocol}:${requestLabel(data)}`;
+  const body = `fino:${connection.alpnProtocol}:${requestLabel(data.value!)}`;
   await stream.writer.write(enc.encode(body));
   await stream.writer.close();
   await connection.close();

@@ -48,6 +48,7 @@
 import { nativeSend } from 'internal:thread-port';
 import { encodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
 import { serialize } from 'internal:serializer';
+import { UnboundedChannel } from 'internal:stream';
 // ---------------------------------------------------------------------------
 // Transport selection
 //
@@ -74,50 +75,7 @@ const _pending = new Map<
 // ---------------------------------------------------------------------------
 // Pending stream registry
 // ---------------------------------------------------------------------------
-/** Simple async queue used to buffer chunks until the consumer iterates. */
-class _StreamQueue {
-  #queue: unknown[] = [];
-  #waiters: Array<() => void> = [];
-  #done = false;
-  #error: string | null = null;
-  push(chunk: unknown): void {
-    this.#queue.push(chunk);
-    this.#waiters.shift()?.();
-  }
-  end(): void {
-    this.#done = true;
-    const ws = this.#waiters.splice(0);
-    for (const w of ws) w();
-  }
-  fail(msg: string): void {
-    this.#error = msg;
-    this.#done = true;
-    const ws = this.#waiters.splice(0);
-    for (const w of ws) w();
-  }
-  [Symbol.asyncIterator](): AsyncIterator<unknown> {
-    const self = this;
-    return {
-      async next(): Promise<IteratorResult<unknown>> {
-        while (self.#queue.length === 0 && !self.#done) {
-          await new Promise<void>((resolve) => self.#waiters.push(resolve));
-        }
-        if (self.#queue.length > 0) {
-          return {
-            value: self.#queue.shift()!,
-            done: false,
-          };
-        }
-        if (self.#error !== null) throw new Error(self.#error);
-        return {
-          value: undefined as unknown,
-          done: true,
-        };
-      },
-    };
-  }
-}
-const _pendingStreams = new Map<number, _StreamQueue>();
+const _pendingStreams = new Map<number, UnboundedChannel<unknown>>();
 // ---------------------------------------------------------------------------
 // Lazy locals (avoid import-time side-effects)
 // ---------------------------------------------------------------------------
@@ -313,10 +271,10 @@ export function callStream(
   args: unknown[],
 ): AsyncIterable<unknown> {
   const reqId = _nextId++;
-  const q = new _StreamQueue();
-  _pendingStreams.set(reqId, q);
+  const channel = new UnboundedChannel<unknown>();
+  _pendingStreams.set(reqId, channel);
   _sendControl(EnvelopeKind.RpcRequest, reqId, { specifier, method, args });
-  return q;
+  return channel.reader;
 }
 /**
  * Deliver a chunk to a pending streaming call.
@@ -333,7 +291,8 @@ export function callStream(
  * ```
  */
 export function pushChunk(reqId: number, chunk: unknown): void {
-  _pendingStreams.get(reqId)?.push(chunk);
+  const channel = _pendingStreams.get(reqId);
+  if (channel !== undefined) void channel.writer.write(chunk);
 }
 /**
  * Signal end-of-stream for a pending streaming call.
@@ -353,7 +312,7 @@ export function endStream(reqId: number): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
   _pendingStreams.delete(reqId);
-  q.end();
+  void q.writer.close();
 }
 /**
  * Signal an error on a pending streaming call.
@@ -374,7 +333,7 @@ export function errStream(reqId: number, error: string): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
   _pendingStreams.delete(reqId);
-  q.fail(error);
+  void q.writer.close(new Error(error));
 }
 // ---------------------------------------------------------------------------
 // Public API — write-stream (sink) calls  [QUIC: client-initiated unidirectional stream]

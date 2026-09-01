@@ -1410,7 +1410,9 @@ export class Facade {
           const source = wsSources.get(reqId);
           if (!source) return false;
           wsSources.delete(reqId);
-          source.fail(String((value as { error?: unknown })?.error ?? 'sink aborted'));
+          void source.close(
+            new Error(String((value as { error?: unknown })?.error ?? 'sink aborted')),
+          );
           return true;
         }
         case EnvelopeKind.RpcRequest:

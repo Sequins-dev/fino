@@ -991,7 +991,7 @@ function wrapSse(handler: SseHandler): Handler {
         await events.close();
         await channel.writer.close();
       } catch (err) {
-        channel.writer.fail(err);
+        void channel.writer.close(err instanceof Error ? err : new Error(String(err)));
       }
     })();
     return new Response(channel.reader, {

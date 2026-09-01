@@ -622,9 +622,9 @@ export class H3ServerDriver {
             if (webTransports.size === 0) {
               if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
               while (true) {
-                const bytes = (await stream.reader.read()) as Uint8Array | null;
-                const fin = bytes === null;
-                session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+                const result = await stream.reader.read();
+                const fin = result.done;
+                session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
                 if (fin) break;
               }
               return;
@@ -647,9 +647,9 @@ export class H3ServerDriver {
             }
             session.readStream(sid, first, false);
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              session.readStream(sid, bytes ?? new Uint8Array(0), fin);
+              const result = await stream.reader.read();
+              const fin = result.done;
+              session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
               if (fin) break;
             }
           } catch {
@@ -714,19 +714,19 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
   }
   return out;
 }
-async function readWebTransportPrefix(reader: { read(): Promise<Uint8Array | null> }): Promise<{
+async function readWebTransportPrefix(reader: QuicStream['reader']): Promise<{
   buffer: Uint8Array | null;
   prefix: ReturnType<typeof inspectWebTransportStreamPrefix> | null;
 }> {
   const chunks: Uint8Array[] = [];
   while (true) {
-    const chunk = await reader.read();
-    if (chunk === null)
+    const result = await reader.read();
+    if (result.done)
       return {
         buffer: chunks.length === 0 ? null : concatBytes(chunks),
         prefix: null,
       };
-    chunks.push(chunk);
+    chunks.push(result.value);
     const buffer = concatBytes(chunks);
     const prefix = inspectWebTransportStreamPrefix(buffer);
     if (prefix.state !== 'incomplete')
