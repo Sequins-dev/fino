@@ -108,12 +108,12 @@ For a buffered state, `reserve()` returns an entire capacity-sized segment and
 than additional methods on the public `Reader` or `Writer` facade. Closing a
 state releases an uncommitted reservation without publishing it.
 
-`read()` on a buffered channel returns a view over committed state storage. A
-returned view remains valid until the next read begins or the reader closes;
-the fixed-capacity state does not reuse that segment while the view is leased.
-`readInto()` copies into caller-owned storage and can consume across multiple
-segments immediately, which is preferable when the caller manages an arena or
-buffer pool.
+`read(n)` always returns stable caller-owned bytes. It allocates an `n`-byte
+destination, reads into it, and returns the filled prefix; later channel
+operations cannot mutate that result. `readInto(view)` instead borrows the
+caller's exact view only until its promise settles. It copies buffered bytes
+into that storage and can consume across multiple segments immediately, which
+is preferable when the caller manages an arena or buffer pool.
 
 The transfer size should be large enough to amortize syscall overhead, while
 capacity limits total resident data so many concurrent connections can retain

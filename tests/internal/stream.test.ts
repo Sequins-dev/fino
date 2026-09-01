@@ -434,6 +434,31 @@ describe('UnboundedChannel', () => {
   });
 });
 describe('BytesReader', () => {
+  it('owns read(n) results even when state storage is reused', async (t) => {
+    const storage = new Uint8Array(2);
+    let value = 0;
+    const state = {
+      read(): Promise<Uint8Array> {
+        storage.fill(++value);
+        return Promise.resolve(storage);
+      },
+      readInto(buffer: ArrayBufferView): Promise<number> {
+        const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        destination.fill(++value);
+        return Promise.resolve(destination.byteLength);
+      },
+      closeReader() {},
+    };
+    const reader = new BytesReader(state);
+
+    const first = await reader.read(2);
+    const second = await reader.read(2);
+
+    t.deepEqual([...first!], [1, 1]);
+    t.deepEqual([...second!], [2, 2]);
+    t.ok(first!.buffer !== second!.buffer, 'each read owns a distinct allocation');
+  });
+
   it('keeps a compound read in one state operation', async (t) => {
     const requests: number[] = [];
     let releaseFirst!: () => void;
@@ -709,15 +734,18 @@ describe('byte channel endpoints', () => {
 
     const unbounded = new UnboundedBytesChannel(2);
     await unbounded.writer.write(new Uint8Array([3, 4, 5]));
-    t.deepEqual([...(await unbounded.reader.read())!], [3, 4]);
-    t.deepEqual([...(await unbounded.reader.read())!], [5]);
+    t.deepEqual(
+      [...(await unbounded.reader.read())!],
+      [3, 4, 5],
+      'owned read fills across internal segments',
+    );
     t.ok(fixed.reader instanceof BytesReader);
     t.ok(unbounded.writer instanceof BytesWriter);
   });
 });
 
 describe('BufferedBytesChannelState', () => {
-  it('reserves one full segment and returns committed bytes as a view', async (t) => {
+  it('read(n) returns stable owned bytes and immediately releases channel storage', async (t) => {
     const state = new BufferedBytesChannelState(4);
     const region = await state.reserve();
     t.equal(region.byteLength, 4, 'reservation exposes the configured segment capacity');
@@ -726,30 +754,16 @@ describe('BufferedBytesChannelState', () => {
 
     const bytes = await state.read({ maxBytes: 2 });
     t.deepEqual([...bytes!], [1, 2], 'read returns at most the requested bytes');
-    t.equal(bytes!.buffer, region.buffer, 'read returns a view over the committed segment');
-  });
 
-  it('does not reuse fixed storage while a returned view is leased', async (t) => {
-    const state = new BufferedBytesChannelState(4);
-    const first = await state.reserve();
-    first.set([1, 2]);
+    const remainder = new Uint8Array(1);
+    t.equal(await state.readInto(remainder), 1);
+    t.deepEqual([...remainder], [3]);
+    const reused = await state.reserve();
+    t.equal(reused.buffer, region.buffer, 'the channel can immediately reuse its segment');
+    reused.set([8, 9]);
     state.commit(2);
-    const leased = await state.read();
-    let reserved = false;
-    const nextReservation = state.reserve().then((region) => {
-      reserved = true;
-      return region;
-    });
-    await Promise.resolve();
-    t.equal(reserved, false, 'fixed capacity remains occupied by the returned view');
-    t.deepEqual([...leased!], [1, 2], 'leased contents remain stable');
-
-    const nextRead = state.read();
-    const second = await nextReservation;
-    second[0] = 3;
-    state.commit(1);
-    t.equal(second.buffer, first.buffer, 'the next read releases the segment for reuse');
-    t.deepEqual([...(await nextRead)!], [3]);
+    t.ok(bytes!.buffer !== region.buffer, 'owned bytes do not alias channel storage');
+    t.deepEqual([...bytes!], [1, 2], 'later writes cannot mutate an earlier read result');
   });
 
   it('releases an uncommitted reservation when the writer closes', async (t) => {

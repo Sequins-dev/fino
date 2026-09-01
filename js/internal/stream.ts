@@ -14,9 +14,10 @@
  *   BytesReader extends Reader<Uint8Array>
  *   BytesWriter extends Writer<ArrayBuffer | ArrayBufferView>
  *     Byte specializations. BytesReader adds structural read primitives and
- *     direct reads into caller-owned views. A byte write need not correspond to
- *     one byte read: state preserves a continuous byte sequence while
- *     satisfying independently sized operations.
+ *     direct reads into caller-owned views. `read(n)` returns stable owned
+ *     bytes; `readInto(view)` borrows the exact caller view until settlement.
+ *     A byte write need not correspond to one byte read: state preserves a
+ *     continuous byte sequence while satisfying independently sized operations.
  *
  *   BytesChannel / BufferedBytesChannel / UnboundedBytesChannel
  *     One byte endpoint contract with different storage policies. BytesChannel
@@ -257,7 +258,7 @@ export interface BytesWritableState extends WritableState<ArrayBuffer | ArrayBuf
 
 interface ByteReadRequest {
   buffer: Uint8Array;
-  view: boolean;
+  returnsBytes: boolean;
   resolve(value: Uint8Array | number | null): void;
   reject(error: unknown): void;
 }
@@ -289,7 +290,7 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
     return new Promise((resolve, reject) => {
       this.#enqueue({
         buffer,
-        view: true,
+        returnsBytes: true,
         resolve: (value) => resolve(value as Uint8Array | null),
         reject,
       });
@@ -304,7 +305,7 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
     return new Promise((resolve, reject) => {
       this.#enqueue({
         buffer: destination,
-        view: false,
+        returnsBytes: false,
         resolve: (value) => resolve(value as number | null),
         reject,
       });
@@ -335,7 +336,7 @@ export class BytesChannelState implements BytesReadableState, BytesWritableState
     if (bytesWritten > request.buffer.byteLength)
       throw new RangeError('commit exceeds reserved capacity');
     this.#active = null;
-    request.resolve(request.view ? request.buffer.subarray(0, bytesWritten) : bytesWritten);
+    request.resolve(request.returnsBytes ? request.buffer.subarray(0, bytesWritten) : bytesWritten);
     this.#pump();
   }
 
@@ -420,7 +421,6 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   #reads: ByteReadRequest[] = [];
   #reserves: Array<{ resolve(buffer: Uint8Array): void; reject(error: unknown): void }> = [];
   #reservation: ByteSegment | null = null;
-  #lease: ByteSegment | null = null;
   #readerClosed = false;
   #writerClosed = false;
   #error: unknown = null;
@@ -437,13 +437,6 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
     return { buffer: new Uint8Array(this.capacity), committed: 0, offset: 0 };
   }
 
-  #releaseLease(): void {
-    const segment = this.#lease;
-    if (segment === null) return;
-    this.#lease = null;
-    if (segment.offset === segment.committed) this.#recycle(segment);
-  }
-
   #recycle(segment: ByteSegment): void {
     segment.committed = 0;
     segment.offset = 0;
@@ -452,13 +445,12 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   }
 
   read(options?: number | BytesReadOptions): Promise<Uint8Array | null> {
-    this.#releaseLease();
     const maxBytes = normalizeReadOptions(options).maxBytes ?? 65536;
     if (maxBytes === 0) return Promise.resolve(new Uint8Array(0));
     return new Promise((resolve, reject) => {
       this.#reads.push({
         buffer: new Uint8Array(maxBytes),
-        view: true,
+        returnsBytes: true,
         resolve: (value) => resolve(value as Uint8Array | null),
         reject,
       });
@@ -467,7 +459,6 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   }
 
   readInto(buffer: ArrayBufferView): Promise<number | null> {
-    this.#releaseLease();
     if (!ArrayBuffer.isView(buffer))
       return Promise.reject(new TypeError('readInto buffer must be a view'));
     const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
@@ -475,7 +466,7 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
     return new Promise((resolve, reject) => {
       this.#reads.push({
         buffer: destination,
-        view: false,
+        returnsBytes: false,
         resolve: (value) => resolve(value as number | null),
         reject,
       });
@@ -520,14 +511,16 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   #pumpReads(): void {
     while (this.#reads.length > 0 && this.#committed.length > 0) {
       const request = this.#reads.shift()!;
-      if (request.view) {
+      if (request.returnsBytes) {
         const segment = this.#committed[0]!;
         const n = Math.min(request.buffer.byteLength, segment.committed - segment.offset);
-        const result = segment.buffer.subarray(segment.offset, segment.offset + n);
+        request.buffer.set(segment.buffer.subarray(segment.offset, segment.offset + n));
         segment.offset += n;
-        if (segment.offset === segment.committed) this.#committed.shift();
-        this.#lease = segment;
-        request.resolve(result);
+        if (segment.offset === segment.committed) {
+          this.#committed.shift();
+          this.#recycle(segment);
+        }
+        request.resolve(request.buffer.subarray(0, n));
         continue;
       }
       let written = 0;
@@ -570,7 +563,6 @@ export class BufferedBytesChannelState implements BytesReadableState, BytesWrita
   closeReader(): void {
     if (this.#readerClosed) return;
     this.#readerClosed = true;
-    this.#releaseLease();
     const error = new Error('Reader is closed');
     for (const request of this.#reads.splice(0)) request.resolve(null);
     for (const reserve of this.#reserves.splice(0)) reserve.reject(error);
@@ -908,10 +900,7 @@ export class BytesReader extends Reader<Uint8Array> {
    * @param buffer Destination storage supplied by the caller.
    * @returns Number of bytes written, or `null` on EOF.
    */
-  protected async doReadInto(
-    buffer: Uint8Array,
-    options?: BytesReadOptions,
-  ): Promise<number | null> {
+  protected doReadInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<number | null> {
     if (this.#byteState !== null) return this.#byteState.readInto(buffer, options);
     throw new Error('BytesReader has no byte state');
   }
@@ -951,7 +940,7 @@ export class BytesReader extends Reader<Uint8Array> {
    *
    * @internal
    */
-  async #fetchInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<number | null> {
+  #fetchInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<number | null> {
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.#stash !== null) {
       const s = this.#stash;
@@ -962,7 +951,7 @@ export class BytesReader extends Reader<Uint8Array> {
       } else {
         this.#stash = s.subarray(n);
       }
-      return n;
+      return Promise.resolve(n);
     }
     return this.doReadInto(buffer, options);
   }
@@ -978,7 +967,8 @@ export class BytesReader extends Reader<Uint8Array> {
    *
    * The default request size is 64 KiB, but subclasses may return fewer bytes.
    * Any bytes stashed by an earlier partial structural read are returned before
-   * the underlying `doReadInto()` hook is called. `null` means EOF.
+   * the underlying `doReadInto()` hook is called. The returned allocation is
+   * owned by the caller and remains stable across later reads. `null` means EOF.
    *
    * ```js
    * import { BytesReader } from 'fino:stream';
@@ -1001,11 +991,6 @@ export class BytesReader extends Reader<Uint8Array> {
     const readOptions = normalizeReadOptions(options);
     const maxBytes = readOptions.maxBytes ?? 65536;
     if (maxBytes === 0) return new Uint8Array(0);
-    if (this.#stash === null && this.#byteState !== null) {
-      const bytes = await this.#byteState.read(readOptions);
-      if (bytes !== null && bytes.byteLength > 0) this.onConsume(bytes.byteLength);
-      return bytes;
-    }
     const buffer = new Uint8Array(maxBytes);
     const n = await this.#fetchInto(buffer, readOptions);
     if (n === null) return null;
@@ -1034,9 +1019,11 @@ export class BytesReader extends Reader<Uint8Array> {
   /**
    * Read bytes directly into caller-provided view storage.
    *
-   * Returns the number of bytes copied, or `null` on EOF. The method never
-   * copies more than `buffer.byteLength` and relies on `readAtMost()` for
-   * consumption accounting.
+   * The reader borrows the exact view, including its offset and length, until
+   * the returned promise settles. The caller must not mutate or reuse that
+   * region while the read is pending; the reader does not retain it afterward.
+   * Returns the number of bytes written, or `null` on EOF, and never writes
+   * more than `buffer.byteLength`.
    *
    * The view's byte offset and length are preserved, allowing slices of pooled
    * or arena-allocated buffers to be filled without an intermediate copy.
@@ -2340,9 +2327,9 @@ export class BytesChannel {
 /**
  * A fixed-capacity byte channel backed by one reusable segment.
  *
- * Writes wait while the segment is full or leased by a returned `read()` view.
- * The segment capacity defaults to 64 KiB. Prefer `readInto()` when the caller
- * wants ownership of the destination storage.
+ * Writes wait while the segment is full. The segment capacity defaults to
+ * 64 KiB. `read(n)` returns a stable owned allocation; `readInto(view)` borrows
+ * caller storage until the read settles and avoids allocating its result.
  *
  * ```ts no_run
  * import { BufferedBytesChannel } from 'fino:stream';
