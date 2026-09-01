@@ -6,7 +6,7 @@
 import { BufferedBytesReader, BufferedBytesWriter, BytesReader, BytesWriter } from 'fino:stream';
 import { bench } from 'fino:bench';
 class MemoryReader extends BytesReader {
-  protected async doRead(_maxBytes: number): Promise<Uint8Array | null> {
+  protected async doReadInto(_buffer: Uint8Array): Promise<number | null> {
     return null;
   }
 }

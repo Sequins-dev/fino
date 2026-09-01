@@ -66,11 +66,9 @@
  *
  * @internal
  */
-import type { BufferedBytesReader } from '../../../stream.ts';
-import type { BytesWriter } from '../../../stream.ts';
+import { Channel, type BufferedBytesReader, type BytesWriter } from '../../../stream.ts';
 import type { ServerDriver, ServerHandler, ServerDriverOptions } from 'internal:net/http/driver';
 import { isConnectionTakeover } from 'internal:net/http/driver';
-import { Fifo } from 'internal:fifo';
 import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
 import { HttpBodyQueue, HttpStreamError } from '../stream.ts';
@@ -800,7 +798,10 @@ interface H2ServerCtx {
 function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: number): H2ServerCtx {
   const streams = new Map<number, H2ServerStream>();
   const inFlight = new Set<Promise<void>>();
-  const drains = new Fifo();
+  const drains = new Channel<() => Promise<void>>();
+  void (async () => {
+    for await (const drain of drains.reader) await drain();
+  })();
   let receivedGoaway = false;
   // Set by setSession() before any closure runs.
   let session = null as unknown as Nghttp2Session;
@@ -824,7 +825,17 @@ function _makeCtx(writer: BytesWriter, handler: ServerHandler, maxConcurrent: nu
       }
       await writer.flush();
     }
-    return drains.run(drainH2Writes);
+    return new Promise<void>((resolve, reject) => {
+      const accepted = drains.writer.write(async () => {
+        try {
+          await drainH2Writes();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+      void accepted.catch(reject);
+    });
   }
   function resetMalformedBody(stream: H2ServerStream, message: string): void {
     stream.cancelled = true;

@@ -164,7 +164,7 @@ function normalizeReadOptions(input?: number | BytesReadOptions): BytesReadOptio
   return out;
 }
 interface ReaderQueueState {
-  queue: AsyncSequence;
+  queue: ChannelSequence;
   closed: () => boolean;
 }
 const readerQueues = new WeakMap<object, ReaderQueueState>();
@@ -178,7 +178,7 @@ function queueReaderOperation<R>(
   return state.queue.run(() => (state.closed() ? Promise.resolve(closedValue()) : operation()));
 }
 interface WriterQueueState {
-  queue: AsyncSequence;
+  queue: ChannelSequence;
   closed: () => boolean;
   pending: number;
 }
@@ -203,60 +203,31 @@ function queueWriterClose(writer: object, operation: () => Promise<void>): Promi
 }
 
 /**
- * Internal async-iterable executor used by legacy byte endpoint adapters.
+ * Channel-backed operation sequence used by subclass-defined endpoints.
  *
- * New channel-backed endpoints put ordering in their state directly. The byte
- * adapters still accept subclass hooks while those backends are migrated, so
- * their asynchronous operations are fed through one iterable consumer rather
- * than rebinding public methods or maintaining promise-tail bookkeeping.
+ * State-backed endpoints put ordering in their state directly. Subclass-defined
+ * endpoints feed their operations through a rendezvous channel so they retain
+ * the same ordering contract without a parallel queue implementation.
  */
-class AsyncSequence {
-  #requests: Array<() => Promise<void>> = [];
-  #active = false;
-  #draining = false;
+class ChannelSequence {
+  #channel = new Channel<() => Promise<void>>();
+  constructor() {
+    void this.#consume();
+  }
   run<T>(operation: () => Promise<T>): Promise<T> {
-    if (!this.#active && this.#requests.length === 0) {
-      this.#active = true;
-      let result: Promise<T>;
-      try {
-        result = Promise.resolve(operation());
-      } catch (error) {
-        result = Promise.reject(error);
-      }
-      return result.finally(() => {
-        this.#active = false;
-        this.#startDrain();
-      });
-    }
     return new Promise<T>((resolve, reject) => {
-      this.#requests.push(async () => {
+      const accepted = this.#channel.writer.write(async () => {
         try {
           resolve(await operation());
         } catch (error) {
           reject(error);
         }
       });
+      void accepted.catch(reject);
     });
   }
-  async *#iterate(): AsyncGenerator<() => Promise<void>> {
-    let request: (() => Promise<void>) | undefined;
-    while ((request = this.#requests.shift()) !== undefined) {
-      this.#active = true;
-      yield request;
-    }
-  }
-  #startDrain(): void {
-    if (this.#draining || this.#active || this.#requests.length === 0) return;
-    this.#draining = true;
-    void this.#consume();
-  }
   async #consume(): Promise<void> {
-    for await (const request of this.#iterate()) {
-      await request();
-      this.#active = false;
-    }
-    this.#draining = false;
-    this.#startDrain();
+    for await (const operation of this.#channel.reader) await operation();
   }
 }
 /** Internal state consumed by the public `Reader` facade. */
@@ -728,7 +699,7 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
     this.#onClose =
       typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeReader();
     if (this.#state === null)
-      readerQueues.set(this, { queue: new AsyncSequence(), closed: () => this.#closed });
+      readerQueues.set(this, { queue: new ChannelSequence(), closed: () => this.#closed });
   }
   /** Wrap an async iterable in the standard pull-based reader facade. */
   static from<T>(source: AsyncIterable<T>): Reader<T> {
@@ -942,31 +913,7 @@ export class BytesReader extends Reader<Uint8Array> {
     options?: BytesReadOptions,
   ): Promise<number | null> {
     if (this.#byteState !== null) return this.#byteState.readInto(buffer, options);
-    if (this.doRead !== BytesReader.prototype.doRead) {
-      const chunk = await this.doRead(buffer.byteLength, options);
-      if (chunk === null) return null;
-      if (chunk.byteLength > buffer.byteLength)
-        throw new RangeError('doRead returned more than the requested length');
-      buffer.set(chunk);
-      return chunk.byteLength;
-    }
     throw new Error('BytesReader has no byte state');
-  }
-  /**
-   * Read one chunk from a legacy byte source.
-   *
-   * State-backed readers bypass this adapter and return their state-owned view.
-   * Subclasses with an existing zero-copy chunk source may override it; the
-   * default allocates once and delegates to `doReadInto()`.
-   *
-   * @internal
-   */
-  protected async doRead(maxBytes: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
-    const buffer = new Uint8Array(maxBytes);
-    const n = await this.doReadInto(buffer, options);
-    if (n === null) return null;
-    if (n < 0 || n > buffer.byteLength) throw new RangeError('doReadInto returned invalid length');
-    return buffer.subarray(0, n);
   }
   /**
    * Called after bytes are delivered to the public reader caller.
@@ -1056,11 +1003,6 @@ export class BytesReader extends Reader<Uint8Array> {
     if (maxBytes === 0) return new Uint8Array(0);
     if (this.#stash === null && this.#byteState !== null) {
       const bytes = await this.#byteState.read(readOptions);
-      if (bytes !== null && bytes.byteLength > 0) this.onConsume(bytes.byteLength);
-      return bytes;
-    }
-    if (this.#stash === null) {
-      const bytes = await this.doRead(maxBytes, readOptions);
       if (bytes !== null && bytes.byteLength > 0) this.onConsume(bytes.byteLength);
       return bytes;
     }
@@ -2103,7 +2045,7 @@ export class Writer<T> {
     this.#onClose =
       typeof stateOrClose === 'function' ? stateOrClose : () => stateOrClose.closeWriter();
     if (this.#state === null) {
-      const state = { queue: new AsyncSequence(), closed: () => this.#closed, pending: 0 };
+      const state = { queue: new ChannelSequence(), closed: () => this.#closed, pending: 0 };
       writerQueues.set(this, state);
     }
   }

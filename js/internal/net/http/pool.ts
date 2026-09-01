@@ -55,7 +55,6 @@
  * @internal
  */
 import { buildWireResponse, Headers, Request, Response } from 'internal:net/http/wire';
-import { Fifo } from 'internal:fifo';
 import { Nghttp2Session } from './h2/session.ts';
 import type { H2StreamCallbacks } from './h2/session.ts';
 import { HttpBodyQueue, HttpStreamError } from './stream.ts';
@@ -66,7 +65,7 @@ import {
   NGHTTP2_FRAME_TYPE_GOAWAY,
   NGHTTP2_FRAME_TYPE_HEADERS,
 } from './h2/bindings.ts';
-import type { BufferedBytesReader, BytesWriter } from '../../stream.ts';
+import { Channel, type BufferedBytesReader, type BytesWriter } from '../../stream.ts';
 /**
  * Default idle timeout in milliseconds (60s) before an idle entry self-evicts.
  *
@@ -199,15 +198,15 @@ export class H2PoolEntry {
    */
   #closed = false;
   /**
-   * FIFO serializing every `drainWrite` call.
+   * Rendezvous channel serializing every `drainWrite` call.
    *
    * Concurrent `nghttp2_session_mem_send2` calls on one session are a data race,
-   * so all flushes from the receive loop and from `send()` are chained through
-   * this promise.
+   * so all flushes from the receive loop and from `send()` pass through one
+   * channel consumer.
    *
    * @internal
    */
-  #drains = new Fifo();
+  #drains = new Channel<() => Promise<void>>();
   /**
    * Memoized promise for the in-progress or completed graceful close.
    *
@@ -253,6 +252,9 @@ export class H2PoolEntry {
     this.#writer = writer;
     this.#idleMs = options.idleMs ?? IDLE_MS;
     this.#maxBufferedBodyBytes = options.maxBufferedBodyBytes ?? 16 * 1024 * 1024;
+    void (async () => {
+      for await (const drain of this.#drains.reader) await drain();
+    })();
     // Start the background recv loop (fire and forget - errors are handled inside).
     this.#recvLoop(reader).catch(() => {});
     this.#resetIdleTimer();
@@ -293,7 +295,7 @@ export class H2PoolEntry {
   /**
    * Serialize and flush all pending nghttp2 output to the writer.
    *
-   * Calls are chained through an internal promise mutex because concurrent
+   * Calls pass through a single channel consumer because concurrent
    * `nghttp2_session_mem_send2` calls on the same session would race. The
    * promise resolves after writer flush, or rejects if the writer fails.
    *
@@ -312,7 +314,17 @@ export class H2PoolEntry {
       }
       await this.#writer.flush();
     };
-    return this.#drains.run(drainH2PoolWrites);
+    return new Promise<void>((resolve, reject) => {
+      const accepted = this.#drains.writer.write(async () => {
+        try {
+          await drainH2PoolWrites();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+      void accepted.catch(reject);
+    });
   }
   // -------------------------------------------------------------------------
   // send() - submit a new request stream

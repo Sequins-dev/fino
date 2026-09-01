@@ -434,23 +434,6 @@ describe('UnboundedChannel', () => {
   });
 });
 describe('BytesReader', () => {
-  it('adapts direct chunk sources for structural and readInto operations', async (t) => {
-    class DirectChunkReader extends BytesReader {
-      chunks = [new Uint8Array([1, 2]), new Uint8Array([3])];
-      protected doRead(maxBytes: number): Promise<Uint8Array | null> {
-        const chunk = this.chunks.shift();
-        if (chunk === undefined) return Promise.resolve(null);
-        const result = chunk.subarray(0, maxBytes);
-        if (result.byteLength < chunk.byteLength) this.chunks.unshift(chunk.subarray(maxBytes));
-        return Promise.resolve(result);
-      }
-    }
-    const reader = new DirectChunkReader();
-    t.equal(await reader.readByte(), 1);
-    const target = new Uint8Array(2);
-    t.equal(await reader.readInto(target), 1);
-    t.deepEqual([...target], [2, 0]);
-  });
   it('keeps a compound read in one state operation', async (t) => {
     const requests: number[] = [];
     let releaseFirst!: () => void;

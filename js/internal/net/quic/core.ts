@@ -60,7 +60,12 @@
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
 import { atob } from '../../../globals/encoding.ts';
 import { encodeUtf8 } from '../../encoding.ts';
-import { BytesReader, BytesWriter } from '../../stream.ts';
+import {
+  BytesReader,
+  BytesWriter,
+  type BytesReadableState,
+  type BytesWritableState,
+} from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
 import { topic } from '../../../context/topic.ts';
 import {
@@ -2156,37 +2161,56 @@ export class ByteQueue {
 export class QuicBytesReader extends BytesReader {
   #stream: QuicStream;
   constructor(stream: QuicStream, onClose: () => void | Promise<void>) {
-    super(onClose);
+    const state: BytesReadableState = {
+      read(options) {
+        const maxBytes = typeof options === 'number' ? options : (options?.maxBytes ?? 65536);
+        const signal = typeof options === 'number' ? undefined : options?.signal;
+        return stream[quicStreamInternals.readIncoming](maxBytes, signal);
+      },
+      async readInto(buffer, options) {
+        const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        const chunk = await stream[quicStreamInternals.readIncoming](
+          destination.byteLength,
+          options?.signal,
+        );
+        if (chunk === null) return null;
+        destination.set(chunk);
+        return chunk.byteLength;
+      },
+      closeReader: onClose,
+    };
+    super(state);
     this.#stream = stream;
-  }
-  protected doRead(
-    maxBytes: number,
-    options?: {
-      signal?: AbortSignal | null;
-    },
-  ): Promise<Uint8Array | null> {
-    return this.#stream[quicStreamInternals.readIncoming](maxBytes, options?.signal);
   }
   protected onConsume(bytes: number): void {
     this.#stream[quicStreamInternals.extendStreamReceiveCredit](bytes);
     this.#stream[quicStreamInternals.extendConnectionReceiveCredit](bytes);
   }
 }
-export class QuicBytesWriter extends BytesWriter {
+class QuicBytesWritableState implements BytesWritableState {
   #stream: QuicStream;
+  #onClose: () => void | Promise<void>;
   #pending: Uint8Array[] = [];
   #flushScheduled = false;
   #fin = false;
   #stopped = false;
+  #reservation: Uint8Array | null = null;
+  #error: unknown = null;
   constructor(stream: QuicStream, onClose: () => void | Promise<void>) {
-    super(onClose);
     this.#stream = stream;
+    this.#onClose = onClose;
   }
-  override async write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+  write(data: ArrayBuffer | ArrayBufferView): Promise<void> {
+    if (this.#error !== null) return Promise.reject(this.#error);
     this.#stream[quicStreamInternals.assertWritableSide]();
-    await super.write(data);
+    const buf = ArrayBuffer.isView(data)
+      ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+      : new Uint8Array(data);
+    this.#writeChunk(buf, false);
+    return Promise.resolve();
   }
   writeSync(data: ArrayBuffer | ArrayBufferView, owned = false): void {
+    if (this.#error !== null) throw this.#error;
     this.#stream[quicStreamInternals.assertWritableSide]();
     const buf =
       data instanceof Uint8Array
@@ -2199,8 +2223,19 @@ export class QuicBytesWriter extends BytesWriter {
     this.#writeChunk(buf, owned);
     this.#flushPending();
   }
-  protected async doWrite(buf: Uint8Array): Promise<void> {
-    this.#writeChunk(buf, false);
+  reserve(): Promise<Uint8Array> {
+    if (this.#error !== null) return Promise.reject(this.#error);
+    if (this.#reservation !== null) return Promise.reject(new Error('Write already reserved'));
+    this.#reservation = new Uint8Array(65536);
+    return Promise.resolve(this.#reservation);
+  }
+  commit(bytesWritten: number): void {
+    const reservation = this.#reservation;
+    if (reservation === null) throw new Error('No active write reservation');
+    if (!Number.isInteger(bytesWritten) || bytesWritten < 0 || bytesWritten > reservation.byteLength)
+      throw new RangeError('commit exceeds reserved capacity');
+    this.#reservation = null;
+    this.#writeChunk(reservation.subarray(0, bytesWritten), true);
   }
   #writeChunk(buf: Uint8Array, owned: boolean): void {
     const chunk = owned ? buf : buf.slice();
@@ -2208,25 +2243,27 @@ export class QuicBytesWriter extends BytesWriter {
     this.#pending.push(chunk);
     this.#scheduleFlush();
   }
-  [quicBytesWriterInternals.closeFromStopSending](): void {
+  closeFromStopSending(): void {
     this.#pending = [];
     this.#fin = false;
     this.#stopped = true;
-    void this.close();
   }
-  override async close(): Promise<void> {
+  async closeWriter(): Promise<void> {
     if (!this.#stopped && this.#stream[quicStreamInternals.hasWritableSide]()) {
       this.#fin = true;
-      this.#flushPending();
     }
-    await super.close();
+    if (this.#fin) this.#flushPending();
+    await this.#onClose();
   }
-  closeSync(): void {
-    if (this.#stream[quicStreamInternals.hasWritableSide]()) {
-      this.#fin = true;
-      this.#flushPending();
-    }
-    void super.close();
+  flush(): Promise<void> {
+    return Promise.resolve();
+  }
+  fail(error: unknown): void {
+    if (this.#error !== null) return;
+    this.#error = error;
+    this.#pending = [];
+    this.#reservation = null;
+    this.#stopped = true;
   }
   #scheduleFlush(): void {
     if (this.#flushScheduled) return;
@@ -2269,6 +2306,24 @@ export class QuicBytesWriter extends BytesWriter {
     } catch (error) {
       if (!(error instanceof Error) || !/QUIC stream is closed/.test(error.message)) throw error;
     }
+  }
+}
+export class QuicBytesWriter extends BytesWriter {
+  #state: QuicBytesWritableState;
+  constructor(stream: QuicStream, onClose: () => void | Promise<void>) {
+    const state = new QuicBytesWritableState(stream, onClose);
+    super(state);
+    this.#state = state;
+  }
+  writeSync(data: ArrayBuffer | ArrayBufferView, owned = false): void {
+    this.#state.writeSync(data, owned);
+  }
+  [quicBytesWriterInternals.closeFromStopSending](): void {
+    this.#state.closeFromStopSending();
+    void this.close();
+  }
+  closeSync(): void {
+    void this.close();
   }
 }
 export function normalizeAddress(address?: QuicAddress): QuicAddress {
