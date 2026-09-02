@@ -1168,19 +1168,24 @@ export type QuicConnectionStats = {
  * final size is known (a FIN was received or the stream was reset). The
  * `maxOffset*` fields track how far each end of the stream has progressed, and
  * `bytesAccumulated`/`maxBytesAccumulated` report current and peak buffered
- * receive bytes so a slow reader's backlog is visible.
+ * receive bytes so a slow reader's backlog is visible. Closing the local writer
+ * only commits a FIN; acknowledgement fields advance later from ngtcp2's peer
+ * ACK notifications.
  */
 export type QuicStreamStats = {
   readonly createdAt: number;
   readonly openedAt: number | null;
   readonly receivedAt: number | null;
+  /** Millisecond epoch of the most recent peer acknowledgement, or `null`. */
   readonly ackedAt: number | null;
   readonly destroyedAt: number | null;
   readonly bytesReceived: number;
   readonly bytesSent: number;
+  /** Sent payload bytes acknowledged by the peer transport. */
   readonly bytesAcked: number;
   readonly finalSize: number | null;
   readonly maxOffset: number;
+  /** Greatest exclusive stream offset acknowledged by the peer transport. */
   readonly maxOffsetAcked: number;
   readonly maxOffsetReceived: number;
   readonly maxOffsetSent: number;

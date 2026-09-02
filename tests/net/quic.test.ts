@@ -1871,6 +1871,26 @@ describe('QUIC loopback object model', () => {
     t.equal(decodeUtf8(queued[0].data), 'GET /awaited-fin\r\n', 'pending write keeps stream data');
     t.equal(queued[0].fin, true, 'pending write carries FIN');
   });
+  it('does not report locally closed stream bytes as acknowledged', async (t) => {
+    const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
+    stream[quicStreamInternals.recordQueuedWrite](14);
+    await stream.writer.close();
+    t.equal(stream.stats.bytesSent, 14, 'local write accounting records the committed bytes');
+    t.equal(stream.stats.bytesAcked, 0, 'local FIN does not fabricate a peer acknowledgement');
+    t.equal(stream.stats.maxOffsetAcked, 0, 'acknowledged offset remains transport-driven');
+    t.equal(stream.stats.ackedAt, null, 'ack timestamp remains unset before a real ACK callback');
+
+    stream[quicStreamInternals.recordAck](0, 5);
+    const firstAckAt = stream.stats.ackedAt;
+    await loop.timeout(2);
+    stream[quicStreamInternals.recordAck](5, 9);
+    t.equal(stream.stats.bytesAcked, 14, 'real ACK callbacks account for acknowledged bytes');
+    t.equal(stream.stats.maxOffsetAcked, 14, 'real ACK callbacks advance the acknowledged offset');
+    t.ok(
+      stream.stats.ackedAt! >= firstAckAt!,
+      'ackedAt records the most recent acknowledgement time',
+    );
+  });
   it('connect dispatches connection event and accept resolves once', async (t) => {
     if (!quicAvailable) return;
     const server = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });
