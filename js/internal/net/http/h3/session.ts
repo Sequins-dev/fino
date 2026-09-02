@@ -11,7 +11,7 @@
  * The session sits between two layers. Above it, a driver submits requests or
  * responses and receives decoded HTTP events through an `H3SessionCallbacks`
  * object. Below it, the same driver feeds inbound QUIC stream bytes in through
- * `readStream()` and lets `drainWrites()` push nghttp3's framed output back out
+ * `receiveStreamData()`/`endStream()` and lets `drainWrites()` push nghttp3's framed output back out
  * to the QUIC stream writers registered with `addQuicStream()`. nghttp3 does the
  * QPACK, framing, and HTTP semantics; this module is the adapter that turns its
  * C callback/vector API into event callbacks and owned `Uint8Array`s.
@@ -30,7 +30,7 @@
  * body are deferred and flushed from the write drain rather than from inside the
  * data-reader callback, because re-entering nghttp3 there corrupts its state.
  *
- * `readStream()` and `drainWrites()` are guarded by a re-entrancy lock: calling
+ * Inbound stream operations and `drainWrites()` are guarded by a re-entrancy lock: calling
  * either while the other is on the stack throws rather than corrupting nghttp3.
  * All operations are synchronous and safe to run on the JS thread — the only
  * asynchrony is async body iteration, which schedules its continuation as a
@@ -74,7 +74,8 @@
  *
  * // For each inbound QUIC request stream: register its writer, then feed bytes.
  * session.addQuicStream(requestStreamId, requestWriter);
- * session.readStream(requestStreamId, inboundBytes, true); // last arg: fin
+ * session.receiveStreamData(requestStreamId, inboundBytes);
+ * session.endStream(requestStreamId);
  * ```
  *
  * @internal
@@ -144,7 +145,7 @@ export { buildNvArray };
 /**
  * Event callbacks a driver registers with a session to observe decoded HTTP/3.
  *
- * The session invokes these synchronously from inside `readStream()` as
+ * The session invokes these synchronously while receiving stream input as
  * nghttp3 decodes inbound frames. Header and trailer fields arrive one at a
  * time between the matching `begin`/`end` pair; body chunks arrive as owned
  * `Uint8Array`s copied out of nghttp3's buffers, so handlers may retain them.
@@ -258,6 +259,7 @@ const _MAX_VECS = 16;
 const _VEC_BUF_SIZE = _MAX_VECS * VEC_ENTRY_SIZE;
 const _PTR_SIZE = 8;
 const _PTR_DATA = 0;
+const EMPTY_BYTES = new Uint8Array(0);
 const _PTR_STREAM_ID = 1;
 const _PTR_FIN = 2;
 const _PTR_VEC = 3;
@@ -346,7 +348,7 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
  *
  * A driver uses a session in three overlapping roles: it submits outbound
  * requests or responses (`submitRequest` / `submitResponse` / `submitTrailers`),
- * feeds inbound QUIC stream bytes with `readStream()`, and lets `drainWrites()`
+ * feeds inbound QUIC stream bytes with `receiveStreamData()` and `endStream()`, and lets `drainWrites()`
  * hand nghttp3's framed output to the per-stream writers registered with
  * `addQuicStream()`. Decoded HTTP events surface through the `H3SessionCallbacks`
  * passed at creation.
@@ -1104,26 +1106,36 @@ export class Nghttp3Session {
   // Read: feed QUIC stream bytes into nghttp3.
   // -------------------------------------------------------------------------
   /**
-   * Feed inbound QUIC stream bytes into nghttp3 for decoding.
+   * Feed bytes present on an inbound QUIC stream into nghttp3 for decoding.
    *
-   * `data` is the bytes just received on `streamId`; `fin` marks the QUIC FIN.
-   * nghttp3 decodes them and drives the registered `H3SessionCallbacks`
-   * synchronously, then this method drains any writes the decode produced (for
-   * example QPACK acknowledgements). Pass an empty `data` with `fin` true to
-   * signal a FIN that carried no bytes.
+   * Completion is a separate control operation expressed through `endStream()`;
+   * `data` must therefore contain at least one byte. nghttp3 drives the registered
+   * `H3SessionCallbacks` synchronously, then the session drains any writes the
+   * decode produced, such as QPACK acknowledgements.
    *
    * A malformed HTTP header or message closes just the offending stream; any
    * other nghttp3 error closes the whole session. Either way the underlying
-   * error is thrown. Throws immediately if the session is closed, or if called
-   * re-entrantly while another `readStream`/`drainWrites` is on the stack.
-   *
-   * ```ts no_run
-   * for await (const { bytes, fin } of quicStream) {
-   *   session.readStream(quicStream.id, bytes ?? new Uint8Array(0), fin);
-   * }
-   * ```
+   * error is thrown. Throws immediately if the session is closed, if `data` is
+   * empty, or if called re-entrantly during another session operation.
    */
-  readStream(streamId: bigint, data: Uint8Array, fin: boolean): void {
+  receiveStreamData(streamId: bigint, data: Uint8Array): void {
+    if (data.byteLength === 0) throw new TypeError('stream data must not be empty');
+    this.#receiveStreamInput(streamId, data, false);
+  }
+
+  /**
+   * Signal clean completion of an inbound QUIC stream to nghttp3.
+   *
+   * This is the control counterpart to `receiveStreamData()`. It carries no
+   * bytes and maps the channel's done state to the QUIC FIN expected by nghttp3.
+   * Throws immediately if the session is closed or if called re-entrantly during
+   * another session operation.
+   */
+  endStream(streamId: bigint): void {
+    this.#receiveStreamInput(streamId, EMPTY_BYTES, true);
+  }
+
+  #receiveStreamInput(streamId: bigint, data: Uint8Array, fin: boolean): void {
     if (this.#locked) throw new Error('nghttp3 session operation re-entered');
     if (this.#closed) throw new Error('session closed');
     this.#locked = true;
@@ -1177,7 +1189,7 @@ export class Nghttp3Session {
    * If the writer for a stream is missing, its queued data is dropped and the
    * stream is cancelled so nghttp3 does not stall. Closes the session and throws
    * on a fatal nghttp3 error. Throws immediately if the session is closed, or if
-   * called re-entrantly while another `readStream`/`drainWrites` is on the stack.
+   * called re-entrantly while another session operation is on the stack.
    *
    * ```ts no_run
    * session.submitResponse(streamId, [[':status', '200']]);

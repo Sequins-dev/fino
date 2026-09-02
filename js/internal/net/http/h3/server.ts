@@ -623,15 +623,17 @@ export class H3ServerDriver {
               if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
               while (true) {
                 const result = await stream.reader.read();
-                const fin = result.done;
-                session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
-                if (fin) break;
+                if (result.done) {
+                  session.endStream(sid);
+                  break;
+                }
+                session.receiveStreamData(sid, result.value);
               }
               return;
             }
             const routed = await readWebTransportPrefix(stream.reader);
             if (routed.buffer === null) {
-              session.readStream(sid, new Uint8Array(0), true);
+              session.endStream(sid);
               return;
             }
             first = routed.buffer;
@@ -645,12 +647,14 @@ export class H3ServerDriver {
             if (stream.direction === 'bidirectional') {
               session.addQuicStream(sid, stream.writer);
             }
-            session.readStream(sid, first, false);
+            session.receiveStreamData(sid, first);
             while (true) {
               const result = await stream.reader.read();
-              const fin = result.done;
-              session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
-              if (fin) break;
+              if (result.done) {
+                session.endStream(sid);
+                break;
+              }
+              session.receiveStreamData(sid, result.value);
             }
           } catch {
             const st = streams.get(sid);

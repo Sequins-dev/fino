@@ -431,15 +431,17 @@ export class H3ClientSession {
             if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
             while (true) {
               const result = await stream.reader.read();
-              const fin = result.done;
-              session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
-              if (fin) break;
+              if (result.done) {
+                session.endStream(sid);
+                break;
+              }
+              session.receiveStreamData(sid, result.value);
             }
             return;
           }
           const routed = await readWebTransportPrefix(stream.reader);
           if (routed.buffer === null) {
-            session.readStream(sid, new Uint8Array(0), true);
+            session.endStream(sid);
             return;
           }
           if (routed.prefix?.kind === stream.direction && routed.prefix.sessionId !== undefined) {
@@ -450,12 +452,14 @@ export class H3ClientSession {
             }
           }
           if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
-          session.readStream(sid, routed.buffer, false);
+          session.receiveStreamData(sid, routed.buffer);
           while (true) {
             const result = await stream.reader.read();
-            const fin = result.done;
-            session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
-            if (fin) break;
+            if (result.done) {
+              session.endStream(sid);
+              break;
+            }
+            session.receiveStreamData(sid, result.value);
           }
         } catch {}
       })();
@@ -565,9 +569,11 @@ export class H3ClientSession {
           // event back into nghttp3 after its stream state was deliberately
           // closed; nghttp3 would report STREAM_NOT_FOUND as a connection error.
           if (!this.#pending.has(sid)) break;
-          const fin = result.done;
-          this.#session.readStream(sid, result.done ? new Uint8Array(0) : result.value, fin);
-          if (fin) break;
+          if (result.done) {
+            this.#session.endStream(sid);
+            break;
+          }
+          this.#session.receiveStreamData(sid, result.value);
         }
       } catch {
         // Connection was closed with an error before the response arrived.
