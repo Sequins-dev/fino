@@ -641,6 +641,21 @@ describe('HTTP app built-ins', () => {
       'the stream fails with the handler error',
     );
   });
+  it('normalizes non-Error SSE failures at the handler boundary', async (t) => {
+    const app = new App();
+    app.route('/broken').sse(async () => {
+      throw 'string failure';
+    });
+    const res = (await app.handle(request('/broken'))) as Response;
+    const reader = parseEventStream(res.body!);
+    try {
+      await reader.read();
+      t.fail('the response body should reject');
+    } catch (error) {
+      t.ok(error instanceof Error, 'downstream receives an Error');
+      t.equal((error as Error).message, 'string failure');
+    }
+  });
   it('serves sse routes over listen()', async (t) => {
     const app = new App();
     app.route('/ticks').sse(async (events) => {

@@ -981,19 +981,26 @@ function wrapWebTransport(handler: WebTransportHandler): Handler {
     return session;
   };
 }
+async function invokeSseHandler(
+  handler: SseHandler,
+  events: EventSourceWriter,
+  ctx: SseContext,
+): Promise<void> {
+  try {
+    await handler(events, ctx);
+  } catch (error) {
+    throw error instanceof Error ? error : new Error(String(error));
+  }
+}
 function wrapSse(handler: SseHandler): Handler {
   return (ctx) => {
     const channel = new Channel<Uint8Array>();
     const events = new EventSourceWriter(channel.writer);
-    void (async () => {
-      try {
-        await handler(events, ctx as SseContext);
-        await events.close();
-        await channel.writer.close();
-      } catch (err) {
-        void channel.writer.close(err instanceof Error ? err : new Error(String(err)));
-      }
-    })();
+    const completion = invokeSseHandler(handler, events, ctx as SseContext).then(async () => {
+      await events.close();
+      await channel.writer.close();
+    });
+    void completion.catch((error: Error) => channel.writer.close(error));
     return new Response(channel.reader, {
       headers: {
         'content-type': 'text/event-stream',
