@@ -2,6 +2,7 @@ import { describe, it } from 'fino:test/test';
 import { Database } from 'fino:database/sqlite';
 import { RecordBatch, tableToIPC } from 'fino:data/arrow';
 import { writeParquet } from 'fino:data/parquet';
+import * as loop from 'internal:runtime/loop';
 import {
   DataLoader,
   Dataset,
@@ -21,6 +22,16 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   const values: T[] = [];
   for await (const value of source) values.push(value);
   return values;
+}
+
+async function waitForReadHandles(expected: number): Promise<number> {
+  const deadline = performance.now() + 2_000;
+  let reads = loop._activeHandleCounts().reads;
+  while (reads !== expected && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    reads = loop._activeHandleCounts().reads;
+  }
+  return reads;
 }
 
 describe('Dataset and IterableDataset', () => {
@@ -215,6 +226,7 @@ describe('DataLoader', () => {
   });
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
+    const baselineReads = loop._activeHandleCounts().reads;
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
     // The first two batches outlast both cold Realm constructions, guaranteeing
     // overlap without a rendezvous that assumes which queued Realm starts first.
@@ -242,6 +254,11 @@ describe('DataLoader', () => {
     const counters = new Int32Array(stats);
     t.equal(counters[0], 0, 'all worker calls have finished');
     t.equal(counters[1], 2, 'realm work is bounded by the configured pool size');
+    t.equal(
+      await waitForReadHandles(baselineReads),
+      baselineReads,
+      'completed worker Realms release their port reads',
+    );
   });
 
   it('cancels active realm work and closes the loader source', async (t) => {
