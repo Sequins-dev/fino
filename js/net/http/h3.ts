@@ -41,9 +41,12 @@
  */
 import { QuicEndpoint, QuicConnectionEvent } from '../quic/index.ts';
 import { H3ServerDriver } from '../../internal/net/http/h3/server.ts';
-import type { H3ServerDriverOptions } from '../../internal/net/http/h3/server.ts';
+import type {
+  H3ServerContext as InternalH3ServerContext,
+  H3ServerDriverOptions,
+} from '../../internal/net/http/h3/server.ts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.ts';
-import type { H3RequestInit } from '../../internal/net/http/h3/client.ts';
+import type { H3InformationalResponse, H3RequestInit } from '../../internal/net/http/h3/client.ts';
 import {
   h3Available as _h3Available,
   requireH3 as _requireH3,
@@ -153,6 +156,10 @@ export interface H3Server {
   /** Stop accepting connections and gracefully drain active HTTP/3 requests. */
   close(): Promise<void>;
 }
+/** Controls available while an HTTP/3 request handler is producing a response. */
+export type H3ServerContext = InternalH3ServerContext;
+/** Metadata delivered for each non-final HTTP/3 1xx response. */
+export type { H3InformationalResponse };
 /**
  * Fetch-compatible HTTP/3 request handler.
  *
@@ -176,7 +183,10 @@ export interface H3Server {
  * );
  * ```
  */
-export type H3Handler = (request: Request) => Response | Promise<Response>;
+export type H3Handler = (
+  request: Request,
+  context: H3ServerContext,
+) => Response | Promise<Response>;
 /**
  * Options for one-shot HTTP/3 `fetch()`.
  *

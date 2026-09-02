@@ -79,7 +79,15 @@ import { inspectWebTransportStreamPrefix } from './webtransport.ts';
  * the connection, so a single failing request cannot take down the whole
  * session.
  */
-export type H3Handler = (request: Request) => Response | Promise<Response>;
+export type H3Handler = (
+  request: Request,
+  context: H3ServerContext,
+) => Response | Promise<Response>;
+/** Per-request controls available while an HTTP/3 handler is running. */
+export interface H3ServerContext {
+  /** Send a non-final 1xx response field section before the final response. */
+  sendInformational(status: number, headers?: HeadersInit): Promise<void>;
+}
 /**
  * Handler for extended-CONNECT WebTransport sessions over HTTP/3.
  *
@@ -649,12 +657,46 @@ export class H3ServerDriver {
       }
       (req as any).trailerHeaders = st.trailerHeaders;
       let response: Response;
+      let acceptingInformational = true;
+      const context: H3ServerContext = {
+        async sendInformational(status, headers = {}) {
+          if (!acceptingInformational || st.cancelled) {
+            throw new Error('HTTP/3 final response has already started');
+          }
+          if (!Number.isInteger(status) || status < 100 || status >= 200 || status === 101) {
+            throw new RangeError('HTTP/3 informational status must be 100..199 except 101');
+          }
+          const fields: Array<[string, string]> = [[':status', String(status)]];
+          new Headers(headers).forEach((value, name) => {
+            const lower = name.toLowerCase();
+            if (!_FORBIDDEN_RESP.has(lower) && !lower.startsWith(':')) {
+              fields.push([lower, value]);
+            }
+          });
+          await new Promise<void>((resolve, reject) => {
+            queueMicrotask(() => {
+              try {
+                if (!acceptingInformational || st.cancelled) {
+                  throw new Error('HTTP/3 final response has already started');
+                }
+                session.submitInformational(st.streamId, fields);
+                session.drainWrites();
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            });
+          });
+        },
+      };
       try {
-        const result = await handler(req);
+        const result = await handler(req, context);
         if (!(result instanceof Response)) throw new TypeError('handler did not return a Response');
         response = result;
       } catch {
         response = new Response('Internal Server Error', { status: 500 });
+      } finally {
+        acceptingInformational = false;
       }
       if (st.cancelled) return;
       const respHeaders: Array<[string, string]> = [[':status', String(response.status)]];
