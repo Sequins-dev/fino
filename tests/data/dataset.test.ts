@@ -23,6 +23,20 @@ async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   return values;
 }
 
+async function waitForAtomicValue(
+  values: Int32Array,
+  index: number,
+  expected: number,
+): Promise<number> {
+  const deadline = performance.now() + 2_000;
+  let value = Atomics.load(values, index);
+  while (value !== expected && performance.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    value = Atomics.load(values, index);
+  }
+  return value;
+}
+
 describe('Dataset and IterableDataset', () => {
   it('provides deterministic random access and lazy transforms', async (t) => {
     const source = Dataset.from([1, 2, 3, 4, 5]);
@@ -215,7 +229,7 @@ describe('DataLoader', () => {
   });
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
-    const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+    const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
     // The first two batches outlast both cold Realm constructions, guaranteeing
     // overlap without a rendezvous that assumes which queued Realm starts first.
     // Later batches complete immediately so the test pays the delay only once.
@@ -242,6 +256,11 @@ describe('DataLoader', () => {
     const counters = new Int32Array(stats);
     t.equal(counters[0], 0, 'all worker calls have finished');
     t.equal(counters[1], 2, 'realm work is bounded by the configured pool size');
+    t.equal(
+      await waitForAtomicValue(counters, 2, 4),
+      4,
+      'every completed worker Realm runs its shutdown hooks',
+    );
   });
 
   it('cancels active realm work and closes the loader source', async (t) => {

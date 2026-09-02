@@ -487,10 +487,11 @@ export class WriteSink {
    * settled only when the parent response is routed back.
    *
    * ```typescript no_run
-   * sink.abort('cancelled');
+   * sink.abort(new Error('cancelled'));
    * ```
    */
-  abort(error: string): void {
+  abort(error: Error): void {
+    if (!(error instanceof Error)) throw new TypeError('sink abort requires an Error');
     _sendControl(EnvelopeKind.SinkError, this.#reqId, { error });
   }
   /**

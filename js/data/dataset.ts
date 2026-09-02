@@ -1025,6 +1025,7 @@ export class DataLoader<T, B = T[]> implements AsyncIterable<B> {
         return descriptor as B;
       } finally {
         if (onAbort) workController.signal.removeEventListener('abort', onAbort);
+        realm.terminate();
         activeRealms.delete(realm);
         if (writer && !descriptorCommitted) sharedRing!.release(writer.slot);
       }

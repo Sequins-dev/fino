@@ -82,6 +82,7 @@ import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelem
 import { registerShutdownHook } from '../internal/shutdown.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
 import { createChildCoverageContext, type CoverageRealmContext } from 'internal:coverage';
+import { UnboundedChannel } from '../internal/stream.ts';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
 const _topicRealmSpawn = topic(otelRuntimeTopic('realm', 'spawn', 'start'));
@@ -732,61 +733,20 @@ export class FacadeHandle {
 // Per-port write-stream (sink) source queues
 //
 // When the child calls callSink(), it sends __rpc_send_start.  The parent
-// creates a _WriteSource that acts as the `source: AsyncIterable` argument to
-// the handler.  Subsequent __rpc_send_chunk messages push into the queue;
-// __rpc_send_end / __rpc_send_err close or fail it.
+// creates an unbounded channel whose reader acts as the `source: AsyncIterable`
+// argument to the handler. Subsequent __rpc_send_chunk messages write into the
+// channel; __rpc_send_end / __rpc_send_err close its writer.
 //
 // This is the symmetric counterpart to _StreamQueue in parent-rpc.ts (which
 // buffers chunks flowing parent->child).  The pairing maps directly onto QUIC:
-//   _WriteSource  <-  QUIC client-initiated unidirectional stream (child sends)
+//   UnboundedChannel <- QUIC client-initiated unidirectional stream (child sends)
 //   _StreamQueue  <-  QUIC server-initiated unidirectional stream (parent sends)
 // ---------------------------------------------------------------------------
-class _WriteSource {
-  #queue: unknown[] = [];
-  #waiters: Array<() => void> = [];
-  #done = false;
-  #error: string | null = null;
-  push(chunk: unknown): void {
-    this.#queue.push(chunk);
-    this.#waiters.shift()?.();
-  }
-  end(): void {
-    this.#done = true;
-    const ws = this.#waiters.splice(0);
-    for (const w of ws) w();
-  }
-  fail(msg: string): void {
-    this.#error = msg;
-    this.#done = true;
-    const ws = this.#waiters.splice(0);
-    for (const w of ws) w();
-  }
-  [Symbol.asyncIterator](): AsyncIterator<unknown> {
-    const self = this;
-    return {
-      async next(): Promise<IteratorResult<unknown>> {
-        while (self.#queue.length === 0 && !self.#done) {
-          await new Promise<void>((resolve) => self.#waiters.push(resolve));
-        }
-        if (self.#queue.length > 0)
-          return {
-            value: self.#queue.shift()!,
-            done: false,
-          };
-        if (self.#error !== null) throw new Error(self.#error);
-        return {
-          value: undefined as unknown,
-          done: true,
-        };
-      },
-    };
-  }
-}
-// portObj -> (reqId -> _WriteSource) for active write streams on this port.
-const _portWriteSources = new WeakMap<object, Map<number, _WriteSource>>();
+// portObj -> (reqId -> channel) for active write streams on this port.
+const _portWriteSources = new WeakMap<object, Map<number, UnboundedChannel<unknown>>>();
 function _getOrCreateWriteSourceRegistry(
   port: MessagePort | RealmPort | ProcessPort | ClusterPort,
-): Map<number, _WriteSource> {
+): Map<number, UnboundedChannel<unknown>> {
   const key = port as object;
   let reg = _portWriteSources.get(key);
   if (!reg) {
@@ -849,9 +809,9 @@ function _getOrCreateHandleRegistry(
         fail(reqId, `No sendStream method '${method}' on handle '${body.specifier}'`);
         return true;
       }
-      const source = new _WriteSource();
+      const source = new UnboundedChannel<unknown>();
       wsSources.set(reqId, source);
-      sinkFn(args, source).then(
+      sinkFn(args, source.reader).then(
         (result) => {
           wsSources.delete(reqId);
           _sendResult(port, registry, reqId, result);
@@ -1382,9 +1342,9 @@ export class Facade {
             fail(reqId, `No sendStream handler for ${specifier}#${method}`);
             return true;
           }
-          const source = new _WriteSource();
+          const source = new UnboundedChannel<unknown>();
           wsSources.set(reqId, source);
-          fn(args, source).then(
+          fn(args, source.reader).then(
             (result) => {
               wsSources.delete(reqId);
               _sendResult(port, reg, reqId, result);
@@ -1396,23 +1356,21 @@ export class Facade {
         case EnvelopeKind.SinkChunk: {
           const source = wsSources.get(reqId);
           if (!source) return false;
-          source.push(value);
+          void source.writer.write(value);
           return true;
         }
         case EnvelopeKind.SinkEnd: {
           const source = wsSources.get(reqId);
           if (!source) return false;
           wsSources.delete(reqId);
-          source.end();
+          void source.writer.close();
           return true;
         }
         case EnvelopeKind.SinkError: {
           const source = wsSources.get(reqId);
           if (!source) return false;
           wsSources.delete(reqId);
-          void source.close(
-            new Error(String((value as { error?: unknown })?.error ?? 'sink aborted')),
-          );
+          void source.writer.close((value as { error: Error }).error);
           return true;
         }
         case EnvelopeKind.RpcRequest:

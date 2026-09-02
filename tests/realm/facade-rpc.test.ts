@@ -16,6 +16,7 @@ import type facadeStreamFn from './fixtures/facade-stream-fn.ts';
 import type facadeStreamErrorFn from './fixtures/facade-stream-error-fn.ts';
 import type facadeHandleFn from './fixtures/facade-handle-fn.ts';
 import type facadeSinkFn from './fixtures/facade-sink-fn.ts';
+import type facadeSinkAbortFn from './fixtures/facade-sink-abort-fn.ts';
 describe('Facade RPC — reactor-pooled realm', () => {
   it('basic call-response round-trip', async (t) => {
     const facade = new Facade('fino:test-facade', ['greet']).handle(
@@ -493,6 +494,31 @@ describe('Facade RPC — callSink / sendStream (reactor-pooled realm)', () => {
       t.ok(err instanceof Error, 'rejects with Error');
       t.ok((err as Error).message.includes('sink handler failed'), 'error message propagated');
     }
+  });
+  it('sink abort delivers an Error to the parent source', async (t) => {
+    let received: unknown;
+    const facade = new Facade('fino:test-facade', []).sendStream(
+      'writeChunks',
+      async (_args, source) => {
+        try {
+          for await (const _chunk of source) {
+            // Drain until the typed abort reaches the source.
+          }
+        } catch (error) {
+          received = error;
+          throw error;
+        }
+      },
+    );
+    const realm = new Realm<typeof facadeSinkAbortFn>({
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'fino:test-facade', directive: facade },
+      ]),
+      entry: new URL('./fixtures/facade-sink-abort-fn.ts', import.meta.url).pathname,
+    });
+    await t.rejects(() => realm.call(), /sink input aborted/);
+    t.ok(received instanceof Error, 'parent source rejects with Error');
   });
 });
 describe('Facade RPC — process realm parity', () => {
