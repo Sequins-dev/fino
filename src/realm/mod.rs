@@ -16,7 +16,9 @@
 
 pub mod bridge;
 pub mod broadcast;
+pub mod bytes;
 pub mod child;
+pub mod message;
 pub mod native;
 pub mod process;
 pub mod serializer;

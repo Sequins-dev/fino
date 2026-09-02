@@ -19,6 +19,7 @@ use ::v8;
 use crate::state::{
     ImportDirective, ImportPattern, ImportRule, SyntheticMode, SyntheticSpec, get_state,
 };
+use crate::v8util;
 
 // ---------------------------------------------------------------------------
 // Source generation
@@ -174,17 +175,8 @@ fn install_module_eval<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("_installSyntheticModule", js_install);
-    set_fn!("_uninstallSyntheticModule", js_uninstall);
+    crate::set_fn!(scope, module, "_installSyntheticModule", js_install);
+    crate::set_fn!(scope, module, "_uninstallSyntheticModule", js_uninstall);
 
     Some(v8::undefined(scope).into())
 }
@@ -202,7 +194,7 @@ fn js_install(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     let exports_arr = match v8::Local::<v8::Array>::try_from(exports_val) {
         Ok(a) => a,
         Err(_) => {
-            throw_str(
+            v8util::throw_error(
                 scope,
                 "_installSyntheticModule: second argument must be an Array",
             );
@@ -229,7 +221,7 @@ fn js_install(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
     };
 
     if let Err(e) = install_synthetic_module(scope, &spec) {
-        throw_str(scope, &e);
+        v8util::throw_error(scope, &e);
     }
 }
 
@@ -246,14 +238,7 @@ fn js_uninstall(
     };
 
     if let Err(e) = uninstall_synthetic_module(scope, &specifier) {
-        throw_str(scope, &e);
-    }
-}
-
-fn throw_str(scope: &mut v8::PinScope, msg: &str) {
-    if let Some(s) = v8::String::new(scope, msg) {
-        let exc = v8::Exception::error(scope, s);
-        scope.throw_exception(exc);
+        v8util::throw_error(scope, &e);
     }
 }
 

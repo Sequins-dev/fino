@@ -131,18 +131,14 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("serialize", native_serialize);
-    set_fn!("deserialize", native_deserialize);
-    set_fn!("detachArrayBuffer", native_detach_array_buffer);
+    crate::set_fn!(scope, module, "serialize", native_serialize);
+    crate::set_fn!(scope, module, "deserialize", native_deserialize);
+    crate::set_fn!(
+        scope,
+        module,
+        "detachArrayBuffer",
+        native_detach_array_buffer
+    );
 
     Some(v8::undefined(scope).into())
 }
@@ -165,38 +161,6 @@ fn native_detach_array_buffer(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/// Copy raw bytes from a Uint8Array argument into a `Vec<u8>`.
-fn u8a_to_vec(scope: &mut v8::PinScope, u8a: v8::Local<v8::Uint8Array>) -> Vec<u8> {
-    let Some(ab) = u8a.buffer(scope) else {
-        return Vec::new();
-    };
-    let Some(data_ptr) = ab.data() else {
-        return Vec::new();
-    };
-    let offset = u8a.byte_offset();
-    let len = u8a.byte_length();
-    // SAFETY: data_ptr into live V8 ArrayBuffer; slice doesn't outlive this frame.
-    unsafe {
-        std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len).to_vec()
-    }
-}
-
-/// Wrap a `Vec<u8>` in a freshly-allocated `Uint8Array`.
-fn vec_to_u8a<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-    bytes: &[u8],
-) -> Option<v8::Local<'s, v8::Uint8Array>> {
-    let len = bytes.len();
-    let bs = v8::ArrayBuffer::new_backing_store(scope, len);
-    if !bytes.is_empty() {
-        // SAFETY: backing store freshly allocated; we own the only reference.
-        let dst = bs.data().unwrap().as_ptr() as *mut u8;
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len) };
-    }
-    let ab = v8::ArrayBuffer::with_backing_store(scope, &bs.make_shared());
-    v8::Uint8Array::new(scope, ab, 0, len)
-}
 
 // ---------------------------------------------------------------------------
 // serialize(value: any, transferList?: ArrayBuffer[]) → Uint8Array[]
@@ -277,14 +241,14 @@ fn native_serialize(
     let result = v8::Array::new(scope, total as i32);
 
     // Index 0 — main bytes.
-    if let Some(u8a) = vec_to_u8a(scope, &main_bytes) {
+    if let Some(u8a) = super::bytes::vec_to_u8a(scope, &main_bytes) {
         let zero = v8::Integer::new(scope, 0);
         result.set(scope, zero.into(), u8a.into());
     }
 
     // Indices 1.. — transfer store bytes.
     for (i, store_bytes) in transfer_data.iter().enumerate() {
-        if let Some(u8a) = vec_to_u8a(scope, store_bytes) {
+        if let Some(u8a) = super::bytes::vec_to_u8a(scope, store_bytes) {
             let idx = v8::Integer::new(scope, (i + 1) as i32);
             result.set(scope, idx.into(), u8a.into());
         }
@@ -326,7 +290,7 @@ fn native_deserialize(
                 if let Some(elem) = arr.get(scope, idx.into())
                     && let Ok(store_u8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
                 {
-                    let raw = u8a_to_vec(scope, store_u8a);
+                    let raw = super::bytes::u8a_slice_to_vec(scope, store_u8a).unwrap_or_default();
                     let len = raw.len();
                     let bs = v8::ArrayBuffer::new_backing_store(scope, len);
                     if !raw.is_empty() {

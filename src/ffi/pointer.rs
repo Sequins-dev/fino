@@ -9,6 +9,8 @@ use std::ffi::c_void;
 
 use ::v8;
 
+use crate::v8util;
+
 // ---------------------------------------------------------------------------
 // Create / unwrap a pointer value
 // ---------------------------------------------------------------------------
@@ -58,12 +60,12 @@ pub fn from_js(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> Option<*m
             let len = abv.byte_length();
             (p, len)
         } else {
-            throw_type_error(scope, "Expected a pointer buffer (ArrayBuffer) or null");
+            v8util::throw_type_error(scope, "Expected a pointer buffer (ArrayBuffer) or null");
             return None;
         };
 
     if available < 8 {
-        throw_type_error(scope, "Pointer buffer must be at least 8 bytes");
+        v8util::throw_type_error(scope, "Pointer buffer must be at least 8 bytes");
         return None;
     }
 
@@ -178,13 +180,13 @@ fn ptr_view(
         return;
     };
     if ptr.is_null() {
-        throw_type_error(scope, "Pointer.view: pointer must not be null");
+        v8util::throw_type_error(scope, "Pointer.view: pointer must not be null");
         return;
     }
 
     let raw_len = args.get(1).integer_value(scope).unwrap_or(-1);
     if raw_len < 0 {
-        throw_type_error(scope, "Pointer.view: length must be a non-negative integer");
+        v8util::throw_type_error(scope, "Pointer.view: length must be a non-negative integer");
         return;
     }
     let len = raw_len as usize;
@@ -193,7 +195,7 @@ fn ptr_view(
     let opts_val = args.get(2);
     if !opts_val.is_null_or_undefined() {
         let Ok(opts) = v8::Local::<v8::Object>::try_from(opts_val) else {
-            throw_type_error(scope, "Pointer.view: options must be an object");
+            v8util::throw_type_error(scope, "Pointer.view: options must be an object");
             return;
         };
         let key = v8::String::new(scope, "onRelease").unwrap();
@@ -201,7 +203,7 @@ fn ptr_view(
             && !cb_val.is_null_or_undefined()
         {
             let Ok(func) = v8::Local::<v8::Function>::try_from(cb_val) else {
-                throw_type_error(scope, "Pointer.view: onRelease must be a function");
+                v8util::throw_type_error(scope, "Pointer.view: onRelease must be a function");
                 return;
             };
             let global = v8::Global::new(scope, func);
@@ -213,7 +215,7 @@ fn ptr_view(
         if let Some(id) = callback_id {
             crate::async_rt::js_calls::unregister_callback(id);
         }
-        throw_type_error(scope, "Pointer.view: async runtime not initialized");
+        v8util::throw_type_error(scope, "Pointer.view: async runtime not initialized");
         return;
     };
 
@@ -292,7 +294,7 @@ fn copy_to(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv: v
                 .unwrap_or(std::ptr::null());
             (p, bs.byte_length())
         } else {
-            throw_type_error(
+            v8util::throw_type_error(
                 scope,
                 "Pointer.copyTo: expected Uint8Array or ArrayBuffer as second argument",
             );
@@ -323,7 +325,7 @@ fn copy_from_into(
                 .unwrap_or(std::ptr::null_mut());
             (p, bs.byte_length())
         } else {
-            throw_type_error(
+            v8util::throw_type_error(
                 scope,
                 "Pointer.copyFromInto: expected ArrayBuffer or ArrayBufferView as first argument",
             );
@@ -339,20 +341,20 @@ fn copy_from_into(
     } else {
         let raw = args.get(2).integer_value(scope).unwrap_or(0);
         if raw < 0 {
-            throw_type_error(scope, "Pointer.copyFromInto: length must be non-negative");
+            v8util::throw_type_error(scope, "Pointer.copyFromInto: length must be non-negative");
             return;
         }
         raw as usize
     };
 
     if len > dest_len {
-        throw_type_error(scope, "Pointer.copyFromInto: destination too small");
+        v8util::throw_type_error(scope, "Pointer.copyFromInto: destination too small");
         return;
     }
 
     if len > 0 {
         if dest_ptr.is_null() || src_ptr.is_null() {
-            throw_type_error(scope, "Pointer.copyFromInto: null pointer");
+            v8util::throw_type_error(scope, "Pointer.copyFromInto: null pointer");
             return;
         }
         // SAFETY: destination bounds are checked above; caller guarantees
@@ -387,7 +389,7 @@ fn ptr_addr(
     } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(src_val) {
         abv.data() as u64
     } else {
-        throw_type_error(
+        v8util::throw_type_error(
             scope,
             "Pointer.addr: expected an ArrayBuffer or ArrayBufferView",
         );
@@ -430,7 +432,7 @@ fn ptr_of(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
         // data() applies byteOffset — correct for TypedArray views.
         abv.data() as u64
     } else {
-        throw_type_error(
+        v8util::throw_type_error(
             scope,
             "Pointer.of: expected an ArrayBuffer or ArrayBufferView",
         );
@@ -451,7 +453,7 @@ fn ptr_of(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
             } else if let Ok(abv) = v8::Local::<v8::ArrayBufferView>::try_from(dest_val) {
                 (abv.data() as *mut u8, abv.byte_length())
             } else {
-                throw_type_error(
+                v8util::throw_type_error(
                     scope,
                     "Pointer.of: dest must be an ArrayBuffer or ArrayBufferView",
                 );
@@ -459,7 +461,7 @@ fn ptr_of(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut rv:
             };
         let byte_off = args.get(2).integer_value(scope).unwrap_or(0) as usize;
         if dest_len < byte_off + 8 {
-            throw_type_error(scope, "Pointer.of: dest too small");
+            v8util::throw_type_error(scope, "Pointer.of: dest too small");
             return;
         }
         // SAFETY: bounds checked above; dest is pinned for the call duration.
@@ -613,11 +615,4 @@ fn val_to_i128(scope: &mut v8::PinScope, val: v8::Local<v8::Value>) -> i128 {
         return bi.i64_value().0 as i128;
     }
     val.number_value(scope).unwrap_or(0.0) as i128
-}
-
-fn throw_type_error(scope: &mut v8::PinScope, msg: &str) {
-    if let Some(msg_str) = v8::String::new(scope, msg) {
-        let exc = v8::Exception::type_error(scope, msg_str);
-        scope.throw_exception(exc);
-    }
 }

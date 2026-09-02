@@ -15,6 +15,7 @@ use ::v8;
 use library::{DynLib, FfiSymbol};
 use types::{NativeType, StructField, StructFieldKind, StructLayout, align_to};
 
+use crate::v8util;
 use call::{CallScratch, ffi_call};
 
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
@@ -76,7 +77,7 @@ fn dlopen_callback(
             .to_rust_string_lossy(scope);
         DynLib::open(&path_str)
     } else {
-        throw_error(
+        v8util::throw_error(
             scope,
             "dlopen: expected path string or null as first argument",
         );
@@ -86,7 +87,7 @@ fn dlopen_callback(
     let lib = match lib {
         Ok(l) => l,
         Err(e) => {
-            throw_error(scope, &format!("dlopen: {e}"));
+            v8util::throw_error(scope, &format!("dlopen: {e}"));
             return;
         }
     };
@@ -94,7 +95,7 @@ fn dlopen_callback(
     let defs_obj = match v8::Local::<v8::Object>::try_from(defs_val) {
         Ok(o) => o,
         Err(_) => {
-            throw_error(scope, "dlopen: expected object as second argument");
+            v8util::throw_error(scope, "dlopen: expected object as second argument");
             return;
         }
     };
@@ -104,7 +105,7 @@ fn dlopen_callback(
     {
         Some(names) => names,
         None => {
-            throw_error(scope, "dlopen: could not read definitions");
+            v8util::throw_error(scope, "dlopen: could not read definitions");
             return;
         }
     };
@@ -131,7 +132,7 @@ fn dlopen_callback(
         let def_obj = match v8::Local::<v8::Object>::try_from(def_val) {
             Ok(o) => o,
             Err(_) => {
-                throw_error(
+                v8util::throw_error(
                     scope,
                     &format!("dlopen: definition for '{key_str}' must be an object"),
                 );
@@ -146,7 +147,7 @@ fn dlopen_callback(
         let param_types = match parse_type_array(scope, params_val) {
             Ok(t) => t,
             Err(e) => {
-                throw_error(scope, &format!("dlopen: '{key_str}'.parameters: {e}"));
+                v8util::throw_error(scope, &format!("dlopen: '{key_str}'.parameters: {e}"));
                 return;
             }
         };
@@ -158,7 +159,7 @@ fn dlopen_callback(
         let result_type = match parse_native_type(scope, result_val) {
             Ok(t) => t,
             Err(e) => {
-                throw_error(scope, &format!("dlopen: '{key_str}'.result: {e}"));
+                v8util::throw_error(scope, &format!("dlopen: '{key_str}'.result: {e}"));
                 return;
             }
         };
@@ -208,12 +209,12 @@ fn dlopen_callback(
                 Some(lib) => match lib.symbol_ptr(&key_str) {
                     Ok(ptr) => ptr,
                     Err(e) => {
-                        throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
+                        v8util::throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
                         return;
                     }
                 },
                 None => {
-                    throw_error(scope, "dlopen: library already closed");
+                    v8util::throw_error(scope, "dlopen: library already closed");
                     return;
                 }
             }
@@ -229,7 +230,7 @@ fn dlopen_callback(
         ) {
             Ok(s) => s,
             Err(e) => {
-                throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
+                v8util::throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
                 return;
             }
         };
@@ -320,7 +321,7 @@ fn symbol_call_callback<'a>(
 
     if sym_data.symbol.nonblocking {
         if crate::state::get_state(scope).borrow().sandboxed_thread {
-            throw_error(
+            v8util::throw_error(
                 scope,
                 "async FFI is unavailable in a sandbox Realm because the process-global blocking pool is outside its thread-local policy",
             );
@@ -364,7 +365,7 @@ fn ffi_callback_constructor(
     let def_obj = match v8::Local::<v8::Object>::try_from(args.get(0)) {
         Ok(o) => o,
         Err(_) => {
-            throw_error(
+            v8util::throw_error(
                 scope,
                 "FfiCallback: expected descriptor object as first argument",
             );
@@ -379,7 +380,7 @@ fn ffi_callback_constructor(
     let param_types = match parse_type_array(scope, params_val) {
         Ok(t) => t,
         Err(e) => {
-            throw_error(scope, &format!("FfiCallback: parameters: {e}"));
+            v8util::throw_error(scope, &format!("FfiCallback: parameters: {e}"));
             return;
         }
     };
@@ -391,7 +392,7 @@ fn ffi_callback_constructor(
     let result_type = match parse_native_type(scope, result_val) {
         Ok(t) => t,
         Err(e) => {
-            throw_error(scope, &format!("FfiCallback: result: {e}"));
+            v8util::throw_error(scope, &format!("FfiCallback: result: {e}"));
             return;
         }
     };
@@ -400,7 +401,7 @@ fn ffi_callback_constructor(
         .any(|ty| matches!(ty, NativeType::Struct(_)))
         || matches!(result_type, NativeType::Struct(_))
     {
-        throw_error(
+        v8util::throw_error(
             scope,
             "FfiCallback: struct parameters and returns are not supported yet",
         );
@@ -410,7 +411,7 @@ fn ffi_callback_constructor(
     let func_local = match v8::Local::<v8::Function>::try_from(args.get(1)) {
         Ok(f) => f,
         Err(_) => {
-            throw_error(scope, "FfiCallback: expected function as second argument");
+            v8util::throw_error(scope, "FfiCallback: expected function as second argument");
             return;
         }
     };
@@ -420,7 +421,7 @@ fn ffi_callback_constructor(
         match closure::new_callback(scope, param_types, result_type, func_global) {
             Ok(pair) => pair,
             Err(e) => {
-                throw_error(scope, &format!("FfiCallback: {e}"));
+                v8util::throw_error(scope, &format!("FfiCallback: {e}"));
                 return;
             }
         };
@@ -546,7 +547,7 @@ fn struct_type_callback(
     let fields = match parse_struct_fields(scope, args.get(0), args.get(1)) {
         Ok(layout) => layout,
         Err(e) => {
-            throw_error(scope, &format!("structType: {e}"));
+            v8util::throw_error(scope, &format!("structType: {e}"));
             return;
         }
     };
@@ -796,12 +797,12 @@ fn struct_offset_of<'s>(
         return;
     };
     let Some(name) = args.get(0).to_string(scope) else {
-        throw_error(scope, "offsetOf: expected field name");
+        v8util::throw_error(scope, "offsetOf: expected field name");
         return;
     };
     let name = name.to_rust_string_lossy(scope);
     let Some(field) = data.layout.field(&name) else {
-        throw_error(scope, &format!("offsetOf: unknown field '{name}'"));
+        v8util::throw_error(scope, &format!("offsetOf: unknown field '{name}'"));
         return;
     };
     rv.set(v8::Integer::new_from_unsigned(scope, field.offset as u32).into());
@@ -819,16 +820,16 @@ fn struct_get<'s>(
         return;
     };
     let Some(name) = args.get(1).to_string(scope) else {
-        throw_error(scope, "get: expected field name");
+        v8util::throw_error(scope, "get: expected field name");
         return;
     };
     let name = name.to_rust_string_lossy(scope);
     let Some(field) = data.layout.field(&name) else {
-        throw_error(scope, &format!("get: unknown field '{name}'"));
+        v8util::throw_error(scope, &format!("get: unknown field '{name}'"));
         return;
     };
     if available < field.offset + field.size {
-        throw_error(scope, "get: buffer is too small for struct field");
+        v8util::throw_error(scope, "get: buffer is too small for struct field");
         return;
     }
     unsafe {
@@ -910,16 +911,16 @@ fn struct_set<'s>(
         return;
     };
     let Some(name) = args.get(1).to_string(scope) else {
-        throw_error(scope, "set: expected field name");
+        v8util::throw_error(scope, "set: expected field name");
         return;
     };
     let name = name.to_rust_string_lossy(scope);
     let Some(field) = data.layout.field(&name) else {
-        throw_error(scope, &format!("set: unknown field '{name}'"));
+        v8util::throw_error(scope, &format!("set: unknown field '{name}'"));
         return;
     };
     if available < field.offset + field.size {
-        throw_error(scope, "set: buffer is too small for struct field");
+        v8util::throw_error(scope, "set: buffer is too small for struct field");
         return;
     }
     let value = args.get(2);
@@ -978,7 +979,7 @@ fn struct_set<'s>(
                     return;
                 };
                 if src_len < layout.size {
-                    throw_error(scope, "set: nested struct buffer is too small");
+                    v8util::throw_error(scope, "set: nested struct buffer is too small");
                     return;
                 }
                 std::ptr::copy_nonoverlapping(src, ptr, layout.size);
@@ -999,7 +1000,7 @@ fn js_buffer_bytes<'s>(
         let len = view.byte_length();
         (view.buffer(scope)?, view.byte_offset(), len)
     } else {
-        throw_error(scope, "expected an ArrayBuffer or TypedArray");
+        v8util::throw_error(scope, "expected an ArrayBuffer or TypedArray");
         return None;
     };
     let bs = ab.get_backing_store();
@@ -1008,11 +1009,4 @@ fn js_buffer_bytes<'s>(
         .map(|p| unsafe { (p.as_ptr() as *mut u8).add(offset) })
         .unwrap_or(std::ptr::null_mut());
     Some((ptr, len, bs))
-}
-
-fn throw_error(scope: &mut v8::PinScope, msg: &str) {
-    if let Some(msg_str) = v8::String::new(scope, msg) {
-        let exc = v8::Exception::error(scope, msg_str);
-        scope.throw_exception(exc);
-    }
 }

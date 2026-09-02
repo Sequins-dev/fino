@@ -61,7 +61,7 @@ fn parse_callback(
     let source = match args.get(0).to_string(scope) {
         Some(s) => s.to_rust_string_lossy(scope),
         None => {
-            throw_error(scope, "parse: expected source string");
+            v8util::throw_type_error(scope, "parse: expected source string");
             return;
         }
     };
@@ -79,7 +79,7 @@ fn transpile_callback(
     let source = match args.get(0).to_string(scope) {
         Some(s) => s.to_rust_string_lossy(scope),
         None => {
-            throw_error(scope, "transpile: expected source string");
+            v8util::throw_type_error(scope, "transpile: expected source string");
             return;
         }
     };
@@ -97,7 +97,7 @@ fn format_callback(
     let source = match args.get(0).to_string(scope) {
         Some(s) => s.to_rust_string_lossy(scope),
         None => {
-            throw_error(scope, "format: expected source string");
+            v8util::throw_type_error(scope, "format: expected source string");
             return;
         }
     };
@@ -115,7 +115,7 @@ fn lint_callback(
     let source = match args.get(0).to_string(scope) {
         Some(s) => s.to_rust_string_lossy(scope),
         None => {
-            throw_error(scope, "lint: expected source string");
+            v8util::throw_type_error(scope, "lint: expected source string");
             return;
         }
     };
@@ -132,15 +132,18 @@ fn set_json_result(
     result: Result<Result<String, String>, Box<dyn std::any::Any + Send>>,
 ) {
     match result {
-        Err(_) => throw_error(scope, &format!("{operation}: parser panicked")),
-        Ok(Err(err)) => throw_error(scope, &format!("{operation}: {err}")),
+        Err(_) => v8util::throw_type_error(scope, &format!("{operation}: parser panicked")),
+        Ok(Err(err)) => v8util::throw_type_error(scope, &format!("{operation}: {err}")),
         Ok(Ok(json)) => {
             let Some(json_value) = v8::String::new(scope, &json) else {
-                throw_error(scope, &format!("{operation}: failed to allocate result"));
+                v8util::throw_type_error(scope, &format!("{operation}: failed to allocate result"));
                 return;
             };
             let Some(value) = v8::json::parse(scope, json_value) else {
-                throw_error(scope, &format!("{operation}: failed to materialize result"));
+                v8util::throw_type_error(
+                    scope,
+                    &format!("{operation}: failed to materialize result"),
+                );
                 return;
             };
             rv.set(value.into());
@@ -148,11 +151,7 @@ fn set_json_result(
     }
 }
 
-fn throw_error(scope: &mut v8::PinScope, message: &str) {
-    let msg = v8::String::new(scope, message).unwrap();
-    let exc = v8::Exception::type_error(scope, msg);
-    scope.throw_exception(exc);
-}
+use crate::v8util;
 
 #[derive(Default)]
 struct ParseOptions {

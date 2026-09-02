@@ -16,6 +16,7 @@ use std::{
 use ::v8;
 
 use crate::state::get_state;
+use crate::v8util;
 
 // ---------------------------------------------------------------------------
 // extern "C" declarations matching src/profiler/binding.cc
@@ -241,12 +242,6 @@ fn start_realm_profile(scope: &mut v8::PinScope) -> Result<(), String> {
     Ok(())
 }
 
-fn throw_error(scope: &mut v8::PinScope, message: &str) {
-    let message = v8::String::new(scope, message).unwrap();
-    let exception = v8::Exception::error(scope, message);
-    scope.throw_exception(exception);
-}
-
 // ---------------------------------------------------------------------------
 // Synthetic module: internal:process-profiler
 // ---------------------------------------------------------------------------
@@ -269,17 +264,24 @@ fn process_eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
-    macro_rules! set_fn {
-        ($name:expr, $callback:expr) => {{
-            let template = v8::FunctionTemplate::new(scope, $callback);
-            let function = template.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, function.into())?;
-        }};
-    }
-    set_fn!("beginProcessProfiling", begin_process_profiling);
-    set_fn!("registerRealmProfiling", register_realm_profiling);
-    set_fn!("finishProcessProfiling", finish_process_profiling);
+    crate::set_fn!(
+        scope,
+        module,
+        "beginProcessProfiling",
+        begin_process_profiling
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "registerRealmProfiling",
+        register_realm_profiling
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "finishProcessProfiling",
+        finish_process_profiling
+    );
     Some(v8::undefined(scope).into())
 }
 
@@ -292,7 +294,7 @@ fn begin_process_profiling(
     {
         let mut slot = process_profile_slot().lock().unwrap();
         if slot.is_some() {
-            throw_error(scope, "process profiling has already started");
+            v8util::throw_error(scope, "process profiling has already started");
             return;
         }
         *slot = Some(Arc::clone(&session));
@@ -300,7 +302,7 @@ fn begin_process_profiling(
     if let Err(error) = start_realm_profile(scope) {
         process_profile_slot().lock().unwrap().take();
         session.close();
-        throw_error(scope, &error);
+        v8util::throw_error(scope, &error);
     }
 }
 
@@ -310,7 +312,7 @@ fn register_realm_profiling(
     _rv: v8::ReturnValue,
 ) {
     if let Err(error) = start_realm_profile(scope) {
-        throw_error(scope, &error);
+        v8util::throw_error(scope, &error);
     }
 }
 
@@ -322,7 +324,7 @@ fn finish_process_profiling(
     let session = {
         let mut slot = process_profile_slot().lock().unwrap();
         let Some(session) = slot.take() else {
-            throw_error(scope, "process profiling has not started");
+            v8util::throw_error(scope, "process profiling has not started");
             return;
         };
         session.close();
@@ -337,7 +339,7 @@ fn finish_process_profiling(
             // Keep the closed session available for a later retry after the
             // remaining Realm teardown hooks have merged their snapshots.
             *process_profile_slot().lock().unwrap() = Some(session);
-            throw_error(scope, &error);
+            v8util::throw_error(scope, &error);
             return;
         }
     };
@@ -368,17 +370,8 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("startProfiling", start_profiling);
-    set_fn!("stopProfiling", stop_profiling);
+    crate::set_fn!(scope, module, "startProfiling", start_profiling);
+    crate::set_fn!(scope, module, "stopProfiling", stop_profiling);
 
     Some(v8::undefined(scope).into())
 }

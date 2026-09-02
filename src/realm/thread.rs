@@ -16,22 +16,11 @@ use std::{
 
 use ::v8;
 
+#[cfg(target_os = "linux")]
+use crate::fdutil::create_pipe;
 use crate::state::get_state;
 #[cfg(target_os = "linux")]
 use crate::state::{ImportRule, ProcessEnv};
-
-/// Copy a `Uint8Array` argument into an owned byte vector.
-pub fn copy_u8a(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> Option<Vec<u8>> {
-    let array = v8::Local::<v8::Uint8Array>::try_from(value).ok()?;
-    let buffer = array.buffer(scope)?;
-    let data = buffer.data()?;
-    let offset = array.byte_offset();
-    let len = array.byte_length();
-    // SAFETY: `data` points into a live V8 ArrayBuffer owned for this scope.
-    Some(unsafe {
-        std::slice::from_raw_parts((data.as_ptr() as *const u8).add(offset), len).to_vec()
-    })
-}
 
 /// Info shipped alongside a message for each transferred MessagePort.
 ///
@@ -126,22 +115,6 @@ impl Drop for OwnedFd {
             unsafe { libc::close(self.0) };
         }
     }
-}
-
-#[cfg(target_os = "linux")]
-fn create_pipe() -> Result<(RawFd, RawFd), String> {
-    let mut fds = [0i32; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(format!(
-            "pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    unsafe {
-        libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-    }
-    Ok((fds[0], fds[1]))
 }
 
 /// Spawn a fixed OS thread for a Linux sandbox Realm.
@@ -264,18 +237,9 @@ fn thread_port_eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("nativeSend", native_send);
-    set_fn!("nativeRecv", native_recv);
-    set_fn!("getWakeReadFd", native_get_wake_read_fd);
+    crate::set_fn!(scope, module, "nativeSend", native_send);
+    crate::set_fn!(scope, module, "nativeRecv", native_recv);
+    crate::set_fn!(scope, module, "getWakeReadFd", native_get_wake_read_fd);
 
     Some(v8::undefined(scope).into())
 }
@@ -292,65 +256,15 @@ fn native_send(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let header = copy_u8a(scope, args.get(0)).unwrap_or_default();
-    let bytes_arg = args.get(1);
-    let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
-        let msg =
-            v8::String::new(scope, "nativeSend: second argument must be a Uint8Array").unwrap();
-        let exc = v8::Exception::type_error(scope, msg);
-        scope.throw_exception(exc);
+    let Some(msg) = super::message::build_message_from_args(
+        scope,
+        "nativeSend",
+        args.get(0),
+        args.get(1),
+        args.get(2),
+        args.get(3),
+    ) else {
         return;
-    };
-
-    // Copy main bytes.
-    let data: Vec<u8> = {
-        let Some(ab) = u8a.buffer(scope) else { return };
-        let Some(data_ptr) = ab.data() else { return };
-        let offset = u8a.byte_offset();
-        let len = u8a.byte_length();
-        // SAFETY: data_ptr points into a live V8 ArrayBuffer owned for this scope.
-        unsafe {
-            std::slice::from_raw_parts((data_ptr.as_ptr() as *const u8).add(offset), len).to_vec()
-        }
-    };
-
-    // Copy transfer stores (optional third arg — Array of Uint8Array).
-    let transfer_stores: Vec<Vec<u8>> =
-        if let Ok(arr) = v8::Local::<v8::Array>::try_from(args.get(2)) {
-            let count = arr.length();
-            let mut stores = Vec::with_capacity(count as usize);
-            for i in 0..count {
-                let idx = v8::Integer::new(scope, i as i32);
-                if let Some(elem) = arr.get(scope, idx.into())
-                    && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
-                {
-                    let Some(sab) = su8a.buffer(scope) else {
-                        continue;
-                    };
-                    let Some(sptr) = sab.data() else { continue };
-                    let soff = su8a.byte_offset();
-                    let slen = su8a.byte_length();
-                    // SAFETY: same as above.
-                    let raw = unsafe {
-                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
-                            .to_vec()
-                    };
-                    stores.push(raw);
-                }
-            }
-            stores
-        } else {
-            Vec::new()
-        };
-
-    // Port transfer infos (optional fourth arg — Array of [handle, wakeReadFd]).
-    let transfer_ports = extract_port_infos(scope, args.get(3));
-
-    let msg = ThreadMessage {
-        header,
-        data,
-        transfer_stores,
-        transfer_ports,
     };
 
     // Extract tx and wake_write_fd without holding the borrow during send.
@@ -366,9 +280,7 @@ fn native_send(
         // Process realms (wake_write_fd = None) wake the partner via the socket
         // write in their bridge thread — no explicit wake byte needed here.
         if let Some(wake_write) = maybe_wake_write {
-            let byte: [u8; 1] = [1];
-            // SAFETY: wake_write is a valid open fd owned by this runtime.
-            unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
+            crate::fdutil::wake(wake_write);
         }
     }
 }
@@ -402,10 +314,7 @@ fn native_recv(
 
     // Drain wake bytes so the fd doesn't remain permanently readable.
     if let Some(wake_read) = maybe_wake_read {
-        let mut discard = [0u8; 256];
-        // Non-blocking; EAGAIN means no more bytes — ignore error.
-        // SAFETY: discard is a valid buffer; wake_read is a valid open fd.
-        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
+        crate::fdutil::drain(wake_read);
     }
 
     rv.set(crate::realm::transit::build_message_array(scope, messages).into());

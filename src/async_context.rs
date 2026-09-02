@@ -45,15 +45,6 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
     // Extract getContinuationPreservedEmbedderData / setContinuationPreservedEmbedderData
     // from the V8 extras binding object. These are Torque builtins that compile to
     // direct CPED memory loads/stores on the V8 isolate — callable from JS without
@@ -71,10 +62,10 @@ fn eval_steps<'a>(
     let key = v8::String::new(scope, "setCPED")?;
     module.set_synthetic_module_export(scope, key, set_cped_fn.into())?;
 
-    set_fn!("drainMicrotasks", drain_microtasks);
-    set_fn!("hasPendingV8Tasks", has_pending_v8_tasks);
-    set_fn!("scheduleSync", schedule_sync);
-    set_fn!("runLoop", run_loop);
+    crate::set_fn!(scope, module, "drainMicrotasks", drain_microtasks);
+    crate::set_fn!(scope, module, "hasPendingV8Tasks", has_pending_v8_tasks);
+    crate::set_fn!(scope, module, "scheduleSync", schedule_sync);
+    crate::set_fn!(scope, module, "runLoop", run_loop);
 
     Some(v8::undefined(scope).into())
 }

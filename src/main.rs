@@ -4,6 +4,7 @@ extern crate libc;
 mod async_context;
 mod async_rt;
 mod async_runtime_module;
+mod fdutil;
 mod ffi;
 mod inspector_module;
 mod loader;
@@ -17,6 +18,7 @@ mod scheduler_native;
 mod state;
 mod typescript_format;
 mod v8_isolate_group;
+mod v8util;
 
 fn main() {
     // Server processes must not die on broken-pipe writes. Network connections

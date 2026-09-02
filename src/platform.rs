@@ -3,6 +3,7 @@ use std::ffi::c_void;
 use v8;
 
 use crate::state::get_state;
+use crate::v8util;
 
 /// Build the `internal:process` synthetic module.
 ///
@@ -95,13 +96,6 @@ fn eval_steps<'a>(
     Some(v8::undefined(scope).into())
 }
 
-fn throw_type_error(scope: &mut v8::PinScope, message: &str) {
-    if let Some(message) = v8::String::new(scope, message) {
-        let exception = v8::Exception::type_error(scope, message);
-        scope.throw_exception(exception);
-    }
-}
-
 fn buffer_parts<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     value: v8::Local<'s, v8::Value>,
@@ -114,7 +108,7 @@ fn buffer_parts<'s>(
         let length = view.byte_length();
         (view.buffer(scope)?, view.byte_offset(), length)
     } else {
-        throw_type_error(scope, "finalizeSandboxExec expects buffer arguments");
+        v8util::throw_type_error(scope, "finalizeSandboxExec expects buffer arguments");
         return None;
     };
     let backing = buffer.get_backing_store();
@@ -244,7 +238,7 @@ fn finalize_sandbox_exec<'a>(
     _args: v8::FunctionCallbackArguments<'a>,
     _rv: v8::ReturnValue,
 ) {
-    throw_type_error(scope, "finalizeSandboxExec is only available on Unix");
+    v8util::throw_type_error(scope, "finalizeSandboxExec is only available on Unix");
 }
 
 fn set_export<'a>(

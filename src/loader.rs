@@ -926,22 +926,23 @@ fn loader_hooks_eval<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("registerResolve", register_resolve);
-    set_fn!("registerInitMeta", register_init_meta);
-    set_fn!("registerTranspile", register_transpile);
-    set_fn!("getPackageMap", get_package_map);
-    set_fn!("getSourceMap", get_source_map);
-    set_fn!("lookupOriginalPosition", lookup_original_position);
-    set_fn!("allowInternalForTests", allow_internal_for_tests);
+    crate::set_fn!(scope, module, "registerResolve", register_resolve);
+    crate::set_fn!(scope, module, "registerInitMeta", register_init_meta);
+    crate::set_fn!(scope, module, "registerTranspile", register_transpile);
+    crate::set_fn!(scope, module, "getPackageMap", get_package_map);
+    crate::set_fn!(scope, module, "getSourceMap", get_source_map);
+    crate::set_fn!(
+        scope,
+        module,
+        "lookupOriginalPosition",
+        lookup_original_position
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "allowInternalForTests",
+        allow_internal_for_tests
+    );
 
     Some(v8::undefined(scope).into())
 }
@@ -2128,11 +2129,11 @@ fn transpile_typescript(
         }
     };
 
-    let Some(code) = get_object_string(scope, object, "code") else {
+    let Some(code) = crate::v8util::get_object_string(scope, object, "code") else {
         throw_loader_error(scope, "TypeScript transpile hook did not return code");
         return None;
     };
-    let Some(map) = get_object_string(scope, object, "map") else {
+    let Some(map) = crate::v8util::get_object_string(scope, object, "map") else {
         throw_loader_error(
             scope,
             "TypeScript transpile hook did not return a source map",
@@ -2142,24 +2143,6 @@ fn transpile_typescript(
     Some(TranspiledSource { code, map })
 }
 
-fn get_object_string(
-    scope: &mut v8::PinScope,
-    object: v8::Local<v8::Object>,
-    name: &str,
-) -> Option<String> {
-    let key = v8::String::new(scope, name)?;
-    let value = object.get(scope, key.into())?;
-    if value.is_null_or_undefined() {
-        return None;
-    }
-    value
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-}
-
 fn throw_loader_error(scope: &mut v8::PinScope, message: &str) {
-    if let Some(msg) = v8::String::new(scope, message) {
-        let exc = v8::Exception::error(scope, msg);
-        scope.throw_exception(exc);
-    }
+    crate::v8util::throw_error(scope, message);
 }
