@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { parse, transpile, format, lint } from 'fino:format/typescript';
+import { parse, transpile, format, lint, highlightLines } from 'fino:format/typescript';
 import { DiskFileSystem } from 'fino:file';
 const fs = new DiskFileSystem();
 describe('fino:format/typescript', () => {
@@ -44,6 +44,58 @@ export function add(value: number): Promise<Response> {
     t.ok(parsed.errors.length > 0, 'parse diagnostics are returned');
     t.ok(parsed.errors[0]!.message.length > 0, 'diagnostics include messages');
     t.equal(parsed.ast.type, 'Program', 'recoverable parse still returns AST JSON');
+  });
+  it('highlights supported language aliases with target-neutral token classes', (t) => {
+    for (const language of [
+      'ts',
+      'typescript',
+      'mts',
+      'cts',
+      'tsx',
+      'js',
+      'javascript',
+      'mjs',
+      'cjs',
+      'jsx',
+    ]) {
+      const lines = highlightLines("const answer = 'yes'; // result", language);
+      t.ok(
+        lines[0]!.some((run) => run.text === 'const' && run.cls === 'keyword'),
+        `${language} classifies keywords`,
+      );
+      t.ok(
+        lines[0]!.some((run) => run.text === "'yes'" && run.cls === 'string'),
+        `${language} classifies strings`,
+      );
+      t.ok(
+        lines[0]!.some((run) => run.text === '// result' && run.cls === 'comment'),
+        `${language} classifies comments`,
+      );
+    }
+  });
+  it('preserves UTF-8 text and multiline token boundaries', (t) => {
+    const source = "const café = '☕'; /* π\n続き */";
+    const lines = highlightLines(source, 'ts');
+    t.equal(lines.map((line) => line.map((run) => run.text).join('')).join('\n'), source);
+    t.ok(lines[0]!.some((run) => run.text === "'☕'" && run.cls === 'string'));
+    t.ok(lines[0]!.some((run) => run.text === '/* π' && run.cls === 'comment'));
+    t.ok(lines[1]!.some((run) => run.text === '続き */' && run.cls === 'comment'));
+  });
+  it('classifies numeric and regular-expression literals', (t) => {
+    const runs = highlightLines('const count = 42; const pattern = /x+/g;', 'js').flat();
+    t.ok(runs.some((run) => run.text === '42' && run.cls === 'number'));
+    t.ok(runs.some((run) => run.text === '/x+/g' && run.cls === 'regexp'));
+  });
+  it('falls back to plain text for unknown, omitted, and invalid source', (t) => {
+    for (const [source, language] of [
+      ['first\nsecond', 'python'],
+      ['first\nsecond', undefined],
+      ['const = ;\nsecond', 'ts'],
+    ] as const) {
+      const lines = highlightLines(source, language);
+      t.equal(lines.map((line) => line.map((run) => run.text).join('')).join('\n'), source);
+      t.ok(lines.flat().every((run) => run.cls === null));
+    }
   });
   it('parses string literals that use hex escapes', (t) => {
     const parsed = parse("const s = 'Hello, World! \\x00\\xFF\\xAB';\n", {
