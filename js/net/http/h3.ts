@@ -36,6 +36,7 @@
  * Learn more:
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
  * - Extensible Priorities: https://www.rfc-editor.org/rfc/rfc9218
+ * - HTTP Early Data: https://www.rfc-editor.org/rfc/rfc8470
  * - QUIC: https://www.rfc-editor.org/rfc/rfc9000
  *
  * @internal
