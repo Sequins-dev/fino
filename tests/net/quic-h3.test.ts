@@ -1,4 +1,5 @@
 import { describe, it } from 'fino:test/test';
+import { topic } from 'fino:context/topic';
 import { quicAvailable, QuicEndpoint, QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { fetch as h3Fetch, h3Available, requireH3, serve as h3Serve } from 'internal:net/http/h3';
@@ -1114,6 +1115,14 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
   it('GET request/response round-trip', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();
+    const events: Array<{ name: string; event: any }> = [];
+    const subscriptions = [
+      'http3.client.request.start',
+      'http3.client.response.headers',
+      'http3.client.request.end',
+      'http3.server.request.start',
+      'http3.server.response.headers',
+    ].map((name) => topic<any>(name).subscribe((event) => events.push({ name, event })));
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
       const driver = new H3ServerDriver();
@@ -1126,10 +1135,26 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       t.equal(response.status, 200, 'response status is 200');
       const text = new TextDecoder().decode(await pipe.pumpUntil(response.arrayBuffer()));
       t.equal(text, 'hello h3', 'response body matches');
+      const names = events.map(({ name }) => name);
+      t.deepEqual(
+        names,
+        [
+          'http3.client.request.start',
+          'http3.server.request.start',
+          'http3.server.response.headers',
+          'http3.client.response.headers',
+          'http3.client.request.end',
+        ],
+        'H3 topics expose the request lifecycle in protocol order',
+      );
+      t.equal(events[0]?.event.connection, clientConn, 'client topic identifies the connection');
+      t.equal(events[0]?.event.streamId, 0n, 'client topic identifies the request stream');
+      t.equal(events[2]?.event.status, 200, 'server response topic includes status');
       session.close();
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
     } finally {
+      for (const subscription of subscriptions) subscription.dispose();
       await pipe.close();
     }
   });

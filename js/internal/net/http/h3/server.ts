@@ -68,6 +68,7 @@ import {
 } from '../../../../net/http/webtransport.ts';
 import { buildWireRequest } from '../../../../net/http/index.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
+import { publishNetworkTopic } from '../../quic/core.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 /**
  * Request handler for an HTTP/3 server.
@@ -503,6 +504,10 @@ export class H3ServerDriver {
         }
       },
       onRecvSettings() {
+        publishNetworkTopic('http3.server.settings', () => ({
+          connection: conn,
+          settings: session.peerSettings,
+        }));
         resolvePeerSettingsReceived?.();
         resolvePeerSettingsReceived = null;
       },
@@ -689,6 +694,11 @@ export class H3ServerDriver {
           });
         },
       };
+      publishNetworkTopic('http3.server.request.start', () => ({
+        connection: conn,
+        streamId: st.streamId,
+        request: req,
+      }));
       try {
         const result = await handler(req, context);
         if (!(result instanceof Response)) throw new TypeError('handler did not return a Response');
@@ -699,6 +709,11 @@ export class H3ServerDriver {
         acceptingInformational = false;
       }
       if (st.cancelled) return;
+      publishNetworkTopic('http3.server.response.headers', () => ({
+        connection: conn,
+        streamId: st.streamId,
+        status: response.status,
+      }));
       const respHeaders: Array<[string, string]> = [[':status', String(response.status)]];
       response.headers.forEach((value, name) => {
         const lc = name.toLowerCase();

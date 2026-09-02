@@ -69,6 +69,7 @@ import {
 import type { WebTransportOptions } from '../../../../net/http/webtransport.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
 import { quicConnectionInternals } from '../../quic/connection.ts';
+import { publishNetworkTopic } from '../../quic/core.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
 
 const EARLY_DATA_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
@@ -500,6 +501,10 @@ export class H3ClientSession {
       },
       onAckedStreamData() {},
       onShutdown(streamId: bigint) {
+        publishNetworkTopic('http3.client.goaway', () => ({
+          connection: conn,
+          lastStreamId: streamId,
+        }));
         if (instance.#goawayStreamId === null || streamId < instance.#goawayStreamId) {
           instance.#goawayStreamId = streamId;
         }
@@ -522,6 +527,10 @@ export class H3ClientSession {
         }
       },
       onRecvSettings() {
+        publishNetworkTopic('http3.client.settings', () => ({
+          connection: conn,
+          settings: instance.#session.peerSettings,
+        }));
         instance.#markPeerSettingsReceived();
       },
     };
@@ -775,6 +784,12 @@ export class H3ClientSession {
         pending.abortCleanup = () => init.signal!.removeEventListener('abort', onAbort);
       }
       this.#pending.set(sid, pending);
+      publishNetworkTopic('http3.client.request.start', () => ({
+        connection: this.#conn,
+        streamId: sid,
+        method: pending.method,
+        url: parsed.href,
+      }));
     });
     try {
       this.#session.submitRequest(sid, reqHeaders, body, init?.trailers);
@@ -921,6 +936,11 @@ export class H3ClientSession {
       trailers: () => pending.trailers,
     } as any);
     (response as any).__h3StreamId = streamId;
+    publishNetworkTopic('http3.client.response.headers', () => ({
+      connection: this.#conn,
+      streamId,
+      status: statusNum,
+    }));
     pending.resolve?.(response);
   }
   #markDone(streamId: bigint): void {
@@ -932,6 +952,10 @@ export class H3ClientSession {
     req.trailerResolve?.(new Headers(req.trailerHeaders as HeadersInit));
     req.abortCleanup?.();
     this.#pending.delete(streamId);
+    publishNetworkTopic('http3.client.request.end', () => ({
+      connection: this.#conn,
+      streamId,
+    }));
   }
   #cancelRequest(streamId: bigint, reason: unknown): void {
     const req = this.#pending.get(streamId);
@@ -949,6 +973,11 @@ export class H3ClientSession {
     if (!req.responseResolved) req.reject?.(error);
     req.abortCleanup?.();
     this.#pending.delete(streamId);
+    publishNetworkTopic('http3.client.request.error', () => ({
+      connection: this.#conn,
+      streamId,
+      error,
+    }));
     this.#session.cancelStream(streamId);
     try {
       req.stream?.stopSending(Number(NGHTTP3_H3_REQUEST_CANCELLED));
