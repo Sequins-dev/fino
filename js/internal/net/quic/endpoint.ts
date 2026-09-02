@@ -53,6 +53,7 @@ export type {
   QuicSessionState,
   QuicSessionStore,
   QuicSNIContextOptions,
+  QuicStreamOpenOptions,
   QuicSocketOptions,
   QuicSourceAddressOptions,
   QuicTlsCipherSuite,

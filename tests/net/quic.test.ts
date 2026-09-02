@@ -538,6 +538,7 @@ describe('QUIC hardening options', { exclusive: true }, () => {
         congestionControl: 'cubic',
         drainingPeriodMultiplier: 3,
         streamIdleTimeoutMs: 3e4,
+        maxPendingStreamOpens: 1024,
         cidLength: 20,
       },
       'connection transport tuning defaults match Node',
@@ -592,6 +593,7 @@ describe('QUIC hardening options', { exclusive: true }, () => {
         congestionControl: 'reno',
         drainingPeriodMultiplier: 4,
         streamIdleTimeoutMs: 500,
+        maxPendingStreamOpens: 7,
         cidLength: 12,
       },
     });
@@ -608,6 +610,7 @@ describe('QUIC hardening options', { exclusive: true }, () => {
         congestionControl: 'reno',
         drainingPeriodMultiplier: 4,
         streamIdleTimeoutMs: 500,
+        maxPendingStreamOpens: 7,
         cidLength: 12,
       },
       'endpoint exposes resolved connection tuning options',
@@ -4742,6 +4745,62 @@ describe('QUIC loopback object model', () => {
       t.ok(
         unblocked instanceof QuicStream,
         'stream open resumes after stream-close MAX_STREAMS credit arrives',
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+  it('bounds and cancels pending local stream opens', async (t) => {
+    if (!quicAvailable) return;
+    const server = new QuicEndpoint({
+      alpnProtocols: ['fino-hq'],
+      connection: {
+        maxIdleTimeoutMs: 0,
+        streamIdleTimeoutMs: 0,
+        initialMaxStreamsBidi: 1,
+      },
+    });
+    const listener = await server.listen(
+      testListenOptions({
+        address: { family: 'ipv4', ip: '127.0.0.1', port: 0 },
+      }),
+    );
+    const client = new QuicEndpoint({
+      alpnProtocols: ['fino-hq'],
+      connection: {
+        maxIdleTimeoutMs: 0,
+        streamIdleTimeoutMs: 0,
+        maxPendingStreamOpens: 1,
+      },
+    });
+    const clientConnection = await client.connect({ address: listener.address });
+    const serverConnection = await server.accept();
+    try {
+      const first = await clientConnection.openBidirectionalStream();
+      const controller = new AbortController();
+      const cancelled = clientConnection.openBidirectionalStream({ signal: controller.signal });
+      await t.rejects(
+        () => clientConnection.openBidirectionalStream(),
+        /pending stream-open limit exceeded/,
+        'a blocked open cannot grow the waiter queue past its configured limit',
+      );
+      controller.abort();
+      await t.rejects(
+        () => cancelled,
+        /aborted/,
+        'a blocked open can be removed from the credit queue',
+      );
+
+      const next = clientConnection.openBidirectionalStream();
+      await first.writer.close();
+      const peerFirst = await serverConnection.acceptStream();
+      while ((await readBytes(peerFirst.reader.read())) !== null) {}
+      await peerFirst.writer.close();
+      t.equal(await readBytes(first.reader.read()), null);
+      t.ok(
+        (await withTimeoutValue(next, 1e3, null)) instanceof QuicStream,
+        'credit skips the cancelled waiter and opens the next stream',
       );
     } finally {
       await client.close();

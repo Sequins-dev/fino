@@ -510,6 +510,8 @@ export type QuicConnectionOptions = {
   drainingPeriodMultiplier?: number;
   /** Peer-initiated stream idle timeout in milliseconds; zero disables it. */
   streamIdleTimeoutMs?: number;
+  /** Maximum blocked local stream-open calls queued for peer credit. */
+  maxPendingStreamOpens?: number;
   /** Advertised max idle timeout in milliseconds. Zero disables idle timeout. */
   maxIdleTimeoutMs?: number;
   /** Advertised connection-level initial flow-control credit. */
@@ -829,6 +831,11 @@ export type QueueResolver<T> = {
   resolve(value: T): void;
   reject(error: Error): void;
 };
+/** Cancellation controls for opening a locally initiated QUIC stream. */
+export type QuicStreamOpenOptions = {
+  /** Abort while waiting for peer stream credit. */
+  signal?: AbortSignal;
+};
 export type QuicConnectionState = 'connecting' | 'connected' | 'closing' | 'closed';
 /**
  * Parameters for a graceful or immediate QUIC connection close.
@@ -933,6 +940,7 @@ export type ResolvedConnectionOptions = {
   congestionControl: 'cubic' | 'reno' | 'bbr';
   drainingPeriodMultiplier: number;
   streamIdleTimeout: bigint;
+  maxPendingStreamOpens: number;
   maxIdleTimeout: bigint;
   initialMaxData: bigint;
   initialMaxStreamDataBidiLocal: bigint;
@@ -1035,6 +1043,7 @@ export type QuicResolvedConnectionOptions = {
   readonly congestionControl: 'cubic' | 'reno' | 'bbr';
   readonly drainingPeriodMultiplier: number;
   readonly streamIdleTimeoutMs: number;
+  readonly maxPendingStreamOpens: number;
   readonly cidLength: number;
 };
 export type ResolvedQuicOptions = {
@@ -1553,6 +1562,7 @@ export const NGTCP2_ENCRYPTION_LEVEL_1RTT = 2;
 export const NGTCP2_MILLISECONDS = 1000000n;
 export const NGTCP2_SECONDS = 1000000000n;
 export const DEFAULT_STREAM_IDLE_TIMEOUT = 30n * NGTCP2_SECONDS;
+export const DEFAULT_MAX_PENDING_STREAM_OPENS = 1024;
 export const ADDRESS_VALIDATION_TIMEOUT = 60n * NGTCP2_SECONDS;
 export const NGTCP2_NO_EXPIRY = (1n << 64n) - 1n;
 export const MIGRATION_KEEP_ALIVE_TIMEOUT = NGTCP2_SECONDS / 2n;
@@ -2746,6 +2756,14 @@ export function normalizeConnection(
       DEFAULT_STREAM_IDLE_TIMEOUT,
       'streamIdleTimeoutMs',
     ),
+    maxPendingStreamOpens: normalizeInteger(
+      input?.maxPendingStreamOpens,
+      baseConnection?.maxPendingStreamOpens,
+      DEFAULT_MAX_PENDING_STREAM_OPENS,
+      0,
+      65535,
+      'maxPendingStreamOpens',
+    ),
     maxIdleTimeout: normalizeDurationMs(
       input?.maxIdleTimeoutMs,
       baseConnection?.maxIdleTimeout,
@@ -3020,6 +3038,7 @@ export function freezeConnectionSnapshot(
     congestionControl: input.congestionControl,
     drainingPeriodMultiplier: input.drainingPeriodMultiplier,
     streamIdleTimeoutMs: nsToMs(input.streamIdleTimeout),
+    maxPendingStreamOpens: input.maxPendingStreamOpens,
     cidLength: input.cidLength,
   });
 }

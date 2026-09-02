@@ -27,5 +27,6 @@ export type {
   QuicConnectionState,
   QuicConnectionStats,
   QuicPeerVerification,
+  QuicStreamOpenOptions,
   QuicTransportParameterSnapshot,
 } from '../../internal/net/quic/connection.ts';
