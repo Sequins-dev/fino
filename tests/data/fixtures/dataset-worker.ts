@@ -1,3 +1,5 @@
+import { registerShutdownHook } from 'internal:shutdown';
+
 type ParallelValue = {
   value: number;
   delayMs: number;
@@ -53,6 +55,11 @@ export default async function collate(
 
   const parallel = values as ParallelValue[];
   const stats = new Int32Array(parallel[0]!.stats);
+  if (stats.length > 2) {
+    registerShutdownHook(() => {
+      Atomics.add(stats, 2, 1);
+    });
+  }
   const active = Atomics.add(stats, 0, 1) + 1;
   recordMaximum(stats, active);
   try {
