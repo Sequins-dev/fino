@@ -51,6 +51,7 @@
  * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
  * HTTP Early Data: https://www.rfc-editor.org/rfc/rfc8470
  * Extensible Prioritization Scheme: https://www.rfc-editor.org/rfc/rfc9218
+ * HTTP/3 ORIGIN extension: https://www.rfc-editor.org/rfc/rfc9412
  *
  * @internal
  */
@@ -71,6 +72,7 @@ import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
 import { quicConnectionInternals } from '../../quic/connection.ts';
 import { publishNetworkTopic } from '../../quic/core.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
+import { MAX_H3_ORIGINS, normalizeH3Origin } from './origin.ts';
 
 const EARLY_DATA_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
@@ -156,8 +158,15 @@ export interface H3RequestInit extends RequestInit {
    */
   webTransportOptions?: WebTransportOptions;
 }
-/** Resource limits and QPACK settings for an HTTP/3 client session. */
-export type H3ClientSessionOptions = Omit<H3SessionOptions, 'webTransport'>;
+/** Resource limits, QPACK settings, and authority policy for an HTTP/3 client session. */
+export interface H3ClientSessionOptions extends Omit<H3SessionOptions, 'webTransport' | 'origins'> {
+  /** Initial origin associated with the connection. The first request pins it when omitted. */
+  origin?: string | URL;
+  /** Maximum advertised origins retained from RFC 9412 frames. Defaults to 128. */
+  maxOrigins?: number;
+  /** Additional certificate/DNS authority check required before using an advertised origin. */
+  authorizeOrigin?: (origin: string, connection: QuicConnection) => boolean | Promise<boolean>;
+}
 /** Immutable envelope delivered for an HTTP/3 informational response. */
 export interface H3InformationalResponse {
   readonly status: number;
@@ -193,6 +202,7 @@ function formatPriority(priority: H3Priority): string {
  */
 interface PendingRequest {
   method: string;
+  origin: string;
   stream: QuicStream | null;
   abortCleanup: (() => void) | null;
   status: string;
@@ -305,14 +315,35 @@ export class H3ClientSession {
   #closed = false;
   #maxFieldSectionSize: number;
   #goawayStreamId: bigint | null = null;
+  #primaryOrigin: string | null;
+  #advertisedOrigins = new Set<string>();
+  #withdrawnOrigins = new Set<string>();
+  #pendingOrigins: string[] = [];
+  #maxOrigins: number;
+  #authorizeOrigin: H3ClientSessionOptions['authorizeOrigin'];
+  #originFrameReceived: Promise<void>;
+  #resolveOriginFrameReceived: (() => void) | null = null;
   #goawayReceived: Promise<void>;
   #resolveGoawayReceived: (() => void) | null = null;
   #peerSettingsReceived: Promise<void>;
   #resolvePeerSettingsReceived: (() => void) | null = null;
-  private constructor(conn: QuicConnection, session: Nghttp3Session, maxFieldSectionSize: number) {
+  private constructor(
+    conn: QuicConnection,
+    session: Nghttp3Session,
+    options: H3ClientSessionOptions,
+  ) {
     this.#conn = conn;
     this.#session = session;
-    this.#maxFieldSectionSize = maxFieldSectionSize;
+    this.#maxFieldSectionSize = options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE;
+    this.#primaryOrigin = options.origin === undefined ? null : normalizeH3Origin(options.origin);
+    this.#maxOrigins = options.maxOrigins ?? MAX_H3_ORIGINS;
+    if (!Number.isInteger(this.#maxOrigins) || this.#maxOrigins < 0) {
+      throw new RangeError('maxOrigins must be a non-negative integer');
+    }
+    this.#authorizeOrigin = options.authorizeOrigin;
+    this.#originFrameReceived = new Promise((resolve) => {
+      this.#resolveOriginFrameReceived = resolve;
+    });
     this.#goawayReceived = new Promise((resolve) => {
       this.#resolveGoawayReceived = resolve;
     });
@@ -346,6 +377,11 @@ export class H3ClientSession {
     options: H3ClientSessionOptions = {},
   ): Promise<H3ClientSession> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
+    if (options.origin !== undefined) normalizeH3Origin(options.origin);
+    const maxOrigins = options.maxOrigins ?? MAX_H3_ORIGINS;
+    if (!Number.isInteger(maxOrigins) || maxOrigins < 0) {
+      throw new RangeError('maxOrigins must be a non-negative integer');
+    }
     let session: Nghttp3Session;
     let instance: H3ClientSession;
     const callbacks: H3SessionCallbacks = {
@@ -362,6 +398,7 @@ export class H3ClientSession {
         } else {
           instance.#pending.set(streamId, {
             method: 'GET',
+            origin: '',
             stream: null,
             abortCleanup: null,
             status: '',
@@ -533,10 +570,25 @@ export class H3ClientSession {
         }));
         instance.#markPeerSettingsReceived();
       },
+      onRecvOrigin(origin) {
+        if (instance.#pendingOrigins.length >= instance.#maxOrigins) return;
+        try {
+          instance.#pendingOrigins.push(normalizeH3Origin(origin));
+        } catch {}
+      },
+      onEndOrigin() {
+        for (const origin of instance.#pendingOrigins) {
+          if (instance.#advertisedOrigins.size >= instance.#maxOrigins) break;
+          instance.#advertisedOrigins.add(origin);
+          instance.#withdrawnOrigins.delete(origin);
+        }
+        instance.#pendingOrigins = [];
+        instance.#resolveOriginFrameReceived?.();
+        instance.#resolveOriginFrameReceived = null;
+      },
     };
-    const maxFieldSectionSize = options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE;
     session = Nghttp3Session.createClient(callbacks, { ...options, webTransport: true });
-    instance = new H3ClientSession(conn, session, maxFieldSectionSize);
+    instance = new H3ClientSession(conn, session, options);
     conn.addEventListener(
       'close',
       () => {
@@ -660,6 +712,21 @@ export class H3ClientSession {
       await waitForHandshake(this.#conn, init?.signal);
     }
     const authority = getPseudoHeader(init, ':authority') ?? parsed.host;
+    const requestOrigin = normalizeH3Origin(`${parsed.protocol}//${authority}`);
+    if (this.#primaryOrigin === null) this.#primaryOrigin = requestOrigin;
+    if (this.#withdrawnOrigins.has(requestOrigin)) {
+      throw new Error(`H3 connection is not authoritative for origin ${requestOrigin}`);
+    }
+    if (requestOrigin !== this.#primaryOrigin) {
+      const advertised = this.#advertisedOrigins.has(requestOrigin);
+      const authorized =
+        advertised && this.#authorizeOrigin !== undefined
+          ? await this.#authorizeOrigin(requestOrigin, this.#conn)
+          : false;
+      if (!authorized) {
+        throw new Error(`H3 connection is not authoritative for origin ${requestOrigin}`);
+      }
+    }
     const reqHeaders: Array<[string, string]> = [
       [':method', method],
       [':path', parsed.pathname + parsed.search],
@@ -755,6 +822,7 @@ export class H3ClientSession {
       void trailers.catch(() => {});
       const pending: PendingRequest = {
         method: method.toUpperCase(),
+        origin: requestOrigin,
         stream: quicStream,
         abortCleanup: null,
         status: '',
@@ -913,6 +981,14 @@ export class H3ClientSession {
     if (this.#goawayStreamId !== null) return Promise.resolve();
     return this.#goawayReceived;
   }
+  /** Advertised, syntactically valid origins retained from RFC 9412 frames. */
+  get advertisedOrigins(): readonly string[] {
+    return Object.freeze([...this.#advertisedOrigins]);
+  }
+  /** @internal */
+  _waitForOriginFrameForTest(): Promise<void> {
+    return this.#originFrameReceived;
+  }
   #resolveResponse(streamId: bigint): void {
     const pending = this.#pending.get(streamId);
     if (!pending || pending.responseResolved) return;
@@ -926,6 +1002,10 @@ export class H3ClientSession {
       return;
     }
     const headers = new Headers(pending.responseHeaders as HeadersInit);
+    if (statusNum === 421) {
+      this.#advertisedOrigins.delete(pending.origin);
+      this.#withdrawnOrigins.add(pending.origin);
+    }
     const body =
       pending.method === 'HEAD' || statusNum === 204 || statusNum === 205 || statusNum === 304
         ? null

@@ -50,6 +50,7 @@
  *
  * Learn more:
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
+ * - HTTP/3 ORIGIN: https://www.rfc-editor.org/rfc/rfc9412
  * - HTTP semantics: https://www.rfc-editor.org/rfc/rfc9110
  * - WebTransport over HTTP/3: https://datatracker.ietf.org/doc/draft-ietf-webtrans-http3/
  *
@@ -70,6 +71,7 @@ import { buildWireRequest } from '../../../../net/http/index.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
 import { publishNetworkTopic } from '../../quic/core.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
+import { normalizeH3Origins } from './origin.ts';
 /**
  * Request handler for an HTTP/3 server.
  *
@@ -133,7 +135,12 @@ export type H3WebTransportHandler = (
  * }
  * ```
  */
-export interface H3ServerDriverOptions extends Omit<H3SessionOptions, 'webTransport'> {
+export interface H3ServerDriverOptions extends Omit<H3SessionOptions, 'webTransport' | 'origins'> {
+  /**
+   * HTTPS origins to advertise in an RFC 9412 ORIGIN frame. Entries are
+   * normalized and duplicates removed; at most 128 may be advertised.
+   */
+  origins?: Array<string | URL>;
   /**
    * Handler invoked for `webtransport-h3` extended-CONNECT streams.
    *
@@ -354,6 +361,7 @@ export class H3ServerDriver {
     handler: H3Handler,
     options: H3ServerDriverOptions = {},
   ): Promise<void> {
+    const advertisedOrigins = normalizeH3Origins(options.origins);
     if (!h3Available) throw new Error('libnghttp3 is not available');
     this.#connection = conn;
     const streams = new Map<bigint, H3ServerStream>();
@@ -512,7 +520,11 @@ export class H3ServerDriver {
         resolvePeerSettingsReceived = null;
       },
     };
-    session = Nghttp3Session.createServer(callbacks, { ...options, webTransport: true });
+    session = Nghttp3Session.createServer(callbacks, {
+      ...options,
+      webTransport: true,
+      origins: advertisedOrigins,
+    });
     this.#session = session;
     // Dispatch a request to the handler once headers are complete.
     function startDispatch(st: H3ServerStream): void {

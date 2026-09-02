@@ -296,8 +296,10 @@ export const CB_RESET_STREAM = 96;
 /** Byte offset of the `shutdown` callback — the connection is shutting down and no new streams should be created. */
 export const CB_SHUTDOWN = 104;
 // offset 112: recv_settings (deprecated, leave zeroed)
-// offset 120: recv_origin  (optional)
-// offset 128: end_origin   (optional)
+/** Byte offset of `recv_origin`, invoked for each RFC 9412 origin entry. */
+export const CB_RECV_ORIGIN = 120;
+/** Byte offset of `end_origin`, invoked after a complete RFC 9412 ORIGIN frame. */
+export const CB_END_ORIGIN = 128;
 // offset 136: rand         (optional)
 /** Byte offset of the `recv_settings2` callback — delivers the peer's decoded SETTINGS frame as an `nghttp3_proto_settings` pointer. */
 export const CB_RECV_SETTINGS2 = 144;
@@ -353,6 +355,8 @@ export const SETTINGS_QPACK_BLOCKED_STREAMS = 24;
 export const SETTINGS_ENABLE_CONNECT_PROTOCOL = 32;
 /** Offset within `nghttp3_settings` of the one-byte `h3_datagram` flag — advertises support for HTTP/3 DATAGRAM (RFC 9297). */
 export const SETTINGS_H3_DATAGRAM = 33;
+/** Offset of the `nghttp3_vec*` containing a serialized RFC 9412 ORIGIN payload. */
+export const SETTINGS_ORIGIN_LIST = 40;
 // ---------------------------------------------------------------------------
 // nghttp3_proto_settings struct offsets used by recv_settings2.
 // ---------------------------------------------------------------------------
