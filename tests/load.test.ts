@@ -674,7 +674,8 @@ describe('scripted load scenarios', { exclusive: true }, () => {
       const connection = await server.accept();
       const stream = await connection.acceptStream();
       const request = await stream.reader.read();
-      await stream.writer.write(request!);
+      if (request.done) throw new Error('QUIC request stream ended before data');
+      await stream.writer.write(request.value);
       await stream.writer.close();
     })();
     try {
@@ -691,8 +692,9 @@ describe('scripted load scenarios', { exclusive: true }, () => {
             await stream.writer.write(payload);
             await stream.writer.close();
             const echoed = await stream.reader.read();
+            if (echoed.done) throw new Error('QUIC response stream ended before data');
             context.bytes('sent', payload.byteLength);
-            context.bytes('received', echoed!.byteLength);
+            context.bytes('received', echoed.value.byteLength);
           },
         },
         { sessions: 1 },

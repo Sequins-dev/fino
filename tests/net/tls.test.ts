@@ -152,6 +152,43 @@ describe('TlsSocket', () => {
       await server.close();
     }
   });
+  it(
+    'releases split TLS ownership exactly once after an immediate socket close',
+    { skip },
+    async (t) => {
+      const server = serveHttp(
+        {
+          port: 0,
+          hostname: '127.0.0.1',
+          tls: {
+            cert: CERT_PATH,
+            key: KEY_PATH,
+          },
+        },
+        () => new Response('unused'),
+      );
+      try {
+        const tls = await TlsSocket.connect(
+          {
+            family: 'ipv4',
+            ip: '127.0.0.1',
+            port: server.port,
+          },
+          {
+            hostname: 'localhost',
+            rejectUnauthorized: false,
+          },
+        );
+        const [reader, writer] = tls.split();
+        tls.close();
+        await reader.close();
+        await writer.close();
+        t.ok(tls.closed, 'direct and split-half cleanup share one idempotent teardown');
+      } finally {
+        await server.close();
+      }
+    },
+  );
   it('rejects the local self-signed certificate by default', { skip }, async (t) => {
     const server = serveHttp(
       {

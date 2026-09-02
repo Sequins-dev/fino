@@ -208,10 +208,12 @@ async function rawH3RequestOutcome(
     void (async () => {
       try {
         while (true) {
-          const bytes = (await stream.reader.read()) as Uint8Array | null;
-          const fin = bytes === null;
-          clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-          if (fin) break;
+          const result = await stream.reader.read();
+          if (result.done) {
+            clientSession.endStream(sid);
+            break;
+          }
+          clientSession.receiveStreamData(sid, result.value);
         }
       } catch {}
     })();
@@ -234,10 +236,12 @@ async function rawH3RequestOutcome(
   void (async () => {
     try {
       while (true) {
-        const bytes = (await requestStream.reader.read()) as Uint8Array | null;
-        const fin = bytes === null;
-        clientSession.readStream(requestSid, bytes ?? new Uint8Array(0), fin);
-        if (fin) break;
+        const result = await requestStream.reader.read();
+        if (result.done) {
+          clientSession.endStream(requestSid);
+          break;
+        }
+        clientSession.receiveStreamData(requestSid, result.value);
       }
     } catch {}
   })();
@@ -477,10 +481,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
             if (stream.direction === 'bidirectional')
               serverSession.addQuicStream(sid, stream.writer);
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                serverSession.endStream(sid);
+                break;
+              }
+              serverSession.receiveStreamData(sid, result.value);
             }
           } catch {}
         })();
@@ -1672,15 +1678,44 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       'submitTrailers throws after close',
     );
     t.throws(
-      () => session.readStream(0n, new Uint8Array(0), false),
+      () => session.receiveStreamData(0n, new Uint8Array([1])),
       /session closed/,
-      'readStream throws synchronously after close',
+      'receiveStreamData throws synchronously after close',
+    );
+    t.throws(
+      () => session.endStream(0n),
+      /session closed/,
+      'endStream throws synchronously after close',
     );
     t.throws(
       () => session.drainWrites(),
       /session closed/,
       'drainWrites throws synchronously after close',
     );
+  });
+  it('keeps empty data distinct from stream completion', async (t) => {
+    if (!available) return;
+    const session = Nghttp3Session.createServer({
+      onBeginHeaders() {},
+      onRecvHeader() {},
+      onEndHeaders() {},
+      onBeginTrailers() {},
+      onRecvTrailer() {},
+      onEndTrailers() {},
+      onRecvData() {},
+      onEndStream() {},
+      onStreamClose() {},
+      onResetStream() {},
+      onAckedStreamData() {},
+    });
+    try {
+      t.throws(
+        () => session.receiveStreamData(0n, new Uint8Array(0)),
+        /stream data must not be empty/,
+      );
+    } finally {
+      session.close();
+    }
   });
   it('QUIC stream writers expose explicit synchronous capabilities', async (t) => {
     if (!available) return;
@@ -2221,10 +2256,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                serverSession.endStream(sid);
+                break;
+              }
+              serverSession.receiveStreamData(sid, result.value);
             }
           } catch {}
         })();
@@ -2310,10 +2347,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                serverSession.endStream(sid);
+                break;
+              }
+              serverSession.receiveStreamData(sid, result.value);
             }
           } catch {}
         })();
@@ -2397,10 +2436,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
         void (async () => {
           try {
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              clientSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                clientSession.endStream(sid);
+                break;
+              }
+              clientSession.receiveStreamData(sid, result.value);
             }
           } catch {}
         })();
@@ -2427,10 +2468,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       void (async () => {
         try {
           while (true) {
-            const bytes = (await connectStream.reader.read()) as Uint8Array | null;
-            const fin = bytes === null;
-            clientSession.readStream(connectSid, bytes ?? new Uint8Array(0), fin);
-            if (fin) break;
+            const result = await connectStream.reader.read();
+            if (result.done) {
+              clientSession.endStream(connectSid);
+              break;
+            }
+            clientSession.receiveStreamData(connectSid, result.value);
           }
         } catch {}
       })();
@@ -2562,10 +2605,12 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
               serverSession.addQuicStream(sid, stream.writer);
             }
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              serverSession.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                serverSession.endStream(sid);
+                break;
+              }
+              serverSession.receiveStreamData(sid, result.value);
             }
           } catch {}
         })();

@@ -619,7 +619,7 @@ describe('HTTP app built-ins', () => {
     );
     const post = (await app.handle(request('/events', { method: 'POST', body: 'x' }))) as Response;
     const first = await parseEventStream(post.body!).read();
-    t.equal(first?.data, 'method:POST', 'sse route also matches POST');
+    t.equal(first.value?.data, 'method:POST', 'sse route also matches POST');
     const put = (await app.handle(request('/events', { method: 'PUT', body: 'x' }))) as Response;
     t.equal(put.status, 405, 'sse route rejects other methods');
     t.equal(put.headers.get('allow'), 'GET, POST');
@@ -632,7 +632,7 @@ describe('HTTP app built-ins', () => {
     });
     const res = (await app.handle(request('/broken'))) as Response;
     const reader = parseEventStream(res.body!);
-    t.equal((await reader.read())?.data, 'first', 'events before the failure are delivered');
+    t.equal((await reader.read()).value?.data, 'first', 'events before the failure are delivered');
     await t.rejects(
       async () => {
         await reader.read();
@@ -691,7 +691,7 @@ describe('HTTP app built-ins', () => {
         }),
       ]);
       t.equal(
-        event?.data,
+        event.value?.data,
         'connected',
         'the initial event arrives while the handler remains active',
       );
@@ -710,7 +710,7 @@ describe('HTTP app built-ins', () => {
     const res = (await app.handle(request('/admin/jobs/mail'))) as Response;
     t.equal(res.headers.get('content-type'), 'text/event-stream');
     const first = await parseEventStream(res.body!).read();
-    t.equal(first?.data, 'queue:mail', 'mounted sse route streams with prefix params');
+    t.equal(first.value?.data, 'queue:mail', 'mounted sse route streams with prefix params');
   });
   it('registers webtransport routes with inherited context values', async (t) => {
     const app = new App();

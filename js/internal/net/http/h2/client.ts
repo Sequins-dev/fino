@@ -53,7 +53,7 @@
  *
  * @internal
  */
-import type { BufferedBytesReader, BytesWriter } from '../../../stream.ts';
+import { Channel, type BufferedBytesReader, type BytesWriter } from '../../../stream.ts';
 import type { ClientDriver, ClientDriverOptions } from 'internal:net/http/driver';
 import { Request, Response, Headers } from '../../../../net/http/index.ts';
 import { Scanner } from '../../../../parsing/scanner.ts';
@@ -190,8 +190,10 @@ export class H2ClientDriver implements ClientDriver {
     _opts: ClientDriverOptions,
   ): Promise<Response> {
     const streams = new Map<number, H2ClientStream>();
-    // Serialize all drainWrite calls - same race as server.ts.
-    let drainChain: Promise<void> = Promise.resolve();
+    const drains = new Channel<() => Promise<void>>();
+    void (async () => {
+      for await (const drain of drains.reader) await drain();
+    })();
     function drainWrite(): Promise<void> {
       async function drainH2Writes() {
         do {
@@ -201,8 +203,17 @@ export class H2ClientDriver implements ClientDriver {
         } while (session.wantWrite());
         await writer.flush();
       }
-      drainChain = drainChain.then(drainH2Writes, drainH2Writes);
-      return drainChain;
+      return new Promise<void>((resolve, reject) => {
+        const accepted = drains.writer.write(async () => {
+          try {
+            await drainH2Writes();
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        });
+        void accepted.catch(reject);
+      });
     }
     const callbacks: H2StreamCallbacks = {
       onBeginHeaders(streamId: number, isTrailers: boolean): void {

@@ -85,6 +85,8 @@ architecture; the deep dives cover
   server, first agent, tests, packages.
 - [Runtime Model](./runtime-model.md) — modules, globals, the event loop, byte
   streams, capabilities and isolation, context and topics.
+- [Readers, Writers, and Channels](./streams.md) — typed rendezvous channels,
+  byte streams, buffered I/O state, and async-iterable transforms.
 - [Modules and Packages](./modules-and-packages.md) — the import model, public
   API boundaries, and npm installation.
 - [Testing and Benchmarking](./testing-and-benchmarking.md) — the built-in

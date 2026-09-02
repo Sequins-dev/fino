@@ -4799,7 +4799,7 @@ export function sslCtxSetAlpnServerProtos(ctx: object, protocols: string[]): obj
  *
  * @internal
  */
-export function sslRead(ssl: object, buf: ArrayBuffer, len: number): number {
+export function sslRead(ssl: object, buf: ArrayBuffer | ArrayBufferView, len: number): number {
   return _requireSsl().symbols.SSL_read(ssl, buf, len);
 }
 /**

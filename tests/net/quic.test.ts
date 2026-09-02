@@ -92,6 +92,10 @@ import {
 } from 'internal:net/quic/endpoint';
 const encodeUtf8 = (value: string) => new TextEncoder().encode(value);
 const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
+async function readBytes(promise: Promise<IteratorResult<Uint8Array>>): Promise<Uint8Array | null> {
+  const result = await promise;
+  return result.done ? null : result.value;
+}
 const TEST_CERT = 'tests/net/fixtures/test.crt';
 const TEST_KEY = 'tests/net/fixtures/test.key';
 const NGTCP2_CID_TOKEN_SIZE = 160;
@@ -1489,7 +1493,7 @@ describe('QUIC loopback object model', () => {
     stream[quicStreamInternals.pushIncoming](0, request.subarray(0, 13), false);
     const chunks: Uint8Array[] = [];
     for (;;) {
-      const chunk = await stream.reader.read();
+      const chunk = await readBytes(stream.reader.read());
       if (chunk === null) break;
       chunks.push(chunk);
     }
@@ -1516,7 +1520,7 @@ describe('QUIC loopback object model', () => {
     stream[quicStreamInternals.pushIncoming](gapEnd, body.subarray(gapEnd), true);
     let total = 0;
     while (total < gapStart) {
-      const chunk = await stream.reader.read();
+      const chunk = await readBytes(stream.reader.read());
       if (chunk === null) break;
       total += chunk.byteLength;
     }
@@ -1524,7 +1528,7 @@ describe('QUIC loopback object model', () => {
     stream[quicStreamInternals.pushIncoming](gapStart, body.subarray(gapStart, gapEnd), false);
     let checksum = 0;
     for (;;) {
-      const chunk = await stream.reader.read();
+      const chunk = await readBytes(stream.reader.read());
       if (chunk === null) break;
       for (const byte of chunk) checksum = (checksum + byte) >>> 0;
       total += chunk.byteLength;
@@ -1543,7 +1547,7 @@ describe('QUIC loopback object model', () => {
     stream[quicStreamInternals.pushIncoming](0, body.subarray(0, gapStart), false);
     stream[quicStreamInternals.pushIncoming](gapEnd, body.subarray(gapEnd), true);
     while (total < gapStart) {
-      const chunk = await stream.reader.read();
+      const chunk = await readBytes(stream.reader.read());
       if (chunk === null) break;
       chunks.push(chunk);
       total += chunk.byteLength;
@@ -1564,7 +1568,9 @@ describe('QUIC loopback object model', () => {
       body.subarray(gapStart - 1200, gapStart + 900),
       false,
     );
-    chunks.push((await blockedRead)!);
+    const unblocked = await blockedRead;
+    if (unblocked.done) throw new Error('reader reached EOF before the missing range arrived');
+    chunks.push(unblocked.value);
     total += chunks[chunks.length - 1].byteLength;
     t.equal(total, gapStart + 900, 'first overlapping retransmit advances into the gap');
     stream[quicStreamInternals.pushIncoming](
@@ -1579,7 +1585,7 @@ describe('QUIC loopback object model', () => {
     );
     let checksum = 0;
     for (;;) {
-      const chunk = await withTimeoutValue(stream.reader.read(), 1e3, undefined);
+      const chunk = await withTimeoutValue(readBytes(stream.reader.read()), 1e3, undefined);
       if (chunk === undefined)
         throw new Error('reader did not reach EOF after late retransmits filled the gap');
       if (chunk === null) break;
@@ -1632,7 +1638,7 @@ describe('QUIC loopback object model', () => {
     t.deepEqual(streamCredits, [], 'complete but unread stream data remains under stream credit');
     const chunks: Uint8Array[] = [];
     for (;;) {
-      const chunk = await stream.reader.read();
+      const chunk = await readBytes(stream.reader.read());
       if (chunk === null) break;
       chunks.push(chunk);
     }
@@ -1674,11 +1680,11 @@ describe('QUIC loopback object model', () => {
       'readExactly consumes only the requested bytes',
     );
     t.equal(
-      decodeUtf8((await stream.reader.read())!),
+      decodeUtf8((await readBytes(stream.reader.read()))!),
       'def',
       'remaining bytes stay queued for later reads',
     );
-    t.equal(await stream.reader.read(), null, 'stream still reaches EOF');
+    t.equal(await readBytes(stream.reader.read()), null, 'stream still reaches EOF');
     t.deepEqual(credits, [1, 2, 3], 'flow-control credit follows actual read sizes');
   });
   it('coalesces contiguous queued stream data up to the read limit', async (t) => {
@@ -1696,22 +1702,26 @@ describe('QUIC loopback object model', () => {
     stream[quicStreamInternals.pushIncoming](3, encodeUtf8('def'), false);
     stream[quicStreamInternals.pushIncoming](6, encodeUtf8('ghi'), true);
     t.equal(
-      decodeUtf8((await stream.reader.read({ maxBytes: 8 }))!),
+      decodeUtf8((await readBytes(stream.reader.read({ maxBytes: 8 })))!),
       'abcdefgh',
       'read coalesces queued contiguous chunks up to maxBytes',
     );
     t.equal(
-      decodeUtf8((await stream.reader.read())!),
+      decodeUtf8((await readBytes(stream.reader.read()))!),
       'i',
       'remaining byte is preserved for the next read',
     );
-    t.equal(await stream.reader.read(), null, 'stream still reaches EOF');
+    t.equal(await readBytes(stream.reader.read()), null, 'stream still reaches EOF');
     t.deepEqual(credits, [8, 1], 'flow-control credit follows the coalesced read sizes');
   });
   it('rejects reads when a connection closes before stream FIN', async (t) => {
     const stream = new QuicStream(0, 'bidirectional', streamConnectionStub());
     stream[quicStreamInternals.pushIncoming](0, encodeUtf8('partial'), false);
-    t.equal(decodeUtf8((await stream.reader.read())!), 'partial', 'partial data is readable first');
+    t.equal(
+      decodeUtf8((await readBytes(stream.reader.read()))!),
+      'partial',
+      'partial data is readable first',
+    );
     stream[quicStreamInternals.closeFromConnection](new Error('connection closed before FIN'));
     await t.rejects(
       () => stream.reader.read(),
@@ -1732,11 +1742,15 @@ describe('QUIC loopback object model', () => {
     await t.rejects(() => pending, /mid-read abort/, 'pending read rejects when the signal aborts');
     stream[quicStreamInternals.pushIncoming](0, encodeUtf8('after-abort'), true);
     t.equal(
-      decodeUtf8((await stream.reader.read())!),
+      decodeUtf8((await readBytes(stream.reader.read()))!),
       'after-abort',
       'aborted waiter is removed before later data arrives',
     );
-    t.equal(await stream.reader.read(), null, 'stream reaches EOF after the post-abort read');
+    t.equal(
+      await readBytes(stream.reader.read()),
+      null,
+      'stream reaches EOF after the post-abort read',
+    );
   });
   it('rejects stream control operations after connection close', (t) => {
     let scheduledWrites = 0;
@@ -1765,7 +1779,7 @@ describe('QUIC loopback object model', () => {
   it('pre-closes unavailable unidirectional stream sides', async (t) => {
     const sendOnly = new QuicStream(2, 'unidirectional', streamConnectionStub(), false);
     t.equal(
-      await sendOnly.reader.read(),
+      await readBytes(sendOnly.reader.read()),
       null,
       'local send-only stream reader reaches EOF immediately',
     );
@@ -1783,7 +1797,7 @@ describe('QUIC loopback object model', () => {
     const receiveOnly = new QuicStream(3, 'unidirectional', streamConnectionStub(), true);
     receiveOnly[quicStreamInternals.pushIncoming](0, encodeUtf8('receive-only-ok'), true);
     t.equal(
-      decodeUtf8((await receiveOnly.reader.read())!),
+      decodeUtf8((await readBytes(receiveOnly.reader.read()))!),
       'receive-only-ok',
       'remote receive-only stream remains readable',
     );
@@ -2425,13 +2439,13 @@ describe('QUIC loopback object model', () => {
       await clientStream.writer.write(encodeUtf8('raw-h3-alpn'));
       await clientStream.writer.close();
       const serverStream = await serverStreamPromise;
-      const request = await serverStream.reader.read();
+      const request = await readBytes(serverStream.reader.read());
       await serverStream.writer.write(encodeUtf8(`echo:${decodeUtf8(request!)}`));
       await serverStream.writer.close();
       t.equal(clientConnection.alpnProtocol, 'h3', 'client negotiated h3 ALPN');
       t.equal(serverConnection.alpnProtocol, 'h3', 'server negotiated h3 ALPN');
       t.equal(
-        decodeUtf8((await clientStream.reader.read())!),
+        decodeUtf8((await readBytes(clientStream.reader.read()))!),
         'echo:raw-h3-alpn',
         'h3 ALPN still exposes raw QUIC streams',
       );
@@ -2489,12 +2503,12 @@ describe('QUIC loopback object model', () => {
       const serverStreamA = await serverConnectionA.acceptStream();
       const serverStreamB = await serverConnectionB.acceptStream();
       t.equal(
-        decodeUtf8((await serverStreamA.reader.read())!),
+        decodeUtf8((await readBytes(serverStreamA.reader.read()))!),
         'listener-a',
         'listener A receives its client stream',
       );
       t.equal(
-        decodeUtf8((await serverStreamB.reader.read())!),
+        decodeUtf8((await readBytes(serverStreamB.reader.read()))!),
         'listener-b',
         'listener B receives its client stream',
       );
@@ -3322,7 +3336,7 @@ describe('QUIC loopback object model', () => {
       await clientStream.writer.close();
       const serverStream = await serverConnection.acceptStream();
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'topic-stream',
         'topic test stream transfers data',
       );
@@ -4198,7 +4212,7 @@ describe('QUIC loopback object model', () => {
       await stream.writer.close();
       const serverStream = await serverConnection.acceptStream();
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'qlog-probe',
         'connection produces traffic for qlog',
       );
@@ -4318,11 +4332,11 @@ describe('QUIC loopback object model', () => {
     await clientStream.writer.write(encodeUtf8('/echo'));
     await clientStream.writer.close();
     const serverStream = await serverConnection.acceptStream();
-    const request = await serverStream.reader.read();
+    const request = await readBytes(serverStream.reader.read());
     t.equal(decodeUtf8(request!), '/echo', 'server reads stream data');
     await serverStream.writer.write(encodeUtf8('echo:/echo'));
     await serverStream.writer.close();
-    const response = await clientStream.reader.read();
+    const response = await readBytes(clientStream.reader.read());
     t.equal(decodeUtf8(response!), 'echo:/echo', 'client reads echo response');
     t.ok(
       clientConnection.stats.connectedAt !== null,
@@ -4393,7 +4407,7 @@ describe('QUIC loopback object model', () => {
       const serverConnection = await server.accept();
       const clientStream = await clientConnection.openUnidirectionalStream();
       t.equal(
-        await clientStream.reader.read(),
+        await readBytes(clientStream.reader.read()),
         null,
         'client local uni stream reader reaches EOF immediately',
       );
@@ -4415,11 +4429,15 @@ describe('QUIC loopback object model', () => {
         'server receive-only uni stream rejects writes before reading data',
       );
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'client-uni',
         'server reads client uni data',
       );
-      t.equal(await serverStream.reader.read(), null, 'server receive-only uni stream reaches EOF');
+      t.equal(
+        await readBytes(serverStream.reader.read()),
+        null,
+        'server receive-only uni stream reaches EOF',
+      );
       await t.rejects(
         () => serverStream.writer.write(encodeUtf8('still-not-writable')),
         /receive-only/,
@@ -4449,7 +4467,7 @@ describe('QUIC loopback object model', () => {
       const clientStreamPromise = clientConnection.acceptStream();
       const serverStream = await serverConnection.openUnidirectionalStream();
       t.equal(
-        await serverStream.reader.read(),
+        await readBytes(serverStream.reader.read()),
         null,
         'server local uni stream reader reaches EOF immediately',
       );
@@ -4471,11 +4489,15 @@ describe('QUIC loopback object model', () => {
         'client receive-only uni stream rejects writes before reading data',
       );
       t.equal(
-        decodeUtf8((await clientStream.reader.read())!),
+        decodeUtf8((await readBytes(clientStream.reader.read()))!),
         'server-uni',
         'client reads server uni data',
       );
-      t.equal(await clientStream.reader.read(), null, 'client receive-only uni stream reaches EOF');
+      t.equal(
+        await readBytes(clientStream.reader.read()),
+        null,
+        'client receive-only uni stream reaches EOF',
+      );
       await t.rejects(
         () => clientStream.writer.write(encodeUtf8('still-not-writable')),
         /receive-only/,
@@ -4631,7 +4653,11 @@ describe('QUIC loopback object model', () => {
       await clientStream.writer.write(encodeUtf8('/large'));
       await clientStream.writer.close();
       const serverStream = await serverConnection.acceptStream();
-      t.equal(decodeUtf8((await serverStream.reader.read())!), '/large', 'server reads request');
+      t.equal(
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
+        '/large',
+        'server reads request',
+      );
       const body = new Uint8Array(2 * 1024 * 1024);
       for (let i = 0; i < body.byteLength; i++) body[i] = i & 255;
       await serverStream.writer.write(body);
@@ -4639,7 +4665,7 @@ describe('QUIC loopback object model', () => {
       let total = 0;
       let checksum = 0;
       for (;;) {
-        const chunk = await clientStream.reader.read();
+        const chunk = await readBytes(clientStream.reader.read());
         if (chunk === null) break;
         for (const byte of chunk) checksum = (checksum + byte) >>> 0;
         total += chunk.byteLength;
@@ -4693,7 +4719,7 @@ describe('QUIC loopback object model', () => {
       t.equal(early, 'blocked', 'stream open waits while peer stream credit is exhausted');
       await streams[0].writer.close();
       const serverStream = await serverConnection.acceptStream();
-      while ((await serverStream.reader.read()) !== null) {}
+      while ((await readBytes(serverStream.reader.read())) !== null) {}
       const stillBlocked = await withTimeoutValue(
         blockedOpen.then(() => 'opened'),
         25,
@@ -4705,7 +4731,11 @@ describe('QUIC loopback object model', () => {
         'stream open remains blocked after only the remote receive side reaches FIN',
       );
       await serverStream.writer.close();
-      t.equal(await streams[0].reader.read(), null, 'client observes the response side close');
+      t.equal(
+        await readBytes(streams[0].reader.read()),
+        null,
+        'client observes the response side close',
+      );
       const unblocked = await withTimeoutValue(blockedOpen, 1e3, null);
       if (unblocked === null)
         throw new Error('stream open did not resume after the prior stream fully closed');
@@ -4768,13 +4798,13 @@ describe('QUIC loopback object model', () => {
       source.set(encodeUtf8('WXYZ'));
       await clientStream.writer.close();
       const serverStream = await serverConnection.acceptStream();
-      const received = await serverStream.reader.read();
+      const received = await readBytes(serverStream.reader.read());
       t.equal(
         decodeUtf8(received!),
         'abcd',
         'peer receives bytes accepted by write before caller mutation',
       );
-      t.equal(await serverStream.reader.read(), null, 'stream reaches EOF');
+      t.equal(await readBytes(serverStream.reader.read()), null, 'stream reaches EOF');
       await serverStream.writer.close();
     } finally {
       await client.close();
@@ -4814,9 +4844,13 @@ describe('QUIC loopback object model', () => {
         await stream.writer.write(source);
         await stream.writer.close();
         const serverStream = await serverConnection.acceptStream();
-        const received = await serverStream.reader.read();
+        const received = await readBytes(serverStream.reader.read());
         t.deepEqual(Array.from(received!), expected, 'stream writer preserves source view range');
-        t.equal(await serverStream.reader.read(), null, 'stream source case reaches EOF');
+        t.equal(
+          await readBytes(serverStream.reader.read()),
+          null,
+          'stream source case reaches EOF',
+        );
         await serverStream.writer.close();
       }
     } finally {
@@ -4882,7 +4916,7 @@ describe('QUIC loopback object model', () => {
       await clientStream.writer.close();
       const serverStream = await serverConnection.acceptStream();
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'ready',
         'server reads 1-RTT stream data before key update',
       );
@@ -4939,14 +4973,14 @@ describe('QUIC loopback object model', () => {
       await clientStream.writer.close();
       const serverStream = await serverConnection.acceptStream();
       t.equal(
-        decodeUtf8((await serverStream.reader.read())!),
+        decodeUtf8((await readBytes(serverStream.reader.read()))!),
         'post-migration',
         'server reads data after migration',
       );
       await serverStream.writer.write(encodeUtf8('migration-ok'));
       await serverStream.writer.close();
       t.equal(
-        decodeUtf8((await clientStream.reader.read())!),
+        decodeUtf8((await readBytes(clientStream.reader.read()))!),
         'migration-ok',
         'client reads data after migration',
       );

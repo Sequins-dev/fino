@@ -5,7 +5,7 @@
  */
 
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
-import { BytesReader, BytesWriter } from '../../stream.ts';
+import { BytesReader, BytesWriter, type ReadResult } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
 import { EAGAIN, decodeAddr } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';
@@ -558,9 +558,9 @@ export class QuicStream extends EventTarget {
     if (this.#readable !== null) return this.#readable;
     this.#readable = new ReadableStream<Uint8Array>({
       pull: async (controller) => {
-        const chunk = await this.reader.read();
-        if (chunk === null) controller.close();
-        else controller.enqueue(chunk);
+        const result = await this.reader.read();
+        if (result.done) controller.close();
+        else controller.enqueue(result.value);
       },
       cancel: () => this.stopSending(0),
     });
@@ -603,6 +603,7 @@ export class QuicStream extends EventTarget {
    * ```
    */
   reset(errorCode: number): void {
+    if (this.writer.closed) return;
     this.#assertConnectionOpen();
     ngtcp2Sym!.ngtcp2_conn_shutdown_stream(
       this.#connection.nativeHandle,
@@ -654,7 +655,11 @@ export class QuicStream extends EventTarget {
    */
   stopSending(errorCode: number): void {
     this.#assertConnectionOpen();
-    if (this.#connection[quicConnectionInternals.isLocalUnidirectionalStream](this.id)) return;
+    if (
+      !this.#readableSide ||
+      this.#connection[quicConnectionInternals.isLocalUnidirectionalStream](this.id)
+    )
+      return;
     this.#incoming.close();
     this.#readStopped = true;
     const rc = ngtcp2Sym!.ngtcp2_conn_shutdown_stream_read(
@@ -707,7 +712,7 @@ export class QuicStream extends EventTarget {
   [quicStreamInternals.readIncoming](
     maxBytes = 65536,
     signal?: AbortSignal | null,
-  ): Promise<Uint8Array | null> {
+  ): Promise<ReadResult<Uint8Array>> {
     return this.#incoming.read(maxBytes, signal);
   }
   [quicStreamInternals.extendStreamReceiveCredit](bytes: number): void {

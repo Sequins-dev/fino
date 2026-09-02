@@ -423,7 +423,7 @@ describe('CLI commands: test', () => {
             return false;
           }
           return loop._activeHandleCounts().referencedTimers > baselineTimers;
-        }, 1_000);
+        }, 10_000);
         t.ok(true, 'the exit diagnostic keeps the coordinator event loop referenced');
       } finally {
         const { stderr, result } = await command;

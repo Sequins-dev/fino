@@ -65,7 +65,7 @@
  */
 import * as openssl from '../internal/openssl.ts';
 import * as loop from '../internal/runtime/loop.ts';
-import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.ts';
+import { BufferedBytesReader, BufferedBytesWriter, type ReadResult } from '../internal/stream.ts';
 import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.ts';
 import type { Address } from './socket.ts';
 import type { ConnectOptions } from './socket.ts';
@@ -299,7 +299,7 @@ async function _doHandshake(
  *
  * ```ts no_run
  * const [reader] = tls.split();
- * const bytes = await reader.read();
+ * const result = await reader.read();
  * ```
  */
 export class TlsReader extends BufferedBytesReader {
@@ -349,28 +349,6 @@ export class TlsReader extends BufferedBytesReader {
   #fd: number;
   #needsReadable = false;
   /**
-   * Private property `#readBuf` used by `TlsReader`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #readBuf = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#readBuf;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #readBuf: ArrayBuffer = new ArrayBuffer(65536);
-  /**
    * Wrap OpenSSL state and a non-blocking fd as a TLS reader.
    *
    * The reader does not own the SSL pointer by itself; the close callback
@@ -401,7 +379,7 @@ export class TlsReader extends BufferedBytesReader {
     await super.close();
   }
   /**
-   * Generated-doc-visible method `doPull`.
+   * Generated-doc-visible method `doPullInto`.
    *
    * This implementation detail is included when documentation is built with
    * `--include-private`. It describes state or helper behavior used by the
@@ -411,33 +389,31 @@ export class TlsReader extends BufferedBytesReader {
    * @example
    * ```ts no_run
    * const includePrivateExample = {
-   *   doPull() {
-   *     return 'doPull';
+   *   doPullInto() {
+   *     return { done: true, value: undefined };
    *   },
    * };
-   * includePrivateExample.doPull();
+   * includePrivateExample.doPullInto(new Uint8Array(1));
    * ```
    *
    * @internal
    */
-  protected async doPull(): Promise<Uint8Array | null> {
+  protected async doPullInto(buffer: Uint8Array): Promise<ReadResult<number>> {
     while (true) {
-      if (this.closed) return null;
+      if (this.closed) return { done: true, value: undefined };
       if (this.#needsReadable && openssl.sslPending(this.#ssl) <= 0) {
         await loop.readable(this.#fd);
-        if (this.closed) return null;
+        if (this.closed) return { done: true, value: undefined };
       }
       this.#needsReadable = false;
-      const n = openssl.sslRead(this.#ssl, this.#readBuf, 65536);
+      const n = openssl.sslRead(this.#ssl, buffer, buffer.byteLength);
       if (n > 0) {
         this.#needsReadable = openssl.sslPending(this.#ssl) <= 0;
-        const out = new Uint8Array(n);
-        out.set(new Uint8Array(this.#readBuf, 0, n));
-        return out;
+        return { done: false, value: n };
       }
-      if (n === 0) return null;
+      if (n === 0) return { done: true, value: undefined };
       const err = openssl.sslGetError(this.#ssl, n);
-      if (err === openssl.SSL_ERROR_ZERO_RETURN) return null;
+      if (err === openssl.SSL_ERROR_ZERO_RETURN) return { done: true, value: undefined };
       if (err === openssl.SSL_ERROR_WANT_READ) {
         this.#needsReadable = true;
         continue;
@@ -451,7 +427,7 @@ export class TlsReader extends BufferedBytesReader {
       if (err === openssl.SSL_ERROR_SSL || err === openssl.SSL_ERROR_SYSCALL) {
         throw new Error('TLS read failed: ' + openssl.getErrorString());
       }
-      return null;
+      return { done: true, value: undefined };
     }
   }
 }
@@ -676,30 +652,7 @@ export class TlsSocket extends Socket {
    * @internal
    */
   #negotiatedProtocol: string | null;
-  // Bound reference to super.close() for use inside split() closures,
-  // where `super` is not lexically accessible.
-  /**
-   * Private property `#superClose` used by `TlsSocket`.
-   *
-   * This implementation detail is included when documentation is built with
-   * `--include-private`. It describes state or helper behavior used by the
-   * owning module rather than a stable application-facing contract. Prefer the
-   * public API around the owning type unless you are maintaining this runtime.
-   *
-   * @example
-   * ```ts no_run
-   * class IncludePrivateExample {
-   *   #superClose = undefined;
-   *
-   *   readInternalState() {
-   *     return this.#superClose;
-   *   }
-   * }
-   * ```
-   *
-   * @internal
-   */
-  #superClose: () => void;
+  #tlsClosed = false;
   /**
    * Wrap an established TLS session.
    *
@@ -716,7 +669,6 @@ export class TlsSocket extends Socket {
     this.#ssl = ssl;
     this.#sslCtx = sslCtx;
     this.#negotiatedProtocol = openssl.sslGetAlpnSelected(ssl);
-    this.#superClose = () => super.close();
   }
   /**
    * The ALPN protocol negotiated during the TLS handshake, or `null` if none.
@@ -785,18 +737,10 @@ export class TlsSocket extends Socket {
    */
   split(): [TlsReader, TlsWriter] {
     const ssl = this.#ssl;
-    const sslCtx = this.#sslCtx;
-    const superClose = this.#superClose;
     let closeCount = 0;
-    const fd = this.fd;
-    const onBothClosed = function onBothClosed() {
+    const onBothClosed = () => {
       if (++closeCount < 2) return;
-      try {
-        openssl.sslShutdown(ssl);
-      } catch (_) {}
-      openssl.sslFree(ssl);
-      if (sslCtx) openssl.sslCtxFree(sslCtx);
-      superClose();
+      this.#closeTls();
     };
     return [new TlsReader(ssl, this.fd, onBothClosed), new TlsWriter(ssl, this.fd, onBothClosed)];
   }
@@ -809,12 +753,20 @@ export class TlsSocket extends Socket {
    * ```
    */
   close() {
-    if (this.closed) return;
+    this.#closeTls();
+  }
+  /** Release the shared SSL session, context, and descriptor exactly once. */
+  #closeTls(): void {
+    if (this.#tlsClosed) return;
+    this.#tlsClosed = true;
     try {
       openssl.sslShutdown(this.#ssl);
     } catch (_) {}
     openssl.sslFree(this.#ssl);
-    if (this.#sslCtx) openssl.sslCtxFree(this.#sslCtx);
+    if (this.#sslCtx) {
+      openssl.sslCtxFree(this.#sslCtx);
+      this.#sslCtx = null;
+    }
     super.close();
   }
   /**

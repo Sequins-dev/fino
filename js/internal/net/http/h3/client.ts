@@ -430,16 +430,18 @@ export class H3ClientSession {
           if (instance.#webTransports.size === 0) {
             if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
             while (true) {
-              const bytes = (await stream.reader.read()) as Uint8Array | null;
-              const fin = bytes === null;
-              session.readStream(sid, bytes ?? new Uint8Array(0), fin);
-              if (fin) break;
+              const result = await stream.reader.read();
+              if (result.done) {
+                session.endStream(sid);
+                break;
+              }
+              session.receiveStreamData(sid, result.value);
             }
             return;
           }
           const routed = await readWebTransportPrefix(stream.reader);
           if (routed.buffer === null) {
-            session.readStream(sid, new Uint8Array(0), true);
+            session.endStream(sid);
             return;
           }
           if (routed.prefix?.kind === stream.direction && routed.prefix.sessionId !== undefined) {
@@ -450,12 +452,14 @@ export class H3ClientSession {
             }
           }
           if (stream.direction === 'bidirectional') session.addQuicStream(sid, stream.writer);
-          session.readStream(sid, routed.buffer, false);
+          session.receiveStreamData(sid, routed.buffer);
           while (true) {
-            const bytes = (await stream.reader.read()) as Uint8Array | null;
-            const fin = bytes === null;
-            session.readStream(sid, bytes ?? new Uint8Array(0), fin);
-            if (fin) break;
+            const result = await stream.reader.read();
+            if (result.done) {
+              session.endStream(sid);
+              break;
+            }
+            session.receiveStreamData(sid, result.value);
           }
         } catch {}
       })();
@@ -559,15 +563,17 @@ export class H3ClientSession {
     void (async () => {
       try {
         while (true) {
-          const bytes = (await quicStream.reader.read()) as Uint8Array | null;
+          const result = await quicStream.reader.read();
           // A local body cancellation removes the pending request before QUIC's
           // STOP_SENDING completion wakes this read. Do not feed that terminal
           // event back into nghttp3 after its stream state was deliberately
           // closed; nghttp3 would report STREAM_NOT_FOUND as a connection error.
           if (!this.#pending.has(sid)) break;
-          const fin = bytes === null;
-          this.#session.readStream(sid, bytes ?? new Uint8Array(0), fin);
-          if (fin) break;
+          if (result.done) {
+            this.#session.endStream(sid);
+            break;
+          }
+          this.#session.receiveStreamData(sid, result.value);
         }
       } catch {
         // Connection was closed with an error before the response arrived.
@@ -864,19 +870,19 @@ function concatBytes(parts: Uint8Array[]): Uint8Array {
  *
  * @internal
  */
-async function readWebTransportPrefix(reader: { read(): Promise<Uint8Array | null> }): Promise<{
+async function readWebTransportPrefix(reader: QuicStream['reader']): Promise<{
   buffer: Uint8Array | null;
   prefix: ReturnType<typeof inspectWebTransportStreamPrefix> | null;
 }> {
   const chunks: Uint8Array[] = [];
   while (true) {
-    const chunk = await reader.read();
-    if (chunk === null)
+    const result = await reader.read();
+    if (result.done)
       return {
         buffer: chunks.length === 0 ? null : concatBytes(chunks),
         prefix: null,
       };
-    chunks.push(chunk);
+    chunks.push(result.value);
     const buffer = concatBytes(chunks);
     const prefix = inspectWebTransportStreamPrefix(buffer);
     if (prefix.state !== 'incomplete')

@@ -34,7 +34,7 @@ try {
   );
   await stream.writer.close();
   const data = await stream.reader.read();
-  console.log(`client ${connection.alpnProtocol} ${dec.decode(data!)}`);
+  console.log(`client ${connection.alpnProtocol} ${dec.decode(data.value!)}`);
   await connection.close();
 } catch (error) {
   if (error !== null) throw error;

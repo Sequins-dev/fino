@@ -996,9 +996,9 @@ export class QuicConnection extends EventTarget {
     if (this.#datagramReadable !== null) return this.#datagramReadable;
     this.#datagramReadable = new ReadableStream<Uint8Array>({
       pull: async (controller) => {
-        const chunk = await this.#datagramQueue.read();
-        if (chunk === null) controller.close();
-        else controller.enqueue(chunk);
+        const result = await this.#datagramQueue.read();
+        if (result.done) controller.close();
+        else controller.enqueue(result.value);
       },
       cancel: () => this.#datagramQueue.close(),
     });

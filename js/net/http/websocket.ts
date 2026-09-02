@@ -501,9 +501,9 @@ class _Buf {
  *  Read exactly n bytes from a Reader into a _Buf, then consume them. */
 async function _readExactly(reader: BytesReader, buf: _Buf, n: number): Promise<Uint8Array | null> {
   while (buf.available < n) {
-    const chunk = await reader.read();
-    if (chunk === null) return null;
-    buf.push(chunk);
+    const result = await reader.read();
+    if (result.done) return null;
+    buf.push(result.value);
   }
   return buf.consume(n);
 }
@@ -633,8 +633,9 @@ async function _readUpgradeResponse(
   const parts: Uint8Array[] = [];
   let totalLen = 0;
   while (true) {
-    const chunk = await reader.read();
-    if (chunk === null) throw new Error('Connection closed during WebSocket handshake');
+    const result = await reader.read();
+    if (result.done) throw new Error('Connection closed during WebSocket handshake');
+    const chunk = result.value;
     parts.push(chunk);
     totalLen += chunk.byteLength;
     // Assemble all received bytes

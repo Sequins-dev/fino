@@ -21,7 +21,7 @@
  * }
  * ```
  */
-import { Reader, Writer } from '../../internal/stream.ts';
+import { Reader, type ReadResult, Writer } from '../../internal/stream.ts';
 import type { BytesWriter } from '../../internal/stream.ts';
 import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 // ---------------------------------------------------------------------------
@@ -148,8 +148,7 @@ export class EventSourceReader extends Reader<SseEvent> {
     return this.#lastEventId;
   }
   /**
-   * Pull the next parsed event from the stream, or `null` once the source is
-   * exhausted.
+   * Pull the next parsed event as an explicit iterator result.
    *
    * This is the pull-based counterpart to `for await`; the inherited async
    * iterator calls it under the hood. Events with no `data:` field are skipped
@@ -159,16 +158,17 @@ export class EventSourceReader extends Reader<SseEvent> {
    *
    * ```ts no_run
    * const reader = new EventSourceReader(response.body);
-   * let event;
-   * while ((event = await reader.read()) !== null) {
-   *   console.log(event.type, event.data);
+   * while (true) {
+   *   const result = await reader.read();
+   *   if (result.done) break;
+   *   console.log(result.value.type, result.value.data);
    * }
    * ```
    */
-  async read(): Promise<SseEvent | null> {
+  async read(): Promise<ReadResult<SseEvent>> {
     if (this.#gen === null) this.#gen = this.#parse();
     const result = await this.#gen.next();
-    return result.done ? null : result.value;
+    return result.done ? { done: true, value: undefined } : { done: false, value: result.value };
   }
   async *#parse(): AsyncGenerator<SseEvent> {
     let eventType = '';
