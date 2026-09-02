@@ -128,6 +128,7 @@ import {
   NGHTTP3_ERR_FATAL,
   NGHTTP3_ERR_MALFORMED_HTTP_HEADER,
   NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING,
+  NGHTTP3_H3_NO_ERROR,
   NGHTTP3_H3_MESSAGE_ERROR,
   NGHTTP3_H3_REQUEST_CANCELLED,
   buildNvArray,
@@ -448,6 +449,13 @@ export class Nghttp3Session {
   >();
   #closed = false;
   #ready = false;
+  #shutdownStarted = false;
+  #shutdownNoticeSent = false;
+  #drainPromise: Promise<void> | null = null;
+  #resolveDrained: (() => void) | null = null;
+  #drainCheckScheduled = false;
+  #remoteEndedStreams = new Set<bigint>();
+  #localEndedStreams = new Set<bigint>();
   #qpackStreamsBound = false;
   #locked = false;
   #localSettings = new Map<number, number>();
@@ -455,17 +463,20 @@ export class Nghttp3Session {
   #peerSettingsReceived = false;
   #webTransport = false;
   #controlStreamId: bigint | null = null;
+  readonly #isServer: boolean;
   readonly #cb: H3SessionCallbacks;
   private constructor(
     conn: ArrayBuffer,
     cbsBuf: Uint8Array,
     drBuf: Uint8Array,
     cb: H3SessionCallbacks,
+    isServer: boolean,
   ) {
     this.#conn = conn;
     this.#cbsBuf = cbsBuf;
     this.#drBuf = drBuf;
     this.#cb = cb;
+    this.#isServer = isServer;
   }
   #ptrOf(source: ArrayBuffer | ArrayBufferView, slot: number): Uint8Array {
     Pointer.of(source, this.#ptrArena, slot * _PTR_SIZE);
@@ -546,7 +557,7 @@ export class Nghttp3Session {
     const connHandle = new ArrayBuffer(8);
     // Create the session object now so #installCallbacks can close over it.
     const drBuf = new Uint8Array(DR_SIZE);
-    const session = new Nghttp3Session(connHandle, cbsBuf, drBuf, cb);
+    const session = new Nghttp3Session(connHandle, cbsBuf, drBuf, cb, isServer);
     session.#installCallbacks(cbsBuf);
     session.#installDataReader(drBuf);
     // Fill settings struct with library defaults.
@@ -640,6 +651,7 @@ export class Nghttp3Session {
         this.#yieldedBytes.delete(streamId);
         this.#webTransportSettingsPrefixes.delete(streamId);
         cb.onStreamClose(streamId, appErrorCode);
+        this.#scheduleDrainedCheck();
         return 0;
       },
     );
@@ -808,6 +820,7 @@ export class Nghttp3Session {
         this.#yieldedBytes.delete(streamId);
         this.#webTransportSettingsPrefixes.delete(streamId);
         cb.onResetStream(streamId, appErrorCode);
+        this.#scheduleDrainedCheck();
         return 0;
       },
     );
@@ -1220,6 +1233,10 @@ export class Nghttp3Session {
     if (this.#closed) throw new Error('session closed');
     this.#locked = true;
     try {
+      // nghttp3 only considers a request stream closed after the transport tells
+      // it that both QUIC directions have ended. Remember the remote FIN before
+      // draining because that drain may synchronously produce our local FIN.
+      if (fin && (streamId & 2n) === 0n) this.#remoteEndedStreams.add(streamId);
       if (this.#webTransport && data.byteLength > 0) {
         const buffered = this.#bufferWebTransportSettingsPrefix(streamId, data);
         const settings = readWebTransportSettings(buffered);
@@ -1249,6 +1266,7 @@ export class Nghttp3Session {
         throw new Error(`nghttp3_conn_read_stream2 error: ${consumed}`);
       }
       this.#drainWritesInnerSync();
+      this.#closeFullyEndedStream(streamId);
     } finally {
       this.#locked = false;
     }
@@ -1408,10 +1426,20 @@ export class Nghttp3Session {
             throw new Error('H3 stream writer does not support synchronous close');
           }
           entry.writer.closeSync();
+          if ((sid & 2n) === 0n) this.#localEndedStreams.add(sid);
           this.#quicStreams.delete(sid);
+          this.#closeFullyEndedStream(sid);
         }
       }
     }
+  }
+  #closeFullyEndedStream(streamId: bigint): void {
+    if (!this.#remoteEndedStreams.has(streamId) || !this.#localEndedStreams.has(streamId)) {
+      return;
+    }
+    this.#remoteEndedStreams.delete(streamId);
+    this.#localEndedStreams.delete(streamId);
+    sym!.nghttp3_conn_close_stream(this.#conn, streamId, NGHTTP3_H3_NO_ERROR);
   }
   // -------------------------------------------------------------------------
   // Mutex helper
@@ -1506,19 +1534,56 @@ export class Nghttp3Session {
   closeWhenIdle(): Promise<void> {
     try {
       if (this.#closed) return Promise.resolve();
-      if (this.#ready) {
-        const src = sym!.nghttp3_conn_shutdown(this.#conn) as number;
-        if (src === 0) {
-          try {
-            this.drainWrites();
-          } catch {}
-        }
+      if (!this.#ready) {
+        this.close();
+        return Promise.resolve();
       }
-      this.close();
-      return Promise.resolve();
+      if (!this.#shutdownStarted) {
+        this.#shutdownStarted = true;
+        const src = sym!.nghttp3_conn_shutdown(this.#conn) as number;
+        if (src !== 0) {
+          this.close();
+          return Promise.reject(new Error(`nghttp3_conn_shutdown failed: ${src}`));
+        }
+        this.drainWrites();
+      }
+      if (!this.#isServer) {
+        this.close();
+        return Promise.resolve();
+      }
+      if ((sym!.nghttp3_conn_is_drained(this.#conn) as number) !== 0) {
+        this.close();
+        return Promise.resolve();
+      }
+      if (this.#drainPromise === null) {
+        this.#drainPromise = new Promise((resolve) => {
+          this.#resolveDrained = resolve;
+        });
+      }
+      return this.#drainPromise;
     } catch (error) {
+      this.close();
       return Promise.reject(error);
     }
+  }
+  /** Send the initial maximum-ID GOAWAY without preventing accepted responses. */
+  submitShutdownNotice(): void {
+    if (this.#closed) throw new Error('session closed');
+    if (!this.#ready || this.#shutdownNoticeSent) return;
+    const rc = sym!.nghttp3_conn_submit_shutdown_notice(this.#conn) as number;
+    if (rc !== 0) throw new Error(`nghttp3_conn_submit_shutdown_notice failed: ${rc}`);
+    this.#shutdownNoticeSent = true;
+    this.drainWrites();
+  }
+  #scheduleDrainedCheck(): void {
+    if (!this.#shutdownStarted || this.#closed || this.#drainCheckScheduled) return;
+    this.#drainCheckScheduled = true;
+    queueMicrotask(() => {
+      this.#drainCheckScheduled = false;
+      if (this.#closed || !this.#shutdownStarted) return;
+      if ((sym!.nghttp3_conn_is_drained(this.#conn) as number) === 0) return;
+      this.close();
+    });
   }
   /**
    * Free the native connection and release all per-stream state immediately.
@@ -1543,6 +1608,10 @@ export class Nghttp3Session {
     this.#pendingTrailers.clear();
     this.#yieldedBytes.clear();
     this.#quicStreams.clear();
+    this.#remoteEndedStreams.clear();
+    this.#localEndedStreams.clear();
+    this.#resolveDrained?.();
+    this.#resolveDrained = null;
   }
   /**
    * Dispose support so a session can be scoped with `using`. Calls `close()`.

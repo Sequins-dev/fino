@@ -149,6 +149,14 @@ const _SYMBOLS = {
     parameters: ['pointer'],
     result: 'i32',
   },
+  nghttp3_conn_submit_shutdown_notice: {
+    parameters: ['pointer'],
+    result: 'i32',
+  },
+  nghttp3_conn_is_drained: {
+    parameters: ['pointer'],
+    result: 'i32',
+  },
   nghttp3_conn_close_stream: {
     parameters: ['pointer', 'i64', 'u64'],
     result: 'i32',

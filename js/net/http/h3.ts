@@ -127,9 +127,9 @@ export interface H3ServeOptions extends Omit<
  * Running HTTP/3 server handle returned by `serve()`.
  *
  * `port` and `hostname` reflect the address the QUIC endpoint actually bound,
- * which matters when `serve()` was called with `port: 0`. `close()` shuts the
- * endpoint down and stops accepting new connections; in-flight connections are
- * torn down by the endpoint.
+ * which matters when `serve()` was called with `port: 0`. `close()` stops
+ * accepting new connections, sends GOAWAY on active H3 sessions, lets accepted
+ * requests finish, and then closes their QUIC connections.
  *
  * ```ts no_run
  * import { serve } from 'internal:net/http/h3';
@@ -150,7 +150,7 @@ export interface H3Server {
   readonly port: number;
   /** Bound local address. */
   readonly hostname: string;
-  /** Close the underlying QUIC endpoint and stop accepting new connections. */
+  /** Stop accepting connections and gracefully drain active HTTP/3 requests. */
   close(): Promise<void>;
 }
 /**
@@ -262,10 +262,26 @@ export async function serve(
       certificateFile,
       privateKeyFile,
     });
+    const drivers = new Set<H3ServerDriver>();
+    const runs = new Set<Promise<void>>();
+    let closing = false;
+    let closePromise: Promise<void> | null = null;
     endpoint.addEventListener('connection', (event) => {
       const conn = (event as QuicConnectionEvent).connection;
+      if (closing) {
+        void conn.close();
+        return;
+      }
       const driver = new H3ServerDriver();
-      void driver.run(conn, handler, driverOptions).catch(() => {});
+      drivers.add(driver);
+      const run = driver
+        .run(conn, handler, driverOptions)
+        .catch(() => {})
+        .finally(() => {
+          drivers.delete(driver);
+          runs.delete(run);
+        });
+      runs.add(run);
     });
     return {
       get port() {
@@ -275,7 +291,17 @@ export async function serve(
         return listener.address.ip;
       },
       close() {
-        return endpoint.close();
+        if (closePromise !== null) return closePromise;
+        closing = true;
+        closePromise = (async () => {
+          await Promise.allSettled(Array.from(drivers, (driver) => driver.shutdown()));
+          // HTTP/3 streams are drained above. Use the endpoint's immediate
+          // teardown now so upgraded, intentionally open WebTransport streams
+          // cannot keep QUIC's transport-level graceful close pending forever.
+          await endpoint.close();
+          await Promise.allSettled([...runs]);
+        })();
+        return closePromise;
       },
     };
   } catch (e) {
