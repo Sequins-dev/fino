@@ -35,6 +35,7 @@
  *
  * Learn more:
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
+ * - Extensible Priorities: https://www.rfc-editor.org/rfc/rfc9218
  * - QUIC: https://www.rfc-editor.org/rfc/rfc9000
  *
  * @internal
@@ -46,7 +47,11 @@ import type {
   H3ServerDriverOptions,
 } from '../../internal/net/http/h3/server.ts';
 import { H3ClientSession } from '../../internal/net/http/h3/client.ts';
-import type { H3InformationalResponse, H3RequestInit } from '../../internal/net/http/h3/client.ts';
+import type {
+  H3Priority as InternalH3Priority,
+  H3InformationalResponse,
+  H3RequestInit,
+} from '../../internal/net/http/h3/client.ts';
 import {
   h3Available as _h3Available,
   requireH3 as _requireH3,
@@ -213,6 +218,8 @@ export interface H3FetchInit extends H3RequestInit {
   /** Connection-level QUIC options for the temporary endpoint. `address` and `alpnProtocols` are set by `fetch()` and cannot be overridden. */
   quic?: Omit<QuicConnectOptions, 'address' | 'alpnProtocols'>;
 }
+/** RFC 9218 urgency and incremental scheduling hints for an HTTP/3 request. */
+export type H3Priority = InternalH3Priority;
 /**
  * Resolved connect target for internal HTTP/3 `fetch()`.
  *

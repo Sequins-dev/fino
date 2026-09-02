@@ -1171,6 +1171,42 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       await pipe.close();
     }
   });
+  it('sends and validates RFC 9218 request priority', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      const receivedPriorities: string[] = [];
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, (req) => {
+        receivedPriorities.push(req.headers.get('priority') ?? '');
+        return new Response('ok');
+      });
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/priority', {
+          h3Priority: { urgency: 1, incremental: true },
+        }),
+      );
+      t.equal(response.status, 200, 'prioritized request completes');
+      t.equal(receivedPriorities[0], 'u=1, i', 'server receives the RFC 9218 Priority field');
+      const lowResponse = await pipe.pumpUntil(
+        session.request('https://localhost/priority', { priority: 'low' }),
+      );
+      t.equal(lowResponse.status, 200, 'standard Fetch priority request completes');
+      t.equal(receivedPriorities[1], 'u=7', 'standard Fetch priority maps to RFC urgency');
+      await t.rejects(
+        () => session.request('https://localhost/priority', { h3Priority: { urgency: 8 } }),
+        /urgency must be an integer from 0 through 7/,
+        'urgency outside the RFC range is rejected',
+      );
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
   it('POST with request body', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();
