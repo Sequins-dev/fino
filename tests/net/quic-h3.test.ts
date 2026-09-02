@@ -394,6 +394,24 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
     } finally {
       session.close();
     }
+    const bounded = Nghttp3Session.createServer(callbacks, {
+      maxFieldSectionSize: 8192,
+      qpackMaxTableCapacity: 1024,
+      qpackEncoderMaxTableCapacity: 512,
+      qpackBlockedStreams: 8,
+    });
+    try {
+      t.equal(bounded.localSettings.get(0x06), 8192, 'field-section limit is advertised');
+      t.equal(bounded.localSettings.get(0x01), 1024, 'QPACK decoder capacity is configured');
+      t.equal(bounded.localSettings.get(0x07), 8, 'QPACK blocked-stream limit is configured');
+    } finally {
+      bounded.close();
+    }
+    t.throws(
+      () => Nghttp3Session.createServer(callbacks, { maxFieldSectionSize: -1 }),
+      /non-negative safe integer/,
+      'invalid resource limits fail before session creation',
+    );
   });
   it('patches custom WebTransport SETTINGS into H3 control streams', (t) => {
     const baseSettings = new Map([
@@ -1202,6 +1220,96 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
         response.headers.get('x-reply'),
         'from-server',
         'client received custom response header',
+      );
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+  it('server rejects oversized request field sections without dispatching', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      let dispatched = false;
+      const serverDone = new H3ServerDriver().run(
+        serverConn,
+        () => {
+          dispatched = true;
+          return new Response('unexpected');
+        },
+        { maxFieldSectionSize: 256 },
+      );
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', {
+          headers: { 'x-oversized': 'x'.repeat(256) },
+        }),
+      );
+      t.equal(response.status, 431, 'oversized request receives 431');
+      t.equal(dispatched, false, 'application handler is not invoked');
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+  it('client rejects oversized response field sections', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      const serverDone = new H3ServerDriver().run(
+        serverConn,
+        () => new Response('body', { headers: { 'x-oversized': 'x'.repeat(256) } }),
+      );
+      const session = await pipe.pumpUntil(
+        H3ClientSession.create(clientConn, { maxFieldSectionSize: 256 }),
+      );
+      await t.rejects(
+        () => pipe.pumpUntil(session.request('https://localhost/')),
+        /field section/i,
+        'oversized response is rejected on its request stream',
+      );
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+  it('client applies the field-section limit independently to response trailers', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      const serverDone = new H3ServerDriver().run(
+        serverConn,
+        () =>
+          new Response('body', {
+            trailers: new Headers({ 'x-oversized': 'x'.repeat(256) }),
+          } as any),
+      );
+      const session = await pipe.pumpUntil(
+        H3ClientSession.create(clientConn, { maxFieldSectionSize: 256 }),
+      );
+      const response = await pipe.pumpUntil(session.request('https://localhost/'));
+      const trailers = response.trailers.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await t.rejects(
+        () => pipe.pumpUntil(response.arrayBuffer()),
+        /field section/i,
+        'oversized trailers cancel the response stream',
+      );
+      const trailerError = await pipe.pumpUntil(trailers);
+      t.ok(
+        trailerError instanceof Error && /field section/i.test(trailerError.message),
+        `oversized response trailers are rejected: ${String(trailerError)}`,
       );
       session.close();
       clientConn.destroy();

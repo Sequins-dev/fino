@@ -329,6 +329,14 @@ export const DR_SIZE = 8;
 // ---------------------------------------------------------------------------
 /** Byte size of the V4 `nghttp3_settings` struct on 64-bit targets. Allocate a zeroed buffer of this size and fill it via `nghttp3_settings_default_versioned` before adjusting fields. */
 export const SETTINGS_SIZE = 72;
+/** Offset of the advertised maximum decoded field-section size (`SETTINGS_MAX_FIELD_SECTION_SIZE`). */
+export const SETTINGS_MAX_FIELD_SECTION_SIZE = 0;
+/** Offset of the decoder's maximum QPACK dynamic-table capacity. */
+export const SETTINGS_QPACK_MAX_DTABLE_CAPACITY = 8;
+/** Offset of the encoder's maximum QPACK dynamic-table capacity. */
+export const SETTINGS_QPACK_ENCODER_MAX_DTABLE_CAPACITY = 16;
+/** Offset of the maximum number of QPACK-blocked streams. */
+export const SETTINGS_QPACK_BLOCKED_STREAMS = 24;
 /** Offset within `nghttp3_settings` of the one-byte `enable_connect_protocol` flag — advertises support for extended CONNECT (RFC 9220). */
 export const SETTINGS_ENABLE_CONNECT_PROTOCOL = 32;
 /** Offset within `nghttp3_settings` of the one-byte `h3_datagram` flag — advertises support for HTTP/3 DATAGRAM (RFC 9297). */
@@ -340,6 +348,12 @@ export const SETTINGS_H3_DATAGRAM = 33;
 export const PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL = 24;
 /** Offset within the `nghttp3_proto_settings` struct handed to the `recv_settings2` callback of the peer's `h3_datagram` flag. */
 export const PROTO_SETTINGS_H3_DATAGRAM = 25;
+/** Offset of the peer's `SETTINGS_MAX_FIELD_SECTION_SIZE` value. */
+export const PROTO_SETTINGS_MAX_FIELD_SECTION_SIZE = 0;
+/** Offset of the peer's QPACK dynamic-table capacity. */
+export const PROTO_SETTINGS_QPACK_MAX_DTABLE_CAPACITY = 8;
+/** Offset of the peer's maximum number of QPACK-blocked streams. */
+export const PROTO_SETTINGS_QPACK_BLOCKED_STREAMS = 16;
 // ---------------------------------------------------------------------------
 // Data flag written into *pflags in read_data callbacks.
 // ---------------------------------------------------------------------------
