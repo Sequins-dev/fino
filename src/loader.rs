@@ -305,6 +305,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:tty/style", "tty/style"),
     source_builtin!("fino:tty/frame", "tty/frame"),
     source_builtin!("internal:tty/width", "internal/tty/width"),
+    source_builtin!("internal:tty/vt", "internal/tty/vt"),
     source_builtin!("fino:tty/tui", "tty/tui"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
