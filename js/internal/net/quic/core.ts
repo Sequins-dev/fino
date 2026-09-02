@@ -65,6 +65,7 @@ import {
   BytesWriter,
   type BytesReadableState,
   type BytesWritableState,
+  type ReadResult,
 } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
 import { topic } from '../../../context/topic.ts';
@@ -2055,7 +2056,7 @@ export class AsyncQueue<T> {
 }
 export class ByteQueue {
   #chunks: Uint8Array[] = [];
-  #waiters: (QueueResolver<Uint8Array | null> & {
+  #waiters: (QueueResolver<ReadResult<Uint8Array>> & {
     maxBytes: number;
     cleanup(): void;
   })[] = [];
@@ -2104,17 +2105,17 @@ export class ByteQueue {
     if (waiter) {
       this.#chunks.push(chunk);
       waiter.cleanup();
-      waiter.resolve(this.#take(waiter.maxBytes)!);
+      waiter.resolve({ done: false, value: this.#take(waiter.maxBytes)! });
     } else {
       this.#chunks.push(chunk);
     }
   }
-  read(maxBytes = 65536, signal?: AbortSignal | null): Promise<Uint8Array | null> {
-    if (maxBytes <= 0) return Promise.resolve(new Uint8Array(0));
+  read(maxBytes = 65536, signal?: AbortSignal | null): Promise<ReadResult<Uint8Array>> {
+    if (maxBytes <= 0) return Promise.resolve({ done: false, value: new Uint8Array(0) });
     const chunk = this.#take(maxBytes);
-    if (chunk !== null) return Promise.resolve(chunk);
+    if (chunk !== null) return Promise.resolve({ done: false, value: chunk });
     if (this.#error !== null) return Promise.reject(this.#error);
-    if (this.#closed) return Promise.resolve(null);
+    if (this.#closed) return Promise.resolve({ done: true, value: undefined });
     if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise((resolve, reject) => {
       let cleanup = () => {};
@@ -2143,7 +2144,7 @@ export class ByteQueue {
     const waiters = this.#waiters.splice(0);
     for (const waiter of waiters) {
       waiter.cleanup();
-      waiter.resolve(null);
+      waiter.resolve({ done: true, value: undefined });
     }
   }
   error(error: Error): void {
@@ -2165,21 +2166,17 @@ export class QuicBytesReader extends BytesReader {
       read(options) {
         const maxBytes = typeof options === 'number' ? options : (options?.maxBytes ?? 65536);
         const signal = typeof options === 'number' ? undefined : options?.signal;
-        return stream[quicStreamInternals.readIncoming](maxBytes, signal).then((chunk) =>
-          chunk === null
-            ? { done: true as const, value: undefined }
-            : { done: false as const, value: chunk },
-        );
+        return stream[quicStreamInternals.readIncoming](maxBytes, signal);
       },
       async readInto(buffer, options) {
         const destination = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-        const chunk = await stream[quicStreamInternals.readIncoming](
+        const result = await stream[quicStreamInternals.readIncoming](
           destination.byteLength,
           options?.signal,
         );
-        if (chunk === null) return { done: true, value: undefined };
-        destination.set(chunk);
-        return { done: false, value: chunk.byteLength };
+        if (result.done) return result;
+        destination.set(result.value);
+        return { done: false, value: result.value.byteLength };
       },
       closeReader: onClose,
     };

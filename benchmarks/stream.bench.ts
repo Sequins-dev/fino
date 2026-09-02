@@ -3,11 +3,17 @@
  *
  * Run with: cargo run -- bench benchmarks/stream.bench.ts
  */
-import { BufferedBytesReader, BufferedBytesWriter, BytesReader, BytesWriter } from 'fino:stream';
+import {
+  BufferedBytesReader,
+  BufferedBytesWriter,
+  BytesReader,
+  BytesWriter,
+  type ReadResult,
+} from 'fino:stream';
 import { bench } from 'fino:bench';
 class MemoryReader extends BytesReader {
-  protected async doReadInto(_buffer: Uint8Array): Promise<number | null> {
-    return null;
+  protected async doReadInto(_buffer: Uint8Array): Promise<ReadResult<number>> {
+    return { done: true, value: undefined };
   }
 }
 class MemoryWriter extends BytesWriter {

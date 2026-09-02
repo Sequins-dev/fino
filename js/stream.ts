@@ -19,7 +19,7 @@
  *
  * class EmptyBytes extends BytesReader {
  *   protected async doReadInto() {
- *     return null;
+ *     return { done: true, value: undefined };
  *   }
  * }
  *

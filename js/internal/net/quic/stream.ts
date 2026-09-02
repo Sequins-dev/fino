@@ -5,7 +5,7 @@
  */
 
 import { Event, EventTarget } from '../../../globals/eventtarget.ts';
-import { BytesReader, BytesWriter } from '../../stream.ts';
+import { BytesReader, BytesWriter, type ReadResult } from '../../stream.ts';
 import * as loop from '../../runtime/loop.ts';
 import { EAGAIN, decodeAddr } from '../../../net/socket.ts';
 import { randBytes } from '../../openssl.ts';
@@ -712,7 +712,7 @@ export class QuicStream extends EventTarget {
   [quicStreamInternals.readIncoming](
     maxBytes = 65536,
     signal?: AbortSignal | null,
-  ): Promise<Uint8Array | null> {
+  ): Promise<ReadResult<Uint8Array>> {
     return this.#incoming.read(maxBytes, signal);
   }
   [quicStreamInternals.extendStreamReceiveCredit](bytes: number): void {

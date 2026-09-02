@@ -181,13 +181,13 @@ class MemoryBytesReader extends BytesReader {
     super();
     this.chunks = chunks.slice();
   }
-  protected async doReadInto(buffer: Uint8Array): Promise<number | null> {
+  protected async doReadInto(buffer: Uint8Array): Promise<ReadResult<number>> {
     const chunk = this.chunks.shift();
-    if (chunk === undefined) return null;
+    if (chunk === undefined) return { done: true, value: undefined };
     const n = Math.min(chunk.byteLength, buffer.byteLength);
     buffer.set(chunk.subarray(0, n));
     if (n < chunk.byteLength) this.chunks.unshift(chunk.subarray(n));
-    return n;
+    return { done: false, value: n };
   }
   protected onConsume(bytes: number): void {
     this.consumed.push(bytes);
@@ -204,16 +204,16 @@ class PendingBytesReader extends BytesReader {
     options?: {
       signal?: AbortSignal | null;
     },
-  ): Promise<number | null> {
+  ): Promise<ReadResult<number>> {
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     return new Promise((resolve, reject) => {
       this.pending = {
         maxBytes: buffer.byteLength,
         resolve: (value) => {
-          if (value === null) return resolve(null);
+          if (value === null) return resolve({ done: true, value: undefined });
           const n = Math.min(value.byteLength, buffer.byteLength);
           buffer.set(value.subarray(0, n));
-          resolve(n);
+          resolve({ done: false, value: n });
         },
         reject,
       };
@@ -482,6 +482,24 @@ describe('UnboundedChannel', () => {
   });
 });
 describe('BytesReader', () => {
+  it('uses ReadResult consistently at subclass read boundaries', async (t) => {
+    class ResultReader extends BytesReader {
+      #done = false;
+      protected async doReadInto(buffer: Uint8Array): Promise<ReadResult<number>> {
+        if (this.#done) return { done: true, value: undefined };
+        this.#done = true;
+        buffer.set([1, 2]);
+        return { done: false, value: 2 };
+      }
+    }
+
+    const reader = new ResultReader();
+    t.deepEqual(await reader.read(4), {
+      done: false,
+      value: new Uint8Array([1, 2]),
+    });
+    t.deepEqual(await reader.read(4), { done: true, value: undefined });
+  });
   it('owns read(n) results even when state storage is reused', async (t) => {
     const storage = new Uint8Array(2);
     let value = 0;
@@ -515,7 +533,7 @@ describe('BytesReader', () => {
       markStarted = resolve;
     });
     class ControlledBytesReader extends BytesReader {
-      protected async doReadInto(buffer: Uint8Array): Promise<number | null> {
+      protected async doReadInto(buffer: Uint8Array): Promise<ReadResult<number>> {
         requests.push(buffer.byteLength);
         if (requests.length === 1) {
           markStarted();
@@ -524,7 +542,7 @@ describe('BytesReader', () => {
           });
         }
         buffer[0] = requests.length;
-        return 1;
+        return { done: false, value: 1 };
       }
     }
     const reader = new ControlledBytesReader();
@@ -569,10 +587,10 @@ describe('BytesReader', () => {
       readonly destinations: Uint8Array[] = [];
       #next = 1;
 
-      protected async doReadInto(buffer: Uint8Array): Promise<number | null> {
+      protected async doReadInto(buffer: Uint8Array): Promise<ReadResult<number>> {
         this.destinations.push(buffer);
         buffer[0] = this.#next++;
-        return 1;
+        return { done: false, value: 1 };
       }
     }
 

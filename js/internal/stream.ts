@@ -143,8 +143,8 @@ export type WriterCloseCallback = (error?: Error) => void | Promise<void>;
  * const reader = new FdReader(0, () => {});
  * const controller = new AbortController();
  * setTimeout(() => controller.abort(new Error('slow input')), 1000);
- * const chunk = await reader.read({ maxBytes: 4096, signal: controller.signal });
- * console.log(chunk?.byteLength ?? 'eof');
+ * const result = await reader.read({ maxBytes: 4096, signal: controller.signal });
+ * console.log(result.done ? 'eof' : result.value.byteLength);
  * ```
  */
 export interface BytesReadOptions {
@@ -857,7 +857,8 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
  * Abstract byte-stream reader with structural read helpers.
  *
  * Subclasses implement `doReadInto(buffer, options)` and fill caller-provided
- * storage, returning the number of bytes written or `null` on EOF.
+ * storage, returning the written byte count as a `ReadResult` or a done result
+ * on EOF.
  * `readExactly()`, `readUntil()`, and `readByte()` are
  * built on that hook and avoid over-fetching. If EOF interrupts an unbuffered
  * structural read, partially consumed bytes are stashed and replayed on the
@@ -870,11 +871,11 @@ export class Reader<T, Options = void> implements AsyncIterator<T> {
  * class MemoryReader extends BytesReader {
  *   data = new Uint8Array([65, 10]);
  *   async doReadInto(buffer) {
- *     if (this.data.byteLength === 0) return null;
+ *     if (this.data.byteLength === 0) return { done: true, value: undefined };
  *     const n = Math.min(buffer.byteLength, this.data.byteLength);
  *     buffer.set(this.data.subarray(0, n));
  *     this.data = this.data.subarray(n);
- *     return n;
+ *     return { done: false, value: n };
  *   }
  * }
  * console.log(await new MemoryReader().readByte());
@@ -920,28 +921,26 @@ export class BytesReader extends Reader<Uint8Array> {
    * Read bytes from the underlying source.
    *
    * Implementations fill at most `buffer.byteLength` bytes, may fill fewer, and
-   * return the number written or `null` on EOF. Backends should avoid returning
-   * zero when possible because structural helpers may need to retry.
+   * return the number written in a value result or a done result on EOF.
+   * Backends should avoid returning zero when possible because structural
+   * helpers may need to retry.
    *
    * ```js
    * import { BytesReader } from 'fino:stream';
    * class EmptyBytes extends BytesReader {
-   *   async doReadInto(_buffer) { return null; }
+   *   async doReadInto(_buffer) { return { done: true, value: undefined }; }
    * }
    * console.log(await new EmptyBytes().read());
    * ```
    *
    * @param buffer Destination storage supplied by the caller.
-   * @returns Number of bytes written, or `null` on EOF.
+   * @returns A written-byte-count result, or a done result on EOF.
    */
   protected async doReadInto(
     buffer: Uint8Array,
     options?: BytesReadOptions,
-  ): Promise<number | null> {
-    if (this.#byteState !== null) {
-      const result = await this.#byteState.readInto(buffer, options);
-      return result.done ? null : result.value;
-    }
+  ): Promise<ReadResult<number>> {
+    if (this.#byteState !== null) return this.#byteState.readInto(buffer, options);
     throw new Error('BytesReader has no byte state');
   }
   /**
@@ -980,7 +979,7 @@ export class BytesReader extends Reader<Uint8Array> {
    *
    * @internal
    */
-  #fetchInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<number | null> {
+  #fetchInto(buffer: Uint8Array, options?: BytesReadOptions): Promise<ReadResult<number>> {
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
     if (this.#stash !== null) {
       const s = this.#stash;
@@ -991,14 +990,15 @@ export class BytesReader extends Reader<Uint8Array> {
       } else {
         this.#stash = s.subarray(n);
       }
-      return Promise.resolve(n);
+      return Promise.resolve(readResult(n));
     }
     return this.doReadInto(buffer, options);
   }
   async #fetch(maxBytes: number, options?: BytesReadOptions): Promise<Uint8Array | null> {
     const buffer = new Uint8Array(maxBytes);
-    const n = await this.#fetchInto(buffer, options);
-    if (n === null) return null;
+    const result = await this.#fetchInto(buffer, options);
+    if (result.done) return null;
+    const n = result.value;
     if (n < 0 || n > buffer.byteLength) throw new RangeError('doReadInto returned invalid length');
     return buffer.subarray(0, n);
   }
@@ -1014,7 +1014,7 @@ export class BytesReader extends Reader<Uint8Array> {
    * ```js
    * import { BytesReader } from 'fino:stream';
    * class EmptyBytes extends BytesReader {
-   *   async doReadInto(_buffer) { return null; }
+   *   async doReadInto(_buffer) { return { done: true, value: undefined }; }
    * }
    * console.log(await new EmptyBytes().read());
    * ```
@@ -1033,8 +1033,9 @@ export class BytesReader extends Reader<Uint8Array> {
     const maxBytes = readOptions.maxBytes ?? 65536;
     if (maxBytes === 0) return readResult(new Uint8Array(0));
     const buffer = new Uint8Array(maxBytes);
-    const n = await this.#fetchInto(buffer, readOptions);
-    if (n === null) return READ_DONE;
+    const result = await this.#fetchInto(buffer, readOptions);
+    if (result.done) return READ_DONE;
+    const n = result.value;
     if (n > 0) this.onConsume(n);
     return readResult(buffer.subarray(0, n));
   }
@@ -1084,18 +1085,14 @@ export class BytesReader extends Reader<Uint8Array> {
     return queueReaderOperation(
       this,
       async () => {
-        const result =
-          this.#stash === null && this.#byteState !== null
-            ? await this.#byteState.readInto(destination, options)
-            : readResult(await this.#fetchInto(destination, options));
+        const result = await this.#fetchInto(destination, options);
         if (!result.done) {
           const n = result.value;
-          if (n === null) return READ_DONE;
           if (n < 0 || n > destination.byteLength)
             throw new RangeError('doReadInto returned invalid length');
           if (n > 0) this.onConsume(n);
         }
-        return result as ReadResult<number>;
+        return result;
       },
       () => READ_DONE,
     );
@@ -1113,11 +1110,11 @@ export class BytesReader extends Reader<Uint8Array> {
    * class MemoryReader extends BytesReader {
    *   data = new Uint8Array([1, 2]);
    *   async doReadInto(buffer) {
-   *     if (!this.data.byteLength) return null;
+   *     if (!this.data.byteLength) return { done: true, value: undefined };
    *     const n = Math.min(buffer.byteLength, this.data.byteLength);
    *     buffer.set(this.data.subarray(0, n));
    *     this.data = this.data.subarray(n);
-   *     return n;
+   *     return { done: false, value: n };
    *   }
    * }
    * const reader = new MemoryReader();
@@ -1165,10 +1162,10 @@ export class BytesReader extends Reader<Uint8Array> {
    * class OneByte extends BytesReader {
    *   done = false;
    *   async doReadInto(buffer) {
-   *     if (this.done) return null;
+   *     if (this.done) return { done: true, value: undefined };
    *     this.done = true;
    *     buffer[0] = 97;
-   *     return 1;
+   *     return { done: false, value: 1 };
    *   }
    * }
    * console.log(await new OneByte().readByte());
@@ -1202,11 +1199,11 @@ export class BytesReader extends Reader<Uint8Array> {
    * class MemoryReader extends BytesReader {
    *   data = new TextEncoder().encode('ok\\nrest');
    *   async doReadInto(buffer) {
-   *     if (!this.data.byteLength) return null;
+   *     if (!this.data.byteLength) return { done: true, value: undefined };
    *     const n = Math.min(buffer.byteLength, this.data.byteLength);
    *     buffer.set(this.data.subarray(0, n));
    *     this.data = this.data.subarray(n);
-   *     return n;
+   *     return { done: false, value: n };
    *   }
    * }
    * const line = await new MemoryReader().readUntil(new Uint8Array([10]));
@@ -1297,7 +1294,7 @@ export class BytesReader extends Reader<Uint8Array> {
  *
  * ```js
  * import { BufferedBytesReader, BytesReader } from 'fino:stream';
- * class EmptyBytes extends BytesReader { async doReadInto() { return null; } }
+ * class EmptyBytes extends BytesReader { async doReadInto() { return { done: true, value: undefined }; } }
  * const reader = BufferedBytesReader.over(new EmptyBytes());
  * console.log(await reader.peek(1));
  * ```
@@ -1372,26 +1369,27 @@ export abstract class BufferedBytesReader extends BytesReader {
   /**
    * Pull one raw chunk from the underlying resource.
    *
-   * Subclasses may return any positive chunk size and must return `null` on
-   * EOF. Empty chunks are ignored by the buffering layer and should be rare to
-   * avoid busy loops.
+   * Subclasses may return any positive chunk size in a value result and must
+   * return a done result on EOF. Empty chunks are ignored by the buffering
+   * layer and should be rare to avoid busy loops.
    *
    * ```js
    * import { BufferedBytesReader } from 'fino:stream';
    * class EmptyBuffered extends BufferedBytesReader {
-   *   async doPullInto() { return null; }
+   *   async doPullInto() { return { done: true, value: undefined }; }
    * }
    * console.log(await new EmptyBuffered().read());
    * ```
    *
-   * @returns A raw byte chunk, or `null` on EOF.
+   * @returns A written-byte-count result, or a done result on EOF.
    */
-  protected abstract doPullInto(buffer: Uint8Array): Promise<number | null>;
+  protected abstract doPullInto(buffer: Uint8Array): Promise<ReadResult<number>>;
 
   async #pullChunk(): Promise<Uint8Array | null> {
     const buffer = new Uint8Array(65536);
-    const n = await this.doPullInto(buffer);
-    if (n === null) return null;
+    const result = await this.doPullInto(buffer);
+    if (result.done) return null;
+    const n = result.value;
     if (n < 0 || n > buffer.byteLength) throw new RangeError('doPullInto returned invalid length');
     return buffer.subarray(0, n);
   }
@@ -1404,7 +1402,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    *
    * ```js
    * import { BufferedBytesReader, BytesReader } from 'fino:stream';
-   * class EmptyBytes extends BytesReader { async doReadInto() { return null; } }
+   * class EmptyBytes extends BytesReader { async doReadInto() { return { done: true, value: undefined }; } }
    * const buffered = BufferedBytesReader.over(new EmptyBytes());
    * console.log(buffered.buffered);
    * ```
@@ -1414,9 +1412,8 @@ export abstract class BufferedBytesReader extends BytesReader {
    */
   static over(source: BytesReader): BufferedBytesReader {
     return new (class WrappedBufferedReader extends BufferedBytesReader {
-      protected async doPullInto(buffer: Uint8Array): Promise<number | null> {
-        const result = await source.readInto(buffer);
-        return result.done ? null : result.value;
+      protected doPullInto(buffer: Uint8Array): Promise<ReadResult<number>> {
+        return source.readInto(buffer);
       }
     })(() => source.close());
   }
@@ -1431,29 +1428,31 @@ export abstract class BufferedBytesReader extends BytesReader {
    * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
-   *   async doPullInto(buffer) { if (this.done) return null; this.done = true; buffer.set([1, 2]); return 2; }
+   *   async doPullInto(buffer) { if (this.done) return { done: true, value: undefined }; this.done = true; buffer.set([1, 2]); return { done: false, value: 2 }; }
    * }
-   * console.log((await new OneChunk().read())?.byteLength);
+   * const result = await new OneChunk().read();
+   * console.log(result.done ? 'eof' : result.value.byteLength);
    * ```
    *
    * @param maxBytes Maximum bytes to return.
-   * @returns A byte chunk, or `null` on EOF.
+   * @returns A written-byte-count result, or a done result on EOF.
    */
   protected async doReadInto(
     buffer: Uint8Array,
     _options?: BytesReadOptions,
-  ): Promise<number | null> {
+  ): Promise<ReadResult<number>> {
     while (this.#chunks.length === 0) {
-      if (this.#upstreamDone) return null;
-      const n = await this.doPullInto(buffer);
-      if (n === null) {
+      if (this.#upstreamDone) return READ_DONE;
+      const result = await this.doPullInto(buffer);
+      if (result.done) {
         this.#upstreamDone = true;
-        return null;
+        return READ_DONE;
       }
+      const n = result.value;
       if (n < 0 || n > buffer.byteLength)
         throw new RangeError('doPullInto returned invalid length');
       if (n === 0) continue;
-      return n;
+      return readResult(n);
     }
     const head = this.#chunks[0]!;
     const n = Math.min(head.byteLength, buffer.byteLength);
@@ -1464,7 +1463,7 @@ export abstract class BufferedBytesReader extends BytesReader {
       this.#chunks[0] = head.subarray(n);
     }
     this.#bufferedBytes -= n;
-    return n;
+    return readResult(n);
   }
   // ── extra methods: only available on the buffered variant ─────────
   /**
@@ -1476,7 +1475,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    *
    * ```js
    * import { BufferedBytesReader } from 'fino:stream';
-   * class EmptyBuffered extends BufferedBytesReader { async doPullInto() { return null; } }
+   * class EmptyBuffered extends BufferedBytesReader { async doPullInto() { return { done: true, value: undefined }; } }
    * console.log(new EmptyBuffered().buffered);
    * ```
    *
@@ -1496,7 +1495,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    *
    * ```js
    * import { BufferedBytesReader } from 'fino:stream';
-   * class EmptyBuffered extends BufferedBytesReader { async doPullInto() { return null; } }
+   * class EmptyBuffered extends BufferedBytesReader { async doPullInto() { return { done: true, value: undefined }; } }
    * const reader = new EmptyBuffered();
    * await reader.peek(1);
    * console.log(reader.eof);
@@ -1519,10 +1518,10 @@ export abstract class BufferedBytesReader extends BytesReader {
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPullInto(buffer) {
-   *     if (this.done) return null;
+   *     if (this.done) return { done: true, value: undefined };
    *     this.done = true;
    *     buffer.set([1, 2]);
-   *     return 2;
+   *     return { done: false, value: 2 };
    *   }
    * }
    * const reader = new OneChunk();
@@ -1565,7 +1564,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * import { BufferedBytesReader } from 'fino:stream';
    * class Chunked extends BufferedBytesReader {
    *   chunks = [new Uint8Array([65]), new Uint8Array([10])];
-   *   async doPullInto(buffer) { const chunk = this.chunks.shift(); if (!chunk) return null; buffer.set(chunk); return chunk.length; }
+   *   async doPullInto(buffer) { const chunk = this.chunks.shift(); if (!chunk) return { done: true, value: undefined }; buffer.set(chunk); return { done: false, value: chunk.length }; }
    * }
    * const reader = new Chunked();
    * await reader.peek(2);
@@ -1633,10 +1632,10 @@ export abstract class BufferedBytesReader extends BytesReader {
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
    *   async doPullInto(buffer) {
-   *     if (this.done) return null;
+   *     if (this.done) return { done: true, value: undefined };
    *     this.done = true;
    *     buffer.set([1, 2]);
-   *     return 2;
+   *     return { done: false, value: 2 };
    *   }
    * }
    * const reader = new OneChunk();
@@ -1668,7 +1667,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * import { BufferedBytesReader } from 'fino:stream';
    * class OneChunk extends BufferedBytesReader {
    *   done = false;
-   *   async doPullInto(buffer) { if (this.done) return null; this.done = true; buffer[0] = 1; return 1; }
+   *   async doPullInto(buffer) { if (this.done) return { done: true, value: undefined }; this.done = true; buffer[0] = 1; return { done: false, value: 1 }; }
    * }
    * const reader = new OneChunk();
    * console.log(await reader.readExactly(2));
@@ -1705,7 +1704,7 @@ export abstract class BufferedBytesReader extends BytesReader {
    * import { BufferedBytesReader } from 'fino:stream';
    * class Lines extends BufferedBytesReader {
    *   chunks = [new TextEncoder().encode('a\\n')];
-   *   async doPullInto(buffer) { const chunk = this.chunks.shift(); if (!chunk) return null; buffer.set(chunk); return chunk.length; }
+   *   async doPullInto(buffer) { const chunk = this.chunks.shift(); if (!chunk) return { done: true, value: undefined }; buffer.set(chunk); return { done: false, value: chunk.length }; }
    * }
    * const reader = new Lines();
    * console.log(new TextDecoder().decode(await reader.readUntil(new Uint8Array([10]))));
@@ -1953,9 +1952,9 @@ export class FdReader extends BufferedBytesReader {
   /**
    * Pull one descriptor chunk for the buffered reader.
    *
-   * The method waits for readability when needed, copies read bytes out of the
-   * reusable arena, returns `null` on EOF or after close, and treats non-EAGAIN
-   * read failures as EOF.
+   * The method waits for readability when needed, fills the supplied storage,
+   * returns a done result on EOF or after close, and treats non-EAGAIN read
+   * failures as EOF.
    *
    * ```js
    * import { FdReader } from 'fino:stream';
@@ -1963,27 +1962,27 @@ export class FdReader extends BufferedBytesReader {
    * console.log(typeof reader.read);
    * ```
    *
-   * @returns A byte chunk, or `null` on EOF/close.
+   * @returns A written-byte-count result, or a done result on EOF/close.
    * @internal
    */
-  protected async doPullInto(buffer: Uint8Array): Promise<number | null> {
+  protected async doPullInto(buffer: Uint8Array): Promise<ReadResult<number>> {
     while (true) {
-      if (this.closed) return null;
+      if (this.closed) return READ_DONE;
       if (this.#fd < 0) throw new Error('read failed');
       if (!this.#readBeforeReady && this.#avail <= 0) {
         const available = await this.#waitReadable();
-        if (available === null) return null;
+        if (available === null) return READ_DONE;
         this.#avail = available;
       }
       const n = lib.symbols.read(this.#fd, buffer, buffer.byteLength) as number;
       if (n > 0) {
         this.#avail = Math.max(0, this.#avail - n);
-        return n;
+        return readResult(n);
       }
-      if (n === 0) return null;
-      if (getErrno() !== EAGAIN) return null;
+      if (n === 0) return READ_DONE;
+      if (getErrno() !== EAGAIN) return READ_DONE;
       const available = await this.#waitReadable();
-      if (available === null) return null;
+      if (available === null) return READ_DONE;
       this.#avail = available;
     }
   }

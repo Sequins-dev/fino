@@ -33,9 +33,9 @@
  *   await writer.write(new TextEncoder().encode('ping'));
  *   await writer.flush();
  *
- *   const bytes = await reader.read();
+ *   const result = await reader.read();
  *   conn.close();
- *   return bytes;
+ *   return result.done ? null : result.value;
  * }
  * ```
  *
@@ -297,9 +297,9 @@ export interface ListenOptions {
  *
  * async function echo(conn: Connection): Promise<void> {
  *   const [reader, writer] = conn.split();
- *   const chunk = await reader.read();
- *   if (chunk) {
- *     await writer.write(chunk);
+ *   const result = await reader.read();
+ *   if (!result.done) {
+ *     await writer.write(result.value);
  *     await writer.flush();
  *   }
  *   conn.close();
@@ -393,8 +393,8 @@ export interface Connection {
  *
  *   for await (const conn of listener) {
  *     const [reader, writer] = conn.split();
- *     const req = await reader.read();
- *     if (req) await writer.write(req);
+ *     const result = await reader.read();
+ *     if (!result.done) await writer.write(result.value);
  *     conn.close();
  *   }
  * }
@@ -557,9 +557,9 @@ export interface DatagramSocket {
  *   const [reader, writer] = conn.split();
  *   await writer.write(new TextEncoder().encode('GET / HTTP/1.0\r\n\r\n'));
  *   await writer.flush();
- *   const response = await reader.read();
+ *   const result = await reader.read();
  *   conn.close();
- *   return response;
+ *   return result.done ? null : result.value;
  * }
  * ```
  */

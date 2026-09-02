@@ -65,7 +65,7 @@
  */
 import * as openssl from '../internal/openssl.ts';
 import * as loop from '../internal/runtime/loop.ts';
-import { BufferedBytesReader, BufferedBytesWriter } from '../internal/stream.ts';
+import { BufferedBytesReader, BufferedBytesWriter, type ReadResult } from '../internal/stream.ts';
 import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.ts';
 import type { Address } from './socket.ts';
 import type { ConnectOptions } from './socket.ts';
@@ -299,7 +299,7 @@ async function _doHandshake(
  *
  * ```ts no_run
  * const [reader] = tls.split();
- * const bytes = await reader.read();
+ * const result = await reader.read();
  * ```
  */
 export class TlsReader extends BufferedBytesReader {
@@ -390,7 +390,7 @@ export class TlsReader extends BufferedBytesReader {
    * ```ts no_run
    * const includePrivateExample = {
    *   doPullInto() {
-   *     return null;
+   *     return { done: true, value: undefined };
    *   },
    * };
    * includePrivateExample.doPullInto(new Uint8Array(1));
@@ -398,22 +398,22 @@ export class TlsReader extends BufferedBytesReader {
    *
    * @internal
    */
-  protected async doPullInto(buffer: Uint8Array): Promise<number | null> {
+  protected async doPullInto(buffer: Uint8Array): Promise<ReadResult<number>> {
     while (true) {
-      if (this.closed) return null;
+      if (this.closed) return { done: true, value: undefined };
       if (this.#needsReadable && openssl.sslPending(this.#ssl) <= 0) {
         await loop.readable(this.#fd);
-        if (this.closed) return null;
+        if (this.closed) return { done: true, value: undefined };
       }
       this.#needsReadable = false;
       const n = openssl.sslRead(this.#ssl, buffer, buffer.byteLength);
       if (n > 0) {
         this.#needsReadable = openssl.sslPending(this.#ssl) <= 0;
-        return n;
+        return { done: false, value: n };
       }
-      if (n === 0) return null;
+      if (n === 0) return { done: true, value: undefined };
       const err = openssl.sslGetError(this.#ssl, n);
-      if (err === openssl.SSL_ERROR_ZERO_RETURN) return null;
+      if (err === openssl.SSL_ERROR_ZERO_RETURN) return { done: true, value: undefined };
       if (err === openssl.SSL_ERROR_WANT_READ) {
         this.#needsReadable = true;
         continue;
@@ -427,7 +427,7 @@ export class TlsReader extends BufferedBytesReader {
       if (err === openssl.SSL_ERROR_SSL || err === openssl.SSL_ERROR_SYSCALL) {
         throw new Error('TLS read failed: ' + openssl.getErrorString());
       }
-      return null;
+      return { done: true, value: undefined };
     }
   }
 }
