@@ -7,6 +7,8 @@
 use ::libc;
 use ::v8;
 
+#[cfg(target_os = "linux")]
+use super::thread;
 use super::{message, process, transit};
 use crate::state::{ImportRule, get_state, resolve_directive};
 
