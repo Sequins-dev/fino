@@ -13,7 +13,7 @@
  *
  * The concrete reader/writer returned by `Connection.split()` may be backed by
  * real fds (FdReader/FdWriter) or by in-memory channels - callers only see the
- * BufferedBytesReader / BufferedBytesWriter interface from fino:stream.
+ * BytesReader / BytesWriter interface from fino:stream.
  *
  * ## Example
  *
@@ -41,7 +41,7 @@
  *
  * @internal
  */
-import type { BufferedBytesReader, BufferedBytesWriter } from '../stream.ts';
+import type { BytesReader, BytesWriter } from '../stream.ts';
 // ---------------------------------------------------------------------------
 // Address types
 // ---------------------------------------------------------------------------
@@ -356,7 +356,7 @@ export interface Connection {
    * pair.length;
    * ```
    */
-  split(): [BufferedBytesReader, BufferedBytesWriter];
+  split(): [BytesReader, BytesWriter];
   /**
    * Close the connection immediately, releasing resources.
    *

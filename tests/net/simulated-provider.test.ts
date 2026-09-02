@@ -3,6 +3,7 @@ import {
   SimulatedNetworkProvider,
   type SimulatedNetworkTraceEvent,
 } from '../../js/internal/net/simulated-provider.ts';
+import { BytesReader, BytesWriter } from '../../js/internal/stream.ts';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 async function readAll(reader: AsyncIterable<Uint8Array>) {
@@ -230,6 +231,33 @@ describe('SimulatedNetworkProvider datagrams', () => {
   });
 });
 describe('SimulatedNetworkProvider streams', () => {
+  it('exposes the shared byte-channel endpoint types', async (t) => {
+    const net = new SimulatedNetworkProvider();
+    const listener = net.listen({
+      family: 'ipv4',
+      ip: '10.0.0.2',
+      port: 8080,
+    });
+    const client = await net.connect(listener.address);
+    const server = await listener.accept();
+    if (server === null) throw new Error('expected accepted connection');
+    const [clientReader, clientWriter] = client.split();
+    const [serverReader, serverWriter] = server.split();
+    t.ok(clientReader instanceof BytesReader, 'reader uses the shared byte endpoint');
+    t.ok(clientWriter instanceof BytesWriter, 'writer uses the shared byte endpoint');
+    const destination = new Uint8Array(8);
+    const read = serverReader.readInto(destination.subarray(2, 6));
+    await clientWriter.write(encodeUtf8('ping'));
+    t.deepEqual(await read, { done: false, value: 4 }, 'readInto returns the channel result');
+    t.equal(decodeUtf8(destination.subarray(2, 6)), 'ping', 'readInto fills the supplied view');
+    await clientReader.close();
+    await clientWriter.close();
+    await serverReader.close();
+    await serverWriter.close();
+    client.close();
+    server.close();
+    listener.close();
+  });
   it('connects stream clients to listeners with stable local and remote addresses', async (t) => {
     const net = new SimulatedNetworkProvider();
     const listener = net.listen({
@@ -249,11 +277,13 @@ describe('SimulatedNetworkProvider streams', () => {
     const [serverReader, serverWriter] = server.split();
     const [clientReader, clientWriter] = client.split();
     await clientWriter.write(encodeUtf8('ping'));
+    const serverPayload = readAll(serverReader);
     await clientWriter.close();
-    t.equal(decodeUtf8(await readAll(serverReader)), 'ping', 'server receives stream payload');
+    t.equal(decodeUtf8(await serverPayload), 'ping', 'server receives stream payload');
     await serverWriter.write(encodeUtf8('pong'));
+    const clientPayload = readAll(clientReader);
     await serverWriter.close();
-    t.equal(decodeUtf8(await readAll(clientReader)), 'pong', 'client receives stream payload');
+    t.equal(decodeUtf8(await clientPayload), 'pong', 'client receives stream payload');
     await serverReader.close();
     await clientReader.close();
     server.close();

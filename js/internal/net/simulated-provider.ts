@@ -45,6 +45,7 @@ import {
   type Listener,
   type SocketAddress,
 } from './provider.ts';
+import { BufferedBytesChannelState, BytesReader, BytesWriter } from '../stream.ts';
 type QueueResolver<T> = {
   resolve(value: T): void;
   reject(error: unknown): void;
@@ -85,8 +86,8 @@ type ScriptedCorruptionRule = {
   corruptByte?: number;
 };
 type StreamPair = {
-  clientInbound: SimulatedByteQueue;
-  serverInbound: SimulatedByteQueue;
+  clientInbound: BufferedBytesChannelState;
+  serverInbound: BufferedBytesChannelState;
 };
 type SimulatedDatagramDropReason =
   | 'closed'
@@ -404,136 +405,18 @@ class AsyncQueue<T> {
     for (const waiter of waiters) waiter.resolve(null);
   }
 }
-class SimulatedByteQueue {
-  #chunks: Uint8Array[] = [];
-  #waiters: QueueResolver<Uint8Array | null>[] = [];
-  #closed = false;
-  #error: Error | null = null;
-  #take(maxBytes: number): Uint8Array | null {
-    const first = this.#chunks[0];
-    if (first === undefined) return null;
-    if (first.byteLength <= maxBytes) return this.#chunks.shift()!;
-    this.#chunks[0] = first.subarray(maxBytes);
-    return first.subarray(0, maxBytes);
-  }
-  push(data: Uint8Array): void {
-    if (this.#closed) return;
-    const copy = cloneBytes(data);
-    const waiter = this.#waiters.shift();
-    if (waiter) waiter.resolve(copy);
-    else this.#chunks.push(copy);
-  }
-  read(maxBytes = 65536): Promise<Uint8Array | null> {
-    if (maxBytes <= 0) return Promise.resolve(new Uint8Array(0));
-    const chunk = this.#take(maxBytes);
-    if (chunk !== null) return Promise.resolve(chunk);
-    if (this.#error !== null) return Promise.reject(this.#error);
-    if (this.#closed) return Promise.resolve(null);
-    return new Promise((resolve, reject) => {
-      this.#waiters.push({
-        resolve,
-        reject,
-      });
-    });
-  }
-  close(): void {
-    if (this.#closed) return;
-    this.#closed = true;
-    const waiters = this.#waiters.splice(0);
-    for (const waiter of waiters) waiter.resolve(null);
-  }
-  error(error: Error): void {
-    if (this.#closed && this.#error !== null) return;
-    this.#closed = true;
-    this.#error = error;
-    const waiters = this.#waiters.splice(0);
-    for (const waiter of waiters) waiter.reject(error);
-  }
-}
-class SimulatedStreamReader implements AsyncIterable<Uint8Array> {
-  #queue: SimulatedByteQueue;
-  #closed = false;
-  constructor(queue: SimulatedByteQueue) {
-    this.#queue = queue;
-  }
-  get closed(): boolean {
-    return this.#closed;
-  }
-  read(
-    input?:
-      | number
-      | {
-          maxBytes?: number;
-        },
-  ): Promise<{ done: false; value: Uint8Array } | { done: true; value: undefined }> {
-    if (this.#closed) return Promise.resolve({ done: true, value: undefined });
-    const maxBytes = typeof input === 'number' ? input : input?.maxBytes;
-    return this.#queue
-      .read(maxBytes ?? 65536)
-      .then((chunk) =>
-        chunk === null
-          ? { done: true as const, value: undefined }
-          : { done: false as const, value: chunk },
-      );
-  }
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#queue.close();
-  }
-  async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    for (;;) {
-      const result = await this.read();
-      if (result.done) {
-        await this.close();
-        return;
-      }
-      yield result.value;
-    }
-  }
-}
-class SimulatedStreamWriter {
-  #queue: SimulatedByteQueue;
-  #closed = false;
-  constructor(queue: SimulatedByteQueue) {
-    this.#queue = queue;
-  }
-  get closed(): boolean {
-    return this.#closed;
-  }
-  async write(data: Uint8Array | ArrayBuffer): Promise<void> {
-    if (this.#closed) throw new Error('Writer is closed');
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    this.#queue.push(bytes);
-  }
-  async writev(vecs: Uint8Array[], count: number = vecs.length): Promise<void> {
-    for (let i = 0; i < count; i++) {
-      const vec = vecs[i];
-      if (vec !== undefined && vec.byteLength > 0) await this.write(vec);
-    }
-  }
-  async pipe(iterable: AsyncIterable<Uint8Array> | Iterable<Uint8Array>): Promise<void> {
-    for await (const chunk of iterable) await this.write(chunk);
-  }
-  async flush(): Promise<void> {}
-  async close(): Promise<void> {
-    if (this.#closed) return;
-    this.#closed = true;
-    this.#queue.close();
-  }
-}
 class SimulatedConnection implements Connection {
   readonly remoteAddress: SocketAddress | null;
   readonly localAddress: SocketAddress | null;
-  #inbound: SimulatedByteQueue;
-  #outbound: SimulatedByteQueue;
+  #inbound: BufferedBytesChannelState;
+  #outbound: BufferedBytesChannelState;
   #closed = false;
   #split = false;
   constructor(
     localAddress: SocketAddress | null,
     remoteAddress: SocketAddress | null,
-    inbound: SimulatedByteQueue,
-    outbound: SimulatedByteQueue,
+    inbound: BufferedBytesChannelState,
+    outbound: BufferedBytesChannelState,
   ) {
     this.localAddress = localAddress === null ? null : copyAddress(localAddress);
     this.remoteAddress = remoteAddress === null ? null : copyAddress(remoteAddress);
@@ -543,17 +426,17 @@ class SimulatedConnection implements Connection {
   get closed(): boolean {
     return this.#closed;
   }
-  split(): [any, any] {
+  split(): [BytesReader, BytesWriter] {
     if (this.#split) throw new Error('Simulated connection has already been split');
     if (this.#closed) throw new Error('Simulated connection is closed');
     this.#split = true;
-    return [new SimulatedStreamReader(this.#inbound), new SimulatedStreamWriter(this.#outbound)];
+    return [new BytesReader(this.#inbound), new BytesWriter(this.#outbound)];
   }
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#inbound.close();
-    this.#outbound.close();
+    this.#inbound.closeReader();
+    void this.#outbound.closeWriter().catch(() => {});
   }
 }
 class SimulatedListener implements Listener {
@@ -971,8 +854,8 @@ export class SimulatedNetworkProvider extends NetworkProvider {
     }
     const localAddress = this.#allocateStreamLocal(addr);
     const pair: StreamPair = {
-      clientInbound: new SimulatedByteQueue(),
-      serverInbound: new SimulatedByteQueue(),
+      clientInbound: new BufferedBytesChannelState(),
+      serverInbound: new BufferedBytesChannelState(),
     };
     const client = new SimulatedConnection(
       localAddress,
