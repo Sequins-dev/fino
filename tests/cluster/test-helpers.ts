@@ -22,12 +22,13 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function startClusterOnAvailablePort(
   options: (port: number) => Parameters<typeof startCluster>[0],
   label = 'startCluster',
+  timeoutMs = START_TIMEOUT_MS,
 ): Promise<number> {
   let collision: unknown;
   for (let attempt = 0; attempt < START_ATTEMPTS; attempt++) {
     const port = randomPort();
     try {
-      await withTimeout(startCluster(options(port)), START_TIMEOUT_MS, label);
+      await withTimeout(startCluster(options(port)), timeoutMs, label);
       return port;
     } catch (err) {
       await leaveCluster();

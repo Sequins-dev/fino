@@ -9,6 +9,7 @@ import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
 import { quicAvailable } from 'fino:net/quic';
 import { h3Available } from 'internal:net/http/h3/bindings';
+import { startClusterOnAvailablePort } from './test-helpers.ts';
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 const remoteCallEntry = `file://${cwd()}/tests/cluster/fixtures/remote-call.ts`;
 const longRunningEntry = `file://${cwd()}/tests/realm/fixtures/long-running.ts`;
@@ -24,9 +25,6 @@ async function readLine(proc: Process): Promise<string> {
   const bytes = await proc.stdout.readUntil(new Uint8Array([10]), 4096);
   if (bytes === null) throw new Error('worker exited before readiness line');
   return decodeUtf8(bytes).trim();
-}
-function randomPort(): number {
-  return 3e4 + Math.floor(Math.random() * 1e4);
 }
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   const timer = loop.timeout(ms);
@@ -99,15 +97,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('startCluster + joinCluster route remote Realm.call over WebTransport', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-seed',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     let worker: Process | null = null;
     try {
@@ -129,18 +126,16 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('startCluster self-joins through the configured IPv6 hostname and path', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    const path = `/__fino_cluster_ipv6_${port}`;
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         hostname: '::1',
-        path,
+        path: `/__fino_cluster_ipv6_${port}`,
         nodeId: 'cluster-ipv6-self-join',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster IPv6 self-join',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     const firstClose = leaveCluster();
     t.equal(leaveCluster(), firstClose, 'concurrent leaveCluster calls share shutdown');
@@ -152,25 +147,24 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
     await leaveCluster();
     await leaveCluster();
     const handlesBefore = loop._activeHandleCounts();
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-restart',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'first startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     await leaveCluster();
-    await withTimeout(
-      startCluster({
-        port: port + 1,
+    await startClusterOnAvailablePort(
+      (port) => ({
+        port,
         nodeId: 'cluster-restart-2',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'second startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     await leaveCluster();
     t.ok(true, 'cluster state can be reused after leaveCluster');
@@ -184,15 +178,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('allows only one active cluster connection per process', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-single-active',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     try {
       await t.rejects(
@@ -211,15 +204,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('remote Realm.run settles after terminate()', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-terminate',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     let worker: Process | null = null;
     try {
@@ -248,15 +240,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
     const oldTimeout = env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS;
     env.FINO_CLUSTER_HEARTBEAT_INTERVAL_MS = '50';
     env.FINO_CLUSTER_HEARTBEAT_TIMEOUT_MS = '1000';
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-worker-loss',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     let worker: Process | null = null;
     const marker = `/tmp/fino-cluster-call-active-${Date.now()}-${Math.random()}`;
@@ -289,15 +280,14 @@ describe('fino:cluster public WebTransport integration', { exclusive: true }, ()
   });
   it('leaveCluster rejects an active remote Realm.call', async (t) => {
     if (!quicAvailable || !h3Available) return;
-    const port = randomPort();
-    await withTimeout(
-      startCluster({
+    const port = await startClusterOnAvailablePort(
+      (port) => ({
         port,
         nodeId: 'cluster-shutdown',
         tls: clusterTls,
       }),
-      CLUSTER_OPERATION_TIMEOUT_MS,
       'startCluster',
+      CLUSTER_OPERATION_TIMEOUT_MS,
     );
     let worker: Process | null = null;
     try {
