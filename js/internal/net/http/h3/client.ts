@@ -236,7 +236,7 @@ export class H3ClientSession {
   #pending = new Map<bigint, PendingRequest>();
   #webTransports = new Map<bigint, WebTransport>();
   #closed = false;
-  #goawayLastStreamId: bigint | null = null;
+  #goawayStreamId: bigint | null = null;
   #goawayReceived: Promise<void>;
   #resolveGoawayReceived: (() => void) | null = null;
   #peerSettingsReceived: Promise<void>;
@@ -373,18 +373,18 @@ export class H3ClientSession {
         }
       },
       onAckedStreamData() {},
-      onShutdown(lastStreamId: bigint) {
-        if (instance.#goawayLastStreamId === null || lastStreamId < instance.#goawayLastStreamId) {
-          instance.#goawayLastStreamId = lastStreamId;
+      onShutdown(streamId: bigint) {
+        if (instance.#goawayStreamId === null || streamId < instance.#goawayStreamId) {
+          instance.#goawayStreamId = streamId;
         }
         instance.#resolveGoawayReceived?.();
         instance.#resolveGoawayReceived = null;
         for (const [sid, req] of instance.#pending) {
-          if (sid > lastStreamId) {
+          if (sid >= streamId) {
             if (!req.done) {
               req.done = true;
               const error = new Error(
-                `H3 stream rejected: server GOAWAY (last accepted: ${lastStreamId})`,
+                `H3 stream rejected: server GOAWAY (first rejected: ${streamId})`,
               );
               req.body.error(error);
               req.trailerReject?.(error);
@@ -499,7 +499,7 @@ export class H3ClientSession {
    * reset or closed with an error, if the connection closes, or if the peer
    * returns a missing or out-of-range `:status`. Throws synchronously if the
    * session is already closed, or immediately rejects if a server GOAWAY has
-   * arrived and this request would exceed the last accepted stream id.
+   * arrived and this request would use or exceed the first rejected stream id.
    *
    * ```ts no_run
    * const res = await session.request('https://example.com/upload', {
@@ -513,9 +513,9 @@ export class H3ClientSession {
   async request(url: string | URL, init?: H3RequestInit): Promise<Response> {
     if (this.#closed) throw new Error('H3 session is closed');
     if (init?.signal?.aborted) throw abortError(init.signal.reason);
-    if (this.#goawayLastStreamId !== null) {
+    if (this.#goawayStreamId !== null) {
       throw new Error(
-        `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`,
+        `H3 stream rejected: server GOAWAY (first rejected: ${this.#goawayStreamId})`,
       );
     }
     const parsed = typeof url === 'string' ? new URL(url) : url;
@@ -552,10 +552,10 @@ export class H3ClientSession {
     }
     // If a GOAWAY arrived while we were waiting to open the stream, reject it
     // immediately rather than letting it linger until connection close.
-    if (this.#goawayLastStreamId !== null && sid > this.#goawayLastStreamId) {
+    if (this.#goawayStreamId !== null && sid >= this.#goawayStreamId) {
       void quicStream.writer.close();
       throw new Error(
-        `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId})`,
+        `H3 stream rejected: server GOAWAY (first rejected: ${this.#goawayStreamId})`,
       );
     }
     this.#session.addQuicStream(sid, quicStream.writer);
@@ -647,7 +647,7 @@ export class H3ClientSession {
           : String(e);
       if (message.includes(`failed: ${NGHTTP3_ERR_CONN_CLOSING}`)) {
         const error = new Error(
-          `H3 stream rejected: server GOAWAY (last accepted: ${this.#goawayLastStreamId ?? 'unknown'})`,
+          `H3 stream rejected: server GOAWAY (first rejected: ${this.#goawayStreamId ?? 'unknown'})`,
         );
         pending?.body.error(error);
         pending?.trailerReject?.(error);
@@ -746,7 +746,7 @@ export class H3ClientSession {
    * @internal
    */
   _waitForGoawayForTest(): Promise<void> {
-    if (this.#goawayLastStreamId !== null) return Promise.resolve();
+    if (this.#goawayStreamId !== null) return Promise.resolve();
     return this.#goawayReceived;
   }
   #resolveResponse(streamId: bigint): void {

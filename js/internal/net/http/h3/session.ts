@@ -209,10 +209,11 @@ export interface H3SessionCallbacks {
    */
   onAckedStreamData?(streamId: bigint, datalen: bigint): void;
   /**
-   * Optional. The peer sent GOAWAY; `lastStreamId` is the highest stream id it
-   * will still service. Streams above it should be treated as retryable.
+   * Optional. The peer sent GOAWAY; `streamId` is the first client-initiated
+   * bidirectional stream the server will not process. Streams at or above it
+   * should be treated as retryable.
    */
-  onShutdown?(lastStreamId: bigint): void;
+  onShutdown?(streamId: bigint): void;
   /**
    * Optional. The peer's HTTP/3 SETTINGS were received (or, for WebTransport,
    * decoded from the control-stream prefix). The map is keyed by SETTINGS

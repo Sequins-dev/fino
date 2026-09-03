@@ -1789,6 +1789,32 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       await pipe.close();
     }
   });
+  it('GET request DATA remains readable until the request stream ends', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      let received = '';
+      const serverDone = new H3ServerDriver().run(serverConn, async (request) => {
+        received = new TextDecoder().decode(await request.arrayBuffer());
+        return new Response('ok');
+      });
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/get-with-body', {
+          method: 'GET',
+          body: new TextEncoder().encode('request payload'),
+        }),
+      );
+      t.equal(await pipe.pumpUntil(response.text()), 'ok', 'request completes normally');
+      t.equal(received, 'request payload', 'handler receives GET request DATA');
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
   it('request() after close() rejects immediately without unhandled rejection', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();
@@ -2287,8 +2313,8 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       t.equal(req1.status, 200, 'request 1 succeeds before GOAWAY');
       await pipe.pumpUntil(req1.arrayBuffer());
       // Pump the GOAWAY through to the client. After this returns, onShutdown has
-      // fired and #goawayLastStreamId is set — so request() throws before opening
-      // a new stream, regardless of the conservative lastStreamId value nghttp3 sent.
+      // fired and #goawayStreamId is set — so request() throws before opening
+      // a new stream, regardless of the conservative GOAWAY identifier nghttp3 sent.
       await serverSession.closeWhenIdle();
       await pipe.pumpUntil(clientSession._waitForGoawayForTest());
       await t.rejects(
@@ -2562,16 +2588,16 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       await pipe.close();
     }
   });
-  it('GOAWAY onShutdown rejects in-flight requests with sid > lastStreamId', async (t) => {
+  it('GOAWAY rejects in-flight requests with sid equal to its identifier', async (t) => {
     if (!available) return;
     // Timeline:
     //   1. reqA (stream 0) completes — server's last received bidi = 0.
     //   2. reqB (stream 4) and reqC (stream 8) submitted before any pump.
     //   3. closeWhenIdle() queued on server. Server has received only stream 0, so
-    //      nghttp3_conn_shutdown sets lastStreamId = 4 (last received + 4 grace).
+    //      nghttp3_conn_shutdown sets the first rejected stream ID to 4.
     //   4. Pump: GOAWAY(4) reaches client → onShutdown(4) →
-    //        reqB sid=4: not rejected (4 > 4 is false; might have been in flight)
-    //        reqC sid=8: rejected with GOAWAY error (8 > 4 is true)
+    //        reqB sid=4 and reqC sid=8 are both rejected. RFC 9114 §5.2
+    //        defines the GOAWAY identifier as the first rejected stream ID.
     const pipe = h3Pipe();
     try {
       const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
@@ -2638,6 +2664,15 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       const reqB = clientSession.request('https://localhost/b');
       const reqC = clientSession.request('https://localhost/c');
       const goawayDone = serverSession.closeWhenIdle();
+      let reqBError: unknown;
+      const reqBSettled = reqB.then(
+        () => {
+          reqBError = new Error('reqB resolved instead of rejecting');
+        },
+        (e: unknown) => {
+          reqBError = e;
+        },
+      );
       let reqCError: unknown;
       const reqCSettled = reqC.then(
         () => {
@@ -2647,28 +2682,26 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
           reqCError = e;
         },
       );
-      // Step 4: pump until GOAWAY sent and reqC rejected.
-      await pipe.pumpUntil(Promise.all([goawayDone, reqCSettled]));
+      // Step 4: pump until GOAWAY is sent and both rejected requests settle.
+      await pipe.pumpUntil(Promise.all([goawayDone, reqBSettled, reqCSettled]));
+      t.ok(reqBError instanceof Error, 'reqB at the GOAWAY identifier was rejected');
+      t.ok(
+        reqBError instanceof Error && /GOAWAY/.test(reqBError.message),
+        `reqB rejected with GOAWAY: ${String(reqBError)}`,
+      );
       t.ok(reqCError instanceof Error, 'reqC was rejected');
       t.ok(
         reqCError instanceof Error && /GOAWAY/.test(reqCError.message),
         `reqC rejected with GOAWAY: ${String(reqCError)}`,
       );
-      // Future requests also rejected via #goawayLastStreamId guard.
+      // Future requests also rejected via #goawayStreamId guard.
       await t.rejects(
         () => clientSession.request('https://localhost/d'),
         /GOAWAY/,
         'new request after GOAWAY is rejected immediately',
       );
-      // reqB eventually fails via connection close (server session is closed,
-      // no response will ever arrive). Destroy connections to settle it.
-      const reqBDone = reqB.then(
-        () => {},
-        () => {},
-      );
       serverConn.destroy();
       clientConn.destroy();
-      await pipe.pumpUntil(reqBDone);
     } finally {
       await pipe.close();
     }

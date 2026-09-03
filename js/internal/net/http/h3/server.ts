@@ -362,14 +362,11 @@ export class H3ServerDriver {
           startDispatch(st);
           return;
         }
-        const noBody =
-          fin || st.method === 'GET' || st.method === 'HEAD' || st.method === 'CONNECT';
-        if (noBody) {
+        if (fin) {
           st.bodyDone = true;
           st.body.close();
         }
-        if (noBody) startDispatch(st);
-        else startDispatch(st);
+        startDispatch(st);
       },
       onBeginTrailers(streamId) {
         const st = streams.get(streamId);
@@ -533,14 +530,13 @@ export class H3ServerDriver {
       const reqHeaders = trustedHeaders(st.headers, st.authority);
       let req: Request;
       try {
-        const body = st.method === 'GET' || st.method === 'HEAD' ? null : st.body;
         req = buildWireRequest({
           version: 'HTTP/3',
           method: st.method,
           url,
           path: st.path,
           headers: reqHeaders,
-          body: body as any,
+          body: st.body,
         });
       } catch {
         try {
