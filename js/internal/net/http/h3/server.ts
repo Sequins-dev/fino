@@ -257,6 +257,48 @@ function trustedHeaders(headers: Array<[string, string]>, authority: string): He
  * ```
  */
 export class H3ServerDriver {
+  #connection: QuicConnection | null = null;
+  #session: Nghttp3Session | null = null;
+  #inFlight: Set<Promise<void>> | null = null;
+  #webTransports: Map<bigint, WebTransport> | null = null;
+  #shutdownPromise: Promise<void> | null = null;
+  /**
+   * Stop accepting new requests on this connection and wait for accepted
+   * request streams to drain after sending GOAWAY. Idempotent.
+   */
+  shutdown(): Promise<void> {
+    if (this.#shutdownPromise !== null) return this.#shutdownPromise;
+    if (this.#session === null) return Promise.resolve();
+    const session = this.#session;
+    this.#shutdownPromise = (async () => {
+      session.submitShutdownNotice();
+      // nghttp3 requires a couple of RTTs between its maximum-ID shutdown
+      // notice and the final cutoff GOAWAY. Let that window overlap accepted
+      // handler completion so graceful shutdown does not add serial latency.
+      const rttMs = this.#connection?.stats.smoothedRttMs ?? 0;
+      await Promise.all([
+        new Promise((resolve) => setTimeout(resolve, Math.max(1, Math.ceil(rttMs * 2)))),
+        (async () => {
+          while (this.#inFlight !== null && this.#inFlight.size > 0) {
+            await Promise.allSettled([...this.#inFlight]);
+          }
+        })(),
+      ]);
+      // Upgraded sessions are intentionally long-lived and cannot participate
+      // in HTTP request draining. End them before asking nghttp3 whether its
+      // remote request streams are drained; the endpoint closes their QUIC
+      // streams immediately after this driver finishes.
+      if (this.#webTransports !== null) {
+        for (const [streamId, transport] of this.#webTransports) {
+          transport.close({ closeCode: 0, reason: 'HTTP/3 server shutdown' });
+          session.cancelStream(streamId);
+        }
+        this.#webTransports.clear();
+      }
+      await session.closeWhenIdle();
+    })();
+    return this.#shutdownPromise;
+  }
   /**
    * Serve HTTP/3 requests on `conn` until the connection closes.
    *
@@ -304,10 +346,13 @@ export class H3ServerDriver {
     options: H3ServerDriverOptions = {},
   ): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
+    this.#connection = conn;
     const streams = new Map<bigint, H3ServerStream>();
     const requestStreams = new Map<bigint, QuicStream>();
     const webTransports = new Map<bigint, WebTransport>();
+    this.#webTransports = webTransports;
     const inFlight = new Set<Promise<void>>();
+    this.#inFlight = inFlight;
     let resolvePeerSettingsReceived: (() => void) | null = null;
     const peerSettingsReceived = new Promise<void>((resolve) => {
       resolvePeerSettingsReceived = resolve;
@@ -455,6 +500,7 @@ export class H3ServerDriver {
       },
     };
     session = Nghttp3Session.createServer(callbacks, { ...options, webTransport: true });
+    this.#session = session;
     // Dispatch a request to the handler once headers are complete.
     function startDispatch(st: H3ServerStream): void {
       if (st.dispatched) return;
@@ -530,7 +576,16 @@ export class H3ServerDriver {
           }
           if (result instanceof WebTransport) {
             webTransports.set(st.streamId, result);
-            result.closed.finally(() => webTransports.delete(st.streamId)).catch(() => {});
+            result.closed
+              .finally(() => {
+                webTransports.delete(st.streamId);
+                // WebTransport's local close settles the session abstraction,
+                // but its extended-CONNECT stream is deliberately open-ended.
+                // Release that stream from nghttp3 as part of the same lifecycle
+                // transition so a later server drain cannot wait on it forever.
+                if (!session.isClosed) session.cancelStream(st.streamId);
+              })
+              .catch(() => {});
             session.submitResponse(st.streamId, [[':status', '200']], keepConnectOpenBody());
             session.drainWrites();
             return;
@@ -744,7 +799,12 @@ export class H3ServerDriver {
       await connectionClosed;
       await Promise.all([...inFlight]);
     } finally {
-      await session.closeWhenIdle();
+      if (conn.state === 'closed') session.close();
+      else await this.shutdown();
+      this.#session = null;
+      this.#inFlight = null;
+      this.#webTransports = null;
+      this.#connection = null;
     }
   }
 }

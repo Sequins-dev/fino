@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { quicAvailable, QuicStreamEvent } from 'fino:net/quic';
+import { quicAvailable, QuicEndpoint, QuicStreamEvent } from 'fino:net/quic';
 import type { QuicConnection, QuicStream } from 'fino:net/quic';
 import { fetch as h3Fetch, h3Available, requireH3, serve as h3Serve } from 'internal:net/http/h3';
 import { resolveH3ConnectAddress } from 'internal:net/http/h3/resolve';
@@ -834,6 +834,57 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
         'response body received',
       );
     } finally {
+      await server.close();
+    }
+  });
+  it('public server close lets an accepted H3 request finish', async (t) => {
+    if (!available) return;
+    let releaseHandler!: () => void;
+    const handlerRelease = new Promise<void>((resolve) => {
+      releaseHandler = resolve;
+    });
+    let handlerStarted!: () => void;
+    const handlerStart = new Promise<void>((resolve) => {
+      handlerStarted = resolve;
+    });
+    const server = await h3Serve(
+      {
+        port: 0,
+        hostname: '127.0.0.1',
+        certificateFile: TEST_CERT,
+        privateKeyFile: TEST_KEY,
+      },
+      async () => {
+        handlerStarted();
+        await handlerRelease;
+        return new Response('finished');
+      },
+    );
+    const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
+    try {
+      const conn = await endpoint.connect({
+        address: { family: 'ipv4', ip: '127.0.0.1', port: server.port },
+        alpnProtocols: ['h3'],
+        serverName: 'localhost',
+        verifyPeer: false,
+      });
+      const session = await H3ClientSession.create(conn);
+      const responsePromise = session.request(`https://localhost:${server.port}/slow`);
+      await handlerStart;
+      let closeResolved = false;
+      const closePromise = server.close().then(() => {
+        closeResolved = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      t.equal(closeResolved, false, 'server close waits for the accepted request');
+      releaseHandler();
+      const response = await responsePromise;
+      t.equal(await response.text(), 'finished', 'accepted request completes during shutdown');
+      await closePromise;
+      session.close();
+    } finally {
+      releaseHandler();
+      await endpoint.close();
       await server.close();
     }
   });
@@ -2423,13 +2474,90 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       // Pump the GOAWAY through to the client. After this returns, onShutdown has
       // fired and #goawayStreamId is set — so request() throws before opening
       // a new stream, regardless of the conservative GOAWAY identifier nghttp3 sent.
-      await serverSession.closeWhenIdle();
+      await pipe.pumpUntil(serverSession.closeWhenIdle());
       await pipe.pumpUntil(clientSession._waitForGoawayForTest());
       await t.rejects(
         () => clientSession.request('https://localhost/'),
         /GOAWAY/,
         'request after GOAWAY is rejected',
       );
+      serverConn.destroy();
+      clientConn.destroy();
+    } finally {
+      await pipe.close();
+    }
+  });
+  it('server closeWhenIdle resolves when the final active stream closes after shutdown starts', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      let requestStreamId: bigint | null = null;
+      let resolveRequestHeaders!: () => void;
+      const requestHeaders = new Promise<void>((resolve) => {
+        resolveRequestHeaders = resolve;
+      });
+      const serverSession = Nghttp3Session.createServer({
+        onBeginHeaders() {},
+        onRecvHeader() {},
+        onEndHeaders(sid) {
+          requestStreamId = sid;
+          resolveRequestHeaders();
+        },
+        onBeginTrailers() {},
+        onRecvTrailer() {},
+        onEndTrailers() {},
+        onRecvData() {},
+        onEndStream() {},
+        onStreamClose() {},
+        onResetStream() {},
+        onAckedStreamData() {},
+      });
+      serverConn.addEventListener('stream', (event) => {
+        const stream = (event as QuicStreamEvent).stream;
+        const sid = BigInt(stream.id);
+        void (async () => {
+          try {
+            if (stream.direction === 'bidirectional') {
+              serverSession.addQuicStream(sid, stream.writer);
+            }
+            while (true) {
+              const result = await stream.reader.read();
+              if (result.done) {
+                serverSession.endStream(sid);
+                break;
+              }
+              serverSession.receiveStreamData(sid, result.value);
+            }
+          } catch {}
+        })();
+      });
+      const [ctrl, qenc, qdec] = (await pipe.pumpUntil(
+        Promise.all([
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+          serverConn.openUnidirectionalStream(),
+        ]),
+      )) as QuicStream[];
+      for (const stream of [ctrl, qenc, qdec]) {
+        serverSession.addQuicStream(BigInt(stream.id), stream.writer);
+      }
+      serverSession.bindControlStream(BigInt(ctrl.id));
+      serverSession.bindQpackStreams(BigInt(qenc.id), BigInt(qdec.id));
+      const clientSessionPromise = H3ClientSession.create(clientConn);
+      serverSession.drainWrites();
+      await pipe.runUntilSettled();
+      const clientSession = await pipe.pumpUntil(clientSessionPromise);
+      const responsePromise = clientSession.request('https://localhost/delayed');
+      await pipe.pumpUntil(requestHeaders);
+      const closePromise = serverSession.closeWhenIdle();
+      serverSession.submitResponse(requestStreamId!, [[':status', '200']]);
+      serverSession.drainWrites();
+      const response = await pipe.pumpUntil(responsePromise);
+      await pipe.pumpUntil(response.arrayBuffer());
+      await pipe.pumpUntil(closePromise);
+      t.ok(serverSession.isClosed, 'session closes after its final active stream');
+      clientSession.close();
       serverConn.destroy();
       clientConn.destroy();
     } finally {

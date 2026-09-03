@@ -67,18 +67,12 @@ const lib = dlopen(LIBC, {
   posix_openpt: { parameters: ['i32'], result: 'i32' },
   grantpt: { parameters: ['i32'], result: 'i32' },
   unlockpt: { parameters: ['i32'], result: 'i32' },
-  ptsname: { parameters: ['i32'], result: 'pointer' },
+  ptsname_r: { parameters: ['i32', 'buffer', 'usize'], result: 'i32' },
   open: { parameters: ['buffer', 'i32', 'i32'], result: 'i32', variadic: 2 },
   // ioctl is variadic; the trailing argument must use the variadic ABI.
   ioctl: { parameters: ['i32', 'u64', 'buffer'], result: 'i32', variadic: 2 },
   [errnoFn]: { parameters: [], result: 'pointer' },
 });
-
-const ptsnameLib = isLinux
-  ? dlopen(LIBC, {
-      ptsname_r: { parameters: ['i32', 'buffer', 'usize'], result: 'i32' },
-    })
-  : null;
 
 function getErrno(): number {
   return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
@@ -91,29 +85,12 @@ function cstr(s: string): Uint8Array {
   return buf;
 }
 
-function readCStr(ptr: ArrayBuffer): string {
-  const bytes: number[] = [];
-  let i = 0;
-  while (true) {
-    const b = Pointer.readU8(ptr, i);
-    if (b === 0) break;
-    bytes.push(b);
-    i++;
-  }
-  return new TextDecoder().decode(new Uint8Array(bytes));
-}
-
 function slaveName(master: number): string {
-  if (ptsnameLib !== null) {
-    const buffer = new Uint8Array(4096);
-    const rc = Number(ptsnameLib.symbols.ptsname_r(master, buffer, buffer.byteLength));
-    if (rc !== 0) throw new Error(`ptsname_r failed: errno ${rc}`);
-    const end = buffer.indexOf(0);
-    return new TextDecoder().decode(end < 0 ? buffer : buffer.subarray(0, end));
-  }
-  const ptr = lib.symbols.ptsname(master) as ArrayBuffer | null;
-  if (ptr === null) throw new Error(`ptsname failed: errno ${getErrno()}`);
-  return readCStr(ptr);
+  const buffer = new Uint8Array(4096);
+  const rc = Number(lib.symbols.ptsname_r(master, buffer, buffer.byteLength));
+  if (rc !== 0) throw new Error(`ptsname_r failed: errno ${rc}`);
+  const end = buffer.indexOf(0);
+  return new TextDecoder().decode(end < 0 ? buffer : buffer.subarray(0, end));
 }
 
 function setWinsize(fd: number, cols: number, rows: number): void {
@@ -442,9 +419,9 @@ export async function openPty(
     if (Number(lib.symbols.unlockpt(master)) !== 0) {
       throw new Error(`unlockpt failed: errno ${getErrno()}`);
     }
-    // Linux's ptsname() uses process-global static storage, which races when
-    // separate test Realms open PTYs concurrently. ptsname_r() writes into
-    // storage owned by this call instead.
+    // ptsname() uses process-global static storage, which races when separate
+    // test Realms open PTYs concurrently. ptsname_r() writes into storage
+    // owned by this call instead on both Linux and macOS.
     const slavePath = slaveName(master);
     // macOS masters reject winsize ioctls until a slave is open, so the
     // initial size is set through a short-lived parent-side slave fd. It is
