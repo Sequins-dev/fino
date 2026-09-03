@@ -132,18 +132,15 @@ fn set_json_result(
     result: Result<Result<String, String>, Box<dyn std::any::Any + Send>>,
 ) {
     match result {
-        Err(_) => v8util::throw_type_error(scope, &format!("{operation}: parser panicked")),
-        Ok(Err(err)) => v8util::throw_type_error(scope, &format!("{operation}: {err}")),
+        Err(_) => v8util::throw_error(scope, &format!("{operation}: parser panicked")),
+        Ok(Err(err)) => v8util::throw_error(scope, &format!("{operation}: {err}")),
         Ok(Ok(json)) => {
             let Some(json_value) = v8::String::new(scope, &json) else {
-                v8util::throw_type_error(scope, &format!("{operation}: failed to allocate result"));
+                v8util::throw_error(scope, &format!("{operation}: failed to allocate result"));
                 return;
             };
             let Some(value) = v8::json::parse(scope, json_value) else {
-                v8util::throw_type_error(
-                    scope,
-                    &format!("{operation}: failed to materialize result"),
-                );
+                v8util::throw_error(scope, &format!("{operation}: failed to materialize result"));
                 return;
             };
             rv.set(value.into());

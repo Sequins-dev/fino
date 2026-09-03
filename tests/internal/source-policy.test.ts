@@ -22,4 +22,19 @@ describe('source policy', () => {
     }
     t.deepEqual(offenders.sort(), []);
   });
+
+  it('keeps TypeScript host failures distinct from argument type errors', async (t) => {
+    const source = decoder.decode(await fs.readFile(`${root}src/typescript_format.rs`));
+    const start = source.indexOf('fn set_json_result(');
+    const end = source.indexOf('\n#[derive(Default)]', start);
+    const helper = source.slice(start, end);
+
+    t.ok(start >= 0 && end > start, 'locates the set_json_result helper');
+    t.ok(helper.includes('v8util::throw_error'), 'host failures throw ordinary Error values');
+    t.equal(
+      helper.includes('v8util::throw_type_error'),
+      false,
+      'host failures are not reported as argument type errors',
+    );
+  });
 });
