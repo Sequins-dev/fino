@@ -47,6 +47,7 @@
  * ```
  *
  * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ * Extensible Prioritization Scheme: https://www.rfc-editor.org/rfc/rfc9218
  *
  * @internal
  */
@@ -92,6 +93,16 @@ export interface H3RequestInit extends RequestInit {
   /** Observe each non-final 1xx response before the final `Response` resolves. */
   onInformational?: (response: H3InformationalResponse) => void;
   /**
+   * RFC 9218 extensible priority for this request.
+   *
+   * Urgency ranges from 0 (highest) through 7 (lowest) and defaults to 3.
+   * `incremental` asks the peer to interleave delivery with other incremental
+   * responses of the same urgency. The value is sent as a `Priority` field for
+   * the peer's HTTP/3 scheduler. The standard Fetch `priority` values are also
+   * mapped to urgencies 0, 3, and 7; this option provides the full H3 range.
+   */
+  h3Priority?: H3Priority;
+  /**
    * Maximum response-body bytes that may wait unread in memory.
    *
    * Exceeding the limit cancels only this HTTP/3 request stream and leaves the
@@ -123,6 +134,21 @@ export type H3ClientSessionOptions = Omit<H3SessionOptions, 'webTransport'>;
 export interface H3InformationalResponse {
   readonly status: number;
   readonly headers: Headers;
+}
+/** RFC 9218 urgency and incremental scheduling hints for an HTTP/3 request. */
+export interface H3Priority {
+  /** Request urgency from 0 (highest) through 7 (lowest). Defaults to 3. */
+  urgency?: number;
+  /** Whether the response can be processed incrementally. Defaults to false. */
+  incremental?: boolean;
+}
+
+function formatPriority(priority: H3Priority): string {
+  const urgency = priority.urgency ?? 3;
+  if (!Number.isInteger(urgency) || urgency < 0 || urgency > 7) {
+    throw new RangeError('priority urgency must be an integer from 0 through 7');
+  }
+  return priority.incremental ? `u=${urgency}, i` : `u=${urgency}`;
 }
 /**
  * Per-stream bookkeeping for a request whose response is still being assembled.
@@ -615,6 +641,22 @@ export class H3ClientSession {
       for (const [name, value] of Object.entries(headers as Record<string, string>)) {
         if (!name.startsWith(':')) reqHeaders.push([name.toLowerCase(), String(value)]);
       }
+    }
+    const priorityValue =
+      init?.h3Priority !== undefined
+        ? formatPriority(init.h3Priority)
+        : init?.priority === 'high'
+          ? 'u=0'
+          : init?.priority === 'low'
+            ? 'u=7'
+            : init?.priority === 'auto'
+              ? 'u=3'
+              : null;
+    if (priorityValue !== null) {
+      for (let index = reqHeaders.length - 1; index >= 0; index--) {
+        if (reqHeaders[index]![0] === 'priority') reqHeaders.splice(index, 1);
+      }
+      reqHeaders.push(['priority', priorityValue]);
     }
     const quicStream = await this.#conn.openBidirectionalStream();
     const sid = BigInt(quicStream.id);
