@@ -71,13 +71,17 @@
  * ## Socket.split() and fd lifecycle
  *
  * `Socket.split()` returns `[Reader, Writer]` that share the underlying fd.
- * The fd should only be `close()`d when both halves are done. The `onClose`
- * callbacks implement a reference-count of 2:
+ * During normal half-close operation, the fd is `close()`d only when both
+ * halves are done. The `onClose` callbacks implement a reference-count of 2:
  *   - Reader's close: `shutdown(fd, SHUT_RD)` + decrement ref. This sends an
  *     EOF to any in-flight `read(2)` call, unblocking the Reader cleanly.
  *   - Writer's close: `shutdown(fd, SHUT_WR)` + decrement ref. This sends a
  *     TCP FIN to the remote peer.
  *   - When both have closed (ref reaches 0): `close(fd)` releases the fd.
+ *
+ * Calling `Socket.close()` instead forcibly closes both directions. It first
+ * unregisters pending read and write readiness watches so abandoning an
+ * in-flight operation cannot keep the owning Realm alive.
  *
  * `shutdown(SHUT_RD)` is a local operation — it doesn't send anything on the
  * wire; it just makes the read side of the socket return 0 (EOF) immediately.
@@ -2349,18 +2353,22 @@ export class Socket {
       }
     };
     const onReadClose = function onReadClose() {
+      if (self.#closed) return;
       shutdown(fd, SHUT_RD);
       onBothClosed();
     };
     const onWriteClose = function onWriteClose() {
+      if (self.#closed) return;
       shutdown(fd, SHUT_WR);
       onBothClosed();
     };
     return [new FdReader(fd, onReadClose), new FdWriter(fd, onWriteClose)];
   }
   /**
-   * Immediately close the socket (both directions). Calls shutdown(SHUT_RDWR)
-   * then close(fd). Idempotent.
+   * Immediately close the socket (both directions). Pending readiness watches
+   * are abandoned before calling `shutdown(SHUT_RDWR)` and `close(fd)`, so an
+   * in-flight split-half operation does not keep the owning Realm alive.
+   * Idempotent.
    *
    * ```ts no_run
    * socket.close();
@@ -2370,6 +2378,8 @@ export class Socket {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    loop.removeRead(this.#fd);
+    loop.removeWrite(this.#fd);
     shutdown(this.#fd, SHUT_RDWR);
     close(this.#fd);
   }

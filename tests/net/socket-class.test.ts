@@ -4,6 +4,7 @@
  */
 import { describe, it } from 'fino:test/test';
 import { Socket } from 'fino:net/socket';
+import * as loop from 'internal:runtime/loop';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
 import { parseRequest, parseResponse, serializeRequest, serializeResponse } from 'fino:net/http';
@@ -326,6 +327,48 @@ describe('HTTP integration', () => {
   });
 });
 describe('Socket lifecycle', () => {
+  it('Socket.close() removes a pending split-reader watch', async (t) => {
+    const server = Socket.listen({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0,
+    });
+    const clientSock = await Socket.connect({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: (
+        server.address as Extract<
+          typeof server.address,
+          {
+            family: 'ipv4';
+          }
+        >
+      ).port,
+    });
+    const serverConn = await server.accept();
+    if (serverConn === null) throw new Error('expected server connection');
+    const [clientReader] = clientSock.split();
+    const baselineReads = loop._activeHandleCounts().reads;
+    try {
+      void clientReader.readAtMost(1);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      t.equal(
+        loop._activeHandleCounts().reads,
+        baselineReads + 1,
+        'the pending socket read installs one watch',
+      );
+      clientSock.close();
+      t.equal(
+        loop._activeHandleCounts().reads,
+        baselineReads,
+        'closing the socket removes the pending read watch',
+      );
+    } finally {
+      clientSock.close();
+      serverConn.close();
+      server.close();
+    }
+  });
   it('Socket.close() marks socket as closed', async (t) => {
     const server = Socket.listen({
       family: 'ipv4',
