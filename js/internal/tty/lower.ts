@@ -8,6 +8,9 @@
  */
 import { defineRenderTarget, lowerTree } from 'fino:ui';
 import type { VNode } from 'fino:ui';
+import 'internal:ui/components/icons.tui';
+import 'internal:ui/components/layout.tui';
+import 'internal:ui/components/typography.tui';
 
 /** Node names painted directly by the retained terminal target. */
 export const TUI_PRIMITIVES = [

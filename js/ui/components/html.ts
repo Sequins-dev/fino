@@ -32,6 +32,9 @@ import {
 } from 'internal:ui/components/html-runtime';
 import { mapComponentLowering, registeredHtmlCss } from 'internal:ui/components/target';
 import type { ToHtmlOptions } from 'internal:ui/components/html-runtime';
+import 'internal:ui/components/icons.html';
+import 'internal:ui/components/layout.html';
+import 'internal:ui/components/typography.html';
 
 export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
 
@@ -139,6 +142,11 @@ function inputNode(props: Props): VNode {
   const attrs: Props = { style: css };
   if (typeof props.value === 'string') attrs.value = props.value;
   if (typeof props.placeholder === 'string') attrs.placeholder = props.placeholder;
+  if (typeof props.id === 'string') attrs.id = props.id;
+  if (typeof props['aria-invalid'] === 'string') attrs['aria-invalid'] = props['aria-invalid'];
+  if (typeof props['aria-describedby'] === 'string') {
+    attrs['aria-describedby'] = props['aria-describedby'];
+  }
   return h('input', attrs);
 }
 

@@ -127,6 +127,26 @@ export function idAttr(id: unknown): Props {
   return typeof id === 'string' ? { id } : {};
 }
 
+/** Build shared id, flex, and style attributes for an HTML component node. */
+export function componentStyleAttrs(props: Props, className?: string): Props {
+  const css: Record<string, string> = {};
+  flexChildCss(props, css);
+  styleCss(resolveStyle(props), css);
+  const attrs: Props = { ...idAttr(props.id) };
+  if (className !== undefined) attrs.className = className;
+  if (Object.keys(css).length > 0) attrs.style = css;
+  return attrs;
+}
+
+/** Accept browser-safe navigation targets and reject active or unknown schemes. */
+export function safeHref(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.replace(/[\u0000-\u001f\u007f\s]+/g, '');
+  if (/^(?:https?:|mailto:|tel:)/i.test(normalized)) return value;
+  if (/^(?:\/|\.\/|\.\.\/|#|\?)/.test(normalized)) return value;
+  return undefined;
+}
+
 /** Collector receiving stable action ids during an interactive HTML walk. */
 export interface ActionCollector {
   /** Associate an action id with the callback invoked by a later request. */
