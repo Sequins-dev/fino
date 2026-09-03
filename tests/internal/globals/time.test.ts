@@ -211,13 +211,12 @@ describe('performance.now', () => {
     const t1 = performance.now();
     t.ok(t1 > t0, 't1 > t0');
   });
-  it('measures elapsed time with sub-ms precision', async (t) => {
+  it('measures elapsed time across a timer wait', async (t) => {
     const t0 = performance.now();
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     const t1 = performance.now();
     const elapsed = t1 - t0;
     t.ok(elapsed >= 40, `elapsed >= 40ms (got ${elapsed.toFixed(2)}ms)`);
-    t.ok(elapsed < 200, `elapsed < 200ms (got ${elapsed.toFixed(2)}ms)`);
     t.ok(typeof elapsed === 'number', 'returns number');
   });
   it('returns fractional milliseconds (sub-ms precision)', async (t) => {

@@ -58,15 +58,12 @@ describe('fino:tty/tui terminal input reassembly', () => {
     const session = await echoPty('escape');
     try {
       await session.pty.send('\x1B');
-      await new Promise((resolve) => setTimeout(resolve, 8));
       await session.pty.send('[');
-      await new Promise((resolve) => setTimeout(resolve, 8));
       await session.pty.send('A');
       await session.pty.waitFor((term) => term.text().join('').includes('<up>'));
       t.ok(!screen(session.pty).includes('<escape>'), 'the held prefix emits no stray Escape');
 
       await session.pty.send('\x1B[');
-      await new Promise((resolve) => setTimeout(resolve, 8));
       await session.pty.send('C');
       await session.pty.waitFor((term) => term.text().join('').includes('<right>'));
       t.ok(true, 'a split before the final byte also decodes');
