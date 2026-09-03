@@ -1371,7 +1371,9 @@ export abstract class BufferedBytesReader extends BytesReader {
    *
    * Subclasses may return any positive chunk size in a value result and must
    * return a done result on EOF. Empty chunks are ignored by the buffering
-   * layer and should be rare to avoid busy loops.
+   * layer and should be rare to avoid busy loops. `options.signal` carries the
+   * caller's cancellation request to implementations that wait on an external
+   * resource.
    *
    * ```js
    * import { BufferedBytesReader } from 'fino:stream';
@@ -1383,7 +1385,10 @@ export abstract class BufferedBytesReader extends BytesReader {
    *
    * @returns A written-byte-count result, or a done result on EOF.
    */
-  protected abstract doPullInto(buffer: Uint8Array): Promise<ReadResult<number>>;
+  protected abstract doPullInto(
+    buffer: Uint8Array,
+    options?: BytesReadOptions,
+  ): Promise<ReadResult<number>>;
 
   async #pullChunk(): Promise<Uint8Array | null> {
     const buffer = new Uint8Array(65536);
@@ -1439,11 +1444,11 @@ export abstract class BufferedBytesReader extends BytesReader {
    */
   protected async doReadInto(
     buffer: Uint8Array,
-    _options?: BytesReadOptions,
+    options?: BytesReadOptions,
   ): Promise<ReadResult<number>> {
     while (this.#chunks.length === 0) {
       if (this.#upstreamDone) return READ_DONE;
-      const result = await this.doPullInto(buffer);
+      const result = await this.doPullInto(buffer, options);
       if (result.done) {
         this.#upstreamDone = true;
         return READ_DONE;
@@ -1931,20 +1936,36 @@ export class FdReader extends BufferedBytesReader {
   get fd(): number {
     return this.#fd;
   }
-  /** Wait for readability while allowing `close()` to settle the wait as EOF. */
-  #waitReadable(): Promise<number | null> {
-    return new Promise<number | null>((resolve) => {
+  /** Wait for readability while allowing close or abort to settle the watch. */
+  #waitReadable(signal?: AbortSignal | null): Promise<number | null> {
+    return new Promise<number | null>((resolve, reject) => {
       let settled = false;
+      const cleanup = () => signal?.removeEventListener('abort', onAbort);
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        this.#cancelPendingRead = null;
+        loop.removeRead(this.#fd);
+        cleanup();
+        reject(signal?.reason);
+      };
       this.#cancelPendingRead = () => {
         if (settled) return;
         settled = true;
         this.#cancelPendingRead = null;
+        cleanup();
         resolve(null);
       };
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
       void loop.readable(this.#fd).then((available) => {
         if (settled) return;
         settled = true;
         this.#cancelPendingRead = null;
+        cleanup();
         resolve(available);
       });
     });
@@ -1953,8 +1974,8 @@ export class FdReader extends BufferedBytesReader {
    * Pull one descriptor chunk for the buffered reader.
    *
    * The method waits for readability when needed, fills the supplied storage,
-   * returns a done result on EOF or after close, and treats non-EAGAIN read
-   * failures as EOF.
+   * returns a done result on EOF or after close, rejects an actively aborted
+   * wait with the signal reason, and treats non-EAGAIN read failures as EOF.
    *
    * ```js
    * import { FdReader } from 'fino:stream';
@@ -1965,12 +1986,15 @@ export class FdReader extends BufferedBytesReader {
    * @returns A written-byte-count result, or a done result on EOF/close.
    * @internal
    */
-  protected async doPullInto(buffer: Uint8Array): Promise<ReadResult<number>> {
+  protected async doPullInto(
+    buffer: Uint8Array,
+    options?: BytesReadOptions,
+  ): Promise<ReadResult<number>> {
     while (true) {
       if (this.closed) return READ_DONE;
       if (this.#fd < 0) throw new Error('read failed');
       if (!this.#readBeforeReady && this.#avail <= 0) {
-        const available = await this.#waitReadable();
+        const available = await this.#waitReadable(options?.signal);
         if (available === null) return READ_DONE;
         this.#avail = available;
       }
@@ -1981,7 +2005,7 @@ export class FdReader extends BufferedBytesReader {
       }
       if (n === 0) return READ_DONE;
       if (getErrno() !== EAGAIN) return READ_DONE;
-      const available = await this.#waitReadable();
+      const available = await this.#waitReadable(options?.signal);
       if (available === null) return READ_DONE;
       this.#avail = available;
     }

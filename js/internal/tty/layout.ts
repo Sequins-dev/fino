@@ -440,6 +440,22 @@ function childLayoutProps(node: LayoutNode | string): ChildLayout {
 }
 
 const measureCache = new WeakMap<object, Map<string, Measured>>();
+interface NodePaint {
+  rect: Rect;
+  order: number;
+}
+
+const nodePaints = new WeakMap<object, NodePaint>();
+
+/** Frame-relative rect a node was last painted at, for event dispatch. */
+export function nodeRect(node: object): Rect | undefined {
+  return nodePaints.get(node)?.rect;
+}
+
+/** Paint order a node last received; larger values are visually above smaller ones. */
+export function nodePaintOrder(node: object): number | undefined {
+  return nodePaints.get(node)?.order;
+}
 
 /** Drop cached measurements for a retained node (called by the host on change). */
 export function invalidateMeasure(node: object): void {
@@ -874,6 +890,7 @@ function paintNode(
   const own = mergeStyle(inherited, styleFromProps(props));
   ctx.depth++;
   const depth = ctx.depth;
+  nodePaints.set(node, { rect, order: depth });
   const id = str(props, 'id');
   if (id) canvas.markHit(id, rect, depth);
 

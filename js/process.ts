@@ -957,6 +957,16 @@ export const SIGTERM = 15;
  * ```
  */
 export const SIGCHLD = isLinux ? 17 : 20;
+/**
+ * Signal number for `SIGWINCH` (terminal window size changed).
+ *
+ * ```ts no_run
+ * import { SIGWINCH, signal } from 'fino:process';
+ *
+ * signal('SIGWINCH').subscribe(({ signo }) => console.log(signo === SIGWINCH));
+ * ```
+ */
+export const SIGWINCH = 28;
 const _signalNumbers: Record<string, number> = {
   SIGHUP,
   SIGINT,
@@ -968,6 +978,7 @@ const _signalNumbers: Record<string, number> = {
   SIGALRM,
   SIGTERM,
   SIGCHLD,
+  SIGWINCH,
 };
 const _childDefaultSignals = Object.values(_signalNumbers).filter((signo) => signo !== SIGKILL);
 /** Set of signal names already registered with the event loop. */

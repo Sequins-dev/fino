@@ -2,7 +2,7 @@
  * Tests for signal handling via fino:process signal() Topic API.
  */
 import { describe, it } from 'fino:test/test';
-import { signal, signalArmed, SIGUSR1, SIGUSR2, SIGTERM, pid, kill } from 'fino:process';
+import { signal, signalArmed, SIGUSR1, SIGUSR2, SIGTERM, SIGWINCH, pid, kill } from 'fino:process';
 /**
  * Subscribe to `name` and resolve once the watch is armed.
  *
@@ -42,6 +42,13 @@ describe('Signal handling', () => {
     };
     t.equal(evt.signal, 'SIGUSR2', 'event.signal is SIGUSR2');
     t.equal(evt.signo, SIGUSR2, 'event.signo matches constant');
+  });
+  it('SIGWINCH topic fires on signal delivery', async (t) => {
+    const { received } = await armSignal('SIGWINCH');
+    kill(pid, SIGWINCH);
+    const evt = (await received) as { signal: string; signo: number };
+    t.equal(evt.signal, 'SIGWINCH', 'event.signal is SIGWINCH');
+    t.equal(evt.signo, SIGWINCH, 'event.signo matches constant');
   });
   it('signal() returns same Topic instance for same name', (t) => {
     const t1 = signal('SIGUSR1');

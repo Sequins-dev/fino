@@ -34,6 +34,10 @@ export function createTerminalRoot(): TerminalRoot {
 
 function shallowEqual(a: unknown, b: unknown): boolean {
   if (Object.is(a, b)) return true;
+  // Handlers are read from the node's current props at dispatch time, so a
+  // fresh closure per render pass is not a visual change — treating it as one
+  // would invalidate every subtree on every pass.
+  if (typeof a === 'function' && typeof b === 'function') return true;
   if (Array.isArray(a) && Array.isArray(b)) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!Object.is(a[i], b[i])) return false;
