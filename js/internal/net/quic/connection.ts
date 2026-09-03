@@ -504,6 +504,30 @@ export type OutstandingStreamData = {
   end: number;
   data: Uint8Array;
 };
+type LocalStreamCreditWaiter = QueueResolver<void> & {
+  cleanup(): void;
+};
+function streamOpenAbortError(reason: unknown): Error {
+  if (reason instanceof Error) return reason;
+  const error = new Error(reason === undefined ? 'The stream open was aborted' : String(reason));
+  error.name = 'AbortError';
+  return error;
+}
+function streamOpenSignal(options: core.QuicStreamOpenOptions): AbortSignal | undefined {
+  if (options === null || typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError('QUIC stream-open options must be an object');
+  }
+  const signal = options.signal;
+  if (
+    signal !== undefined &&
+    (typeof signal.aborted !== 'boolean' ||
+      typeof signal.addEventListener !== 'function' ||
+      typeof signal.removeEventListener !== 'function')
+  ) {
+    throw new TypeError('QUIC stream-open signal must be an AbortSignal');
+  }
+  return signal;
+}
 /**
  * A single QUIC connection and the streams multiplexed inside it.
  *
@@ -585,8 +609,8 @@ export class QuicConnection extends EventTarget {
   #writePacketScratch: Uint8Array[] = [];
   #writePacketScratchSize = 0;
   #localStreamCreditWaiters = {
-    bidirectional: [] as QueueResolver<void>[],
-    unidirectional: [] as QueueResolver<void>[],
+    bidirectional: [] as LocalStreamCreditWaiter[],
+    unidirectional: [] as LocalStreamCreditWaiter[],
   };
   #nextStreamOffsets = new Map<number, number>();
   #outstandingStreamData: OutstandingStreamData[] = [];
@@ -1106,15 +1130,19 @@ export class QuicConnection extends EventTarget {
    *
    * If the peer's bidirectional stream limit is currently exhausted, the promise
    * waits until the peer extends stream credit and then opens the stream, rather
-   * than failing. Rejects if the connection is closing or not connected, or if
-   * ngtcp2 reports a non-recoverable open error.
+   * than failing. Pass an `AbortSignal` to cancel that wait. The connection's
+   * `maxPendingStreamOpens` limit bounds blocked calls across both directions.
+   * Rejects if the connection is closing or not connected, the signal aborts,
+   * the pending limit is reached, or ngtcp2 reports a non-recoverable open error.
    *
    * ```ts no_run
-   * const stream = await conn.openBidirectionalStream();
+   * const stream = await conn.openBidirectionalStream({ signal });
    * await stream.writer.write(payload);
    * ```
    */
-  async openBidirectionalStream(): Promise<QuicStream> {
+  async openBidirectionalStream(options: core.QuicStreamOpenOptions = {}): Promise<QuicStream> {
+    const signal = streamOpenSignal(options);
+    if (signal?.aborted) throw streamOpenAbortError(signal.reason);
     if (this.#gracefulClosing || this.#gracefullyClosed)
       throw new Error('QUIC connection is closing');
     if (!this.#canOpenApplicationStream()) throw new Error('QUIC connection is not connected');
@@ -1125,7 +1153,8 @@ export class QuicConnection extends EventTarget {
       }
       if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED)
         throw ngtcp2Error(stream, 'ngtcp2_conn_open_bidi_stream');
-      await this.#waitForLocalStreamCredit('bidirectional');
+      await this.#waitForLocalStreamCredit('bidirectional', signal);
+      if (signal?.aborted) throw streamOpenAbortError(signal.reason);
     }
   }
   [quicConnectionInternals.openUnidirectionalStreamSync](): QuicStream {
@@ -1141,7 +1170,8 @@ export class QuicConnection extends EventTarget {
    *
    * Behaves like `openBidirectionalStream()` but produces a stream whose
    * readable side is closed — only `writer` is usable. Awaits unidirectional
-   * stream credit when the peer's limit is exhausted.
+   * stream credit when the peer's limit is exhausted and accepts the same
+   * cancellation and pending-queue controls.
    *
    * ```ts no_run
    * const stream = await conn.openUnidirectionalStream();
@@ -1149,7 +1179,9 @@ export class QuicConnection extends EventTarget {
    * await stream.writer.close();
    * ```
    */
-  async openUnidirectionalStream(): Promise<QuicStream> {
+  async openUnidirectionalStream(options: core.QuicStreamOpenOptions = {}): Promise<QuicStream> {
+    const signal = streamOpenSignal(options);
+    if (signal?.aborted) throw streamOpenAbortError(signal.reason);
     if (this.#gracefulClosing || this.#gracefullyClosed)
       throw new Error('QUIC connection is closing');
     if (!this.#canOpenApplicationStream()) throw new Error('QUIC connection is not connected');
@@ -1160,7 +1192,8 @@ export class QuicConnection extends EventTarget {
       }
       if (stream !== NGTCP2_ERR_STREAM_ID_BLOCKED)
         throw ngtcp2Error(stream, 'ngtcp2_conn_open_uni_stream');
-      await this.#waitForLocalStreamCredit('unidirectional');
+      await this.#waitForLocalStreamCredit('unidirectional', signal);
+      if (signal?.aborted) throw streamOpenAbortError(signal.reason);
     }
   }
   #tryOpenLocalStream(direction: 'bidirectional' | 'unidirectional'): QuicStream | number {
@@ -1173,13 +1206,44 @@ export class QuicConnection extends EventTarget {
     const id = Number(readU64(out, 0));
     return this.#ensureStream(id, direction, false);
   }
-  #waitForLocalStreamCredit(direction: 'bidirectional' | 'unidirectional'): Promise<void> {
+  #waitForLocalStreamCredit(
+    direction: 'bidirectional' | 'unidirectional',
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (this.#closed) return Promise.reject(new Error('QUIC connection is closed'));
+    const pendingCount =
+      this.#localStreamCreditWaiters.bidirectional.length +
+      this.#localStreamCreditWaiters.unidirectional.length;
+    if (pendingCount >= this.#options.connection.maxPendingStreamOpens) {
+      return Promise.reject(
+        new Error(
+          `QUIC pending stream-open limit exceeded (${this.#options.connection.maxPendingStreamOpens})`,
+        ),
+      );
+    }
     return new Promise((resolve, reject) => {
-      this.#localStreamCreditWaiters[direction].push({
-        resolve,
-        reject,
-      });
+      const queue = this.#localStreamCreditWaiters[direction];
+      const onAbort = () => {
+        const index = queue.indexOf(waiter);
+        if (index !== -1) queue.splice(index, 1);
+        waiter.reject(streamOpenAbortError(signal?.reason));
+      };
+      const waiter: LocalStreamCreditWaiter = {
+        resolve(value) {
+          waiter.cleanup();
+          resolve(value);
+        },
+        reject(error) {
+          waiter.cleanup();
+          reject(error);
+        },
+        cleanup() {
+          signal?.removeEventListener('abort', onAbort);
+        },
+      };
+      queue.push(waiter);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) onAbort();
     });
   }
   #streamInitiatedByLocal(streamId: number): boolean {
@@ -3718,5 +3782,6 @@ export type {
   QuicConnectionState,
   QuicConnectionStats,
   QuicPeerVerification,
+  QuicStreamOpenOptions,
   QuicTransportParameterSnapshot,
 } from './core.ts';
