@@ -395,6 +395,59 @@ describe('CLI commands: test', () => {
       t.equal((marker as unknown as string).length, 1, 'shutdown hook completed before CLI exit');
     });
   });
+  it('awaits an abandoned child Realm before releasing a parallel file', async (t) => {
+    await withTempProject({}, async (dir, fs) => {
+      const marker = `${dir}/child-cleaned`;
+      await fs.writeFile(
+        `${dir}/child.ts`,
+        [
+          "import { DiskFileSystem } from 'fino:file';",
+          "import { registerShutdownHook } from 'internal:shutdown';",
+          "import { timeout } from 'internal:runtime/loop';",
+          'const fs = new DiskFileSystem();',
+          'registerShutdownHook(async () => {',
+          '  await timeout(100);',
+          `  await fs.writeFile(${JSON.stringify(marker)}, new Uint8Array([1]));`,
+          '});',
+          "export default async function () { return 'ready'; }",
+          '',
+        ].join('\n') as never,
+      );
+      await fs.writeFile(
+        `${dir}/abandoned-realm.test.ts`,
+        [
+          "import { test } from 'fino:test/test';",
+          "import { Realm } from 'fino:realm';",
+          `const realm = new Realm({ entry: ${JSON.stringify(`${dir}/child.ts`)} });`,
+          "test('returns before abandoning its child Realm', async (t) => {",
+          "  t.equal(await realm.call(), 'ready');",
+          '});',
+          '',
+        ].join('\n') as never,
+      );
+      await fs.writeFile(
+        `${dir}/observes-cleanup.test.ts`,
+        [
+          "import { test } from 'fino:test/test';",
+          "import { DiskFileSystem } from 'fino:file';",
+          'const fs = new DiskFileSystem();',
+          "test('starts after the abandoned child exits', async (t) => {",
+          `  t.ok(await fs.lstat(${JSON.stringify(marker)}));`,
+          '});',
+          '',
+        ].join('\n') as never,
+      );
+      const { stdout, stderr, result } = await runCli(
+        ['test', '--parallel', 'abandoned-realm.test.ts', 'observes-cleanup.test.ts'],
+        { cwd: dir, env: { FINO_REACTOR_THREADS: '1', FINO_TEST_CONCURRENCY: '1' } },
+      );
+      t.equal(result.code, 0, 'parallel file exits successfully');
+      t.equal(stderr, '', 'child Realm cleanup has no diagnostics');
+      t.ok(stdout.includes('ok 1 - returns before abandoning its child Realm'));
+      t.ok(stdout.includes('ok 2 - starts after the abandoned child exits'));
+      t.ok(await fs.lstat(marker), 'child Realm shutdown hook completed before file release');
+    });
+  });
   it('does not let ambient handles retain a completed test Realm', async (t) => {
     await withTempProject({}, async (dir, fs) => {
       const marker = `${dir}/completion-reported`;

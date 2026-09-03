@@ -2796,7 +2796,10 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
       this.#scheduledCompletion = this.#startScheduledRealm(opts, rules, false, bootstrapData);
-      this.#scheduledShutdownRegistration = registerShutdownHook(() => this.terminate());
+      this.#scheduledShutdownRegistration = registerShutdownHook(() => {
+        this.terminate();
+        return this.#scheduledCompletion!.catch(() => {});
+      });
       void this.#scheduledCompletion.then(
         () => this.#disposeScheduledShutdownRegistration(),
         () => this.#disposeScheduledShutdownRegistration(),
