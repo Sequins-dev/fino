@@ -184,6 +184,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:process/cwd", "internal/process/cwd"),
     source_builtin!("internal:process/exit", "internal/process/exit"),
+    source_builtin!("internal:process/spawn", "internal/process/spawn"),
     source_builtin!("internal:statistics", "internal/statistics"),
     source_builtin!("internal:value/equal", "internal/value/equal"),
     source_builtin!("internal:store/facade", "internal/store/facade"),
@@ -688,6 +689,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:test/assert", "test/assert"),
     source_builtin!("fino:test/test", "test/test"),
     source_builtin!("fino:test/bench", "test/bench"),
+    source_builtin!("fino:test/pty", "test/pty"),
     source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
     // util

@@ -324,9 +324,9 @@ export class TuiInput {
     while (!this.#closed) {
       const queued = this.#queue.shift();
       if (queued) return queued;
-      const bytes = await stdin().read();
-      if (bytes === null) return null;
-      this.#queue.push(...decodeTuiInput(bytes));
+      const result = await stdin().read();
+      if (result.done) return null;
+      this.#queue.push(...decodeTuiInput(result.value));
     }
     return null;
   }
@@ -378,12 +378,12 @@ export async function measureTerminalSize(): Promise<TerminalSize> {
     void timer.then(() => controller.abort(new Error('terminal size query timed out')));
     let response = '';
     while (!controller.signal.aborted) {
-      const chunk = await stdin().read({
+      const result = await stdin().read({
         maxBytes: 64,
         signal: controller.signal,
       });
-      if (chunk === null) break;
-      response += decoder.decode(chunk);
+      if (result.done) break;
+      response += decoder.decode(result.value);
       const match = /\x1b\[(\d+);(\d+)R/.exec(response);
       if (match) {
         timer.cancel();
