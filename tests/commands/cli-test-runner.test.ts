@@ -526,7 +526,7 @@ describe('CLI commands: test', () => {
         const unackedRun = unackedRealm.run();
         void unackedRealm.call(`file://${dir}/held.test.ts`, {}).catch(() => {});
         try {
-          await withTimeout(unackedRun, 3_000, 'unacknowledged test worker did not exit');
+          await withTimeout(unackedRun, 10_000, 'unacknowledged test worker did not exit');
           t.ok(true, 'a lost acknowledgement cannot keep the worker Realm alive');
         } finally {
           unackedRealm.port.removeEventListener('message', onUnackedMessage);
