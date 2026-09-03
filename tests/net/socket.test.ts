@@ -238,6 +238,11 @@ describe('TCP / UDP loopback', () => {
       const deadline = Date.now() + 200;
       while (received.length < 2 && Date.now() < deadline) {
         const batch = sock.recvmmsgBatch(server, 2 - received.length, 64);
+        if (typeof batch === 'number') {
+          t.ok(batch < 0, 'recvmmsgBatch reports a negative errno when no datagram is ready');
+          await Promise.race([loop.readable(server), loop.timeout(20)]);
+          continue;
+        }
         t.ok(Array.isArray(batch), 'recvmmsgBatch returned datagrams');
         if (!Array.isArray(batch)) throw new Error('expected recvmmsgBatch results');
         received.push(...batch);
