@@ -408,7 +408,13 @@ export class TuiInput {
       if (queued) return queued;
       this.#pendingRead ??= stdin().read({ signal: this.#abortRead.signal });
       let result: ReadResult<Uint8Array>;
-      const read = this.#pendingRead.then((value) => ({ kind: 'read' as const, value }));
+      const read = this.#pendingRead.then(
+        (value) => ({ kind: 'read' as const, value }),
+        (error) => {
+          if (this.#closed) return { kind: 'closed' as const };
+          throw error;
+        },
+      );
       if (this.#partial.length > 0) {
         const hold = loopTimeout(25);
         const settled = await Promise.race([
@@ -451,8 +457,10 @@ export class TuiInput {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    this.#resolveClosed();
+    // Abort removes the shared stdin readiness watch synchronously. Publish
+    // closure only after that cleanup so a replacement reader cannot race it.
     this.#abortRead.abort(new Error('Terminal input closed'));
+    this.#resolveClosed();
     if (this.#mouse) void writeStdout(exitMouseMode());
     this.#restoreRaw?.();
     this.#restoreRaw = null;
