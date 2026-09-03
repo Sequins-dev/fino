@@ -13,14 +13,11 @@ import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
 import type errorFn from './fixtures/error-fn.ts';
 import type openFdCountFn from './fixtures/open-fd-count-fn.ts';
+import type processRealmFdReleaseFn from './fixtures/process-realm-fd-release-fn.ts';
 
 const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
   close: {
     parameters: ['i32'],
-    result: 'i32',
-  },
-  fcntl: {
-    parameters: ['i32', 'i32', 'i32'],
     result: 'i32',
   },
   pipe: {
@@ -28,15 +25,6 @@ const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6'
     result: 'i32',
   },
 });
-const F_GETFD = 1;
-
-function countOpenFds(): number {
-  let open = 0;
-  for (let fd = 3; fd < 4096; fd++) {
-    if (libc.symbols.fcntl(fd, F_GETFD, 0) >= 0) open++;
-  }
-  return open;
-}
 
 async function countProcessRealmFds(): Promise<number> {
   const realm = new Realm<typeof openFdCountFn>({
@@ -272,16 +260,11 @@ describe('Process Realm descriptor isolation', { exclusive: true }, () => {
   });
 
   it('releases parent transport descriptors after exit', async (t) => {
-    const before = countOpenFds();
-    for (let index = 0; index < 12; index++) {
-      const realm = new Realm({
-        process: true,
-        entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
-      });
-      await realm.run();
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 20));
-    const after = countOpenFds();
+    const probe = new Realm<typeof processRealmFdReleaseFn>({
+      process: true,
+      entry: new URL('./fixtures/process-realm-fd-release-fn.ts', import.meta.url).pathname,
+    });
+    const { before, after } = await probe.call();
     t.ok(
       after <= before + 2,
       `process Realm transport descriptors were released: before=${before}, after=${after}`,
