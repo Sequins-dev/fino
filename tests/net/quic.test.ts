@@ -85,6 +85,7 @@ import {
   sym as ngtcp2Sym,
 } from '../../js/internal/net/quic/ngtcp2/bindings.ts';
 import { sym as cryptoSym } from '../../js/internal/net/quic/ngtcp2/crypto.ts';
+import { publishNetworkTopic } from 'internal:net/quic/core';
 import {
   quicConnectionInternals,
   quicEndpointInternals,
@@ -182,6 +183,35 @@ function memorySessionStore(sessions: Map<string, any>) {
     delete: (key: string) => sessions.delete(key),
   };
 }
+
+describe('Network topic publisher', () => {
+  it('constructs events only when the topic has subscribers', (t) => {
+    const name = 'test:network-topic:lazy-event';
+    let constructions = 0;
+    const publish = () =>
+      publishNetworkTopic(name, () => {
+        constructions++;
+        return { value: 42 };
+      });
+
+    publish();
+    t.equal(constructions, 0, 'unobserved events are not constructed');
+
+    let received: any;
+    const subscription = topic<any>(name).subscribe((event) => {
+      received = event;
+    });
+    try {
+      publish();
+      t.equal(constructions, 1, 'observed events are constructed once');
+      t.deepEqual(received, { value: 42 }, 'subscriber receives the constructed event');
+      t.ok(Object.isFrozen(received), 'published events remain immutable');
+    } finally {
+      subscription.dispose();
+    }
+  });
+});
+
 function writeU32BE(buf: Uint8Array, offset: number, value: number): void {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   view.setUint32(offset, value, false);
@@ -523,6 +553,11 @@ describe('QUIC hardening options', { exclusive: true }, () => {
       'active migration and preferred-address use are disabled by default',
     );
     t.equal(endpoint.qlog, false, 'qlog is disabled by default');
+    t.throws(
+      () => new QuicEndpoint({ qlog: { events: ['transport:packet_sent'] } as any }),
+      /qlog does not support event filtering/,
+      'inert qlog event filters are rejected instead of silently ignored',
+    );
     t.equal(endpoint.keylog, false, 'keylog is disabled by default');
     t.equal(endpoint.tlsGroups, null, 'TLS groups use backend defaults by default');
     t.deepEqual(

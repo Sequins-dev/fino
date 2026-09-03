@@ -590,8 +590,6 @@ export type QuicQlogOptions =
   | {
       /** Directory or file path for qlog output, depending on implementation policy. */
       path?: string;
-      /** Optional event name filters for future qlog writers. */
-      events?: string[];
     };
 /** TLS keylog diagnostics configuration. Disabled by default. */
 export type QuicKeylogOptions =
@@ -1639,9 +1637,15 @@ export function deferAfterNativeCallback(task: () => void): void {
   scheduleDeferredNativeTasks();
 }
 export function publishQuicTopic(name: string, event: Record<string, unknown>): void {
+  publishNetworkTopic(name, () => event);
+}
+export function publishNetworkTopic(
+  name: string,
+  createEvent: () => Record<string, unknown>,
+): void {
   const channel = topic(name);
   if (!channel.hasSubscribers) return;
-  channel.publish(Object.freeze({ ...event }));
+  channel.publish(Object.freeze({ ...createEvent() }));
 }
 export function runtimeDelay(runtime: QuicRuntime, delayMs: number): Promise<void> {
   return new Promise((resolve) => {
@@ -2563,9 +2567,11 @@ export function normalizeQlog(
 ): QuicQlogOptions {
   if (input === undefined) return base?.qlog ?? false;
   if (input === false) return false;
+  if ('events' in input) {
+    throw new TypeError('QUIC qlog does not support event filtering; omit qlog.events');
+  }
   return {
     ...(input.path === undefined ? {} : { path: String(input.path) }),
-    ...(input.events === undefined ? {} : { events: input.events.map(String) }),
   };
 }
 export function normalizeKeylog(

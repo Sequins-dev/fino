@@ -22,10 +22,10 @@
  * `NGHTTP3_CALLBACKS_VERSION` and `NGHTTP3_SETTINGS_VERSION`; they are not
  * discovered at runtime, so bumping the vendored libnghttp3 major version means
  * re-checking every `CB_*`, `NV_*`, `VEC_*`, `DR_*`, and `SETTINGS_*` constant
- * against the corresponding C header. This binding covers the request/response
- * HTTP/3 surface used by the internal helpers. Connection reuse,
- * WebTransport/Capsule, H3 DATAGRAM, CONNECT tunnels, and external H3 interop
- * remain deferred above this FFI layer.
+ * against the corresponding C header. This binding covers request/response
+ * framing, QPACK configuration, graceful shutdown, and the settings needed by
+ * the higher-level WebTransport integration. Origin coalescing and external H3
+ * interop remain policy and validation work above this FFI layer.
  *
  * ```ts no_run
  * import {
