@@ -80,7 +80,10 @@
  *
  * @internal
  */
-import { TextDecoder as _TextDecoder } from '../../../../globals/encoding.ts';
+import {
+  TextDecoder as _TextDecoder,
+  TextEncoder as _TextEncoder,
+} from '../../../../globals/encoding.ts';
 import {
   sym,
   FfiCallback,
@@ -90,6 +93,10 @@ import {
   NGHTTP3_SETTINGS_VERSION,
   CB_SIZE,
   SETTINGS_SIZE,
+  SETTINGS_MAX_FIELD_SECTION_SIZE,
+  SETTINGS_QPACK_MAX_DTABLE_CAPACITY,
+  SETTINGS_QPACK_ENCODER_MAX_DTABLE_CAPACITY,
+  SETTINGS_QPACK_BLOCKED_STREAMS,
   CB_ACKED_STREAM_DATA,
   CB_STREAM_CLOSE,
   CB_RECV_DATA,
@@ -108,6 +115,9 @@ import {
   SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM,
   PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL,
   PROTO_SETTINGS_H3_DATAGRAM,
+  PROTO_SETTINGS_MAX_FIELD_SECTION_SIZE,
+  PROTO_SETTINGS_QPACK_MAX_DTABLE_CAPACITY,
+  PROTO_SETTINGS_QPACK_BLOCKED_STREAMS,
   NV_ENTRY_SIZE,
   VEC_ENTRY_SIZE,
   DR_READ_DATA,
@@ -247,6 +257,32 @@ export interface H3SessionOptions {
    * SETTINGS negotiation on the control stream. Defaults to false.
    */
   webTransport?: boolean;
+  /**
+   * Maximum decoded size accepted for each header or trailer section, using
+   * RFC 9114's name bytes + value bytes + 32 bytes per field accounting.
+   * Advertised to the peer and enforced by the client/server drivers. Defaults
+   * to 64 KiB.
+   */
+  maxFieldSectionSize?: number;
+  /** Maximum QPACK decoder dynamic-table capacity in bytes. Defaults to libnghttp3's 4 KiB. */
+  qpackMaxTableCapacity?: number;
+  /** Maximum QPACK encoder dynamic-table capacity in bytes. Defaults to libnghttp3's 4 KiB. */
+  qpackEncoderMaxTableCapacity?: number;
+  /** Maximum number of streams allowed to block on QPACK state. Defaults to libnghttp3's 100. */
+  qpackBlockedStreams?: number;
+}
+/** Default maximum decoded size of one HTTP field section. @internal */
+export const DEFAULT_MAX_FIELD_SECTION_SIZE = 64 * 1024;
+const _fieldEncoder = new _TextEncoder();
+/** Return RFC 9114 field-list accounting for one decoded field. @internal */
+export function h3FieldSize(name: string, value: string): number {
+  return _fieldEncoder.encode(name).byteLength + _fieldEncoder.encode(value).byteLength + 32;
+}
+function checkedSetting(name: string, value: number): bigint {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${name} must be a non-negative safe integer`);
+  }
+  return BigInt(value);
 }
 interface BodySlot {
   bytes: Uint8Array | null;
@@ -318,6 +354,12 @@ function nameForQpackToken(token: number): string | null {
 function protoSettingsToMap(settingsPtr: ArrayBuffer | null): Map<number, number> {
   const settings = new Map<number, number>();
   if (settingsPtr === null) return settings;
+  settings.set(0x06, Number(Pointer.readU64(settingsPtr, PROTO_SETTINGS_MAX_FIELD_SECTION_SIZE)));
+  settings.set(
+    0x01,
+    Number(Pointer.readU64(settingsPtr, PROTO_SETTINGS_QPACK_MAX_DTABLE_CAPACITY)),
+  );
+  settings.set(0x07, Number(Pointer.readU64(settingsPtr, PROTO_SETTINGS_QPACK_BLOCKED_STREAMS)));
   settings.set(
     SETTINGS_ENABLE_CONNECT_PROTOCOL,
     Pointer.readU8(settingsPtr, PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL) === 0 ? 0 : 1,
@@ -484,6 +526,20 @@ export class Nghttp3Session {
     isServer: boolean,
     options: H3SessionOptions,
   ): Nghttp3Session {
+    const maxFieldSectionSize = options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE;
+    const maxFieldSectionSizeSetting = checkedSetting('maxFieldSectionSize', maxFieldSectionSize);
+    const qpackMaxTableCapacitySetting =
+      options.qpackMaxTableCapacity === undefined
+        ? null
+        : checkedSetting('qpackMaxTableCapacity', options.qpackMaxTableCapacity);
+    const qpackEncoderMaxTableCapacitySetting =
+      options.qpackEncoderMaxTableCapacity === undefined
+        ? null
+        : checkedSetting('qpackEncoderMaxTableCapacity', options.qpackEncoderMaxTableCapacity);
+    const qpackBlockedStreamsSetting =
+      options.qpackBlockedStreams === undefined
+        ? null
+        : checkedSetting('qpackBlockedStreams', options.qpackBlockedStreams);
     // Allocate the 152-byte callbacks struct (zeroed = null callbacks for unused fields).
     const cbsBuf = new Uint8Array(CB_SIZE);
     // Allocate 8-byte out-param buffer for the conn pointer.
@@ -496,7 +552,30 @@ export class Nghttp3Session {
     // Fill settings struct with library defaults.
     const settingsBuf = new Uint8Array(SETTINGS_SIZE);
     sym!.nghttp3_settings_default_versioned(NGHTTP3_SETTINGS_VERSION, Pointer.of(settingsBuf));
-    const localSettings = new Map<number, number>();
+    const settingsView = new DataView(settingsBuf.buffer);
+    settingsView.setBigUint64(SETTINGS_MAX_FIELD_SECTION_SIZE, maxFieldSectionSizeSetting, true);
+    if (qpackMaxTableCapacitySetting !== null) {
+      settingsView.setBigUint64(
+        SETTINGS_QPACK_MAX_DTABLE_CAPACITY,
+        qpackMaxTableCapacitySetting,
+        true,
+      );
+    }
+    if (qpackEncoderMaxTableCapacitySetting !== null) {
+      settingsView.setBigUint64(
+        SETTINGS_QPACK_ENCODER_MAX_DTABLE_CAPACITY,
+        qpackEncoderMaxTableCapacitySetting,
+        true,
+      );
+    }
+    if (qpackBlockedStreamsSetting !== null) {
+      settingsView.setBigUint64(SETTINGS_QPACK_BLOCKED_STREAMS, qpackBlockedStreamsSetting, true);
+    }
+    const localSettings = new Map<number, number>([
+      [0x06, maxFieldSectionSize],
+      [0x01, Number(settingsView.getBigUint64(SETTINGS_QPACK_MAX_DTABLE_CAPACITY, true))],
+      [0x07, Number(settingsView.getBigUint64(SETTINGS_QPACK_BLOCKED_STREAMS, true))],
+    ]);
     if (options.webTransport === true) {
       settingsBuf[NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL] = 1;
       settingsBuf[NGHTTP3_SETTINGS_H3_DATAGRAM] = 1;

@@ -50,8 +50,8 @@
  *
  * @internal
  */
-import { Nghttp3Session } from './session.ts';
-import type { H3BodySource, H3SessionCallbacks } from './session.ts';
+import { DEFAULT_MAX_FIELD_SECTION_SIZE, Nghttp3Session, h3FieldSize } from './session.ts';
+import type { H3BodySource, H3SessionCallbacks, H3SessionOptions } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
 import { h3Available, NGHTTP3_ERR_CONN_CLOSING, NGHTTP3_H3_REQUEST_CANCELLED } from './bindings.ts';
 import { HttpStreamError } from '../stream.ts';
@@ -114,6 +114,8 @@ export interface H3RequestInit extends RequestInit {
    */
   webTransportOptions?: WebTransportOptions;
 }
+/** Resource limits and QPACK settings for an HTTP/3 client session. */
+export type H3ClientSessionOptions = Omit<H3SessionOptions, 'webTransport'>;
 /**
  * Per-stream bookkeeping for a request whose response is still being assembled.
  *
@@ -136,6 +138,8 @@ interface PendingRequest {
   body: H3BodyQueue;
   trailerHeaders: Array<[string, string]>;
   inTrailers: boolean;
+  fieldSectionSize: number;
+  fieldSectionTooLarge: boolean;
   done: boolean;
   responseResolved: boolean;
   resolve: ((response: Response) => void) | null;
@@ -236,14 +240,16 @@ export class H3ClientSession {
   #pending = new Map<bigint, PendingRequest>();
   #webTransports = new Map<bigint, WebTransport>();
   #closed = false;
+  #maxFieldSectionSize: number;
   #goawayStreamId: bigint | null = null;
   #goawayReceived: Promise<void>;
   #resolveGoawayReceived: (() => void) | null = null;
   #peerSettingsReceived: Promise<void>;
   #resolvePeerSettingsReceived: (() => void) | null = null;
-  private constructor(conn: QuicConnection, session: Nghttp3Session) {
+  private constructor(conn: QuicConnection, session: Nghttp3Session, maxFieldSectionSize: number) {
     this.#conn = conn;
     this.#session = session;
+    this.#maxFieldSectionSize = maxFieldSectionSize;
     this.#goawayReceived = new Promise((resolve) => {
       this.#resolveGoawayReceived = resolve;
     });
@@ -271,7 +277,10 @@ export class H3ClientSession {
    * const session = await H3ClientSession.create(conn);
    * ```
    */
-  static async create(conn: QuicConnection): Promise<H3ClientSession> {
+  static async create(
+    conn: QuicConnection,
+    options: H3ClientSessionOptions = {},
+  ): Promise<H3ClientSession> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
     let session: Nghttp3Session;
     let instance: H3ClientSession;
@@ -284,6 +293,8 @@ export class H3ClientSession {
           existing.responseHeaders = [];
           existing.trailerHeaders = [];
           existing.inTrailers = false;
+          existing.fieldSectionSize = 0;
+          existing.fieldSectionTooLarge = false;
         } else {
           instance.#pending.set(streamId, {
             method: 'GET',
@@ -294,6 +305,8 @@ export class H3ClientSession {
             body: new H3BodyQueue(),
             trailerHeaders: [],
             inTrailers: false,
+            fieldSectionSize: 0,
+            fieldSectionTooLarge: false,
             done: false,
             responseResolved: false,
             resolve: null,
@@ -307,6 +320,11 @@ export class H3ClientSession {
       onRecvHeader(streamId, _token, name, value) {
         const req = instance.#pending.get(streamId);
         if (!req) return;
+        req.fieldSectionSize += h3FieldSize(name, value);
+        if (req.fieldSectionSize > instance.#maxFieldSectionSize) {
+          req.fieldSectionTooLarge = true;
+          return;
+        }
         if (req.inTrailers) {
           req.trailerHeaders.push([name, value]);
           return;
@@ -315,18 +333,38 @@ export class H3ClientSession {
         else if (!name.startsWith(':')) req.responseHeaders.push([name, value]);
       },
       onEndHeaders(streamId, fin) {
+        const req = instance.#pending.get(streamId);
+        if (req?.fieldSectionTooLarge) {
+          instance.#rejectOversizedFieldSection(streamId);
+          return;
+        }
         instance.#resolveResponse(streamId);
         if (fin) instance.#markDone(streamId);
       },
       onBeginTrailers(streamId) {
         const req = instance.#pending.get(streamId);
-        if (req) req.inTrailers = true;
+        if (req) {
+          req.inTrailers = true;
+          req.fieldSectionSize = 0;
+          req.fieldSectionTooLarge = false;
+        }
       },
       onRecvTrailer(streamId, _token, name, value) {
         const req = instance.#pending.get(streamId);
-        if (req && !name.startsWith(':')) req.trailerHeaders.push([name, value]);
+        if (!req) return;
+        req.fieldSectionSize += h3FieldSize(name, value);
+        if (req.fieldSectionSize > instance.#maxFieldSectionSize) {
+          req.fieldSectionTooLarge = true;
+          return;
+        }
+        if (!name.startsWith(':')) req.trailerHeaders.push([name, value]);
       },
       onEndTrailers(streamId) {
+        const req = instance.#pending.get(streamId);
+        if (req?.fieldSectionTooLarge) {
+          instance.#rejectOversizedFieldSection(streamId);
+          return;
+        }
         instance.#markDone(streamId);
       },
       onRecvData(streamId, data) {
@@ -348,6 +386,10 @@ export class H3ClientSession {
         }
       },
       onEndStream(streamId) {
+        if (instance.#pending.get(streamId)?.fieldSectionTooLarge) {
+          instance.#rejectOversizedFieldSection(streamId);
+          return;
+        }
         instance.#markDone(streamId);
       },
       onStreamClose(streamId, appErrorCode) {
@@ -399,8 +441,9 @@ export class H3ClientSession {
         instance.#markPeerSettingsReceived();
       },
     };
-    session = Nghttp3Session.createClient(callbacks, { webTransport: true });
-    instance = new H3ClientSession(conn, session);
+    const maxFieldSectionSize = options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE;
+    session = Nghttp3Session.createClient(callbacks, { ...options, webTransport: true });
+    instance = new H3ClientSession(conn, session, maxFieldSectionSize);
     conn.addEventListener(
       'close',
       () => {
@@ -610,6 +653,8 @@ export class H3ClientSession {
         }),
         trailerHeaders: [],
         inTrailers: false,
+        fieldSectionSize: 0,
+        fieldSectionTooLarge: false,
         done: false,
         responseResolved: false,
         resolve: null,
@@ -807,6 +852,14 @@ export class H3ClientSession {
     try {
       req.stream?.reset(Number(NGHTTP3_H3_REQUEST_CANCELLED));
     } catch {}
+  }
+  #rejectOversizedFieldSection(streamId: bigint): void {
+    queueMicrotask(() => {
+      this.#cancelRequest(
+        streamId,
+        new Error(`HTTP/3 response field section exceeds ${this.#maxFieldSectionSize} bytes`),
+      );
+    });
   }
   /**
    * Marks the session closed and shuts down nghttp3 once streams drain.

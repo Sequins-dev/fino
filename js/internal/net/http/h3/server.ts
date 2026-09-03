@@ -55,8 +55,8 @@
  *
  * @internal
  */
-import { Nghttp3Session } from './session.ts';
-import type { H3SessionCallbacks } from './session.ts';
+import { DEFAULT_MAX_FIELD_SECTION_SIZE, Nghttp3Session, h3FieldSize } from './session.ts';
+import type { H3SessionCallbacks, H3SessionOptions } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
 import { h3Available } from './bindings.ts';
 import { QuicStreamEvent } from 'fino:net/quic';
@@ -124,7 +124,7 @@ export type H3WebTransportHandler = (
  * }
  * ```
  */
-export interface H3ServerDriverOptions {
+export interface H3ServerDriverOptions extends Omit<H3SessionOptions, 'webTransport'> {
   /**
    * Handler invoked for `webtransport-h3` extended-CONNECT streams.
    *
@@ -171,6 +171,9 @@ interface H3ServerStream {
   dispatchDone: boolean;
   seenPseudos: number;
   seenRegular: boolean;
+  fieldSectionSize: number;
+  fieldSectionTooLarge: boolean;
+  requestHeadersTooLarge: boolean;
 }
 function pseudoHeaderBit(token: number, name: string): number {
   switch (token) {
@@ -212,6 +215,9 @@ function makeStream(streamId: bigint): H3ServerStream {
     dispatchDone: false,
     seenPseudos: 0,
     seenRegular: false,
+    fieldSectionSize: 0,
+    fieldSectionTooLarge: false,
+    requestHeadersTooLarge: false,
   };
 }
 function hasInvalidRequestControlData(st: H3ServerStream): boolean {
@@ -299,6 +305,7 @@ export class H3ServerDriver {
   ): Promise<void> {
     if (!h3Available) throw new Error('libnghttp3 is not available');
     const streams = new Map<bigint, H3ServerStream>();
+    const requestStreams = new Map<bigint, QuicStream>();
     const webTransports = new Map<bigint, WebTransport>();
     const inFlight = new Set<Promise<void>>();
     let resolvePeerSettingsReceived: (() => void) | null = null;
@@ -313,6 +320,12 @@ export class H3ServerDriver {
       onRecvHeader(streamId, token, name, value) {
         const st = streams.get(streamId);
         if (!st || st.cancelled) return;
+        st.fieldSectionSize += h3FieldSize(name, value);
+        if (st.fieldSectionSize > (options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE)) {
+          st.fieldSectionTooLarge = true;
+          if (!st.inTrailers) st.requestHeadersTooLarge = true;
+          return;
+        }
         if (st.inTrailers) {
           if (!name.startsWith(':')) st.trailerHeaders.push([name, value]);
           return;
@@ -370,15 +383,41 @@ export class H3ServerDriver {
       },
       onBeginTrailers(streamId) {
         const st = streams.get(streamId);
-        if (st) st.inTrailers = true;
+        if (st) {
+          st.inTrailers = true;
+          st.fieldSectionSize = 0;
+          st.fieldSectionTooLarge = false;
+        }
       },
       onRecvTrailer(streamId, _token, name, value) {
         const st = streams.get(streamId);
-        if (st && !name.startsWith(':')) st.trailerHeaders.push([name, value]);
+        if (!st || st.cancelled) return;
+        st.fieldSectionSize += h3FieldSize(name, value);
+        if (st.fieldSectionSize > (options.maxFieldSectionSize ?? DEFAULT_MAX_FIELD_SECTION_SIZE)) {
+          st.fieldSectionTooLarge = true;
+          return;
+        }
+        if (!name.startsWith(':')) st.trailerHeaders.push([name, value]);
       },
       onEndTrailers(streamId) {
         const st = streams.get(streamId);
         if (!st) return;
+        if (st.fieldSectionTooLarge) {
+          st.cancelled = true;
+          st.bodyDone = true;
+          st.body.error(new Error('HTTP/3 request trailer field section exceeds its limit'));
+          queueMicrotask(() => {
+            session.cancelStream(streamId);
+            const stream = requestStreams.get(streamId);
+            try {
+              stream?.stopSending(270);
+            } catch {}
+            try {
+              stream?.reset(270);
+            } catch {}
+          });
+          return;
+        }
         st.body.close();
         st.bodyDone = true;
         startDispatch(st);
@@ -400,6 +439,7 @@ export class H3ServerDriver {
           st.body.error(new Error(`H3 stream closed with error 0x${appErrorCode.toString(16)}`));
         }
         streams.delete(streamId);
+        requestStreams.delete(streamId);
       },
       onResetStream(streamId, appErrorCode) {
         const st = streams.get(streamId);
@@ -414,7 +454,7 @@ export class H3ServerDriver {
         resolvePeerSettingsReceived = null;
       },
     };
-    session = Nghttp3Session.createServer(callbacks, { webTransport: true });
+    session = Nghttp3Session.createServer(callbacks, { ...options, webTransport: true });
     // Dispatch a request to the handler once headers are complete.
     function startDispatch(st: H3ServerStream): void {
       if (st.dispatched) return;
@@ -437,6 +477,13 @@ export class H3ServerDriver {
       streams.delete(st.streamId);
     }
     async function dispatch(st: H3ServerStream): Promise<void> {
+      if (st.requestHeadersTooLarge) {
+        try {
+          session.submitResponse(st.streamId, [[':status', '431']]);
+          session.drainWrites();
+        } catch {}
+        return;
+      }
       if (st.badRequest) {
         try {
           session.submitResponse(st.streamId, [[':status', '400']]);
@@ -611,6 +658,7 @@ export class H3ServerDriver {
       // arrived before installation.
       conn[quicIncomingStreamHook] = (stream) => {
         const sid = BigInt(stream.id);
+        if (stream.direction === 'bidirectional') requestStreams.set(sid, stream);
         void (async () => {
           let first: Uint8Array | null = null;
           try {
