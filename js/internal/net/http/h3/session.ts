@@ -1121,7 +1121,7 @@ export class Nghttp3Session {
     this.#quicStreams.delete(streamId);
     // nghttp3 reports an error if the stream has already reached its terminal
     // callback. There is no further state to release in that case.
-    sym!.nghttp3_conn_close_stream(this.#conn, streamId, errorCode);
+    this.#closeStream(streamId, errorCode);
   }
   #dropBodySlot(streamId: bigint): void {
     const slot = this.#bodySlots.get(streamId);
@@ -1259,7 +1259,7 @@ export class Nghttp3Session {
           consumed === NGHTTP3_ERR_MALFORMED_HTTP_HEADER ||
           consumed === NGHTTP3_ERR_MALFORMED_HTTP_MESSAGING;
         if (isStreamError) {
-          sym!.nghttp3_conn_close_stream(this.#conn, streamId, NGHTTP3_H3_MESSAGE_ERROR);
+          this.#closeStream(streamId, NGHTTP3_H3_MESSAGE_ERROR);
         } else {
           this.close();
         }
@@ -1379,7 +1379,7 @@ export class Nghttp3Session {
             // Writer is gone but nghttp3 still has data queued — close the stream so
             // nghttp3 stops producing for it. Without this, add_write_offset(0) would
             // stall the loop: nghttp3 never advances its buffer pointer.
-            sym!.nghttp3_conn_close_stream(this.#conn, sid, NGHTTP3_H3_REQUEST_CANCELLED);
+            this.#closeStream(sid, NGHTTP3_H3_REQUEST_CANCELLED);
           } else {
             // FIN-only frame, writer already gone — advance by 0 so nghttp3 releases
             // its internal stream state instead of leaving a stale entry.
@@ -1439,7 +1439,11 @@ export class Nghttp3Session {
     }
     this.#remoteEndedStreams.delete(streamId);
     this.#localEndedStreams.delete(streamId);
-    sym!.nghttp3_conn_close_stream(this.#conn, streamId, NGHTTP3_H3_NO_ERROR);
+    this.#closeStream(streamId, NGHTTP3_H3_NO_ERROR);
+  }
+  #closeStream(streamId: bigint, errorCode: bigint): void {
+    sym!.nghttp3_conn_close_stream(this.#conn, streamId, errorCode);
+    this.#scheduleDrainedCheck();
   }
   // -------------------------------------------------------------------------
   // Mutex helper
