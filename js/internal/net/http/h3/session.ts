@@ -1030,6 +1030,19 @@ export class Nghttp3Session {
     ) as number;
     if (rc !== 0) throw new Error(`nghttp3_conn_submit_response failed: ${rc}`);
   }
+  /** Queue a non-final 1xx response field section on a server request stream. */
+  submitInformational(streamId: bigint, headers: Array<[string, string]>): void {
+    if (this.#closed) throw new Error('session closed');
+    if (!this.#qpackStreamsBound) throw new Error('H3 session QPACK streams are not bound');
+    const { buf: nvBuf, nv } = buildNvArray(headers);
+    const rc = sym!.nghttp3_conn_submit_info(
+      this.#conn,
+      streamId,
+      this.#ptrOf(nvBuf, _PTR_NV),
+      nv,
+    ) as number;
+    if (rc !== 0) throw new Error(`nghttp3_conn_submit_info failed: ${rc}`);
+  }
   /**
    * Queue an HTTP/3 request on a client-opened stream (client sessions).
    *

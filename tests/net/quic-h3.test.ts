@@ -1126,6 +1126,51 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       await pipe.close();
     }
   });
+  it('delivers multiple informational responses before the final response', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, async (_request, context) => {
+        await context.sendInformational(103, { link: '</style.css>; rel=preload' });
+        await context.sendInformational(102, { 'x-progress': 'accepted' });
+        return new Response('final', { headers: { 'x-final': 'yes' } });
+      });
+      const information: Array<[number, string]> = [];
+      const session = await pipe.pumpUntil(H3ClientSession.create(clientConn));
+      const response = await pipe.pumpUntil(
+        session.request('https://localhost/', {
+          onInformational(info) {
+            information.push([
+              info.status,
+              info.headers.get('link') ?? info.headers.get('x-progress')!,
+            ]);
+          },
+        }),
+      );
+      t.deepEqual(
+        information,
+        [
+          [103, '</style.css>; rel=preload'],
+          [102, 'accepted'],
+        ],
+        'client observes each informational field section in wire order',
+      );
+      t.equal(response.status, 200, 'only the final status resolves the response');
+      t.equal(
+        response.headers.get('x-final'),
+        'yes',
+        'final headers are not mixed with interim fields',
+      );
+      t.equal(await pipe.pumpUntil(response.text()), 'final');
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
   it('POST with request body', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();

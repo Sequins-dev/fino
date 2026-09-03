@@ -137,6 +137,10 @@ const _SYMBOLS = {
     parameters: ['pointer', 'i64', 'pointer', 'usize', 'pointer'],
     result: 'i32',
   },
+  nghttp3_conn_submit_info: {
+    parameters: ['pointer', 'i64', 'pointer', 'usize'],
+    result: 'i32',
+  },
   nghttp3_conn_submit_request: {
     parameters: ['pointer', 'i64', 'pointer', 'usize', 'pointer', 'pointer'],
     result: 'i32',

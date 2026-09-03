@@ -73,8 +73,9 @@ import { inspectWebTransportStreamPrefix } from './webtransport.ts';
  * honoured. Pseudo-headers may be supplied through `headers` (for example a
  * `:authority` or `:protocol` entry) and are extracted before the ordinary
  * headers are serialized; regular header names are lowercased to satisfy HTTP/3
- * field-name rules. The two extra fields carry request trailers and the tuning
- * options used when the request is a WebTransport CONNECT.
+ * field-name rules. The extra fields carry request trailers, informational
+ * response delivery, and options used when the request is a WebTransport
+ * CONNECT.
  *
  * ```ts no_run
  * import type { H3RequestInit } from 'internal:net/http/h3/client';
@@ -88,6 +89,8 @@ import { inspectWebTransportStreamPrefix } from './webtransport.ts';
  * ```
  */
 export interface H3RequestInit extends RequestInit {
+  /** Observe each non-final 1xx response before the final `Response` resolves. */
+  onInformational?: (response: H3InformationalResponse) => void;
   /**
    * Maximum response-body bytes that may wait unread in memory.
    *
@@ -116,6 +119,11 @@ export interface H3RequestInit extends RequestInit {
 }
 /** Resource limits and QPACK settings for an HTTP/3 client session. */
 export type H3ClientSessionOptions = Omit<H3SessionOptions, 'webTransport'>;
+/** Immutable envelope delivered for an HTTP/3 informational response. */
+export interface H3InformationalResponse {
+  readonly status: number;
+  readonly headers: Headers;
+}
 /**
  * Per-stream bookkeeping for a request whose response is still being assembled.
  *
@@ -147,6 +155,7 @@ interface PendingRequest {
   trailers: Promise<Headers>;
   trailerResolve: ((headers: Headers) => void) | null;
   trailerReject: ((reason: unknown) => void) | null;
+  onInformational: ((response: H3InformationalResponse) => void) | null;
 }
 /**
  * Normalizes a request `init.body` into the `H3BodySource` nghttp3 expects.
@@ -314,6 +323,7 @@ export class H3ClientSession {
             trailers: Promise.resolve(new Headers()),
             trailerResolve: null,
             trailerReject: null,
+            onInformational: null,
           });
         }
       },
@@ -333,9 +343,29 @@ export class H3ClientSession {
         else if (!name.startsWith(':')) req.responseHeaders.push([name, value]);
       },
       onEndHeaders(streamId, fin) {
-        const req = instance.#pending.get(streamId);
-        if (req?.fieldSectionTooLarge) {
+        const pending = instance.#pending.get(streamId);
+        if (pending?.fieldSectionTooLarge) {
           instance.#rejectOversizedFieldSection(streamId);
+          return;
+        }
+        const status = Number(pending?.status);
+        if (pending && Number.isInteger(status) && status >= 100 && status < 200) {
+          const callback = pending.onInformational;
+          if (callback !== null) {
+            const information: H3InformationalResponse = Object.freeze({
+              status,
+              headers: new Headers(pending.responseHeaders as HeadersInit),
+            });
+            queueMicrotask(() => {
+              try {
+                callback(information);
+              } catch (error) {
+                reportError(error);
+              }
+            });
+          }
+          pending.status = '';
+          pending.responseHeaders = [];
           return;
         }
         instance.#resolveResponse(streamId);
@@ -662,6 +692,7 @@ export class H3ClientSession {
         trailers,
         trailerResolve,
         trailerReject,
+        onInformational: init?.onInformational ?? null,
       };
       pending.resolve = (response) => resolve(response);
       pending.reject = reject;
