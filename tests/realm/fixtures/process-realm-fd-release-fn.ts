@@ -20,7 +20,10 @@ function countOpenFds(): number {
 
 export default async function (): Promise<{ before: number; after: number }> {
   const before = countOpenFds();
-  for (let index = 0; index < 12; index++) {
+  // Three iterations still distinguish a per-Realm descriptor leak from the
+  // two-descriptor scheduling tolerance without multiplying process startup
+  // cost across the full parallel suite.
+  for (let index = 0; index < 3; index++) {
     const realm = new Realm({
       process: true,
       entry: new URL('./process-realm-empty.ts', import.meta.url).pathname,
