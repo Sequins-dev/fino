@@ -39,7 +39,15 @@ import { resolve as resolvePath } from 'fino:file/path';
 import { cwd } from 'fino:process';
 import { Realm } from 'fino:realm';
 import { escapeHtml } from 'fino:template';
-import { Fragment, h, type Child, type Component, type NormalizedChild, type VNode } from 'fino:ui';
+import {
+  Fragment,
+  h,
+  lowerTree,
+  type Child,
+  type Component,
+  type NormalizedChild,
+  type VNode,
+} from 'fino:ui';
 import { renderToHtml } from 'fino:ui/html';
 /** Metadata optionally exported by a slide module. */
 export interface PresentationMeta {
@@ -392,7 +400,10 @@ export class Presentation {
     }
   }
   #install(rendered: VNode, meta: PresentationMeta, theme: PresentationTheme): void {
-    const slides = slideSections(rendered).map(slideRecord);
+    // The manifest is read off the element tree — `data-fino-slide`,
+    // `data-fino-steps`, `data-fino-notes` — so components have to resolve to
+    // their elements before it can be walked.
+    const slides = slideSections(lowerTree(rendered, 'html')).map(slideRecord);
     if (slides.length === 0)
       throw new Error('Presentation module did not render any <section data-fino-slide> elements');
     this.#manifest = {

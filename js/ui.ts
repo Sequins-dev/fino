@@ -29,6 +29,12 @@
  * event loop drains, which turns async data loading into static output without
  * either side changing.
  *
+ * Function components stay as functions in the constructed tree until a sink
+ * lowers it for a named render target. Targets declare the primitive node names
+ * they consume and may register lowerings for components or host element names
+ * they do not own. Registrations are stack-safe disposable handles: the most
+ * recent active value wins, and disposing it restores the preceding value.
+ *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
  * import { createRoot, createSignal, renderStatic } from 'fino:ui';
@@ -72,9 +78,18 @@ export type Component<P = Record<string, unknown>> = (
  * Host-neutral element or component type accepted by `h()`.
  *
  * Strings are host element names, `Fragment` groups children without a host
- * node, and functions are invoked as components.
+ * node, and functions are components — stored on the node and invoked later,
+ * by whichever render target lowers the tree.
  */
 export type VNodeType = string | typeof Fragment | Component<any>;
+/**
+ * Name of a render target, used as the second key into the lowering registry.
+ *
+ * Targets are open: `'tui'` and `'html'` ship here, but a name is just a
+ * string, so a target defined outside this framework participates on equal
+ * terms.
+ */
+export type RenderTargetName = string;
 /**
  * Child value after normalization.
  *
@@ -95,9 +110,11 @@ export type Props = Record<string, unknown>;
  */
 export interface VNode {
   /**
-   * Host element name, or `'fragment'` for fragment VNodes.
+   * Host element name, `'fragment'` for fragment VNodes, or the component
+   * function itself — components are stored, not invoked, so a render target
+   * can substitute its own lowering for them.
    */
-  type: string;
+  type: string | Component<any>;
   /**
    * Host props with `key` and `children` removed.
    */
@@ -128,7 +145,7 @@ function normalizeChild(input: Child, out: NormalizedChild[]): void {
     out.push(String(input));
     return;
   }
-  if (typeof input !== 'string' && input.type === 'fragment') {
+  if (typeof input !== 'string' && typeof input.type === 'string' && input.type === 'fragment') {
     for (const child of input.children) normalizeChild(child, out);
     return;
   }
@@ -140,12 +157,17 @@ function normalizeChildren(children: Child[]): NormalizedChild[] {
   return out;
 }
 /**
- * Construct a host-neutral VNode or invoke a function component.
+ * Construct a host-neutral VNode.
  *
  * `key` is copied out of props and stored on the VNode for reconciliation.
  * `children` from props and variadic children are merged, flattened, and
- * stripped of empty placeholders. Function components receive the normalized
- * children as `props.children`.
+ * stripped of empty placeholders.
+ *
+ * Function components are **not** invoked here. The function is stored as the
+ * node's `type` and runs later, during `lowerTree()`, so that a render target
+ * gets the chance to substitute its own lowering for that component first —
+ * see `mapRenderTargetLowering()`. Calling a component directly still works
+ * and simply bypasses the registry.
  *
  * ```ts no_run
  * import { h } from 'fino:ui';
@@ -175,20 +197,282 @@ export function h(type: VNodeType, props: Props | null, ...children: Child[]): V
   for (const name of Object.keys(rawProps)) {
     if (name !== 'key' && name !== 'children') normalizedProps[name] = rawProps[name];
   }
-  if (typeof type === 'function') {
-    const node = type({
-      ...normalizedProps,
-      children: normalizedChildren,
-    });
-    const key = typeof keyValue === 'string' || typeof keyValue === 'number' ? keyValue : null;
-    return key === null || node.key === key ? node : { ...node, key };
-  }
   return {
     type,
     props: normalizedProps,
     children: normalizedChildren,
     key: typeof keyValue === 'string' || typeof keyValue === 'number' ? keyValue : null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Render targets and the lowering registry
+// ---------------------------------------------------------------------------
+
+interface RenderTargetSpec {
+  /** Node names this target can consume directly, or `null` to accept any. */
+  primitives: Set<string> | null;
+}
+
+interface RegistryEntry<T> {
+  value: T;
+}
+
+interface RegistryStore<K, V> {
+  get(key: K): RegistryEntry<V>[] | undefined;
+  set(key: K, entries: RegistryEntry<V>[]): unknown;
+  delete(key: K): boolean;
+}
+
+/** A reversible registration in the render-target registry. */
+export interface RenderTargetRegistration {
+  /** Whether this registration has already been removed. */
+  readonly disposed: boolean;
+  /** Remove only this registration, restoring the next-most-recent value. */
+  dispose(): void;
+  /** Alias for `dispose()` that supports `using` declarations. */
+  [Symbol.dispose](): void;
+}
+
+const renderTargets = new Map<RenderTargetName, RegistryEntry<RenderTargetSpec>[]>();
+const componentLowerings = new WeakMap<
+  Component<any>,
+  Map<RenderTargetName, RegistryEntry<Component<any>>[]>
+>();
+const elementLowerings = new Map<string, Map<RenderTargetName, RegistryEntry<Component<any>>[]>>();
+const componentNames = new WeakMap<Component<any>, RegistryEntry<string>[]>();
+
+function registration<T>(
+  entries: RegistryEntry<T>[],
+  entry: RegistryEntry<T>,
+  onEmpty: () => void,
+): RenderTargetRegistration {
+  let disposed = false;
+  const dispose = (): void => {
+    if (disposed) return;
+    disposed = true;
+    const index = entries.indexOf(entry);
+    if (index !== -1) entries.splice(index, 1);
+    if (entries.length === 0) onEmpty();
+  };
+  return {
+    get disposed(): boolean {
+      return disposed;
+    },
+    dispose,
+    [Symbol.dispose]: dispose,
+  };
+}
+
+function registerValue<K, V>(
+  store: RegistryStore<K, V>,
+  key: K,
+  value: V,
+  onEmpty?: () => void,
+): RenderTargetRegistration {
+  let entries = store.get(key);
+  if (entries === undefined) {
+    entries = [];
+    store.set(key, entries);
+  }
+  const entry = { value };
+  entries.push(entry);
+  return registration(entries, entry, () => {
+    store.delete(key);
+    onEmpty?.();
+  });
+}
+
+function active<T>(entries: RegistryEntry<T>[] | undefined): T | undefined {
+  return entries?.[entries.length - 1]?.value;
+}
+
+/**
+ * A tree reached a node the target has no lowering for.
+ *
+ * The message names both the node and the target, because the fix is always
+ * one of two registrations: a lowering for that component, or a lowering for
+ * the host element it produced.
+ */
+export class RenderTargetError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'RenderTargetError';
+  }
+}
+
+/**
+ * Declare a render target and the node names it consumes directly.
+ *
+ * `primitives` is the target's floor: the names it paints itself, below which
+ * no further lowering happens. Omit it to accept any node name, which suits a
+ * target whose vocabulary is open-ended — HTML tags, for instance.
+ *
+ * ```ts no_run
+ * import { defineRenderTarget } from 'fino:ui';
+ *
+ * const target = defineRenderTarget('canvas', {
+ *   primitives: ['canvas:rect', 'canvas:text'],
+ * });
+ * // Dispose temporary or replaceable targets when their lifetime ends.
+ * target.dispose();
+ * ```
+ */
+export function defineRenderTarget(
+  name: RenderTargetName,
+  options: { primitives?: Iterable<string> } = {},
+): RenderTargetRegistration {
+  return registerValue(renderTargets, name, {
+    primitives: options.primitives === undefined ? null : new Set(options.primitives),
+  });
+}
+
+/**
+ * Map a component or host element name to a target-specific lowering.
+ *
+ * This is the open half of the render model. A component's own function is its
+ * default behaviour; registering a lowering for a target replaces that
+ * behaviour when the tree is lowered for that target, and leaves every other
+ * target alone. Registration is deliberately not the component author's
+ * privilege — a render target can lower components it did not write and cannot
+ * modify, which is what lets a target be added without editing the catalog.
+ *
+ * A string key matches a host element name, so a target can catch elements
+ * generically (`'article'`, `'strong'`) rather than specialising every
+ * component that emits them. The last active registration for a pair wins.
+ * Dispose the returned handle to restore the previous lowering; this makes
+ * temporary overrides explicit and allows independent integrations to clean up
+ * without deleting one another's registrations.
+ *
+ * ```ts no_run
+ * import { mapRenderTargetLowering } from 'fino:ui';
+ *
+ * using checkbox = mapRenderTargetLowering(Checkbox, 'tui', TuiCheckbox);
+ * using article = mapRenderTargetLowering('article', 'tui', TuiArticle);
+ * ```
+ */
+export function mapRenderTargetLowering<P>(
+  type: Component<P> | string,
+  target: RenderTargetName,
+  lowering: Component<P>,
+): RenderTargetRegistration {
+  if (typeof type === 'string') {
+    let byTarget = elementLowerings.get(type);
+    if (byTarget === undefined) {
+      byTarget = new Map();
+      elementLowerings.set(type, byTarget);
+    }
+    return registerValue(byTarget, target, lowering as Component<any>, () => {
+      if (byTarget.size === 0) elementLowerings.delete(type);
+    });
+  }
+  let byTarget = componentLowerings.get(type as Component<any>);
+  if (byTarget === undefined) {
+    byTarget = new Map();
+    componentLowerings.set(type as Component<any>, byTarget);
+  }
+  return registerValue(byTarget, target, lowering as Component<any>, () => {
+    if (byTarget.size === 0) componentLowerings.delete(type as Component<any>);
+  });
+}
+
+/** The lowering registered for `type` on `target`, if any. */
+export function renderTargetLowering(
+  type: string | Component<any>,
+  target: RenderTargetName,
+): Component<any> | undefined {
+  return active(
+    typeof type === 'string'
+      ? elementLowerings.get(type)?.get(target)
+      : componentLowerings.get(type)?.get(target),
+  );
+}
+
+/**
+ * Give a component a stable name for boundaries that carry names, not code.
+ *
+ * A portable tree identifies a node by string, so a component crossing a realm
+ * or an SSE stream needs a name its receiver can route. `fn.name` is the
+ * default and is usually enough; register an explicit, namespaced name when a
+ * component must survive a boundary and its bare function name could collide.
+ * Dispose the returned registration to restore the previous name.
+ */
+export function nameComponent(component: Component<any>, name: string): RenderTargetRegistration {
+  return registerValue(componentNames, component, name);
+}
+
+/** The name a node's type is known by: the string itself, or the component's name. */
+export function componentName(type: string | Component<any>): string {
+  if (typeof type === 'string') return type;
+  return active(componentNames.get(type)) ?? type.name;
+}
+
+// A lowering chain that never reaches a primitive is a bug in a lowering, not
+// a deep tree — this counts substitutions at one node, and resets per child.
+const MAX_LOWERING_DEPTH = 100;
+
+/**
+ * Lower a tree until nothing is left but the target's own primitives.
+ *
+ * Each node resolves to the lowering registered for it on `target`, or to the
+ * component function itself when none is registered, and the result is lowered
+ * again — so a component may compose other components and the chain resolves
+ * to a fixpoint. A node whose type is already one of the target's primitives
+ * passes through with its children lowered.
+ *
+ * The node's `key` transplants onto whatever it lowered to, so reconciliation
+ * sees the identity the source tree declared. Subtrees that did not change are
+ * returned by reference, which is what lets a host reconciler skip them. An
+ * undeclared target throws `RenderTargetError` before any component runs.
+ */
+export function lowerTree(node: VNode, target: RenderTargetName): VNode {
+  const spec = active(renderTargets.get(target));
+  if (spec === undefined) {
+    throw new RenderTargetError(
+      `Unknown render target '${target}'. Register it with defineRenderTarget('${target}', …).`,
+    );
+  }
+  return lowerNode(node, target, spec, 0);
+}
+
+function lowerNode(
+  node: VNode,
+  target: RenderTargetName,
+  spec: RenderTargetSpec,
+  depth: number,
+): VNode {
+  if (depth > MAX_LOWERING_DEPTH) {
+    throw new RenderTargetError(
+      `Lowering '${componentName(node.type)}' for target '${target}' did not reach a primitive ` +
+        `after ${MAX_LOWERING_DEPTH} substitutions — a lowering is probably emitting its own type`,
+    );
+  }
+  const lowering = renderTargetLowering(node.type, target);
+  const impl = lowering ?? (typeof node.type === 'function' ? node.type : undefined);
+  if (impl !== undefined) {
+    const composed = impl({ ...node.props, children: node.children });
+    return lowerNode(
+      node.key === null ? composed : { ...composed, key: node.key },
+      target,
+      spec,
+      depth + 1,
+    );
+  }
+  const type = node.type as string;
+  if (spec.primitives && !spec.primitives.has(type)) {
+    throw new RenderTargetError(
+      `No '${target}' lowering for '${type}'. Register one with ` +
+        `mapRenderTargetLowering('${type}', '${target}', …), or lower the component that emits it.`,
+    );
+  }
+  let changed = false;
+  const children = node.children.map((child) => {
+    if (typeof child === 'string') return child;
+    const lowered = lowerNode(child, target, spec, 0);
+    if (lowered !== child) changed = true;
+    return lowered;
+  });
+  return changed ? { ...node, children } : node;
 }
 /**
  * Host adapter consumed by `createRenderer()`.
@@ -272,6 +556,14 @@ function mount<Node, Root>(
       text: vnode,
       children: [],
     };
+  }
+  if (typeof vnode.type !== 'string') {
+    // A host only ever sees primitives. Reaching one with a component still on
+    // it means the tree was committed without being lowered for this target.
+    throw new RenderTargetError(
+      `Component '${componentName(vnode.type)}' reached the host unlowered — ` +
+        `commit through a sink that calls lowerTree() for its target`,
+    );
   }
   const node = host.createNode(vnode.type, vnode.props);
   const mounted: Mounted<Node> = {
@@ -455,10 +747,15 @@ export class StaticRenderError extends Error {
  */
 export function renderStatic<Out>(element: () => VNode, sink: Sink<Out>): Out {
   try {
-    const tree = withWriteGuard(() => {
-      throw new StaticRenderError();
-    }, element);
-    return sink.commit(tree);
+    // The guard covers the commit too, not just `element()`: components are
+    // stored by `h()` and run when the sink lowers the tree, so most of a
+    // render pass now happens inside `commit`.
+    return withWriteGuard(
+      () => {
+        throw new StaticRenderError();
+      },
+      () => sink.commit(element()),
+    );
   } finally {
     sink.dispose?.();
   }
@@ -521,20 +818,25 @@ export function createRoot<Out>(element: () => VNode, sink: Sink<Out>): Root<Out
  * mounted one, so a host that owns mutable nodes participates in the same
  * render programs as a snapshot host.
  *
+ * Pass `target` when the tree still contains components: the sink lowers for
+ * that target before reconciling, so the host only ever sees its own
+ * primitives. Omit it when the caller has already lowered.
+ *
  * ```ts no_run
  * import { createRoot, hostSink } from 'fino:ui';
  *
- * const root = createRoot(App, hostSink(domHost, document.body));
+ * const root = createRoot(App, hostSink(domHost, document.body, 'dom'));
  * ```
  */
 export function hostSink<Node, RootNode>(
   host: HostAdapter<Node, RootNode>,
   root: RootNode,
+  target?: RenderTargetName,
 ): Sink<void> {
   const renderer = createRenderer(host);
   return {
     commit(tree: VNode): void {
-      renderer.render(tree, root);
+      renderer.render(target === undefined ? tree : lowerTree(tree, target), root);
     },
   };
 }

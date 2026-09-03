@@ -19,6 +19,7 @@
  * const tree = renderStatic(() => h('main', { id: 'root' }, 'Ready'), portableSink());
  * ```
  */
+import { componentName } from 'fino:ui';
 import type { Sink, VNode } from 'fino:ui';
 
 /**
@@ -120,7 +121,33 @@ function convert(value: unknown, path: string, seen: Set<object>): PortableValue
  * ```
  */
 export function toPortable(tree: VNode): PortableVNode {
-  return convert(tree, 'tree', new Set<object>()) as unknown as PortableVNode;
+  return convert(named(tree, 'tree'), 'tree', new Set<object>()) as unknown as PortableVNode;
+}
+
+/**
+ * Replace component types with the names their receiver routes by.
+ *
+ * `h()` stores a component function rather than invoking it, but a portable
+ * tree carries names, not code — a receiver resolves `type` against its own
+ * implementations. An anonymous component has nothing to resolve, so it is
+ * rejected here rather than arriving as an empty string.
+ */
+function named(node: VNode, path: string): VNode {
+  const name = componentName(node.type);
+  if (name === '') {
+    throw new PortableValueError(
+      `${path}.type`,
+      'Portable UI components must have a name; give it one with nameComponent()',
+    );
+  }
+  let changed = name !== node.type;
+  const children = node.children.map((child, index) => {
+    if (typeof child === 'string') return child;
+    const next = named(child, `${path}.children[${index}]`);
+    if (next !== child) changed = true;
+    return next;
+  });
+  return changed ? { ...node, type: name, children } : node;
 }
 
 /**
