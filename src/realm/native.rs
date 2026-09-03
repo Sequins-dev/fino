@@ -7,7 +7,9 @@
 use ::libc;
 use ::v8;
 
-use super::{process, thread, transit};
+#[cfg(target_os = "linux")]
+use super::thread;
+use super::{message, process, transit};
 use crate::state::{ImportRule, get_state, resolve_directive};
 
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
@@ -43,29 +45,45 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("createSandboxContext", create_sandbox_context);
-    set_fn!("stepSandboxContext", step_sandbox_context);
-    set_fn!("forceSandboxContext", force_sandbox_context);
-    set_fn!("sandboxPortSend", sandbox_port_send);
-    set_fn!("sandboxPortRecv", sandbox_port_recv);
-    set_fn!("getSandboxPortWakeReadFd", get_sandbox_port_wake_read_fd);
-    set_fn!("getSandboxCompletionFd", get_sandbox_completion_fd);
-    set_fn!("createProcessContext", create_process_context);
-    set_fn!("stepProcessContext", step_process_context);
-    set_fn!("processPortSend", process_port_send);
-    set_fn!("processPortRecv", process_port_recv);
-    set_fn!("getProcessSocketFd", get_process_socket_fd);
-    set_fn!("getProcessCompletionFd", get_process_completion_fd);
-    set_fn!("killProcessContext", kill_process_context);
+    crate::set_fn!(
+        scope,
+        module,
+        "createSandboxContext",
+        create_sandbox_context
+    );
+    crate::set_fn!(scope, module, "stepSandboxContext", step_sandbox_context);
+    crate::set_fn!(scope, module, "forceSandboxContext", force_sandbox_context);
+    crate::set_fn!(scope, module, "sandboxPortSend", sandbox_port_send);
+    crate::set_fn!(scope, module, "sandboxPortRecv", sandbox_port_recv);
+    crate::set_fn!(
+        scope,
+        module,
+        "getSandboxPortWakeReadFd",
+        get_sandbox_port_wake_read_fd
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "getSandboxCompletionFd",
+        get_sandbox_completion_fd
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "createProcessContext",
+        create_process_context
+    );
+    crate::set_fn!(scope, module, "stepProcessContext", step_process_context);
+    crate::set_fn!(scope, module, "processPortSend", process_port_send);
+    crate::set_fn!(scope, module, "processPortRecv", process_port_recv);
+    crate::set_fn!(scope, module, "getProcessSocketFd", get_process_socket_fd);
+    crate::set_fn!(
+        scope,
+        module,
+        "getProcessCompletionFd",
+        get_process_completion_fd
+    );
+    crate::set_fn!(scope, module, "killProcessContext", kill_process_context);
 
     Some(v8::undefined(scope).into())
 }
@@ -374,61 +392,15 @@ fn sandbox_port_send(
     _rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let header = thread::copy_u8a(scope, args.get(1)).unwrap_or_default();
-    let Ok(bytes) = v8::Local::<v8::Uint8Array>::try_from(args.get(2)) else {
-        let msg = v8::String::new(
-            scope,
-            "sandboxPortSend: third argument must be a Uint8Array",
-        )
-        .unwrap();
-        let exception = v8::Exception::type_error(scope, msg);
-        scope.throw_exception(exception);
+    let Some(message) = message::build_message_from_args(
+        scope,
+        "sandboxPortSend",
+        args.get(1),
+        args.get(2),
+        args.get(3),
+        args.get(4),
+    ) else {
         return;
-    };
-    let data = {
-        let Some(buffer) = bytes.buffer(scope) else {
-            return;
-        };
-        let Some(ptr) = buffer.data() else { return };
-        unsafe {
-            std::slice::from_raw_parts(
-                (ptr.as_ptr() as *const u8).add(bytes.byte_offset()),
-                bytes.byte_length(),
-            )
-            .to_vec()
-        }
-    };
-    let transfer_stores = if let Ok(stores) = v8::Local::<v8::Array>::try_from(args.get(3)) {
-        let mut output = Vec::with_capacity(stores.length() as usize);
-        for i in 0..stores.length() {
-            let index = v8::Integer::new(scope, i as i32);
-            let Some(value) = stores.get(scope, index.into()) else {
-                continue;
-            };
-            let Ok(bytes) = v8::Local::<v8::Uint8Array>::try_from(value) else {
-                continue;
-            };
-            let Some(buffer) = bytes.buffer(scope) else {
-                continue;
-            };
-            let Some(ptr) = buffer.data() else { continue };
-            output.push(unsafe {
-                std::slice::from_raw_parts(
-                    (ptr.as_ptr() as *const u8).add(bytes.byte_offset()),
-                    bytes.byte_length(),
-                )
-                .to_vec()
-            });
-        }
-        output
-    } else {
-        Vec::new()
-    };
-    let message = thread::ThreadMessage {
-        header,
-        data,
-        transfer_stores,
-        transfer_ports: thread::extract_port_infos(scope, args.get(4)),
     };
     let transport = {
         let state_rc = get_state(scope);
@@ -437,12 +409,13 @@ fn sandbox_port_send(
             .sandbox_contexts
             .get(handle)
             .and_then(|slot| slot.as_ref())
-            .map(|realm| (realm.tx.clone(), realm.child_wake_write))
+            .map(|realm| message::SendTransport {
+                tx: realm.tx.clone(),
+                wake_write: Some(realm.child_wake_write),
+            })
     };
-    if let Some((tx, wake_write)) = transport {
-        let _ = tx.send(message);
-        let byte = [1u8];
-        unsafe { libc::write(wake_write, byte.as_ptr() as *const _, 1) };
+    if let Some(transport) = transport {
+        message::send_message(&transport, message);
     }
 }
 
@@ -452,28 +425,21 @@ fn sandbox_port_recv(
     mut rv: v8::ReturnValue,
 ) {
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let (messages, wake_read) = {
+    let messages = {
         let state_rc = get_state(scope);
         let state = state_rc.borrow();
-        match state
+        let transport = state
             .sandbox_contexts
             .get(handle)
             .and_then(|slot| slot.as_ref())
-        {
-            Some(realm) => {
-                let mut messages = Vec::new();
-                while let Ok(message) = realm.rx.try_recv() {
-                    messages.push(message);
-                }
-                (messages, Some(realm.parent_wake_read))
-            }
-            None => (Vec::new(), None),
-        }
+            .map(|realm| message::RecvTransport {
+                rx: &realm.rx,
+                wake_read: Some(realm.parent_wake_read),
+            });
+        transport
+            .map(|transport| message::recv_messages(&transport))
+            .unwrap_or_default()
     };
-    if let Some(wake_read) = wake_read {
-        let mut discard = [0u8; 256];
-        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
     rv.set(transit::build_message_array(scope, messages).into());
 }
 
@@ -626,68 +592,32 @@ fn process_port_send(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    use thread::ThreadMessage;
-
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
-    let header = thread::copy_u8a(scope, args.get(1)).unwrap_or_default();
-    let bytes_arg = args.get(2);
-    let Ok(u8a) = v8::Local::<v8::Uint8Array>::try_from(bytes_arg) else {
+    let Some(mut message) = message::build_message_from_args(
+        scope,
+        "processPortSend",
+        args.get(1),
+        args.get(2),
+        args.get(3),
+        v8::undefined(scope).into(),
+    ) else {
         return;
     };
-
-    let data: Vec<u8> = {
-        let Some(ab) = u8a.buffer(scope) else { return };
-        let Some(ptr) = ab.data() else { return };
-        let off = u8a.byte_offset();
-        let len = u8a.byte_length();
-        unsafe { std::slice::from_raw_parts((ptr.as_ptr() as *const u8).add(off), len).to_vec() }
-    };
-
-    let transfer_stores: Vec<Vec<u8>> = if let Ok(arr) =
-        v8::Local::<v8::Array>::try_from(args.get(3))
-    {
-        let mut stores = Vec::with_capacity(arr.length() as usize);
-        for i in 0..arr.length() {
-            let idx = v8::Integer::new(scope, i as i32);
-            if let Some(elem) = arr.get(scope, idx.into())
-                && let Ok(su8a) = v8::Local::<v8::Uint8Array>::try_from(elem)
-            {
-                let Some(sab) = su8a.buffer(scope) else {
-                    continue;
-                };
-                let Some(sptr) = sab.data() else { continue };
-                let soff = su8a.byte_offset();
-                let slen = su8a.byte_length();
-                unsafe {
-                    stores.push(
-                        std::slice::from_raw_parts((sptr.as_ptr() as *const u8).add(soff), slen)
-                            .to_vec(),
-                    );
-                }
-            }
-        }
-        stores
-    } else {
-        Vec::new()
-    };
-
-    let msg = ThreadMessage {
-        header,
-        data,
-        transfer_stores,
-        transfer_ports: Vec::new(),
-    };
-
-    let maybe_tx = {
+    // Process realms do not support port transfer.
+    message.transfer_ports = Vec::new();
+    let transport = {
         let state_rc = get_state(scope);
         let st = state_rc.borrow();
         st.process_contexts
             .get(handle)
             .and_then(|s| s.as_ref())
-            .map(|h| h.tx.clone())
+            .map(|h| message::SendTransport {
+                tx: h.tx.clone(),
+                wake_write: None,
+            })
     };
-    if let Some(tx) = maybe_tx {
-        let _ = tx.send(msg);
+    if let Some(transport) = transport {
+        message::send_message(&transport, message);
     }
 }
 
@@ -697,29 +627,23 @@ fn process_port_recv(
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    use thread::ThreadMessage;
-
     let handle = args.get(0).integer_value(scope).unwrap_or(-1) as usize;
 
-    let (messages, maybe_wake_read) = {
+    let messages = {
         let state_rc = get_state(scope);
         let st = state_rc.borrow();
-        match st.process_contexts.get(handle).and_then(|s| s.as_ref()) {
-            Some(h) => {
-                let mut msgs: Vec<ThreadMessage> = Vec::new();
-                while let Ok(msg) = h.rx.try_recv() {
-                    msgs.push(msg);
-                }
-                (msgs, Some(h.parent_wake_read))
-            }
-            None => (Vec::new(), None),
-        }
+        let transport = st
+            .process_contexts
+            .get(handle)
+            .and_then(|s| s.as_ref())
+            .map(|h| message::RecvTransport {
+                rx: &h.rx,
+                wake_read: Some(h.parent_wake_read),
+            });
+        transport
+            .map(|transport| message::recv_messages(&transport))
+            .unwrap_or_default()
     };
-
-    if let Some(wake_read) = maybe_wake_read {
-        let mut discard = [0u8; 256];
-        unsafe { libc::read(wake_read, discard.as_mut_ptr() as *mut _, discard.len()) };
-    }
 
     rv.set(transit::build_message_array(scope, messages).into());
 }

@@ -269,19 +269,10 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("dispatch", dispatch_cb);
-    set_fn!("onMessage", on_message_cb);
-    set_fn!("nextId", next_id_cb);
-    set_fn!("evaluate", evaluate_cb);
+    crate::set_fn!(scope, module, "dispatch", dispatch_cb);
+    crate::set_fn!(scope, module, "onMessage", on_message_cb);
+    crate::set_fn!(scope, module, "nextId", next_id_cb);
+    crate::set_fn!(scope, module, "evaluate", evaluate_cb);
 
     Some(v8::undefined(scope).into())
 }

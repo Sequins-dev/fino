@@ -19,9 +19,11 @@ use std::{
 
 use ::v8;
 
+use crate::fdutil::{WakePipe, create_pipe};
 use crate::{
     loader,
     state::{FinoState, ProcessEnv, get_state},
+    v8util,
 };
 
 struct Workload {
@@ -181,7 +183,7 @@ impl ScheduledRealmState {
 
     fn complete(&self, result: ScheduledRealmResult) {
         *self.result.lock().unwrap() = Some(result);
-        WakePipe::signal(self.parent_wake_write);
+        crate::fdutil::wake(self.parent_wake_write);
     }
 }
 
@@ -227,75 +229,6 @@ fn owner_pools() -> &'static Mutex<HashMap<u32, Weak<PoolShared>>> {
     static POOLS: std::sync::OnceLock<Mutex<HashMap<u32, Weak<PoolShared>>>> =
         std::sync::OnceLock::new();
     POOLS.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn create_pipe() -> Result<(RawFd, RawFd), String> {
-    let mut fds = [-1; 2];
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
-        return Err(format!(
-            "pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    for fd in fds {
-        unsafe {
-            libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
-        }
-    }
-    Ok((fds[0], fds[1]))
-}
-
-/// A non-blocking self-pipe used to make a descriptor readable on demand.
-///
-/// Every cross-thread hand-off in the scheduler needs the same thing: mark a
-/// descriptor readable so a poll-based loop notices, and drain it once the
-/// reader has caught up. The payload carries no information — the queue behind
-/// the pipe does — so `notify` deliberately ignores its write result. A failed
-/// write means either the reader is gone, or the pipe is already full of
-/// undrained bytes; in both cases the descriptor is already readable and the
-/// reader will wake, so there is nothing to recover.
-struct WakePipe {
-    read: RawFd,
-    write: RawFd,
-}
-
-impl WakePipe {
-    fn new() -> Self {
-        let (read, write) = create_pipe().expect("wake pipe");
-        Self { read, write }
-    }
-
-    fn notify(&self) {
-        Self::signal(self.write);
-    }
-
-    /// Mark a raw write descriptor readable, for owners that hand the write end
-    /// to another structure.
-    fn signal(write: RawFd) {
-        let byte = [1u8];
-        unsafe {
-            libc::write(write, byte.as_ptr().cast(), byte.len());
-        }
-    }
-
-    fn drain(&self) {
-        Self::consume(self.read);
-    }
-
-    /// Drain a raw read descriptor that a caller owns directly.
-    fn consume(read: RawFd) {
-        let mut bytes = [0u8; 64];
-        while unsafe { libc::read(read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
-    }
-}
-
-impl Drop for WakePipe {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.read);
-            libc::close(self.write);
-        }
-    }
 }
 
 fn next_owner() -> u32 {
@@ -385,7 +318,7 @@ impl Mailbox {
     fn new() -> Self {
         Self {
             inner: Mutex::new(MailboxInner::default()),
-            wake: WakePipe::new(),
+            wake: WakePipe::new().expect("wake pipe"),
         }
     }
 
@@ -401,19 +334,6 @@ impl Mailbox {
 fn mailbox() -> &'static Mailbox {
     static MAILBOX: std::sync::OnceLock<Mailbox> = std::sync::OnceLock::new();
     MAILBOX.get_or_init(Mailbox::new)
-}
-
-fn throw_error(scope: &mut v8::PinScope, message: &str) {
-    let message = v8::String::new(scope, message).unwrap();
-    let exception = v8::Exception::error(scope, message);
-    scope.throw_exception(exception);
-}
-
-fn js_string(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> String {
-    value
-        .to_string(scope)
-        .map(|value| value.to_rust_string_lossy(scope))
-        .unwrap_or_else(|| "unknown exception".to_string())
 }
 
 fn current_workload_owner(
@@ -440,7 +360,7 @@ fn set_scheduler_polling_required(
     _rv: v8::ReturnValue,
 ) {
     let Ok(function) = v8::Local::<v8::Function>::try_from(args.get(0)) else {
-        throw_error(
+        v8util::throw_error(
             scope,
             "setSchedulerPollingRequired: argument must be a function",
         );
@@ -558,7 +478,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
             })?;
         }
         if module.get_status() == v8::ModuleStatus::Errored {
-            return Err(js_string(scope, module.get_exception()));
+            return Err(v8util::js_string(scope, module.get_exception()));
         }
         // An interrupt requested during bootstrap may be consumed by a module
         // evaluation TryCatch. The atomic remains authoritative until setup is
@@ -643,40 +563,6 @@ fn deactivate(workload: &mut Workload, active: ActiveWorkload) {
     drop(locker);
 }
 
-fn service_scheduled_sync_call(scope: &mut v8::PinScope, state: &Rc<RefCell<FinoState>>) -> bool {
-    let (maybe_fn, maybe_resolver) = {
-        let mut state = state.borrow_mut();
-        (state.sync_call_fn.take(), state.sync_call_resolver.take())
-    };
-    let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
-        return false;
-    };
-    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-        let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
-        v8::tc_scope!(tc, scope);
-        let function = v8::Local::new(tc, &fn_ref);
-        match function.call(tc, receiver, &[]) {
-            Some(result) => Ok(v8::Global::new(tc, result)),
-            None => {
-                let exception = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                Err(v8::Global::new(tc, exception))
-            }
-        }
-    };
-    let resolver = v8::Local::new(scope, &resolver_ref);
-    match call_result {
-        Ok(result) => {
-            let result = v8::Local::new(scope, &result);
-            let _ = resolver.resolve(scope, result);
-        }
-        Err(exception) => {
-            let exception = v8::Local::new(scope, &exception);
-            let _ = resolver.reject(scope, exception);
-        }
-    }
-    true
-}
-
 /// How long the main realm waits before re-signalling a realm whose remaining
 /// work has no pollable descriptor (V8 background tasks, `Atomics.waitAsync`).
 const SCHEDULER_POLL_INTERVAL_MS: f64 = 1.0;
@@ -737,7 +623,7 @@ fn drive_slice(
         }
         let mut progress = step > 0.0;
         progress |= crate::realm::child::pump_and_checkpoint(tc);
-        if service_scheduled_sync_call(tc, &workload.state) {
+        if crate::async_rt::service_scheduled_sync_call(tc, &workload.state) {
             crate::realm::child::pump_and_checkpoint(tc);
             // The TypeScript step cannot see a sync call until the host
             // services it here, so its pre-service result is stale. Give the
@@ -963,7 +849,7 @@ impl PoolShared {
         };
         Self {
             inner: Mutex::new(inner),
-            wake: WakePipe::new(),
+            wake: WakePipe::new().expect("wake pipe"),
         }
     }
 
@@ -1381,7 +1267,7 @@ fn create_workload(
         .map(|value| value.to_rust_string_lossy(scope))
         .unwrap_or_default();
     if entry.is_empty() {
-        throw_error(scope, "createWorkload: entry path is required");
+        v8util::throw_error(scope, "createWorkload: entry path is required");
         return;
     }
     let parent = get_state(scope);
@@ -1394,14 +1280,14 @@ fn create_workload(
         )
     };
     let Some(pool) = process_pool().lock().unwrap().clone() else {
-        throw_error(scope, "createWorkload: process reactor is not running");
+        v8util::throw_error(scope, "createWorkload: process reactor is not running");
         return;
     };
     let owner = next_owner();
     let async_pipe = match create_pipe() {
         Ok(pipe) => pipe,
         Err(error) => {
-            throw_error(scope, &format!("createWorkload: {error}"));
+            v8util::throw_error(scope, &format!("createWorkload: {error}"));
             return;
         }
     };
@@ -1448,7 +1334,7 @@ fn create_scheduled_realm(
     mut rv: v8::ReturnValue,
 ) {
     let Some(pool) = process_pool().lock().unwrap().clone() else {
-        throw_error(
+        v8util::throw_error(
             scope,
             "createScheduledRealm: process reactor is not running",
         );
@@ -1465,7 +1351,7 @@ fn create_scheduled_realm(
     };
     let repl_mode = args.get(6).boolean_value(scope);
     if entry.is_empty() && !repl_mode {
-        throw_error(scope, "createScheduledRealm: entry path is required");
+        v8util::throw_error(scope, "createScheduledRealm: entry path is required");
         return;
     }
     let mut process_env = get_state(scope).borrow().process_env.clone();
@@ -1480,7 +1366,7 @@ fn create_scheduled_realm(
     let import_rules = match crate::realm::native::parse_and_merge_rules(scope, args.get(2)) {
         Ok(rules) => rules,
         Err(error) => {
-            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            v8util::throw_error(scope, &format!("createScheduledRealm: {error}"));
             return;
         }
     };
@@ -1494,7 +1380,7 @@ fn create_scheduled_realm(
     let (child_wake_read, child_wake_write) = match create_pipe() {
         Ok(pipe) => pipe,
         Err(error) => {
-            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            v8util::throw_error(scope, &format!("createScheduledRealm: {error}"));
             return;
         }
     };
@@ -1505,7 +1391,7 @@ fn create_scheduled_realm(
                 libc::close(child_wake_read);
                 libc::close(child_wake_write);
             }
-            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            v8util::throw_error(scope, &format!("createScheduledRealm: {error}"));
             return;
         }
     };
@@ -1518,7 +1404,7 @@ fn create_scheduled_realm(
                 libc::close(parent_wake_read);
                 libc::close(parent_wake_write);
             }
-            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            v8util::throw_error(scope, &format!("createScheduledRealm: {error}"));
             return;
         }
     };
@@ -1533,7 +1419,7 @@ fn create_scheduled_realm(
                 libc::close(completion_wake_read);
                 libc::close(completion_wake_write);
             }
-            throw_error(scope, &format!("createScheduledRealm: {error}"));
+            v8util::throw_error(scope, &format!("createScheduledRealm: {error}"));
             return;
         }
     };
@@ -1638,7 +1524,7 @@ fn scheduled_realm_send(
     let handle = handle_arg(scope, args.get(0));
     let header = copy_uint8_array(scope, args.get(1)).unwrap_or_default();
     let Some(data) = copy_uint8_array(scope, args.get(2)) else {
-        throw_error(
+        v8util::throw_error(
             scope,
             "scheduledRealmSend: third argument must be a Uint8Array",
         );
@@ -1660,7 +1546,7 @@ fn scheduled_realm_send(
     let transfer_ports = crate::realm::thread::extract_port_infos(scope, args.get(4));
     let realms = scheduled_realms().lock().unwrap();
     let Some(realm) = realms.get(&handle) else {
-        throw_error(
+        v8util::throw_error(
             scope,
             &format!("scheduledRealmSend: invalid realm handle {handle}"),
         );
@@ -1672,7 +1558,7 @@ fn scheduled_realm_send(
         transfer_stores,
         transfer_ports,
     });
-    WakePipe::signal(realm.child_wake_write);
+    crate::fdutil::wake(realm.child_wake_write);
 }
 
 fn scheduled_realm_recv(
@@ -1683,7 +1569,7 @@ fn scheduled_realm_recv(
     let handle = handle_arg(scope, args.get(0));
     let realms = scheduled_realms().lock().unwrap();
     let Some(realm) = realms.get(&handle) else {
-        throw_error(
+        v8util::throw_error(
             scope,
             &format!("scheduledRealmRecv: invalid realm handle {handle}"),
         );
@@ -1693,7 +1579,7 @@ fn scheduled_realm_recv(
     while let Ok(message) = realm.rx.try_recv() {
         messages.push(message);
     }
-    WakePipe::consume(realm.parent_wake_read);
+    crate::fdutil::drain(realm.parent_wake_read);
     rv.set(crate::realm::transit::build_message_array(scope, messages).into());
 }
 
@@ -1705,13 +1591,13 @@ fn take_scheduled_realm_status(
     let handle = handle_arg(scope, args.get(0));
     let realms = scheduled_realms().lock().unwrap();
     let Some(realm) = realms.get(&handle) else {
-        throw_error(
+        v8util::throw_error(
             scope,
             &format!("takeScheduledRealmStatus: invalid realm handle {handle}"),
         );
         return;
     };
-    WakePipe::consume(realm.completion_wake_read);
+    crate::fdutil::drain(realm.completion_wake_read);
     let status = realm.state.result.lock().unwrap().clone();
     let result = v8::Object::new(scope);
     let (kind, error) = match status {
@@ -1761,7 +1647,7 @@ fn close_scheduled_realm(
     let handle = handle_arg(scope, args.get(0));
     let realm = scheduled_realms().lock().unwrap().remove(&handle);
     if realm.is_none() {
-        throw_error(
+        v8util::throw_error(
             scope,
             &format!("closeScheduledRealm: invalid realm handle {handle}"),
         );
@@ -1782,14 +1668,14 @@ fn start_reactor_pool(
 ) {
     let mut registered = process_pool().lock().unwrap();
     if registered.is_some() {
-        throw_error(
+        v8util::throw_error(
             scope,
             "startReactorPool: process reactor is already running",
         );
         return;
     }
     let shared = Arc::new(PoolShared::new());
-    let control_fd = shared.wake.read;
+    let control_fd = shared.wake.read_fd();
     *registered = Some(shared);
     rv.set(v8::Integer::new(scope, control_fd).into());
 }
@@ -1798,7 +1684,7 @@ fn start_reactor_pool(
 fn require_pool(scope: &mut v8::PinScope, caller: &str) -> Option<Arc<PoolShared>> {
     let pool = process_pool().lock().unwrap().clone();
     if pool.is_none() {
-        throw_error(scope, &format!("{caller}: process reactor is not running"));
+        v8util::throw_error(scope, &format!("{caller}: process reactor is not running"));
     }
     pool
 }
@@ -1837,7 +1723,7 @@ fn close_reactor_thread(
     let handle = handle_arg(scope, args.get(0));
     let thread = REACTOR_THREADS.with(|threads| threads.borrow_mut().remove(&handle));
     let Some(mut thread) = thread else {
-        throw_error(
+        v8util::throw_error(
             scope,
             &format!("closeReactorThread: invalid thread {handle}"),
         );
@@ -1926,12 +1812,12 @@ fn stop_reactor_pool(
         .as_ref()
         .map(Arc::strong_count);
     let Some(attached) = attached else {
-        throw_error(scope, "stopReactorPool: process reactor is not running");
+        v8util::throw_error(scope, "stopReactorPool: process reactor is not running");
         return;
     };
     // Only the registration itself may hold a reference by this point.
     if attached > 1 {
-        throw_error(scope, "stopReactorPool: reactor threads are still attached");
+        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
         return;
     }
     let pool = process_pool()
@@ -1945,7 +1831,7 @@ fn stop_reactor_pool(
         inner.wake_all();
     }
     let Ok(pool) = Arc::try_unwrap(pool) else {
-        throw_error(scope, "stopReactorPool: reactor threads are still attached");
+        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
         return;
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
@@ -2111,7 +1997,7 @@ fn process_readiness_control_fd(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    rv.set(v8::Integer::new(scope, mailbox().wake.read).into());
+    rv.set(v8::Integer::new(scope, mailbox().wake.read_fd()).into());
 }
 
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
@@ -2152,38 +2038,78 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
-    macro_rules! set_fn {
-        ($name:literal, $function:path) => {{
-            let function = v8::FunctionTemplate::new(scope, $function).get_function(scope)?;
-            let name = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, name, function.into())?;
-        }};
-    }
-    set_fn!("currentWorkloadOwner", current_workload_owner);
-    set_fn!("usesProcessReadiness", uses_process_readiness);
-    set_fn!(
+    crate::set_fn!(
+        scope,
+        module,
+        "currentWorkloadOwner",
+        current_workload_owner
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "usesProcessReadiness",
+        uses_process_readiness
+    );
+    crate::set_fn!(
+        scope,
+        module,
         "setSchedulerPollingRequired",
         set_scheduler_polling_required
     );
-    set_fn!("createWorkload", create_workload);
-    set_fn!("createScheduledRealm", create_scheduled_realm);
-    set_fn!("scheduledRealmSend", scheduled_realm_send);
-    set_fn!("scheduledRealmRecv", scheduled_realm_recv);
-    set_fn!("takeScheduledRealmStatus", take_scheduled_realm_status);
-    set_fn!("closeScheduledRealm", close_scheduled_realm);
-    set_fn!("forceScheduledRealm", force_scheduled_realm);
-    set_fn!("startReactorPool", start_reactor_pool);
-    set_fn!("createReactorThread", create_reactor_thread);
-    set_fn!("closeReactorThread", close_reactor_thread);
-    set_fn!("signalReactorOwner", signal_reactor_owner);
-    set_fn!("takeReactorEvents", take_reactor_events);
-    set_fn!("stopReactorPool", stop_reactor_pool);
-    set_fn!("processReadinessControlFd", process_readiness_control_fd);
-    set_fn!("registerProcessReadiness", register_process_readiness);
-    set_fn!("registerReactorWake", register_reactor_wake);
-    set_fn!("takeSharedReadinessChanges", take_readiness_changes);
-    set_fn!("routeProcessReadiness", route_process_readiness);
-    set_fn!("takeSharedLoopEvents", take_shared_loop_events);
+    crate::set_fn!(scope, module, "createWorkload", create_workload);
+    crate::set_fn!(
+        scope,
+        module,
+        "createScheduledRealm",
+        create_scheduled_realm
+    );
+    crate::set_fn!(scope, module, "scheduledRealmSend", scheduled_realm_send);
+    crate::set_fn!(scope, module, "scheduledRealmRecv", scheduled_realm_recv);
+    crate::set_fn!(
+        scope,
+        module,
+        "takeScheduledRealmStatus",
+        take_scheduled_realm_status
+    );
+    crate::set_fn!(scope, module, "closeScheduledRealm", close_scheduled_realm);
+    crate::set_fn!(scope, module, "forceScheduledRealm", force_scheduled_realm);
+    crate::set_fn!(scope, module, "startReactorPool", start_reactor_pool);
+    crate::set_fn!(scope, module, "createReactorThread", create_reactor_thread);
+    crate::set_fn!(scope, module, "closeReactorThread", close_reactor_thread);
+    crate::set_fn!(scope, module, "signalReactorOwner", signal_reactor_owner);
+    crate::set_fn!(scope, module, "takeReactorEvents", take_reactor_events);
+    crate::set_fn!(scope, module, "stopReactorPool", stop_reactor_pool);
+    crate::set_fn!(
+        scope,
+        module,
+        "processReadinessControlFd",
+        process_readiness_control_fd
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "registerProcessReadiness",
+        register_process_readiness
+    );
+    crate::set_fn!(scope, module, "registerReactorWake", register_reactor_wake);
+    crate::set_fn!(
+        scope,
+        module,
+        "takeSharedReadinessChanges",
+        take_readiness_changes
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "routeProcessReadiness",
+        route_process_readiness
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "takeSharedLoopEvents",
+        take_shared_loop_events
+    );
     Some(v8::undefined(scope).into())
 }
 

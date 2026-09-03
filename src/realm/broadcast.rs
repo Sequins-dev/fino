@@ -22,6 +22,8 @@ use std::{
 
 use ::v8;
 
+use crate::fdutil::create_pipe;
+
 // ---------------------------------------------------------------------------
 // Registry data structures
 // ---------------------------------------------------------------------------
@@ -60,23 +62,6 @@ fn registry() -> &'static Mutex<BroadcastRegistry> {
             by_handle: HashMap::new(),
         })
     })
-}
-
-fn create_pipe() -> Result<(RawFd, RawFd), String> {
-    let mut fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    // Set both ends non-blocking.
-    unsafe {
-        libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-    }
-    Ok((fds[0], fds[1]))
 }
 
 // ---------------------------------------------------------------------------
@@ -242,19 +227,11 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-    set_fn!("subscribe", native_subscribe);
-    set_fn!("publish", native_publish);
-    set_fn!("receive", native_receive);
-    set_fn!("unsubscribe", native_unsubscribe);
-    set_fn!("wakeSubscriber", native_wake_subscriber);
+    crate::set_fn!(scope, module, "subscribe", native_subscribe);
+    crate::set_fn!(scope, module, "publish", native_publish);
+    crate::set_fn!(scope, module, "receive", native_receive);
+    crate::set_fn!(scope, module, "unsubscribe", native_unsubscribe);
+    crate::set_fn!(scope, module, "wakeSubscriber", native_wake_subscriber);
     Some(v8::undefined(scope).into())
 }
 
@@ -287,15 +264,8 @@ fn native_subscribe(
     };
 
     let obj = v8::Object::new(scope);
-    macro_rules! set_int {
-        ($key:expr, $val:expr) => {{
-            let k = v8::String::new(scope, $key).unwrap();
-            let v = v8::Number::new(scope, $val as f64);
-            obj.set(scope, k.into(), v.into());
-        }};
-    }
-    set_int!("handle", handle);
-    set_int!("wakeReadFd", wake_read_fd);
+    crate::set_num_prop!(scope, obj, "handle", handle);
+    crate::set_num_prop!(scope, obj, "wakeReadFd", wake_read_fd);
     rv.set(obj.into());
 }
 

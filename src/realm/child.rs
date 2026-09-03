@@ -286,36 +286,7 @@ pub fn run_child_isolate(config: ChildConfig) -> Result<(), String> {
                 // Drain async FFI completions on every iteration (mirrors runtime.rs).
                 pump_and_checkpoint(scope);
 
-                let (maybe_fn, maybe_resolver) = {
-                    let mut st = state_rc.borrow_mut();
-                    (st.sync_call_fn.take(), st.sync_call_resolver.take())
-                };
-
-                if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-                    let result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        v8::tc_scope!(tc, scope);
-                        let f = v8::Local::new(tc, &fn_ref);
-                        match f.call(tc, undef, &[]) {
-                            Some(r) => Ok(v8::Global::new(tc, r)),
-                            None => {
-                                let exc =
-                                    tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                                Err(v8::Global::new(tc, exc))
-                            }
-                        }
-                    };
-                    let res_local = v8::Local::new(scope, &resolver_ref);
-                    match result {
-                        Ok(r) => {
-                            let v = v8::Local::new(scope, &r);
-                            let _ = res_local.resolve(scope, v);
-                        }
-                        Err(e) => {
-                            let v = v8::Local::new(scope, &e);
-                            let _ = res_local.reject(scope, v);
-                        }
-                    }
+                if crate::async_rt::service_scheduled_sync_call(scope, &state_rc) {
                     pump_and_checkpoint(scope);
                 }
             }

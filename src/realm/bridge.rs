@@ -37,26 +37,27 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
 
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-
-    set_fn!("getEntryPath", get_entry_path);
-    set_fn!("isTerminated", is_terminated);
-    set_fn!("getPort", get_port);
-    set_fn!("setEntryError", set_entry_error);
-    set_fn!("getLoadedFsPaths", get_loaded_fs_paths);
-    set_fn!("requestReload", request_reload);
-    set_fn!("getWatchMode", get_watch_mode);
-    set_fn!("getReplMode", get_repl_mode);
-    set_fn!("getRealmData", get_realm_data);
-    set_fn!("getRealmBootstrapData", get_realm_bootstrap_data);
-    set_fn!("setSandboxCgroupPath", set_sandbox_cgroup_path);
+    crate::set_fn!(scope, module, "getEntryPath", get_entry_path);
+    crate::set_fn!(scope, module, "isTerminated", is_terminated);
+    crate::set_fn!(scope, module, "getPort", get_port);
+    crate::set_fn!(scope, module, "setEntryError", set_entry_error);
+    crate::set_fn!(scope, module, "getLoadedFsPaths", get_loaded_fs_paths);
+    crate::set_fn!(scope, module, "requestReload", request_reload);
+    crate::set_fn!(scope, module, "getWatchMode", get_watch_mode);
+    crate::set_fn!(scope, module, "getReplMode", get_repl_mode);
+    crate::set_fn!(scope, module, "getRealmData", get_realm_data);
+    crate::set_fn!(
+        scope,
+        module,
+        "getRealmBootstrapData",
+        get_realm_bootstrap_data
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "setSandboxCgroupPath",
+        set_sandbox_cgroup_path
+    );
 
     Some(v8::undefined(scope).into())
 }

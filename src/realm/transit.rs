@@ -29,6 +29,7 @@ use std::{
 
 use ::v8;
 
+use crate::fdutil::create_pipe;
 use crate::realm::thread::ThreadMessage;
 
 // ---------------------------------------------------------------------------
@@ -62,22 +63,6 @@ fn registry() -> &'static Mutex<TransitRegistry> {
             halves: HashMap::new(),
         })
     })
-}
-
-fn create_pipe() -> Result<(RawFd, RawFd), String> {
-    let mut fds = [0i32; 2];
-    let ret = unsafe { libc::pipe(fds.as_mut_ptr()) };
-    if ret != 0 {
-        return Err(format!(
-            "pipe() failed: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    unsafe {
-        libc::fcntl(fds[0], libc::F_SETFL, libc::O_NONBLOCK);
-        libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
-    }
-    Ok((fds[0], fds[1]))
 }
 
 /// Create a symmetric transit channel pair.  Returns `(p2_handle, q_handle)`.
@@ -145,17 +130,14 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
-    macro_rules! set_fn {
-        ($name:expr, $cb:expr) => {{
-            let tmpl = v8::FunctionTemplate::new(scope, $cb);
-            let func = tmpl.get_function(scope)?;
-            let key = v8::String::new(scope, $name)?;
-            module.set_synthetic_module_export(scope, key, func.into())?;
-        }};
-    }
-    set_fn!("createTransitChannel", native_create_transit_channel);
-    set_fn!("transitSend", native_transit_send);
-    set_fn!("transitRecv", native_transit_recv);
+    crate::set_fn!(
+        scope,
+        module,
+        "createTransitChannel",
+        native_create_transit_channel
+    );
+    crate::set_fn!(scope, module, "transitSend", native_transit_send);
+    crate::set_fn!(scope, module, "transitRecv", native_transit_recv);
     Some(v8::undefined(scope).into())
 }
 
@@ -179,17 +161,10 @@ fn native_create_transit_channel(
     };
 
     let obj = v8::Object::new(scope);
-    macro_rules! set_int {
-        ($key:expr, $val:expr) => {{
-            let k = v8::String::new(scope, $key).unwrap();
-            let v = v8::Number::new(scope, $val as f64);
-            obj.set(scope, k.into(), v.into());
-        }};
-    }
-    set_int!("p2Handle", p2_handle);
-    set_int!("p2WakeReadFd", p2_wake_read_fd);
-    set_int!("qHandle", q_handle);
-    set_int!("qWakeReadFd", q_wake_read_fd);
+    crate::set_num_prop!(scope, obj, "p2Handle", p2_handle);
+    crate::set_num_prop!(scope, obj, "p2WakeReadFd", p2_wake_read_fd);
+    crate::set_num_prop!(scope, obj, "qHandle", q_handle);
+    crate::set_num_prop!(scope, obj, "qWakeReadFd", q_wake_read_fd);
 
     rv.set(obj.into());
 }
@@ -327,7 +302,7 @@ pub fn build_message_array<'s>(
         let bytes_arr = v8::Array::new(scope, bytes_arr_len);
 
         // Main bytes at [0]
-        let main = copy_bytes_to_u8a(scope, &msg.data);
+        let main = super::bytes::vec_to_u8a(scope, &msg.data);
         let zero = v8::Integer::new(scope, 0);
         if let Some(u8a) = main {
             bytes_arr.set(scope, zero.into(), u8a.into());
@@ -335,7 +310,7 @@ pub fn build_message_array<'s>(
 
         // Store bytes at [1..]
         for (j, store) in msg.transfer_stores.iter().enumerate() {
-            if let Some(u8a) = copy_bytes_to_u8a(scope, store) {
+            if let Some(u8a) = super::bytes::vec_to_u8a(scope, store) {
                 let idx = v8::Integer::new(scope, (j + 1) as i32);
                 bytes_arr.set(scope, idx.into(), u8a.into());
             }
@@ -362,7 +337,7 @@ pub fn build_message_array<'s>(
         let two = v8::Integer::new(scope, 2);
         tuple.set(scope, zero3.into(), bytes_arr.into());
         tuple.set(scope, one2.into(), ports_arr.into());
-        if let Some(header) = copy_bytes_to_u8a(scope, &msg.header) {
+        if let Some(header) = super::bytes::vec_to_u8a(scope, &msg.header) {
             tuple.set(scope, two.into(), header.into());
         }
 
@@ -370,19 +345,4 @@ pub fn build_message_array<'s>(
         outer.set(scope, oidx.into(), tuple.into());
     }
     outer
-}
-
-fn copy_bytes_to_u8a<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-    bytes: &[u8],
-) -> Option<v8::Local<'s, v8::Uint8Array>> {
-    let len = bytes.len();
-    let bs = v8::ArrayBuffer::new_backing_store(scope, len);
-    if !bytes.is_empty() {
-        let dst = bs.data()?.as_ptr() as *mut u8;
-        // SAFETY: freshly allocated backing store, exclusive access.
-        unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dst, len) };
-    }
-    let ab = v8::ArrayBuffer::with_backing_store(scope, &bs.make_shared());
-    v8::Uint8Array::new(scope, ab, 0, len)
 }

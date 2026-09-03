@@ -19,10 +19,13 @@ pub mod js_calls;
 use std::{
     cell::RefCell,
     os::unix::io::RawFd,
+    rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use ::v8;
+
+use crate::state::FinoState;
 
 pub use bridge::PendingResolution;
 
@@ -506,4 +509,56 @@ fn raw_to_v8<'s>(
             v8::undefined(scope).into()
         }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled sync-call servicing (shared by all host event loops)
+// ---------------------------------------------------------------------------
+
+/// Service one pending synchronous call scheduled by JS via `scheduleSync()`
+/// (internal:async-context).
+///
+/// Takes `sync_call_fn`/`sync_call_resolver` from `state`, calls the function
+/// under a fresh `TryCatch`, and resolves or rejects the stored promise
+/// resolver with the result. Returns `true` when a call was serviced, `false`
+/// when nothing was pending.
+///
+/// This is shared by the main-realm loop (`runtime.rs`), the child-isolate
+/// loop (`realm/child.rs`), and the reactor scheduler (`scheduler_native.rs`)
+/// so the call/settle ordering stays identical everywhere.
+pub fn service_scheduled_sync_call(
+    scope: &mut v8::PinScope,
+    state: &Rc<RefCell<FinoState>>,
+) -> bool {
+    let (maybe_fn, maybe_resolver) = {
+        let mut state = state.borrow_mut();
+        (state.sync_call_fn.take(), state.sync_call_resolver.take())
+    };
+    let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) else {
+        return false;
+    };
+    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
+        let receiver: v8::Local<v8::Value> = v8::undefined(scope).into();
+        v8::tc_scope!(tc, scope);
+        let function = v8::Local::new(tc, &fn_ref);
+        match function.call(tc, receiver, &[]) {
+            Some(result) => Ok(v8::Global::new(tc, result)),
+            None => {
+                let exception = tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
+                Err(v8::Global::new(tc, exception))
+            }
+        }
+    };
+    let resolver = v8::Local::new(scope, &resolver_ref);
+    match call_result {
+        Ok(result) => {
+            let result = v8::Local::new(scope, &result);
+            let _ = resolver.resolve(scope, result);
+        }
+        Err(exception) => {
+            let exception = v8::Local::new(scope, &exception);
+            let _ = resolver.reject(scope, exception);
+        }
+    }
+    true
 }

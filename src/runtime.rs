@@ -219,41 +219,7 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
                 // here (outside perform_checkpoint) so that
                 // is_running_microtasks_ is false, allowing spin() →
                 // drainMicrotasks() to actually drain the queue.
-                let (maybe_fn, maybe_resolver) = {
-                    let mut st = state_rc.borrow_mut();
-                    (st.sync_call_fn.take(), st.sync_call_resolver.take())
-                };
-
-                if let (Some(fn_ref), Some(resolver_ref)) = (maybe_fn, maybe_resolver) {
-                    // Call fn() and capture result/exception as globals so TryCatch can drop.
-                    let call_result: Result<v8::Global<v8::Value>, v8::Global<v8::Value>> = {
-                        let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                        v8::tc_scope!(tc, scope);
-                        let fn_local = v8::Local::new(tc, &fn_ref);
-                        match fn_local.call(tc, undef, &[]) {
-                            Some(result) => Ok(v8::Global::new(tc, result)),
-                            None => {
-                                let exc =
-                                    tc.exception().unwrap_or_else(|| v8::undefined(tc).into());
-                                Err(v8::Global::new(tc, exc))
-                            }
-                        }
-                    }; // TryCatch dropped here, borrow on scope released
-
-                    // Resolve or reject the promise resolver (requires scope, now free).
-                    match call_result {
-                        Ok(result_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let result_local = v8::Local::new(scope, &result_ref);
-                            let _ = resolver_local.resolve(scope, result_local);
-                        }
-                        Err(exc_ref) => {
-                            let resolver_local = v8::Local::new(scope, &resolver_ref);
-                            let exc_local = v8::Local::new(scope, &exc_ref);
-                            let _ = resolver_local.reject(scope, exc_local);
-                        }
-                    }
-
+                if crate::async_rt::service_scheduled_sync_call(scope, &state_rc) {
                     // Drain foreground tasks + microtasks produced by resolving the promise.
                     pump_and_checkpoint(scope);
                 }
