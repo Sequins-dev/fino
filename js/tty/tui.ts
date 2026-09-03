@@ -9,7 +9,7 @@
  *
  * Primitives are host-neutral: `Box` (flexbox layout, padding, margin,
  * borders), `Text` (styled runs, wrapping, caret), `Spacer`, `Input`,
- * `Button`, `List`, `ScrollView`, `Layer` (content painted above the normal
+ * `Button`, `List`, `Scroll`, `Layer` (content painted above the normal
  * flow), and `Clickable` (focusable pointer/key behavior without visuals).
  * All accept style props (`color`, `background`, `bold`, …)
  * resolved against `fino:tty/style` tokens during layout.
@@ -49,9 +49,6 @@ import {
   createRenderer,
   createSignal,
   batch,
-  defineRenderTarget,
-  lowerTree,
-  type Child,
   type Props,
   type Root,
   type Sink,
@@ -75,150 +72,22 @@ import {
   queryTerminalSize,
 } from '../internal/tty/bindings.ts';
 import { layout as layoutRetained, measure as measureRetained } from 'internal:tty/layout';
-import type { BorderStyle, Constraints, Measured, WrapMode } from 'internal:tty/layout';
+import type { Constraints, Measured } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
+import { lowerTui } from 'internal:tty/lower';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
-import type { Color, Style } from 'fino:tty/style';
+import type {
+  BorderStyle,
+  FlexChildProps,
+  StyleProps,
+  UiKeyEvent,
+  UiMouseEvent,
+  WrapMode,
+} from 'fino:ui/components';
 export { h, Fragment, createSignal, batch };
 export type { BorderStyle, Constraints, Measured, WrapMode };
-type Direction = 'row' | 'column';
-type Align = 'start' | 'center' | 'end' | 'stretch';
-
-// The terminal renderer owns this closed primitive floor for its module lifetime.
-defineRenderTarget('tui', {
-  primitives: [
-    'box',
-    'text',
-    'spacer',
-    'input',
-    'button',
-    'list',
-    'scrollview',
-    'layer',
-    'clickable',
-  ],
-});
-
-/** Style props accepted by every terminal primitive. */
-export interface StyleProps {
-  /** Foreground color inherited by descendants unless they override it. */
-  color?: Color;
-  /** Background color painted across the primitive's assigned rectangle. */
-  background?: Color;
-  /** Enable or disable bold intensity. */
-  bold?: boolean;
-  /** Enable or disable dim intensity. */
-  dim?: boolean;
-  /** Enable or disable italic text. */
-  italic?: boolean;
-  /** Enable or disable underlining. */
-  underline?: boolean;
-  /** Swap the effective foreground and background colors. */
-  inverse?: boolean;
-  /** Enable or disable strikethrough text. */
-  strike?: boolean;
-  /** Style token(s) merged left-to-right beneath the individual props above. */
-  style?: Style | Style[];
-  /** Hit-region id reported in `Frame.hits` for mouse routing. */
-  id?: string;
-}
-/** Flex-child props accepted by every terminal primitive. */
-export interface FlexChildProps {
-  /** Share of leftover main-axis space. */
-  grow?: number;
-  /** Share of main-axis deficit absorbed when content overflows. */
-  shrink?: number;
-  /** Main-axis start size, overriding the measured size. */
-  basis?: number;
-  /** Shorthand for `grow`. */
-  flex?: number;
-  /** Override the parent's cross-axis alignment for this child. */
-  alignSelf?: Align;
-  /** Shorthand applying the same cell margin on both axes. */
-  margin?: number;
-  /** Horizontal cell margin, overriding `margin` on that axis. */
-  marginX?: number;
-  /** Vertical cell margin, overriding `margin` on that axis. */
-  marginY?: number;
-}
-/** Props accepted by `Box`. */
-export interface BoxProps extends StyleProps, FlexChildProps, Props {
-  /** Fixed width in terminal cells. */
-  width?: number;
-  /** Fixed height in terminal rows. */
-  height?: number;
-  /** Minimum assigned width in terminal cells. */
-  minWidth?: number;
-  /** Maximum assigned width in terminal cells. */
-  maxWidth?: number;
-  /** Minimum assigned height in terminal rows. */
-  minHeight?: number;
-  /** Maximum assigned height in terminal rows. */
-  maxHeight?: number;
-  /** Main-axis flow direction; defaults to `column`. */
-  direction?: Direction;
-  /** Wrap children onto new lines when the main axis overflows (row only). */
-  wrap?: boolean;
-  /** Main-axis distribution of leftover space. */
-  justify?: 'start' | 'center' | 'end' | 'between';
-  /** Cross-axis placement of children. */
-  align?: Align;
-  /** Cells or rows inserted between non-empty children. */
-  gap?: number;
-  /** Shorthand applying the same inner inset on both axes. */
-  padding?: number;
-  /** Horizontal inner inset, overriding `padding` on that axis. */
-  paddingX?: number;
-  /** Vertical inner inset, overriding `padding` on that axis. */
-  paddingY?: number;
-  /** Draw a border: `true` for the default style, or a named style. */
-  border?: boolean | BorderStyle;
-  /** Border glyph family used when `border` is `true`. */
-  borderStyle?: BorderStyle;
-  /** Foreground color used for border glyphs. */
-  borderColor?: Color;
-  /** Whether descendants may paint outside the content rectangle; defaults to `hidden`. */
-  overflow?: 'hidden' | 'visible';
-  /** Ordered content laid out inside the box. */
-  children?: Child;
-}
-/** Props accepted by `Text`. */
-export interface TextProps extends StyleProps, FlexChildProps, Props {
-  /** `true` means word wrap; `'char'` breaks at exact cell boundaries. */
-  wrap?: boolean | WrapMode;
-  /** Horizontal placement of each rendered line. */
-  align?: 'start' | 'center' | 'end';
-  /** Clip overflowing lines with a trailing ellipsis instead of hard-cutting. */
-  truncate?: boolean;
-  /** Character offset of the caret within this node's text. */
-  caret?: number;
-  /** Fixed width in terminal cells. */
-  width?: number;
-  /** Fixed height in terminal rows. */
-  height?: number;
-  /** Text and nested text content concatenated into styled runs. */
-  children?: Child;
-}
-/** Props accepted by `Spacer`. */
-export interface SpacerProps extends FlexChildProps, Props {
-  /** Fixed empty width in terminal cells. */
-  width?: number;
-  /** Fixed empty height in terminal rows; defaults to one. */
-  height?: number;
-}
-/** Props accepted by `Input`. */
-export interface InputProps extends StyleProps, FlexChildProps, Props {
-  /** Visible single-line value. */
-  value?: string;
-  /** Dimmed text shown when `value` is empty. */
-  placeholder?: string;
-  /** Whether to draw the focus marker and place the terminal caret. */
-  focused?: boolean;
-  /** Character offset of the caret within `value`. */
-  caret?: number;
-}
 /** Props accepted by `Button`. */
 export interface ButtonProps extends StyleProps, FlexChildProps, Props {
   /** Text rendered inside the button brackets. */
@@ -232,59 +101,6 @@ export interface ListProps extends StyleProps, FlexChildProps, Props {
   items: string[];
   /** Zero-based row receiving the selection marker; defaults to zero. */
   selectedIndex?: number;
-}
-/** Props accepted by `ScrollView`. */
-export interface ScrollViewProps extends StyleProps, FlexChildProps, Props {
-  /** Viewport width in terminal cells. */
-  width?: number;
-  /** Viewport height in terminal rows. */
-  height?: number;
-  /** First content row shown at the top of the viewport. */
-  offset?: number;
-  /** Column-flow content painted through the clipped viewport. */
-  children?: Child;
-}
-/** Props accepted by `Layer`. */
-export interface LayerProps extends StyleProps, Props {
-  /** Cell position the layer attaches to; omitted centers it. */
-  anchor?: { x: number; y: number };
-  /** Placement relative to `anchor`, or `center` within the frame. */
-  placement?: 'bottom-start' | 'bottom-end' | 'top-start' | 'top-end' | 'center';
-  /** Layer width in terminal cells; defaults to measured content width. */
-  width?: number;
-  /** Layer height in terminal rows; defaults to measured content height. */
-  height?: number;
-  /** Content painted above normal flow. */
-  children?: Child;
-}
-/** Props accepted by `Clickable`. */
-export interface ClickableProps extends StyleProps, FlexChildProps, Props {
-  /** Fired when any cell within is clicked, or Enter/Space activates it. */
-  onClick?: () => void;
-  /** Handle a key routed from this node or one of its descendants. */
-  onKey?: (event: TuiKeyEvent) => boolean | void;
-  /** Handle a mouse event routed from this node or one of its descendants. */
-  onMouse?: (event: TuiMouseEvent) => boolean | void;
-  /** Called when this node receives focus. */
-  onFocus?: () => void;
-  /** Called when this node loses focus. */
-  onBlur?: () => void;
-  /** Clickables join the tab order unless this is set to false. */
-  focusable?: boolean;
-  /** Receive keys while nothing is focused; intended for active overlay surfaces. */
-  captureKeys?: boolean;
-  /** Prevent focus, handlers, and activation. */
-  disabled?: boolean;
-  /** Main-axis flow direction; defaults to `column`. */
-  direction?: Direction;
-  /** Cells or rows inserted between non-empty children. */
-  gap?: number;
-  /** Fixed width in terminal cells. */
-  width?: number;
-  /** Fixed height in terminal rows. */
-  height?: number;
-  /** Content laid out inside the behavior container. */
-  children?: Child;
 }
 /** Focus control surface exposed by a live TUI app. */
 export interface TuiFocus {
@@ -340,62 +156,26 @@ export interface TuiApp {
   focus: TuiFocus;
 }
 /** Keyboard event decoded from terminal input. */
-export interface TuiKeyEvent {
-  /** Event discriminator. */
-  type: 'key';
-  /** Normalized key name or printable character. */
-  key: string;
-  /** Printable text to insert, when the key carries text. */
-  text?: string;
-  /** Whether Control modified the key. */
-  ctrl?: boolean;
-  /** Whether Alt modified the key. */
-  alt?: boolean;
-  /** Whether Shift modified the key. */
-  shift?: boolean;
-}
+export type TuiKeyEvent = UiKeyEvent;
 /** Mouse event decoded from SGR terminal mouse reporting. */
-export interface TuiMouseEvent {
-  /** Event discriminator. */
-  type: 'mouse';
-  /** Pointer transition encoded by the terminal. */
-  action: 'press' | 'release' | 'drag' | 'move' | 'wheel';
-  /** Physical button or wheel direction. */
-  button: 'left' | 'middle' | 'right' | 'none' | 'wheel-up' | 'wheel-down';
-  /** Zero-based terminal column. */
-  x: number;
-  /** Zero-based terminal row. */
-  y: number;
-  /** Whether Control modified the pointer event. */
-  ctrl: boolean;
-  /** Whether Alt modified the pointer event. */
-  alt: boolean;
-  /** Whether Shift modified the pointer event. */
-  shift: boolean;
-  /** Column relative to the deepest painted node, when a node was hit. */
-  localX?: number;
-  /** Row relative to the deepest painted node, when a node was hit. */
-  localY?: number;
-}
+export type TuiMouseEvent = UiMouseEvent;
 /** Terminal input event consumed by TUI applications. */
 export type TuiEvent = TuiKeyEvent | TuiMouseEvent;
 const decoder = new TextDecoder();
-/** Terminal box container: flexbox layout, padding, margins, and borders. */
-export function Box(props: BoxProps): VNode {
-  return h('box', props);
-}
-/** Terminal text node with styled runs, wrapping, and caret reporting. */
-export function Text(props: TextProps): VNode {
-  return h('text', props);
-}
-/** Flexible or fixed empty space inside a `Box`. */
-export function Spacer(props: SpacerProps): VNode {
-  return h('spacer', props);
-}
-/** Single-line text input primitive for terminal forms. */
-export function Input(props: InputProps): VNode {
-  return h('input', props);
-}
+/** Host-neutral primitives, re-exported for existing terminal applications. */
+export { Box, Clickable, Input, Layer, Rule, Scroll, Spacer, Text } from 'fino:ui/components';
+export type {
+  BoxProps,
+  ClickableProps,
+  InputProps,
+  LayerProps,
+  RuleProps,
+  ScrollProps,
+  SpacerProps,
+  StyleProps,
+  TextProps,
+} from 'fino:ui/components';
+
 /** Push button primitive rendered as bracketed terminal text. */
 export function Button(props: ButtonProps): VNode {
   return h('button', props);
@@ -404,34 +184,15 @@ export function Button(props: ButtonProps): VNode {
 export function List(props: ListProps): VNode {
   return h('list', props);
 }
-/** Clipped viewport over child content. */
-export function ScrollView(props: ScrollViewProps): VNode {
-  return h('scrollview', props);
-}
-/** Content painted above the normal flow, anchored or centered. */
-export function Layer(props: LayerProps): VNode {
-  return h('layer', props);
-}
-/**
- * Non-visual behavior container: lays out like a plain `Box`, and a click
- * anywhere within it — or Enter/Space while it holds focus — fires `onClick`.
- */
-export function Clickable(props: ClickableProps): VNode {
-  return h('clickable', props);
-}
-
-function lowerTuiTree(element: VNode): VNode {
-  return lowerTree(element, 'tui');
-}
 
 /** Measure a terminal component tree under the supplied cell constraints. */
 export function measure(element: VNode, constraints: Constraints): Measured {
-  return measureRetained(lowerTuiTree(element), constraints);
+  return measureRetained(lowerTui(element), constraints);
 }
 
 /** Lay out and paint a terminal component tree into a structured frame. */
 export function layout(element: VNode, constraints: Constraints): Frame {
-  return layoutRetained(lowerTuiTree(element), constraints);
+  return layoutRetained(lowerTui(element), constraints);
 }
 
 function frameConstraints(options: RenderFrameOptions): Required<Constraints> {
@@ -465,7 +226,7 @@ function retainedTerminal(options: RenderFrameOptions): RetainedTerminal {
     dispatcher,
     sink: {
       commit(tree: VNode): Frame {
-        renderer.render(lowerTuiTree(tree), root);
+        renderer.render(lowerTui(tree), root);
         dispatcher.reconcile();
         const node = root.children[0];
         return node === undefined ? emptyFrame(constraints) : layoutRetained(node, constraints);

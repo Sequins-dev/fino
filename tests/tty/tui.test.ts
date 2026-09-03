@@ -5,7 +5,7 @@ import {
   Button,
   Input,
   List,
-  ScrollView,
+  Scroll,
   Spacer,
   Text,
   decodeTuiInput,
@@ -86,7 +86,7 @@ describe('fino:tty/tui renderFrame', () => {
           items: ['one', 'two'],
           selectedIndex: 1,
         }),
-        h(ScrollView, { height: 1 }, h(Text, null, 'line 1'), h(Text, null, 'line 2')),
+        h(Scroll, { height: 1 }, h(Text, null, 'line 1'), h(Text, null, 'line 2')),
       ),
       {
         width: 12,

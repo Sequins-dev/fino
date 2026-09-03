@@ -13,7 +13,7 @@ import { agent, streamText } from 'fino:ai/agent';
 import { openai } from 'fino:ai/model';
 import { env } from 'fino:process';
 import { h } from 'fino:ui';
-import { Box, Input, ScrollView, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } from 'fino:tty/tui';
+import { Box, Input, Scroll, Text, measureTerminalSize, render, type TuiApp, type TuiEvent } from 'fino:tty/tui';
 const apiKey = env.OPENAI_API_KEY ?? 'local';
 const baseUrl = env.OPENAI_BASE_URL ?? 'http://127.0.0.1:8080/v1';
 const modelName = env.OPENAI_MODEL ?? 'qwen3.6-40b-claude-4.6-opus-deckard-heretic-uncensored-thinking-8bit';
@@ -129,7 +129,7 @@ function view() {
   return h(Box, {
     direction: 'column',
     gap: 0
-  }, h(ScrollView, {
+  }, h(Scroll, {
     height: transcriptHeight,
     offset: scrollOffset
   }, ...rows.map((row) => h(Text, null, row.text))), h(Box, {

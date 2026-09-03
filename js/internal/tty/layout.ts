@@ -16,6 +16,7 @@ import { EMPTY_STYLE, internStyle, mergeStyle } from 'fino:tty/style';
 import type { Color, Style } from 'fino:tty/style';
 import { parseAnsi, stringWidth, graphemes, clusterWidth } from 'fino:tty/frame';
 import type { CursorPlacement, Frame, HitRect, Rect, Row, Segment } from 'fino:tty/frame';
+import type { Align, BorderStyle, Justify, WrapMode } from 'fino:ui/components';
 
 /** Anything the engine can lay out: a VNode or a retained terminal node. */
 export interface LayoutNode {
@@ -39,13 +40,6 @@ export interface Constraints {
   /** Available height in terminal rows, or unbounded when omitted. */
   readonly height?: number;
 }
-
-type Align = 'start' | 'center' | 'end' | 'stretch';
-type Justify = 'start' | 'center' | 'end' | 'between';
-/** Text wrapping policy: none, grapheme boundary, or word boundary. */
-export type WrapMode = 'none' | 'char' | 'word';
-/** Glyph family used to draw a terminal box border. */
-export type BorderStyle = 'single' | 'ascii' | 'round' | 'heavy' | 'double';
 
 const BORDERS: Record<BorderStyle, [string, string, string, string, string, string]> = {
   single: ['┌', '┐', '└', '┘', '─', '│'],
@@ -554,6 +548,11 @@ function measureUncached(node: LayoutNode, constraints: Constraints): Measured {
     case 'spacer':
       size = { width: num(props, 'width') ?? 0, height: num(props, 'height') ?? 1 };
       break;
+    case 'rule':
+      // A rule fills the width assigned by its parent without inflating the
+      // parent's min-content measurement.
+      size = { width: 1, height: 1 };
+      break;
     case 'input': {
       const value = str(props, 'value') ?? str(props, 'placeholder') ?? '';
       size = { width: Math.max(1, stringWidth(value) + 2), height: 1 };
@@ -927,6 +926,20 @@ function paintNode(
     }
     case 'spacer':
       break;
+    case 'rule': {
+      const requested = str(props, 'char') ?? '─';
+      const fill = stringWidth(requested) === 1 ? requested : '─';
+      const width = Math.max(0, rect.width - (num(props, 'inset') ?? 0));
+      canvas.clipPush(rect);
+      canvas.draw(rect.x, rect.y, [
+        {
+          segments: [{ text: fill.repeat(width), width, style: own }],
+          width,
+        },
+      ]);
+      canvas.clipPop();
+      break;
+    }
     case 'input': {
       const focused = props.focused === true;
       const value = str(props, 'value') ?? '';

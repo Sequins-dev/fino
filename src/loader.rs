@@ -293,6 +293,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:context", "context/index"),
     source_builtin!("fino:signals", "signals"),
     source_builtin!("fino:ui", "ui"),
+    source_builtin!("fino:ui/components", "ui/components"),
+    source_builtin!("fino:ui/components/html", "ui/components/html"),
+    source_builtin!("fino:ui/components/theme", "ui/components/theme"),
     source_builtin!("fino:ui/html", "ui/html"),
     source_builtin!("fino:ui/portable", "ui/portable"),
     source_builtin!("fino:ui/realm", "ui/realm"),
@@ -309,8 +312,14 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tty/layout", "internal/tty/layout"),
     source_builtin!("internal:tty/host", "internal/tty/host"),
     source_builtin!("internal:tty/events", "internal/tty/events"),
+    source_builtin!("internal:tty/lower", "internal/tty/lower"),
     source_builtin!("internal:tty/vt", "internal/tty/vt"),
     source_builtin!("fino:tty/tui", "tty/tui"),
+    source_builtin!(
+        "internal:ui/components/html-runtime",
+        "ui/components/html-runtime"
+    ),
+    source_builtin!("internal:ui/components/target", "ui/components/target"),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
