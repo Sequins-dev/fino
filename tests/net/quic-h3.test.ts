@@ -80,6 +80,13 @@ function h3Pipe(): QuicPipe {
     },
   });
 }
+function memorySessionStore(sessions: Map<string, any>) {
+  return {
+    load: (key: string) => sessions.get(key) ?? null,
+    save: (key: string, state: any) => sessions.set(key, state),
+    delete: (key: string) => sessions.delete(key),
+  };
+}
 async function h3Handshake(pipe: QuicPipe) {
   const { client, server } = await pipe.handshake();
   return {
@@ -1204,6 +1211,91 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       clientConn.destroy();
       await pipe.pumpUntil(serverDone);
     } finally {
+      await pipe.close();
+    }
+  });
+  it('holds replay-unsafe requests until a resumed handshake completes', async (t) => {
+    if (!available) return;
+    const sessions = new Map<string, any>();
+    const earlyData = { replaySafe: true, maxBytes: 64 * 1024 } as const;
+    const pipe = new QuicPipe({
+      client: { alpnProtocols: ['h3'], sessionStore: memorySessionStore(sessions), earlyData },
+      server: {
+        alpnProtocols: ['h3'],
+        sessionStore: memorySessionStore(new Map()),
+        earlyData,
+        connection: { initialMaxStreamsUni: 16 },
+      },
+    });
+    let resumedEndpoint: QuicEndpoint | null = null;
+    try {
+      await pipe.listen();
+      const warmup = await pipe.handshake();
+      await pipe.pumpUntilCondition(() =>
+        sessions.get('localhost|h3')?.ticket instanceof Uint8Array ? true : null,
+      );
+      warmup.client.destroy();
+      warmup.server.destroy();
+      await pipe.runUntilSettled();
+      resumedEndpoint = new QuicEndpoint(
+        { alpnProtocols: ['h3'], sessionStore: memorySessionStore(sessions), earlyData },
+        {
+          transportFactory: pipe.transportFactory,
+          runtime: pipe.runtime,
+          clientBindAddress: { family: 'ipv4', ip: '10.0.0.1', port: 55130 },
+        } as any,
+      );
+      const accepted = pipe.server.accept();
+      const clientConn = await resumedEndpoint.connect({
+        address: pipe.listener!.address,
+        serverName: 'localhost',
+      });
+      t.equal(clientConn.handshakeComplete, false, 'resumed connection enters the 0-RTT window');
+      const clientSession = await H3ClientSession.create(clientConn);
+      const streamsBeforeRequests = clientConn.stats.streamsOpened;
+      const safeRequestPromise = clientSession.request('https://localhost/read');
+      const requestPromise = clientSession.request('https://localhost/mutate', {
+        method: 'POST',
+        body: 'mutation',
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      t.equal(
+        clientConn.stats.streamsOpened,
+        streamsBeforeRequests + 1,
+        'safe GET opens in 0-RTT while unsafe POST remains held',
+      );
+      const controller = new AbortController();
+      const abortedRequest = clientSession.request('https://localhost/aborted', {
+        method: 'PATCH',
+        signal: controller.signal,
+      });
+      controller.abort('cancel held request');
+      await t.rejects(
+        () => abortedRequest,
+        /cancel held request/,
+        'held request remains abortable',
+      );
+      t.equal(
+        clientConn.stats.streamsOpened,
+        streamsBeforeRequests + 1,
+        'aborting a held request does not consume a stream',
+      );
+      const serverConn = await pipe.pumpUntil(accepted);
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, async (request) => {
+        return new Response(request.method === 'POST' ? await request.text() : 'safe');
+      });
+      const safeResponse = await pipe.pumpUntil(safeRequestPromise);
+      const response = await pipe.pumpUntil(requestPromise);
+      t.equal(clientConn.handshakeComplete, true, 'request resumes only after the handshake');
+      t.equal(await pipe.pumpUntil(safeResponse.text()), 'safe', 'safe early request completes');
+      t.equal(await pipe.pumpUntil(response.text()), 'mutation', 'held request completes normally');
+      clientSession.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await resumedEndpoint?.close();
       await pipe.close();
     }
   });

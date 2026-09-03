@@ -10,12 +10,14 @@
  * and `HttpClient` in `fino:net/http` — reach this module indirectly; callers
  * rarely instantiate an `H3ClientSession` directly.
  *
- * A session is created with `H3ClientSession.create(conn)` after the QUIC
- * handshake completes with ALPN `h3`. Each `request()` opens a fresh
- * bidirectional stream, streams the body, and resolves as soon as the response
- * headers arrive — the body is exposed as a streaming `Response` whose bytes and
- * trailers are pumped in lazily by the nghttp3 callbacks. The session multiplexes
- * any number of concurrent requests over the single connection.
+ * A session is created with `H3ClientSession.create(conn)` once ALPN `h3` is
+ * selected. Resumed connections can create the session during the 0-RTT window:
+ * safe methods may proceed immediately, while replay-unsafe methods wait for the
+ * handshake. Each `request()` opens a fresh bidirectional stream, streams the
+ * body, and resolves as soon as the response headers arrive — the body is
+ * exposed as a streaming `Response` whose bytes and trailers are pumped in
+ * lazily by the nghttp3 callbacks. The session multiplexes any number of
+ * concurrent requests over the single connection.
  *
  * Two failure modes are handled beyond ordinary stream resets. A server GOAWAY
  * marks the highest stream id the peer will still service; requests numbered
@@ -47,6 +49,7 @@
  * ```
  *
  * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ * HTTP Early Data: https://www.rfc-editor.org/rfc/rfc8470
  * Extensible Prioritization Scheme: https://www.rfc-editor.org/rfc/rfc9218
  *
  * @internal
@@ -65,7 +68,31 @@ import {
 } from '../../../../net/http/webtransport.ts';
 import type { WebTransportOptions } from '../../../../net/http/webtransport.ts';
 import { quicIncomingStreamHook } from '../../quic/endpoint.ts';
+import { quicConnectionInternals } from '../../quic/connection.ts';
 import { inspectWebTransportStreamPrefix } from './webtransport.ts';
+
+const EARLY_DATA_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
+
+async function waitForHandshake(conn: QuicConnection, signal?: AbortSignal | null): Promise<void> {
+  if (conn.handshakeComplete) return;
+  if (signal?.aborted) throw abortError(signal.reason);
+  if (signal === undefined || signal === null) {
+    await conn[quicConnectionInternals.waitHandshake]();
+    return;
+  }
+  let onAbort!: () => void;
+  try {
+    await Promise.race([
+      conn[quicConnectionInternals.waitHandshake](),
+      new Promise<never>((_, reject) => {
+        onAbort = () => reject(abortError(signal.reason));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
+}
 /**
  * Request options for an HTTP/3 request, extending the standard Fetch
  * `RequestInit` with HTTP/3-specific fields.
@@ -293,14 +320,15 @@ export class H3ClientSession {
     });
   }
   /**
-   * Creates a client session over an established QUIC connection.
+   * Creates a client session over an established or resumed QUIC connection.
    *
    * Wires up the nghttp3 client callbacks, installs the connection's
    * incoming-stream hook (so remote control, QPACK, and WebTransport streams are
    * captured immediately), and opens and binds the three mandatory local
    * unidirectional streams: the HTTP/3 control stream and the QPACK
-   * encoder/decoder streams. The connection must already have completed its
-   * handshake with ALPN `h3`.
+   * encoder/decoder streams. A resumed connection may still be in its 0-RTT
+   * window; the session permits safe requests there and holds unsafe methods
+   * until the handshake completes.
    *
    * Throws if libnghttp3 is unavailable, or if opening/binding the local
    * unidirectional streams fails (in which case the nghttp3 session is closed
@@ -619,6 +647,9 @@ export class H3ClientSession {
     }
     const parsed = typeof url === 'string' ? new URL(url) : url;
     const method = init?.method ?? 'GET';
+    if (!EARLY_DATA_SAFE_METHODS.has(method.toUpperCase())) {
+      await waitForHandshake(this.#conn, init?.signal);
+    }
     const authority = getPseudoHeader(init, ':authority') ?? parsed.host;
     const reqHeaders: Array<[string, string]> = [
       [':method', method],
