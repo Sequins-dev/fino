@@ -584,13 +584,7 @@ export class QuicStream extends EventTarget {
   }
   /** Frozen snapshot of this stream's byte and offset counters. */
   get stats(): QuicStreamStats {
-    const stats = { ...this.#stats };
-    if (this.writer.closed && stats.bytesSent > 0 && stats.bytesAcked === 0) {
-      stats.bytesAcked = stats.bytesSent;
-      stats.maxOffsetAcked = Math.max(stats.maxOffsetAcked, stats.maxOffsetSent);
-      if (stats.ackedAt === null) stats.ackedAt = Date.now();
-    }
-    return Object.freeze(stats);
+    return Object.freeze({ ...this.#stats });
   }
   /**
    * Abruptly terminate the sending half with an application error code.
