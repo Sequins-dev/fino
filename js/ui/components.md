@@ -98,6 +98,64 @@ Links accept HTTP, HTTPS, mail, telephone, and relative targets. Unknown or
 active schemes such as `javascript:` render without a live `href`. Handler links
 and icon buttons reuse the HTML target's shared action protocol.
 
+## Forms and text editing
+
+`Button`, `Checkbox`, `Radio`, `RadioGroup`, and `Switch` expose controlled
+actions and choices. `TextInput`, `TextArea`, `NumberInput`, and `Slider` expose
+controlled values. Their application-facing definitions remain target-neutral:
+HTML lowers them to native controls through one value/action adapter, while the
+terminal target composes the same callbacks with retained focus and mouse
+routing.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import {
+  Button,
+  Field,
+  Slider,
+  TextArea,
+  TextInput,
+  VStack,
+  createTextArea,
+  createTextField,
+} from 'fino:ui/components';
+
+const name = createTextField('Ada');
+const notes = createTextArea('Ready');
+
+const form = (
+  <VStack gap={1}>
+    <Field label="Name">
+      <TextInput
+        value={name.value.get()}
+        caret={name.caret.get()}
+        selection={name.selection.get()}
+        onChange={name.set}
+      />
+    </Field>
+    <TextArea
+      value={notes.value.get()}
+      caret={notes.caret.get()}
+      selection={notes.selection.get()}
+      onChange={notes.set}
+    />
+    <Slider value={50} min={0} max={100} onChange={(value) => console.log(value)} />
+    <Button label="Save" onClick={() => console.log('save')} />
+  </VStack>
+);
+```
+
+`createTextField()` and `createTextArea()` share one value/caret/selection
+controller contract. The terminal reducers replace selections, move and delete
+by character or word, and clamp caret positions. Multi-line state additionally
+handles line-relative Home/End, vertical movement, and newline insertion. Plain
+Enter submits a `TextInput`; a `TextArea` reserves plain Enter for a newline and
+uses Control+Enter as its explicit terminal submit gesture.
+
+Numeric controls reject non-finite updates and clamp to their bounds. Terminal
+sliders use the same fraction-to-step mapping for horizontal clicks and vertical
+clicks or drags, so orientation changes presentation rather than value policy.
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

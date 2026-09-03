@@ -2,9 +2,9 @@
  * fino:ui/components — host-neutral UI component primitives.
  *
  * Structural primitives and semantic style tokens form the shared floor.
- * Layout, typography, and icon families compose that floor without branching
- * on the active render target; co-located HTML and terminal lowerings own the
- * target-specific presentation.
+ * Layout, typography, icon, and form families compose that floor without
+ * branching on the active render target; co-located HTML and terminal
+ * lowerings own the target-specific presentation.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -328,3 +328,30 @@ export type {
 } from './components/typography.ts';
 export { Icon, IconButton } from './components/icons.ts';
 export type { IconButtonProps, IconForms, IconProps } from './components/icons.ts';
+export {
+  Button,
+  Checkbox,
+  NumberInput,
+  Radio,
+  RadioGroup,
+  Slider,
+  Switch,
+  TextArea,
+  TextInput,
+} from './components/forms.ts';
+export type {
+  ButtonProps,
+  CheckboxProps,
+  FormControlProps,
+  NumberInputProps,
+  RadioGroupProps,
+  RadioOption,
+  RadioProps,
+  SliderProps,
+  SwitchProps,
+  TextAreaProps,
+  TextControlProps,
+  TextInputProps,
+} from './components/forms.ts';
+export { createTextArea, createTextField } from './components/text-edit.ts';
+export type { TextEditController } from './components/text-edit.ts';
