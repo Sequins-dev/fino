@@ -37,6 +37,7 @@
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
  * - Extensible Priorities: https://www.rfc-editor.org/rfc/rfc9218
  * - HTTP Early Data: https://www.rfc-editor.org/rfc/rfc8470
+ * - HTTP/3 ORIGIN: https://www.rfc-editor.org/rfc/rfc9412
  * - QUIC: https://www.rfc-editor.org/rfc/rfc9000
  *
  * @internal
@@ -131,6 +132,8 @@ export interface H3ServeOptions extends Omit<
   certificateFile: string;
   /** PEM private key file matching `certificateFile`. */
   privateKeyFile: string;
+  /** HTTPS origins to advertise for authenticated connection coalescing. */
+  origins?: Array<string | URL>;
 }
 /**
  * Running HTTP/3 server handle returned by `serve()`.
@@ -267,6 +270,7 @@ export async function serve(
       hostname = '127.0.0.1',
       certificateFile,
       privateKeyFile,
+      origins,
       ...quicOptions
     } = options;
     const listener = await endpoint.listen({
@@ -293,7 +297,10 @@ export async function serve(
       const driver = new H3ServerDriver();
       drivers.add(driver);
       const run = driver
-        .run(conn, handler, driverOptions)
+        .run(conn, handler, {
+          ...driverOptions,
+          origins: driverOptions.origins ?? origins,
+        })
         .catch(() => {})
         .finally(() => {
           drivers.delete(driver);
@@ -370,7 +377,7 @@ export async function fetch(url: string | URL, init: H3FetchInit = {}): Promise<
       alpnProtocols: ['h3'],
       serverName: quic?.serverName ?? target.serverName,
     });
-    using session = await H3ClientSession.create(conn);
+    using session = await H3ClientSession.create(conn, { origin: parsed.origin });
     const response = await session.request(url, requestInit);
     // Materialise the body and trailers before closing the connection.
     const body = await response.arrayBuffer();

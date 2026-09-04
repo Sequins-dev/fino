@@ -45,6 +45,7 @@
  * client and server drivers rather than driving a session directly.
  *
  * HTTP/3 specification: https://www.rfc-editor.org/rfc/rfc9114
+ * HTTP/3 ORIGIN extension: https://www.rfc-editor.org/rfc/rfc9412
  *
  * ```ts no_run
  * import { Nghttp3Session } from 'internal:net/http/h3/session';
@@ -110,9 +111,12 @@ import {
   CB_END_STREAM,
   CB_RESET_STREAM,
   CB_SHUTDOWN,
+  CB_RECV_ORIGIN,
+  CB_END_ORIGIN,
   CB_RECV_SETTINGS2,
   SETTINGS_ENABLE_CONNECT_PROTOCOL as NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL,
   SETTINGS_H3_DATAGRAM as NGHTTP3_SETTINGS_H3_DATAGRAM,
+  SETTINGS_ORIGIN_LIST,
   PROTO_SETTINGS_ENABLE_CONNECT_PROTOCOL,
   PROTO_SETTINGS_H3_DATAGRAM,
   PROTO_SETTINGS_MAX_FIELD_SECTION_SIZE,
@@ -144,6 +148,7 @@ import {
   webTransportSettings,
   webTransportSettingsEnabled,
 } from './webtransport.ts';
+import { encodeH3OriginList } from './origin.ts';
 /**
  * Re-exported from the h3 bindings module so drivers can build the native
  * name/value header array without importing `bindings.ts` separately.
@@ -231,6 +236,10 @@ export interface H3SessionCallbacks {
    * identifier. May fire more than once as settings are merged.
    */
   onRecvSettings?(settings: ReadonlyMap<number, number>): void;
+  /** Optional. One origin entry from an RFC 9412 ORIGIN frame. */
+  onRecvOrigin?(origin: string): void;
+  /** Optional. The current RFC 9412 ORIGIN frame was completely processed. */
+  onEndOrigin?(): void;
 }
 /**
  * Accepted shapes for a request or response body passed to a submit call.
@@ -271,6 +280,8 @@ export interface H3SessionOptions {
   qpackEncoderMaxTableCapacity?: number;
   /** Maximum number of streams allowed to block on QPACK state. Defaults to libnghttp3's 100. */
   qpackBlockedStreams?: number;
+  /** Normalized HTTPS origins to advertise from a server in an RFC 9412 ORIGIN frame. */
+  origins?: string[];
 }
 /** Default maximum decoded size of one HTTP field section. @internal */
 export const DEFAULT_MAX_FIELD_SECTION_SIZE = 64 * 1024;
@@ -285,6 +296,7 @@ function checkedSetting(name: string, value: number): bigint {
   }
   return BigInt(value);
 }
+
 interface BodySlot {
   bytes: Uint8Array | null;
   iterator: AsyncIterator<Uint8Array | ArrayBuffer> | null;
@@ -462,6 +474,8 @@ export class Nghttp3Session {
   #peerSettings = new Map<number, number>();
   #peerSettingsReceived = false;
   #webTransport = false;
+  #originPayload: Uint8Array | null = null;
+  #originVec: Uint8Array | null = null;
   #controlStreamId: bigint | null = null;
   readonly #isServer: boolean;
   readonly #cb: H3SessionCallbacks;
@@ -591,6 +605,16 @@ export class Nghttp3Session {
       settingsBuf[NGHTTP3_SETTINGS_ENABLE_CONNECT_PROTOCOL] = 1;
       settingsBuf[NGHTTP3_SETTINGS_H3_DATAGRAM] = 1;
       for (const [id, value] of webTransportSettings()) localSettings.set(id, value);
+    }
+    if (isServer && options.origins !== undefined) {
+      const payload = encodeH3OriginList(options.origins);
+      const vec = new Uint8Array(VEC_ENTRY_SIZE);
+      const vecView = new DataView(vec.buffer);
+      vecView.setBigUint64(0, Pointer.addr(payload), true);
+      vecView.setBigUint64(8, BigInt(payload.byteLength), true);
+      new DataView(settingsBuf.buffer).setBigUint64(SETTINGS_ORIGIN_LIST, Pointer.addr(vec), true);
+      session.#originPayload = payload;
+      session.#originVec = vec;
     }
     const rc = isServer
       ? (sym!.nghttp3_conn_server_new_versioned(
@@ -839,6 +863,32 @@ export class Nghttp3Session {
       );
       writeCbPtr(cbsBuf, CB_SHUTDOWN, shutdown);
       this.#callbacks.push(shutdown);
+    }
+    if (cb.onRecvOrigin) {
+      const recvOrigin = new FfiCallback(
+        {
+          parameters: ['ignoredPointer', 'pointer', 'usize', 'ignoredPointer'],
+          result: 'i32',
+        },
+        (_conn: ArrayBuffer, originPtr: ArrayBuffer, originLength: bigint) => {
+          const bytes = Pointer.copyFrom(originPtr, Number(originLength)) as Uint8Array;
+          cb.onRecvOrigin!(new _TextDecoder().decode(bytes));
+          return 0;
+        },
+      );
+      writeCbPtr(cbsBuf, CB_RECV_ORIGIN, recvOrigin);
+      this.#callbacks.push(recvOrigin);
+    }
+    if (cb.onEndOrigin) {
+      const endOrigin = new FfiCallback(
+        { parameters: ['ignoredPointer', 'ignoredPointer'], result: 'i32' },
+        () => {
+          cb.onEndOrigin!();
+          return 0;
+        },
+      );
+      writeCbPtr(cbsBuf, CB_END_ORIGIN, endOrigin);
+      this.#callbacks.push(endOrigin);
     }
     const recvSettings2 = new FfiCallback(
       {

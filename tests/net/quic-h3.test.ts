@@ -1324,6 +1324,104 @@ describe('HTTP/3 (h3 ALPN)', { exclusive: true }, () => {
       await pipe.close();
     }
   });
+  it('advertises and authorizes RFC 9412 origins before coalescing', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      let receivedOrigin = '';
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(
+        serverConn,
+        (request) => {
+          receivedOrigin = new URL(request.url).origin;
+          if (receivedOrigin === 'https://misdirected.test') {
+            return new Response(null, { status: 421 });
+          }
+          return new Response('coalesced');
+        },
+        {
+          origins: ['https://other.test', 'https://OTHER.test', 'https://misdirected.test'],
+        },
+      );
+      const checked: string[] = [];
+      const session = await pipe.pumpUntil(
+        H3ClientSession.create(clientConn, {
+          origin: 'https://localhost',
+          authorizeOrigin(origin) {
+            checked.push(origin);
+            return origin === 'https://other.test' || origin === 'https://misdirected.test';
+          },
+        }),
+      );
+      await pipe.pumpUntil(session._waitForOriginFrameForTest());
+      t.deepEqual(
+        session.advertisedOrigins,
+        ['https://other.test', 'https://misdirected.test'],
+        'client retains normalized deduplicated advertisements',
+      );
+      await t.rejects(
+        () => session.request('https://unadvertised.test/'),
+        /not authoritative/,
+        'an unadvertised origin is rejected before opening a stream',
+      );
+      await t.rejects(
+        () =>
+          session.request('https://localhost/', {
+            headers: [[':authority', 'unadvertised.test']],
+          }),
+        /not authoritative/,
+        'an authority override cannot bypass the origin policy',
+      );
+      const response = await pipe.pumpUntil(session.request('https://other.test/resource'));
+      t.equal(await pipe.pumpUntil(response.text()), 'coalesced', 'authorized request completes');
+      t.deepEqual(checked, ['https://other.test'], 'advertisement still requires authority policy');
+      t.equal(
+        receivedOrigin,
+        'https://other.test',
+        'coalesced request carries advertised authority',
+      );
+      const misdirected = await pipe.pumpUntil(session.request('https://misdirected.test/'));
+      t.equal(misdirected.status, 421, 'server can withdraw authority with 421');
+      await t.rejects(
+        () => session.request('https://misdirected.test/again'),
+        /not authoritative/,
+        '421 removes the origin from this connection',
+      );
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
+  it('withdraws the initial origin after a 421 response', async (t) => {
+    if (!available) return;
+    const pipe = h3Pipe();
+    try {
+      const { client: clientConn, server: serverConn } = await h3Handshake(pipe);
+      const driver = new H3ServerDriver();
+      const serverDone = driver.run(serverConn, () => new Response(null, { status: 421 }), {
+        origins: [],
+      });
+      const session = await pipe.pumpUntil(
+        H3ClientSession.create(clientConn, { origin: 'https://localhost' }),
+      );
+      await pipe.pumpUntil(session._waitForOriginFrameForTest());
+      const first = await pipe.pumpUntil(session.request('https://localhost/'));
+      t.equal(first.status, 421, 'the initial origin can be withdrawn');
+      await t.rejects(
+        () => pipe.pumpUntil(session.request('https://localhost/again')),
+        /not authoritative/,
+        'the withdrawn initial origin is no longer reusable on this connection',
+      );
+      session.close();
+      clientConn.destroy();
+      await pipe.pumpUntil(serverDone);
+    } finally {
+      await pipe.close();
+    }
+  });
   it('POST with request body', async (t) => {
     if (!available) return;
     const pipe = h3Pipe();

@@ -1363,7 +1363,7 @@ export class HttpSession {
         connectTimeout,
         'HTTP/3 connection timeout',
       );
-      return await this.#attachH3Connection(conn, endpoint, slot);
+      return await this.#attachH3Connection(conn, endpoint, slot, url.origin);
     } catch (error) {
       await endpoint.close();
       throw error;
@@ -1373,8 +1373,9 @@ export class HttpSession {
     conn: QuicConnection,
     endpoint: QuicEndpoint,
     slot: number,
+    origin?: string,
   ): Promise<H3Transport> {
-    const h3 = await H3ClientSession.create(conn);
+    const h3 = await H3ClientSession.create(conn, { origin });
     const connection: HttpConnectionInfo = {
       id: nextConnectionId(),
       protocol: 'h3',
