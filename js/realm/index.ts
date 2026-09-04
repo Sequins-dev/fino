@@ -1447,363 +1447,8 @@ export class Facade {
   }
 }
 // ---------------------------------------------------------------------------
-// Legacy provider config classes (kept for backwards compatibility)
-// ---------------------------------------------------------------------------
-/**
- * Generated-doc-visible interface `DiskFsOptions`.
- *
- * This implementation detail is included when documentation is built with
- * `--include-private`. It describes state or helper behavior used by the
- * owning module rather than a stable application-facing contract. Prefer the
- * public API around the owning type unless you are maintaining this runtime.
- *
- * @example
- * ```ts no_run
- * const documentedType = 'DiskFsOptions';
- * console.log(documentedType);
- * ```
- *
- * @internal
- */
-export interface DiskFsOptions {
-  /**
-   * Filesystem root used by the disk provider.
-   *
-   * When omitted, the provider uses the realm's inherited/default filesystem
-   * root. The value is interpreted by the file provider, not normalized by this
-   * config class.
-   *
-   * ```ts no_run
-   * import type { DiskFsOptions } from 'fino:realm';
-   *
-   * const options: DiskFsOptions = { root: '/srv/app' };
-   * ```
-   */
-  root?: string;
-}
-/**
- * Use the real on-disk filesystem for this realm.
- *
- * This legacy provider config is kept for backwards compatibility. New code
- * should prefer explicit import rules where possible.
- *
- * ```ts no_run
- * import { DiskFsConfig, Realm } from 'fino:realm';
- *
- * new Realm({
- *   entry: './worker.ts',
- *   providers: { fs: new DiskFsConfig({ root: '/srv/app' }) },
- * });
- * ```
- */
-export class DiskFsConfig {
-  /**
-   * Provider discriminator serialized by `toJSON()`.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * console.log(new DiskFsConfig().type);
-   * ```
-   */
-  readonly type = 'disk' as const;
-  /**
-   * Options supplied to the disk filesystem provider.
-   *
-   * The object is stored as provided by the constructor. Omitted options are
-   * represented by an empty object.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * const config = new DiskFsConfig({ root: '/tmp/app' });
-   * console.log(config.options.root);
-   * ```
-   */
-  readonly options: DiskFsOptions;
-  /**
-   * Create a disk filesystem provider config.
-   *
-   * The default options object is empty. Construction does not verify that the
-   * root exists; provider setup handles filesystem failures later.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * const config = new DiskFsConfig({ root: '/srv/app' });
-   * ```
-   *
-   * @param options Disk filesystem provider options.
-   */
-  constructor(options: DiskFsOptions = {}) {
-    this.options = options;
-  }
-  /**
-   * Serialize this provider config.
-   *
-   * The result includes the provider type and any configured options. It is
-   * suitable for legacy config persistence, not for direct import-rule use.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * const json = new DiskFsConfig({ root: '/srv/app' }).toJSON();
-   * ```
-   */
-  toJSON(): Record<string, unknown> {
-    return {
-      type: this.type,
-      ...this.options,
-    };
-  }
-  /**
-   * Recreate a disk provider config from serialized data.
-   *
-   * Unknown keys are ignored. Missing `root` produces a config with default
-   * options.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * const config = DiskFsConfig.fromJSON({ type: 'disk', root: '/srv/app' });
-   * ```
-   *
-   * @param json Serialized provider data.
-   */
-  static fromJSON(json: Record<string, unknown>): DiskFsConfig {
-    return new DiskFsConfig({ root: json['root'] as string | undefined });
-  }
-  /**
-   * Convert this provider config into import rules.
-   *
-   * Disk filesystem config inherits the runtime file bindings, matching the
-   * legacy system default behavior.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig } from 'fino:realm';
-   *
-   * const rules = new DiskFsConfig().toRules();
-   * ```
-   *
-   * @internal
-   */
-  toRules(): ImportRule[] {
-    // Empty source_map + empty code would have reset to BUILTINS in the old
-    // system. In the new system we emit Inherit, which drops from the child
-    // specific list so the parent's rule applies (same effect for root realms).
-    return [
-      {
-        pattern: 'internal:file/bindings',
-        directive: 'inherit',
-      },
-    ];
-  }
-}
-/**
- * Use the system network stack for this realm.
- *
- * This legacy provider config maps the network provider import back to the
- * inherited system provider.
- *
- * ```ts no_run
- * import { Realm, SystemNetConfig } from 'fino:realm';
- *
- * new Realm({ entry: './worker.ts', providers: { net: new SystemNetConfig() } });
- * ```
- */
-export class SystemNetConfig {
-  /**
-   * Provider discriminator serialized by `toJSON()`.
-   *
-   * ```ts no_run
-   * import { SystemNetConfig } from 'fino:realm';
-   *
-   * console.log(new SystemNetConfig().type);
-   * ```
-   */
-  readonly type = 'system-net' as const;
-  /**
-   * Serialize this provider config.
-   *
-   * The result has no options because the system network provider has no
-   * JS-visible configuration in this compatibility layer.
-   *
-   * ```ts no_run
-   * import { SystemNetConfig } from 'fino:realm';
-   *
-   * const json = new SystemNetConfig().toJSON();
-   * ```
-   */
-  toJSON(): Record<string, unknown> {
-    return { type: this.type };
-  }
-  /**
-   * Recreate a system network provider config from serialized data.
-   *
-   * The input is accepted for compatibility and otherwise ignored.
-   *
-   * ```ts no_run
-   * import { SystemNetConfig } from 'fino:realm';
-   *
-   * const config = SystemNetConfig.fromJSON({ type: 'system-net' });
-   * ```
-   */
-  static fromJSON(_json: Record<string, unknown>): SystemNetConfig {
-    return new SystemNetConfig();
-  }
-  /**
-   * Convert this provider config into import rules.
-   *
-   * System network config inherits the runtime network provider.
-   *
-   * ```ts no_run
-   * import { SystemNetConfig } from 'fino:realm';
-   *
-   * const rules = new SystemNetConfig().toRules();
-   * ```
-   *
-   * @internal
-   */
-  toRules(): ImportRule[] {
-    return [
-      {
-        pattern: 'internal:net/provider',
-        directive: 'inherit',
-      },
-    ];
-  }
-}
-/**
- * Use the system DNS resolver for this realm.
- *
- * This legacy provider config maps DNS provider imports back to the inherited
- * system resolver.
- *
- * ```ts no_run
- * import { Realm, SystemDnsConfig } from 'fino:realm';
- *
- * new Realm({ entry: './worker.ts', providers: { dns: new SystemDnsConfig() } });
- * ```
- */
-export class SystemDnsConfig {
-  /**
-   * Provider discriminator serialized by `toJSON()`.
-   *
-   * ```ts no_run
-   * import { SystemDnsConfig } from 'fino:realm';
-   *
-   * console.log(new SystemDnsConfig().type);
-   * ```
-   */
-  readonly type = 'system-dns' as const;
-  /**
-   * Serialize this provider config.
-   *
-   * The result has no options because the system DNS provider has no
-   * JS-visible configuration in this compatibility layer.
-   *
-   * ```ts no_run
-   * import { SystemDnsConfig } from 'fino:realm';
-   *
-   * const json = new SystemDnsConfig().toJSON();
-   * ```
-   */
-  toJSON(): Record<string, unknown> {
-    return { type: this.type };
-  }
-  /**
-   * Recreate a system DNS provider config from serialized data.
-   *
-   * The input is accepted for compatibility and otherwise ignored.
-   *
-   * ```ts no_run
-   * import { SystemDnsConfig } from 'fino:realm';
-   *
-   * const config = SystemDnsConfig.fromJSON({ type: 'system-dns' });
-   * ```
-   */
-  static fromJSON(_json: Record<string, unknown>): SystemDnsConfig {
-    return new SystemDnsConfig();
-  }
-  /**
-   * Convert this provider config into import rules.
-   *
-   * System DNS config inherits the runtime DNS provider.
-   *
-   * ```ts no_run
-   * import { SystemDnsConfig } from 'fino:realm';
-   *
-   * const rules = new SystemDnsConfig().toRules();
-   * ```
-   *
-   * @internal
-   */
-  toRules(): ImportRule[] {
-    return [
-      {
-        pattern: 'internal:net/dns-provider',
-        directive: 'inherit',
-      },
-    ];
-  }
-}
-// ---------------------------------------------------------------------------
 // Realm options
 // ---------------------------------------------------------------------------
-/**
- * Legacy provider overrides installed in a child realm.
- *
- * Prefer `RealmOptions.overrides` with explicit import rules for new code.
- * Unspecified providers are inherited from the parent realm.
- *
- * ```ts no_run
- * import { DiskFsConfig, type RealmProviders } from 'fino:realm';
- *
- * const providers: RealmProviders = {
- *   fs: new DiskFsConfig({ root: '/srv/app' }),
- * };
- * ```
- */
-export interface RealmProviders {
-  /**
-   * Filesystem provider override.
-   *
-   * When omitted, filesystem bindings are inherited. This compatibility field
-   * currently supports the disk filesystem provider config.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig, type RealmProviders } from 'fino:realm';
-   *
-   * const providers: RealmProviders = { fs: new DiskFsConfig() };
-   * ```
-   */
-  fs?: DiskFsConfig;
-  /**
-   * Network provider override.
-   *
-   * When omitted, network provider bindings are inherited.
-   *
-   * ```ts no_run
-   * import { SystemNetConfig, type RealmProviders } from 'fino:realm';
-   *
-   * const providers: RealmProviders = { net: new SystemNetConfig() };
-   * ```
-   */
-  net?: SystemNetConfig;
-  /**
-   * DNS provider override.
-   *
-   * When omitted, DNS provider bindings are inherited.
-   *
-   * ```ts no_run
-   * import { SystemDnsConfig, type RealmProviders } from 'fino:realm';
-   *
-   * const providers: RealmProviders = { dns: new SystemDnsConfig() };
-   * ```
-   */
-  dns?: SystemDnsConfig;
-}
-
 /**
  * Strict Linux policy installed on a dedicated sandbox Realm thread.
  *
@@ -1886,7 +1531,7 @@ export interface RealmOptions {
    * Filesystem root for module resolution.
    *
    * When omitted, the child inherits the parent's root. The root affects module
-   * lookup and any providers that consult realm root state.
+   * lookup; service access remains entirely controlled by import rules.
    *
    * ```ts no_run
    * import type { RealmOptions } from 'fino:realm';
@@ -1909,34 +1554,6 @@ export interface RealmOptions {
    * ```
    */
   overrides?: ImportMap | ImportRule[];
-  /**
-   * @deprecated Use `overrides` with explicit ImportRule entries instead.
-   * Override specific I/O providers. Unspecified providers are inherited.
-   *
-   * ```ts no_run
-   * import { DiskFsConfig, type RealmOptions } from 'fino:realm';
-   *
-   * const options: RealmOptions = {
-   *   entry: './worker.ts',
-   *   providers: { fs: new DiskFsConfig() },
-   * };
-   * ```
-   */
-  providers?: RealmProviders;
-  /**
-   * @deprecated Use `overrides` with `{ pattern, directive: 'block' }` instead.
-   * Module specifiers that should throw on import in the child Realm.
-   *
-   * ```ts no_run
-   * import type { RealmOptions } from 'fino:realm';
-   *
-   * const options: RealmOptions = {
-   *   entry: './worker.ts',
-   *   blocked: ['fino:process'],
-   * };
-   * ```
-   */
-  blocked?: string[];
   /**
    * Run this Realm on a dedicated Linux thread and install the requested
    * cgroup v2 threaded controls, Landlock filesystem policy, and seccomp
@@ -2559,9 +2176,8 @@ export class Realm<F extends RealmFn = RealmFn> {
    *
    * The source is installed as an import-rule-backed entry module and then
    * evaluated by the same Realm machinery used for file entries. Caller import
-   * rules, provider overrides, blocked specifiers, and execution mode options
-   * are preserved. Source entries cannot use `watch` because there is no entry
-   * file to monitor for changes.
+   * rules and execution mode options are preserved. Source entries cannot use
+   * `watch` because there is no entry file to monitor for changes.
    *
    * ```ts
    * import { Realm } from 'fino:realm';
@@ -2600,26 +2216,10 @@ export class Realm<F extends RealmFn = RealmFn> {
           'Unable to transpile Realm source',
       );
     }
-    const rules: ImportRule[] = [];
-    if (options.overrides) {
-      const src =
-        options.overrides instanceof ImportMap ? options.overrides.toRules() : options.overrides;
-      rules.push(...src);
-    } else {
-      if (options.providers) {
-        const { fs, net, dns } = options.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (options.blocked) {
-        for (const spec of options.blocked)
-          rules.push({
-            pattern: spec,
-            directive: 'block',
-          });
-      }
-    }
+    const rules =
+      options.overrides instanceof ImportMap
+        ? options.overrides.toRules()
+        : [...(options.overrides ?? [])];
     rules.push({
       pattern: specifier,
       directive: {
@@ -2628,13 +2228,7 @@ export class Realm<F extends RealmFn = RealmFn> {
         source_map: options.sourceMap ?? transpiled.map ?? '',
       },
     });
-    const {
-      specifier: _specifier,
-      sourceMap: _sourceMap,
-      providers: _providers,
-      blocked: _blocked,
-      ...realmOptions
-    } = options;
+    const { specifier: _specifier, sourceMap: _sourceMap, ...realmOptions } = options;
     return new Realm<F>({
       ...realmOptions,
       entry: specifier,
@@ -2731,26 +2325,8 @@ export class Realm<F extends RealmFn = RealmFn> {
     if (repl && (opts.process || opts.remote || opts.watch)) {
       throw new Error('fino:realm — repl: true is not supported with process, remote, or watch');
     }
-    // Build the child-specific rule list from overrides / legacy providers+blocked.
-    const rules: ImportRule[] = [];
-    if (opts.overrides) {
-      const src = opts.overrides instanceof ImportMap ? opts.overrides.toRules() : opts.overrides;
-      rules.push(...src);
-    } else {
-      if (opts.providers) {
-        const { fs, net, dns } = opts.providers;
-        if (fs) rules.push(...fs.toRules());
-        if (net) rules.push(...net.toRules());
-        if (dns) rules.push(...dns.toRules());
-      }
-      if (opts.blocked) {
-        for (const spec of opts.blocked)
-          rules.push({
-            pattern: spec,
-            directive: 'block',
-          });
-      }
-    }
+    const rules =
+      opts.overrides instanceof ImportMap ? opts.overrides.toRules() : [...(opts.overrides ?? [])];
     if (repl) {
       rules.push({
         pattern: 'internal:repl-handler',
