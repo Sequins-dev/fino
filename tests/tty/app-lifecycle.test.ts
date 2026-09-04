@@ -26,13 +26,17 @@ app = render(h(Text, null, 'press q'), {
   input: true,
   mouse: false,
   async onEvent(event) {
-    if (event.type !== 'key' || event.key !== 'q') return;
+    if (event.type !== 'key') return;
+    if (event.key === 'r') {
+      await new DiskFileSystem().writeFile('__READY_MARKER__', new Uint8Array([1]));
+      return;
+    }
+    if (event.key !== 'q') return;
     app.stop();
     app.stop();
     await writeStdout('STOP RESTORED\\r\\n');
   },
 });
-await new DiskFileSystem().writeFile('__READY_MARKER__', new Uint8Array([1]));
 `;
 
 describe('fino:tty/tui app lifecycle', () => {
@@ -45,6 +49,7 @@ describe('fino:tty/tui app lifecycle', () => {
     await fs.writeFile(script, new TextEncoder().encode(APP.replace('__READY_MARKER__', ready)));
     const pty = await openPty(execPath, [script], { cols: 30, rows: 6 });
     try {
+      await pty.waitFor((term) => term.text().join('').includes('press q'));
       const readyDeadline = performance.now() + 10_000;
       while (true) {
         try {
@@ -52,8 +57,9 @@ describe('fino:tty/tui app lifecycle', () => {
           break;
         } catch {
           if (performance.now() >= readyDeadline) throw new Error('TUI input did not become ready');
-          await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
+        await pty.send('r');
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
       await pty.waitFor((term) => term.text().join('').includes('press q'), { timeout: 10_000 });
       await pty.send('q');
