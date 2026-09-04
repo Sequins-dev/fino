@@ -22,12 +22,15 @@ const cancelledEvent = await cancelled.read();
 await writeStdout('INPUT CANCELLED ' + String(cancelledEvent === null) + '\\r\\n');
 
 let app: TuiApp;
+let inputReady = false;
 app = render(h(Text, null, 'press q'), {
   input: true,
   mouse: false,
   async onEvent(event) {
     if (event.type !== 'key') return;
     if (event.key === 'r') {
+      if (inputReady) return;
+      inputReady = true;
       await new DiskFileSystem().writeFile('__READY_MARKER__', new Uint8Array([1]));
       return;
     }
