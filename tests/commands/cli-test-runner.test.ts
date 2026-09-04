@@ -451,6 +451,8 @@ describe('CLI commands: test', () => {
   it('does not let ambient handles retain a completed test Realm', async (t) => {
     await withTempProject({}, async (dir, fs) => {
       const marker = `${dir}/completion-reported`;
+      const ambientTimerMarker = `${dir}/ambient-timer-fired`;
+      await fs.writeFile(ambientTimerMarker, 'pending' as never);
       await fs.writeFile(
         `${dir}/delayed-exit.test.ts`,
         [
@@ -458,13 +460,12 @@ describe('CLI commands: test', () => {
           "import { DiskFileSystem } from 'fino:file';",
           "import { registerShutdownHook } from 'internal:shutdown';",
           'const fs = new DiskFileSystem();',
-          'setTimeout(() => {}, 3_000);',
+          `setTimeout(() => fs.writeFile(${JSON.stringify(ambientTimerMarker)}, new TextEncoder().encode('fired')), 3_000);`,
           `registerShutdownHook(() => fs.writeFile(${JSON.stringify(marker)}, new Uint8Array([1])));`,
           "test('reports before its Realm exits', (t) => t.ok(true));",
           '',
         ].join('\n') as never,
       );
-      const started = performance.now();
       const { stderr, result } = await runRootInProcess(
         ['test', '--parallel', 'delayed-exit.test.ts'],
         {
@@ -473,7 +474,11 @@ describe('CLI commands: test', () => {
       );
       t.equal(result.code, 0, 'the delayed test Realm exits successfully');
       t.equal(stderr, '', 'the delayed exit does not report a lifecycle error');
-      t.ok(performance.now() - started < 2_000, 'the ambient timer does not retain the Realm');
+      t.equal(
+        (await fs.readFile(ambientTimerMarker)) as unknown as string,
+        'pending',
+        'the ambient timer does not retain the Realm',
+      );
       t.ok(await fs.lstat(marker), 'shutdown hooks finish before the Realm exits');
     });
   });
