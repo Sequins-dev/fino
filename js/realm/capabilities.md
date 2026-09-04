@@ -90,24 +90,8 @@ new Realm({
 
 This is enforced by the Rust-side loader before the child realm is created. There is no way for a JS-level rule to bypass it.
 
-## Legacy provider configs
+## Import inheritance
 
-`DiskFsConfig`, `SystemNetConfig`, and `SystemDnsConfig` are legacy builder classes retained for backwards compatibility. They translate to import rules internally:
-
-```ts
-import { Realm, DiskFsConfig, SystemNetConfig } from 'fino:realm';
-
-new Realm({
-  entry: './worker.ts',
-  providers: {
-    fs:  new DiskFsConfig({ root: '/srv/app' }),
-    net: new SystemNetConfig(),
-  },
-});
-```
-
-When `overrides` is present in `RealmOptions`, both `providers` and `blocked` are ignored. Prefer `overrides` with explicit import rules for new code; the legacy fields exist only to avoid breaking existing configurations that predate the `overrides` API.
-
-## Provider inheritance
-
-Child realms inherit the parent's provider overrides by default. You do not need to re-declare filesystem or network configuration in every child — the parent's settings flow down automatically unless the child's rule list overrides them.
+Child realms inherit the parent's import rules by default. You do not need to
+re-declare filesystem or network facades in every child: the parent's rules flow
+down unless the child's import map narrows or replaces them.

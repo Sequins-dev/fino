@@ -3,15 +3,7 @@
  *
  * Run with: cargo run -- bench benchmarks/realm/index.bench.ts
  */
-import {
-  DiskFsConfig,
-  Facade,
-  FacadeHandle,
-  ImportMap,
-  SystemDnsConfig,
-  SystemNetConfig,
-  Realm,
-} from 'fino:realm';
+import { Facade, FacadeHandle, ImportMap, Realm } from 'fino:realm';
 import { bench } from 'fino:bench';
 import { cwd } from 'fino:process';
 const echoEntry = `file://${cwd()}/tests/realm/fixtures/echo-fn.ts`;
@@ -37,7 +29,7 @@ bench('realm import rules', (b) => {
     ]),
   );
 });
-bench('realm facades and providers', (b) => {
+bench('realm facades', (b) => {
   b.measure('Facade registration', () => {
     new Facade('bench:facade', ['sum'])
       .handle('sum', async (a, b) => Number(a) + Number(b))
@@ -51,11 +43,6 @@ bench('realm facades and providers', (b) => {
       });
   });
   b.measure('FacadeHandle', () => new FacadeHandle({ close: () => undefined }));
-  b.measure('provider configs', () => {
-    new DiskFsConfig({ root: '/tmp' });
-    new SystemNetConfig();
-    new SystemDnsConfig();
-  });
 });
 bench('realm scheduler', (b) => {
   b.measure('construct and call 16 realms concurrently', async () => {
