@@ -273,7 +273,7 @@ export function callStream(
   const reqId = _nextId++;
   const channel = new UnboundedChannel<unknown>();
   _pendingStreams.set(reqId, channel);
-  _sendControl(EnvelopeKind.RpcRequest, reqId, { specifier, method, args });
+  _sendControl(EnvelopeKind.RpcStreamRequest, reqId, { specifier, method, args });
   return channel.reader;
 }
 /**

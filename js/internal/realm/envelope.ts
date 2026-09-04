@@ -55,6 +55,8 @@ export const EnvelopeKind = {
   SinkEnd: 12,
   /** Abort of a child-to-parent write stream. Payload describes the error. */
   SinkError: 13,
+  /** Begin a parent-to-child read stream. Payload holds specifier/method/args. */
+  RpcStreamRequest: 14,
 } as const;
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];

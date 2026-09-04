@@ -10,11 +10,14 @@
  */
 import { describe, it } from 'fino:test/test';
 import { Realm, Facade, FacadeHandle, ImportMap } from 'fino:realm';
+import { EnvelopeKind } from 'internal:realm/envelope';
 import type facadeCallFn from './fixtures/facade-call.ts';
 import type facadeUnknownFn from './fixtures/facade-unknown-method.ts';
 import type facadeStreamFn from './fixtures/facade-stream-fn.ts';
 import type facadeStreamErrorFn from './fixtures/facade-stream-error-fn.ts';
 import type facadeHandleFn from './fixtures/facade-handle-fn.ts';
+import type facadeHandleSinkFn from './fixtures/facade-handle-sink-fn.ts';
+import type facadeRequestKindsFn from './fixtures/facade-request-kinds-fn.ts';
 import type facadeSinkFn from './fixtures/facade-sink-fn.ts';
 import type facadeSinkAbortFn from './fixtures/facade-sink-abort-fn.ts';
 describe('Facade RPC — reactor-pooled realm', () => {
@@ -120,6 +123,47 @@ describe('Facade RPC — reactor-pooled realm', () => {
     });
     const result = (await realm.call()) as unknown[];
     t.deepEqual(result, ['alpha', 'beta', 'gamma'], 'all chunks delivered in order');
+  });
+  it('distinguishes scalar and streaming requests at the transport boundary', async (t) => {
+    const facade = new Facade('fino:test-facade', ['greet'])
+      .handle('greet', async () => 'hello')
+      .stream('chunks', async function* () {
+        yield 'chunk';
+      });
+    const realm = new Realm<typeof facadeRequestKindsFn>({
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'fino:test-facade', directive: facade },
+      ]),
+      entry: new URL('./fixtures/facade-request-kinds-fn.ts', import.meta.url).pathname,
+    });
+    const requestKinds: number[] = [];
+    const observablePort = realm.port as typeof realm.port & {
+      observe(observer: {
+        filter(metadata: { direction: string }): boolean;
+        next(frame: { kind: number }): void;
+      }): () => void;
+    };
+    const detach = observablePort.observe({
+      filter: (metadata: { direction: string }) => metadata.direction === 'inbound',
+      next: (frame: { kind: number }) => {
+        if (
+          frame.kind === EnvelopeKind.RpcRequest ||
+          frame.kind === EnvelopeKind.RpcStreamRequest
+        ) {
+          requestKinds.push(frame.kind);
+        }
+      },
+    });
+
+    await realm.call();
+    detach();
+
+    t.deepEqual(
+      requestKinds,
+      [EnvelopeKind.RpcRequest, EnvelopeKind.RpcStreamRequest],
+      'scalar and streaming calls use distinct request kinds',
+    );
   });
   it('streaming handler that throws propagates the error', async (t) => {
     const facade = new Facade('fino:test-facade', []).stream('failingChunks', async function* () {
@@ -465,6 +509,33 @@ describe('Facade RPC — FacadeHandle (reactor-pooled realm)', () => {
         'error mentions missing method: ' + (err as Error).message,
       );
     }
+  });
+  it('handle write stream delivers chunks and returns its result', async (t) => {
+    const facade = new Facade('fino:test-facade', ['openHandle']).handle('openHandle', async () => {
+      return new FacadeHandle(
+        {},
+        {},
+        {
+          writeChunks: async (args, source) => {
+            const chunks: unknown[] = [];
+            for await (const chunk of source) chunks.push(chunk);
+            return { args, chunks };
+          },
+        },
+      );
+    });
+    const realm = new Realm<typeof facadeHandleSinkFn>({
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'fino:test-facade', directive: facade },
+      ]),
+      entry: new URL('./fixtures/facade-handle-sink-fn.ts', import.meta.url).pathname,
+    });
+
+    t.deepEqual(await realm.call(), {
+      args: ['log'],
+      chunks: ['one', 'two'],
+    });
   });
 });
 // ---------------------------------------------------------------------------
