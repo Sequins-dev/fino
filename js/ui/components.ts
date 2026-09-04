@@ -2,9 +2,10 @@
  * fino:ui/components — host-neutral UI component primitives.
  *
  * Structural primitives and semantic style tokens form the shared floor.
- * Layout, typography, icon, form, disclosure, menu, navigation, and overlay
- * families compose that floor without branching on the active render target;
- * co-located HTML and terminal lowerings own target-specific presentation.
+ * Layout, typography, icon, form, disclosure, menu, navigation, overlay,
+ * feedback, and display families compose that floor without branching on the
+ * active render target; co-located HTML and terminal lowerings own
+ * target-specific presentation.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -413,6 +414,36 @@ export {
   ToastStack,
   Tooltip,
 } from './components/overlay.ts';
+export {
+  Badge,
+  KeyHint,
+  ProgressBar,
+  SPINNER_FRAMES,
+  Spinner,
+  Tag,
+  TagGroup,
+  normalizeProgress,
+} from './components/feedback.ts';
+export type {
+  BadgeProps,
+  KeyHintEntry,
+  KeyHintProps,
+  NormalizedProgress,
+  ProgressBarProps,
+  SpinnerProps,
+  TagGroupProps,
+  TagProps,
+  ToneVariant,
+} from './components/feedback.ts';
+export { Card, EmptyState, Stat, StatusDot } from './components/display.ts';
+export type {
+  CardProps,
+  EmptyStateProps,
+  StatProps,
+  StatusDotProps,
+  StatusDotStatus,
+  Trend,
+} from './components/display.ts';
 export type {
   ContextMenuProps,
   FloatingActionBarProps,

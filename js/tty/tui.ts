@@ -75,7 +75,7 @@ import { layout as layoutRetained, measure as measureRetained } from 'internal:t
 import type { Constraints, Measured } from 'internal:tty/layout';
 import { createTerminalRoot, terminalHost } from 'internal:tty/host';
 import { TuiDispatcher } from 'internal:tty/events';
-import { lowerTui } from 'internal:tty/lower';
+import { holdSpinnerClock, lowerTui } from 'internal:tty/lower';
 import { frameToAnsi, frameToScreen } from 'fino:tty/frame';
 import type { Frame } from 'fino:tty/frame';
 import type {
@@ -627,6 +627,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
   let restored = false;
   let stopResize: (() => void) | null = null;
   let root: Root<Frame> | null = null;
+  const releaseSpinnerClock = holdSpinnerClock();
   void writeStdout(enterAlternateScreen() + hideCursor() + disableAutoWrap() + '\x1B[2J');
   const restoreTerminal = (): void => {
     if (restored) return;
@@ -634,6 +635,7 @@ export function render(element: VNode | (() => VNode), options: RenderOptions = 
     stopResize?.();
     stopResize = null;
     input?.close();
+    releaseSpinnerClock();
     void writeStdout(enableAutoWrap() + showCursor() + exitAlternateScreen());
   };
   const sink: Sink<Frame> = {
