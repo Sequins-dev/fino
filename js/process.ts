@@ -1846,11 +1846,16 @@ export class Process {
     return status;
   }
   /**
-   * Send a signal to the child process.
+   * Send `signal` to the process, defaulting to `SIGTERM`.
    *
-   * Defaults to `SIGTERM`. This method does not wait for the child to exit and
-   * throws when the underlying `kill(2)` call fails, for example after the
-   * child has already been reaped.
+   * For an ordinary process, only the direct child is signalled. A strict
+   * sandbox owns the complete process tree, so killing it also terminates its
+   * descendants. On cgroup-backed Linux sandboxes, descendants are forcefully
+   * terminated after the requested signal is delivered to the direct child.
+   *
+   * This method does not wait for the process to exit. It throws when the
+   * underlying signalling operation fails, for example after the child has
+   * already been reaped.
    *
    * ```ts no_run
    * import { Process, SIGTERM } from 'fino:process';
@@ -1859,10 +1864,19 @@ export class Process {
    * proc.kill(SIGTERM);
    * ```
    *
-   * @param {number} [signal=15] SIGTERM by default
-   * @throws {Error} If `kill(2)` fails.
    */
   kill(signal: number = _SIGTERM): void {
+    if (this.#descendantCleanup === 'cgroup' && this.#cgroupPath !== undefined) {
+      signalChild(this.#pid, signal);
+      killAndRemoveCgroup(this.#cgroupPath);
+      this.#cgroupPath = undefined;
+      this.#descendantCleanup = undefined;
+      return;
+    }
+    if (this.#descendantCleanup === 'processGroup') {
+      signalChild(-this.#pid, signal);
+      return;
+    }
     signalChild(this.#pid, signal);
   }
 }

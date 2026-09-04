@@ -123,7 +123,7 @@ describe('strict sandbox pre-spawn network rejection', () => {
       return;
     }
     const proc = new Process('/bin/echo', ['coarse'], options);
-    proc.stdin.close();
+    await proc.stdin.close();
     for await (const _ of proc.stdout) {
     }
     for await (const _ of proc.stderr) {
@@ -145,7 +145,7 @@ describe('strict sandbox pre-spawn network rejection', () => {
       proc.sandboxReport.unsupported.some((entry) => entry.category === 'network'),
       'network policy is reported unenforced',
     );
-    proc.stdin.close();
+    await proc.stdin.close();
     for await (const _ of proc.stdout) {
     }
     for await (const _ of proc.stderr) {
@@ -160,7 +160,7 @@ describe('strict sandbox launcher preserves the Process contract', () => {
     if (!capabilities.strictAvailable) return;
     const proc = new Process('/bin/cat', [], { sandbox: { mode: 'strict' } });
     await proc.stdin.write(new TextEncoder().encode('round-trip\n'));
-    proc.stdin.close();
+    await proc.stdin.close();
     const chunks: Uint8Array[] = [];
     for await (const chunk of proc.stdout) chunks.push(chunk);
     for await (const _ of proc.stderr) {
@@ -194,24 +194,26 @@ describe('strict sandbox launcher preserves the Process contract', () => {
       proc.sandboxReport.enforced.every((entry) => !forbidden.test(entry.reason)),
       'no cross-platform mechanism wording',
     );
-    proc.stdin.close();
+    await proc.stdin.close();
     for await (const _ of proc.stdout) {
     }
     for await (const _ of proc.stderr) {
     }
     await proc.wait();
   });
-  it('kills a strict-sandboxed child', async (t) => {
+  it('kills a strict-sandboxed process tree promptly', async (t) => {
     const capabilities = processSandboxCapabilities();
     if (!capabilities.strictAvailable) return;
     const proc = new Process('/bin/sh', ['-c', 'sleep 30'], { sandbox: { mode: 'strict' } });
+    const started = performance.now();
     proc.kill();
-    proc.stdin.close();
+    await proc.stdin.close();
     for await (const _ of proc.stdout) {
     }
     for await (const _ of proc.stderr) {
     }
     const { code, signal } = await proc.wait();
     t.ok(code !== 0 || signal !== null, 'killed strict child does not exit zero');
+    t.ok(performance.now() - started < 5_000, 'sandbox descendants release inherited pipes');
   });
 });
