@@ -40,6 +40,8 @@ import 'internal:ui/components/disclosure.html';
 import 'internal:ui/components/menu.html';
 import 'internal:ui/components/navigation.html';
 import 'internal:ui/components/overlay.html';
+import 'internal:ui/components/feedback.html';
+import 'internal:ui/components/display.html';
 
 export type { ActionCollector, ToHtmlOptions } from 'internal:ui/components/html-runtime';
 

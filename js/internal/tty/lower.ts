@@ -16,6 +16,10 @@ import 'internal:ui/components/disclosure.tui';
 import 'internal:ui/components/menu.tui';
 import 'internal:ui/components/navigation.tui';
 import 'internal:ui/components/overlay.tui';
+import 'internal:ui/components/feedback.tui';
+import 'internal:ui/components/display.tui';
+
+export { holdSpinnerClock } from 'internal:ui/components/feedback.tui';
 
 /** Node names painted directly by the retained terminal target. */
 export const TUI_PRIMITIVES = [

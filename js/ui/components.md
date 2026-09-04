@@ -260,6 +260,36 @@ const overlays = (
 );
 ```
 
+## Feedback and display
+
+`Badge`, `Spinner`, `ProgressBar`, `KeyHint`, `Tag`, and `TagGroup` provide
+compact status surfaces. `normalizeProgress()` is the one clamping and
+percentage contract used by both HTML and terminal progress bars. Unpinned
+terminal spinners share one clock whose lifetime is explicitly held by a live
+TUI app, so multiple spinners do not install multiple timers and stopped apps
+do not keep the event loop awake.
+
+`Card`, `Stat`, `StatusDot`, and `EmptyState` cover common presentation states.
+Status and trend components always include a glyph or accessible label, so
+meaning does not rely on color alone. Card image URLs use the same safe URL
+allowlist as links.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Badge, Card, ProgressBar, Stat, StatusDot, VStack } from 'fino:ui/components';
+
+const summary = (
+  <Card title="Deployment" subtitle="Production">
+    <VStack gap={1}>
+      <StatusDot status="ok" label="Healthy" />
+      <ProgressBar value={0.72} showPercent />
+      <Stat label="Requests" value="12.4k" trend="up" />
+      <Badge label="Ready" variant="success" />
+    </VStack>
+  </Card>
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

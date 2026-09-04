@@ -440,6 +440,32 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/overlay.preview",
         "ui/components/overlay.preview"
     ),
+    source_builtin!("internal:ui/components/feedback", "ui/components/feedback"),
+    source_builtin!(
+        "internal:ui/components/feedback.html",
+        "ui/components/feedback.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/feedback.tui",
+        "ui/components/feedback.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/feedback.preview",
+        "ui/components/feedback.preview"
+    ),
+    source_builtin!("internal:ui/components/display", "ui/components/display"),
+    source_builtin!(
+        "internal:ui/components/display.html",
+        "ui/components/display.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.tui",
+        "ui/components/display.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/display.preview",
+        "ui/components/display.preview"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
