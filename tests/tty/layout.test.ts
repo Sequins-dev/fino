@@ -155,6 +155,19 @@ describe('internal:tty/layout flexbox', () => {
     t.equal(size.height, 2, 'maxHeight caps the measured height');
   });
 
+  it('rebuilds width-dependent content inside each assigned constraint', (t) => {
+    const widths: number[] = [];
+    const tree = h('measured', {
+      render: ({ width }: { width: number }) => {
+        widths.push(width);
+        return h('text', null, 'x'.repeat(width));
+      },
+    });
+    t.equal(measure(tree, { width: 5 }).width, 5);
+    t.equal(renderFrame(tree, { width: 3, height: 1 }), 'xxx');
+    t.ok(widths.includes(5) && widths.includes(3));
+  });
+
   it('clips overflow by default and allows explicit visible overflow', (t) => {
     const hidden = renderFrame(
       h(

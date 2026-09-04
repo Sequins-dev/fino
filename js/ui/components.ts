@@ -497,6 +497,8 @@ export {
   timeColumnWindow,
   weekdayLabels,
 } from './components/pickers.ts';
+export { BarChart, LineChart } from './components/charts.ts';
+export type { BarChartProps, LineChartProps, Series } from './components/charts.ts';
 export type {
   CalendarProps,
   ClockParts,

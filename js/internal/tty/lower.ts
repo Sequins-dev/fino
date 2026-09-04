@@ -21,6 +21,7 @@ import 'internal:ui/components/display.tui';
 import 'internal:ui/components/data.tui';
 import 'internal:ui/components/virtual.tui';
 import 'internal:ui/components/pickers.tui';
+import 'internal:ui/components/charts.tui';
 
 export { holdSpinnerClock } from 'internal:ui/components/feedback.tui';
 
@@ -38,6 +39,7 @@ export const TUI_PRIMITIVES = [
   'clickable',
   'scrollview',
   'layer',
+  'measured',
 ];
 
 defineRenderTarget('tui', { primitives: TUI_PRIMITIVES });
