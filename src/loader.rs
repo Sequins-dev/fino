@@ -281,6 +281,16 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:runtime/io_uring", "internal/runtime/io_uring"),
     source_builtin!("internal:runtime/poll", "internal/runtime/poll"),
     source_builtin!("internal:runtime/linux", "internal/runtime/linux"),
+    source_builtin!("internal:runtime/clock", "internal/runtime/clock"),
+    source_builtin!(
+        "internal:runtime/deterministic-effects",
+        "internal/runtime/deterministic-effects"
+    ),
+    source_builtin!("internal:runtime/random", "internal/runtime/random"),
+    source_builtin!(
+        "internal:runtime/virtual-timers",
+        "internal/runtime/virtual-timers"
+    ),
     (
         "internal:runtime/loop-backend",
         BuiltinKind::Source {

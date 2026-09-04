@@ -57,7 +57,9 @@
 import * as loop from 'internal:runtime/loop';
 import { os } from 'internal:process';
 import { dlopen } from 'fino:ffi';
+import { elapsedMillis, installPlatformClock, timeOriginMillis } from 'internal:runtime/clock';
 import { EventTarget } from './eventtarget.ts';
+const realDateNow = Date.now;
 // ---------------------------------------------------------------------------
 // High-resolution monotonic timer (nanoseconds) — mirrors bench.mjs
 // ---------------------------------------------------------------------------
@@ -99,11 +101,10 @@ const _getNanos = (() => {
     };
   }
 })();
-const _startNs = _getNanos();
+installPlatformClock({ monotonicNanos: _getNanos, wallMillis: realDateNow });
 // ---------------------------------------------------------------------------
 // performance
 // ---------------------------------------------------------------------------
-const _startMs = Date.now();
 const PERFORMANCE_CONSTRUCTOR_TOKEN = {};
 const _performanceInstances = new WeakSet<Performance>();
 /**
@@ -146,7 +147,7 @@ export class Performance extends EventTarget {
    */
   get timeOrigin() {
     if (!_performanceInstances.has(this)) throw new TypeError('Illegal invocation');
-    return _startMs;
+    return timeOriginMillis();
   }
   /** Brands instances as `[object Performance]` for `Object.prototype.toString`. */
   get [Symbol.toStringTag]() {
@@ -178,7 +179,7 @@ export class Performance extends EventTarget {
    */
   now() {
     if (!_performanceInstances.has(this)) throw new TypeError('Illegal invocation');
-    return (_getNanos() - _startNs) / 1e6;
+    return elapsedMillis();
   }
   /**
    * Return a JSON-serializable performance snapshot.
