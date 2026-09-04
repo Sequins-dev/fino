@@ -3,7 +3,7 @@
  *
  * Structural primitives and semantic style tokens form the shared floor.
  * Layout, typography, icon, form, disclosure, menu, navigation, overlay,
- * feedback, and display families compose that floor without branching on the
+ * feedback, display, and data families compose that floor without branching on the
  * active render target; co-located HTML and terminal lowerings own
  * target-specific presentation.
  *
@@ -444,6 +444,25 @@ export type {
   StatusDotStatus,
   Trend,
 } from './components/display.ts';
+export {
+  FILE_ICONS,
+  FileTree,
+  Table,
+  Timeline,
+  createTreeState,
+  fileIcon,
+  visibleTreeRows,
+} from './components/data.ts';
+export type {
+  FileTreeNode,
+  FileTreeProps,
+  TableColumn,
+  TableProps,
+  TimelineEntry,
+  TimelineProps,
+  TreeState,
+  VisibleTreeRow,
+} from './components/data.ts';
 export type {
   ContextMenuProps,
   FloatingActionBarProps,
