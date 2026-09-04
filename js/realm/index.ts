@@ -52,6 +52,7 @@ import {
   killProcessContext,
 } from 'internal:realm-native';
 import { getRealmBootstrapData } from 'internal:realm-bridge';
+import type { DeterministicEffectsConfig } from 'internal:runtime/deterministic-effects';
 import { os } from 'internal:process';
 import { MessagePort, type MessageEvent } from '../globals/messaging.ts';
 import {
@@ -248,6 +249,25 @@ interface RealmBootstrapData {
   };
   sandbox?: ProcessSandboxOptions;
   coverage?: CoverageRealmContext;
+  deterministic?: DeterministicEffectsConfig;
+}
+
+function deterministicEffectsConfig(
+  options: DeterministicRealmOptions,
+): DeterministicEffectsConfig {
+  if (
+    (typeof options.seed !== 'number' || !Number.isFinite(options.seed)) &&
+    typeof options.seed !== 'string'
+  ) {
+    throw new TypeError('fino:realm — deterministic.seed must be a finite number or string');
+  }
+  if (options.startTime !== undefined && !Number.isFinite(options.startTime)) {
+    throw new TypeError('fino:realm — deterministic.startTime must be a finite number');
+  }
+  return {
+    seed: options.seed,
+    startTime: options.startTime ?? 1_700_000_000_000,
+  };
 }
 function currentRealmBootstrapData(): RealmBootstrapData | undefined {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -272,6 +292,9 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
   if (kind !== 'remote') {
     const coverage = createChildCoverageContext(kind, opts.entry ?? null);
     if (coverage !== undefined) data.coverage = coverage;
+  }
+  if (opts.deterministic !== undefined) {
+    data.deterministic = deterministicEffectsConfig(opts.deterministic);
   }
   const endpointOption = opts.otlpEndpoint;
   if (endpointOption === false) return Object.keys(data).length === 0 ? undefined : data;
@@ -1555,6 +1578,27 @@ export interface RealmOptions {
    */
   overrides?: ImportMap | ImportRule[];
   /**
+   * Make ambient time and randomness reproducible inside this Realm.
+   *
+   * The child starts at `startTime`, timers advance virtual time when the
+   * Realm is otherwise idle, and `Math.random()` plus runtime random bytes draw
+   * from `seed`. The default start is `2023-11-14T22:13:20Z`.
+   *
+   * This option does not simulate or deny I/O. Use import-map policy to control
+   * external effects. It is not inherited by nested Realms and is not supported
+   * with `remote: true`.
+   *
+   * ```ts no_run
+   * import { Realm } from 'fino:realm';
+   *
+   * const realm = new Realm({
+   *   entry: './worker.ts',
+   *   deterministic: { seed: 'checkout-flow', startTime: 0 },
+   * });
+   * ```
+   */
+  deterministic?: DeterministicRealmOptions;
+  /**
    * Run this Realm on a dedicated Linux thread and install the requested
    * cgroup v2 threaded controls, Landlock filesystem policy, and seccomp
    * syscall policy before importing its entry module.
@@ -1667,6 +1711,14 @@ export interface RealmOptions {
    * ```
    */
   otlpEndpoint?: string | false;
+}
+
+/** Settings for deterministic ambient effects in one Realm. */
+export interface DeterministicRealmOptions {
+  /** Seed for `Math.random()`, Web Crypto random bytes, and runtime entropy. */
+  seed: number | string;
+  /** Initial virtual Unix time in milliseconds. Defaults to `1700000000000`. */
+  startTime?: number;
 }
 /**
  * Options for creating a Realm from in-memory entrypoint source.
@@ -2316,6 +2368,9 @@ export class Realm<F extends RealmFn = RealmFn> {
     validateSandboxRealmOptions(opts);
     if (opts.watch && opts.remote) {
       throw new Error('fino:realm — watch: true is not supported with remote: true');
+    }
+    if (opts.deterministic !== undefined && opts.remote) {
+      throw new Error('fino:realm — deterministic effects are not supported with remote: true');
     }
     const watch = opts.watch ?? false;
     const repl = opts.repl ?? false;

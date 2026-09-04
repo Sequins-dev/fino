@@ -29,6 +29,7 @@
  */
 import { dlopen, FfiCallback, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
+import { randomOverride } from 'internal:runtime/random';
 import { encodeUtf8, decodeUtf8 } from './encoding.ts';
 /**
  * Result returned by symmetric encryption helpers.
@@ -1033,6 +1034,11 @@ function _normalizeCipherAlgorithm(algorithm: string): CipherAlgorithm {
  * @internal
  */
 export function randBytes(buf: ArrayBuffer, len: number): void {
+  const source = randomOverride();
+  if (source !== null) {
+    source.fillBytes(new Uint8Array(buf, 0, len));
+    return;
+  }
   const rc = _requireCrypto().symbols.RAND_bytes(buf, len);
   if (rc !== 1) throw new Error('RAND_bytes failed: ' + getErrorString());
 }

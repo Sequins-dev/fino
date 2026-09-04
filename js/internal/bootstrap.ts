@@ -59,6 +59,7 @@ import {
   tick,
   alive,
   registerWakeSource,
+  _advanceVirtualTime,
   _trackAtomicsWaiter,
   _untrackAtomicsWaiter,
   _schedulerPollingRequired,
@@ -414,6 +415,11 @@ export function driveLoop(
     const count = tick(processScheduled || emptyTicks < 3 ? 0 : 25);
     const delivered = _flushPorts();
     drainMicrotasks();
+    let advanced = 0;
+    if (count + delivered === 0) {
+      advanced = _advanceVirtualTime();
+      if (advanced > 0) drainMicrotasks();
+    }
     if (count === 0) emptyTicks++;
     else emptyTicks = 0;
     // Re-check completion before reporting quiescence. `isDone` is not a pure
@@ -424,7 +430,7 @@ export function driveLoop(
     // because nothing would ever step it again to notice.
     const done = isDone();
     if (done && (finishWhenDone() || !alive())) return -1;
-    return count + delivered;
+    return count + delivered + advanced;
   }
   runLoop(step, onDone);
 }
@@ -450,6 +456,7 @@ interface RuntimeBootstrapData {
   };
   sandbox?: unknown;
   coverage?: CoverageRealmContext;
+  deterministic?: import('./runtime/deterministic-effects.ts').DeterministicEffectsConfig;
 }
 const _runtimeBootstrapData = (() => {
   const raw = (getRealmBootstrapData as () => string | undefined)();
@@ -504,6 +511,12 @@ if (_childEntry) {
   }> {
     let sandboxPolicy = _runtimeBootstrapData?.sandbox;
     let cliOtel = _runtimeBootstrapData?.cliOtel;
+    const deterministic = _runtimeBootstrapData?.deterministic;
+    if (deterministic !== undefined) {
+      const { installDeterministicEffects } =
+        await import('internal:runtime/deterministic-effects');
+      installDeterministicEffects(deterministic);
+    }
     if (sandboxPolicy !== undefined) {
       const { installSandboxRealmPolicy } = await import('internal:security/sandbox/realm');
       installSandboxRealmPolicy(

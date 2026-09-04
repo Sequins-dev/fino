@@ -68,6 +68,7 @@
  * @internal
  */
 import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
   currentWorkloadOwner,
@@ -205,6 +206,8 @@ const _wakeSourceCallbacks: Map<number, () => void> = new Map();
 let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
+let _virtualTimers: VirtualTimerQueue | null = null;
+let _virtualTimeBlocked: (() => boolean) | null = null;
 const TASK_TOKEN_BASE = 4294967296;
 /**
  * Scalars per routed readiness completion, matching the native layout:
@@ -418,6 +421,7 @@ export function loopFd(): number {
  */
 export function alive(): boolean {
   return (
+    (_virtualTimers !== null && _virtualTimers.referencedSize() > 0) ||
     _reads.size > 0 ||
     _writes.size > 0 ||
     _timers.size > _unreferencedTimers.size ||
@@ -431,6 +435,29 @@ export function alive(): boolean {
     hasPendingV8Tasks() ||
     _atomicsWaiters > 0
   );
+}
+
+/**
+ * Route timers through `queue`, or restore platform timers with `null`.
+ *
+ * `isBlocked` prevents virtual time from overtaking an external operation
+ * whose completion is already pending.
+ *
+ * @internal
+ */
+export function _setVirtualTimerQueue(
+  queue: VirtualTimerQueue | null,
+  isBlocked: () => boolean = () => false,
+): void {
+  _virtualTimers = queue;
+  _virtualTimeBlocked = queue === null ? null : isBlocked;
+}
+
+/** Advance the installed virtual queue when external work does not block it. @internal */
+export function _advanceVirtualTime(): number {
+  if (_virtualTimers === null || _virtualTimers.size() === 0) return 0;
+  if (_virtualTimeBlocked?.()) return 0;
+  return _virtualTimers.advance();
 }
 /**
  * Report whether a scheduled realm needs occasional foreground-task polling.
@@ -628,6 +655,7 @@ export function writable(fd: number, forToken?: number): Promise<void> {
  * ```
  */
 export function timeout(ms: number): CancelablePromise {
+  if (_virtualTimers !== null) return _virtualTimers.schedule(ms) as CancelablePromise;
   const id = _nextTimerId++;
   const token = taskToken(id);
   const p = new Promise<void>(function onTimeout(resolve) {
