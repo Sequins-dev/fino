@@ -58,6 +58,22 @@ interface ObservableTransportPort {
   observe(observer: TransportObserver): () => void;
 }
 
+interface ReplayTransportPort extends ObservableTransportPort {
+  _addControlHandler(
+    handler: (
+      envelope: { kind: EnvelopeKindValue; correlation: number },
+      value: unknown,
+    ) => boolean,
+    options?: { first?: boolean },
+  ): () => void;
+  _postControl(kind: EnvelopeKindValue, correlation: number, value: unknown): void;
+  _postSerializedControl(
+    kind: EnvelopeKindValue,
+    correlation: number,
+    parts: readonly Uint8Array[],
+  ): void;
+}
+
 interface PendingCall {
   seq: number;
   specifier: string;
@@ -85,6 +101,15 @@ function isObservablePort(value: unknown): value is ObservableTransportPort {
     typeof value === 'object' &&
     value !== null &&
     typeof (value as { observe?: unknown }).observe === 'function'
+  );
+}
+
+function isReplayPort(value: unknown): value is ReplayTransportPort {
+  return (
+    isObservablePort(value) &&
+    typeof (value as { _addControlHandler?: unknown })._addControlHandler === 'function' &&
+    typeof (value as { _postControl?: unknown })._postControl === 'function' &&
+    typeof (value as { _postSerializedControl?: unknown })._postSerializedControl === 'function'
   );
 }
 
@@ -187,6 +212,181 @@ export function decodeCassette(value: unknown): TransportFrame[] {
       parts,
     };
   });
+}
+
+const REPLAY_INPUT_KINDS = new Set<EnvelopeKindValue>([
+  EnvelopeKind.RpcRequest,
+  EnvelopeKind.RpcStreamRequest,
+  EnvelopeKind.SinkStart,
+  EnvelopeKind.SinkChunk,
+  EnvelopeKind.SinkEnd,
+  EnvelopeKind.SinkError,
+]);
+
+function equalParts(left: readonly Uint8Array[], right: readonly Uint8Array[]): boolean {
+  if (left.length !== right.length) return false;
+  return left.every(
+    (part, index) =>
+      part.byteLength === right[index]!.byteLength &&
+      part.every((byte, offset) => byte === right[index]![offset]),
+  );
+}
+
+function validateReplaySequence(frames: readonly TransportFrame[]): void {
+  const requests = new Map<number, number>();
+  const completed = new Set<number>();
+  for (const [index, frame] of frames.entries()) {
+    const startsRequest =
+      frame.direction === 'inbound' &&
+      (frame.kind === EnvelopeKind.RpcRequest ||
+        frame.kind === EnvelopeKind.RpcStreamRequest ||
+        frame.kind === EnvelopeKind.SinkStart);
+    if (startsRequest) {
+      if (requests.has(frame.correlation)) {
+        throw invalidCassette(`frame ${index} reuses an active request correlation`);
+      }
+      requests.set(frame.correlation, index);
+      continue;
+    }
+    if (!requests.has(frame.correlation)) {
+      const traffic = frame.direction === 'outbound' ? 'output' : 'input';
+      throw invalidCassette(`frame ${index} ${traffic} has no matching request`);
+    }
+    if (
+      frame.direction === 'outbound' &&
+      (frame.kind === EnvelopeKind.RpcResponse ||
+        frame.kind === EnvelopeKind.RpcEnd ||
+        frame.kind === EnvelopeKind.RpcError)
+    ) {
+      completed.add(frame.correlation);
+    }
+  }
+  for (const [correlation, index] of requests) {
+    if (!completed.has(correlation)) {
+      throw invalidCassette(`incomplete request at frame ${index}`);
+    }
+  }
+}
+
+/** Serve recorded RPC frames over an ordinary Realm transport. @internal */
+export class CassetteReplay {
+  #frames: TransportFrame[];
+  #position = 0;
+  #recordedToLive = new Map<number, number>();
+  #liveToRecorded = new Map<number, number>();
+  #divergence: Error | null = null;
+  #bound = false;
+
+  constructor(cassette: unknown) {
+    this.#frames = decodeCassette(cassette);
+    validateReplaySequence(this.#frames);
+  }
+
+  /** Claim replayed RPC traffic before the live Facade dispatcher. */
+  bind(port: unknown): () => void {
+    if (!isReplayPort(port)) {
+      throw new TypeError('CassetteReplay requires a replayable Realm transport port');
+    }
+    if (this.#bound) throw new TypeError('CassetteReplay is already bound');
+    this.#bound = true;
+    const stopObservation = port.observe({
+      filter: (metadata) =>
+        metadata.direction === 'inbound' && REPLAY_INPUT_KINDS.has(metadata.kind),
+      next: (frame) => this.#accept(port, frame),
+    });
+    const stopControl = port._addControlHandler(
+      (envelope) => REPLAY_INPUT_KINDS.has(envelope.kind),
+      { first: true },
+    );
+    this.#drain(port);
+    return () => {
+      stopControl();
+      stopObservation();
+    };
+  }
+
+  /** Fail when replay diverged or the guest left recorded traffic unused. */
+  assertComplete(): void {
+    if (this.#divergence !== null) throw this.#divergence;
+    if (this.#position === this.#frames.length) return;
+    const frame = this.#frames[this.#position]!;
+    throw new Error(
+      `Simulation cassette diverged at frame ${this.#position}: the guest did not send recorded ${this.#describe(frame)}`,
+    );
+  }
+
+  #accept(port: ReplayTransportPort, frame: TransportFrame): void {
+    if (this.#divergence !== null) return;
+    const expected = this.#frames[this.#position];
+    if (expected === undefined) {
+      this.#fail(port, frame, `the cassette ended before ${this.#describe(frame)}`);
+      return;
+    }
+    if (expected.direction !== 'inbound') {
+      this.#fail(port, frame, `the cassette expected ${this.#describe(expected)}`);
+      return;
+    }
+    const recordedCorrelation = this.#liveToRecorded.get(frame.correlation);
+    const liveCorrelation = this.#recordedToLive.get(expected.correlation);
+    if (
+      expected.kind !== frame.kind ||
+      (recordedCorrelation !== undefined && recordedCorrelation !== expected.correlation) ||
+      (liveCorrelation !== undefined && liveCorrelation !== frame.correlation) ||
+      !equalParts(expected.parts, frame.parts)
+    ) {
+      this.#fail(
+        port,
+        frame,
+        `expected ${this.#describe(expected)} but received ${this.#describe(frame)}`,
+      );
+      return;
+    }
+    this.#recordedToLive.set(expected.correlation, frame.correlation);
+    this.#liveToRecorded.set(frame.correlation, expected.correlation);
+    this.#position++;
+    this.#drain(port);
+  }
+
+  #drain(port: ReplayTransportPort): void {
+    while (this.#divergence === null) {
+      const frame = this.#frames[this.#position];
+      if (frame === undefined || frame.direction !== 'outbound') return;
+      const liveCorrelation = this.#recordedToLive.get(frame.correlation);
+      if (liveCorrelation === undefined) {
+        this.#divergence = new Error(
+          `Simulation cassette diverged at frame ${this.#position}: recorded output has no matching request`,
+        );
+        return;
+      }
+      port._postSerializedControl(frame.kind, liveCorrelation, frame.parts);
+      this.#position++;
+    }
+  }
+
+  #fail(port: ReplayTransportPort, frame: TransportFrame, reason: string): void {
+    this.#divergence = new Error(
+      `Simulation cassette diverged at frame ${this.#position}: ${reason}`,
+    );
+    const kind =
+      frame.kind === EnvelopeKind.RpcStreamRequest
+        ? EnvelopeKind.RpcError
+        : EnvelopeKind.RpcResponse;
+    port._postControl(kind, frame.correlation, { error: this.#divergence.message });
+  }
+
+  #describe(frame: TransportFrame): string {
+    if (
+      frame.kind === EnvelopeKind.RpcRequest ||
+      frame.kind === EnvelopeKind.RpcStreamRequest ||
+      frame.kind === EnvelopeKind.SinkStart
+    ) {
+      const request = frameValue(frame) as { specifier?: unknown; method?: unknown } | undefined;
+      if (typeof request?.specifier === 'string' && typeof request.method === 'string') {
+        return `${request.specifier}.${request.method}`;
+      }
+    }
+    return `RPC kind ${frame.kind}`;
+  }
 }
 
 /** Ordered record projected from a live Realm transport. @internal */

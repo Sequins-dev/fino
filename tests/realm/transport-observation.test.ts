@@ -1,6 +1,6 @@
 import { describe, it } from 'fino:test/test';
-import { EnvelopeKind } from 'internal:realm/envelope';
-import { deserialize } from 'internal:serializer';
+import { decodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
+import { deserialize, serialize } from 'internal:serializer';
 import {
   RealmPort,
   type RealmFrame,
@@ -162,5 +162,69 @@ describe('RealmPort observation', () => {
     receiver._drain();
 
     t.deepEqual(delivered, { value: 1 }, 'the observer cannot mutate primary delivery');
+  });
+
+  it('sends recorded control bytes and backing stores without reserializing them', (t) => {
+    const sent: RealmFrame[] = [];
+    const link: RealmLink = {
+      transport: 'scheduled',
+      wakeFd: -1,
+      supportsPortTransfer: true,
+      send: (header, data, stores, ports) => sent.push([[data, ...stores], ports, header]),
+      drain: () => sent.splice(0),
+    };
+    const port = new RealmPort(link);
+    const observed: TransportFrame[] = [];
+    port.observe({ next: (frame) => observed.push(frame) });
+    const bytes = new Uint8Array([2, 7, 1, 8]);
+    const sourceParts = serialize({ bytes }, [bytes.buffer]);
+
+    port._postSerializedControl(EnvelopeKind.RpcResponse, 42, sourceParts);
+
+    const [parts, transferredPorts, header] = sent[0]!;
+    t.deepEqual(decodeEnvelope(header), {
+      kind: EnvelopeKind.RpcResponse,
+      correlation: 42,
+    });
+    t.equal(transferredPorts.length, 0, 'recorded cassettes never synthesize MessagePorts');
+    t.equal(parts.length, 2, 'the transferred backing store stays separate from the payload');
+    t.notEqual(parts[0], sourceParts[0], 'replay owns the bytes handed to the live transport');
+    t.deepEqual(
+      [...(deserialize(parts[0]!, parts.slice(1)) as { bytes: Uint8Array }).bytes],
+      [2, 7, 1, 8],
+      'the recorded transfer remains deserializable',
+    );
+    t.deepEqual(observed[0]!.parts, parts, 'replayed output remains observable as live traffic');
+  });
+
+  it('lets an interceptor claim control traffic before existing dispatchers', (t) => {
+    const frames: RealmFrame[] = [];
+    const link: RealmLink = {
+      transport: 'scheduled',
+      wakeFd: -1,
+      supportsPortTransfer: true,
+      send: (header, data, stores, ports) => frames.push([[data, ...stores], ports, header]),
+      drain: () => frames.splice(0),
+    };
+    const sender = new RealmPort(link);
+    const receiver = new RealmPort(link);
+    const order: string[] = [];
+    receiver._addControlHandler(() => {
+      order.push('live');
+      return true;
+    });
+    receiver._addControlHandler(
+      () => {
+        order.push('interceptor');
+        return true;
+      },
+      { first: true },
+    );
+    receiver.start();
+
+    sender._postControl(EnvelopeKind.RpcRequest, 1, null);
+    receiver._drain();
+
+    t.deepEqual(order, ['interceptor'], 'claimed traffic never reaches the live dispatcher');
   });
 });
