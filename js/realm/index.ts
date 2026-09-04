@@ -133,6 +133,7 @@ export type ImportDirectiveSer =
       exports: string[];
       streams?: string[];
       sinks?: string[];
+      source?: string;
     };
 /**
  * Import rule applied to module resolution inside a child realm.
@@ -998,6 +999,8 @@ export class Facade {
    * @internal
    */
   readonly #sinks: string[];
+  /** Custom child-side module source, when the facade needs more than functions. @internal */
+  #source: string | undefined;
   /**
    * Private readonly property `#handlers` used by `Facade`.
    *
@@ -1090,6 +1093,33 @@ export class Facade {
     this.#exports = exports;
     this.#streams = [];
     this.#sinks = [];
+  }
+  /**
+   * Define the child-side shape of this facade module.
+   *
+   * The source may export any valid module shape, including classes and
+   * constants. Import `call`, `callStream`, or `callSink` from
+   * `internal:parent-rpc` to reach handlers bound on this facade, passing
+   * `import.meta.url` as the facade specifier. This is useful for APIs whose
+   * local shape cannot be represented by the default async function exports.
+   *
+   * ```ts no_run
+   * import { Facade } from 'fino:realm';
+   *
+   * const clock = new Facade('app:clock', [])
+   *   .module(`import { call } from 'internal:parent-rpc';
+   *   export class Clock {
+   *     now() { return call(import.meta.url, 'now', []); }
+   *   }`)
+   *   .handle('now', async () => Date.now());
+   * ```
+   *
+   * The source is trusted parent configuration, not guest input. Syntax and
+   * module-linking errors surface when the child imports the facade.
+   */
+  module(source: string): this {
+    this.#source = source;
+    return this;
   }
   /**
    * Create a facade from callable properties on an object or class instance.
@@ -1280,6 +1310,7 @@ export class Facade {
       exports: this.#exports,
       streams: this.#streams,
       sinks: this.#sinks,
+      ...(this.#source === undefined ? {} : { source: this.#source }),
     };
   }
   /**
