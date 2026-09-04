@@ -2407,6 +2407,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   #scheduledRules: ImportRule[] = [];
   /** Removes this realm from its owning workload's shutdown stack. @internal */
   #scheduledShutdownRegistration: { dispose(): void } | null = null;
+  /** Calls whose response still owns this realm during shutdown. @internal */
+  #activeCalls = 0;
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   /**
    * Private property `#spawnPromise` used by `Realm`.
@@ -2635,9 +2637,12 @@ export class Realm<F extends RealmFn = RealmFn> {
       }
     }
     return (async () => {
-      await readable(scheduled.completionFd);
+      let status: ReturnType<typeof takeScheduledRealmStatus>;
+      do {
+        await readable(scheduled.completionFd);
+        status = takeScheduledRealmStatus(scheduled.handle);
+      } while (status.kind === 'pending');
       port._drain();
-      const status = takeScheduledRealmStatus(scheduled.handle);
       removeRead(scheduled.completionFd);
       port.close();
       closeScheduledRealm(scheduled.handle);
@@ -2793,7 +2798,10 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#scheduledOpts = opts.watch ? opts : null;
       this.#scheduledRules = rules;
       this.#scheduledCompletion = this.#startScheduledRealm(opts, rules, false, bootstrapData);
-      this.#scheduledShutdownRegistration = registerShutdownHook(() => this.terminate());
+      this.#scheduledShutdownRegistration = registerShutdownHook(() => {
+        if (this.#activeCalls === 0) this.terminate({ force: true });
+        return this.#scheduledCompletion!.catch(() => {});
+      });
       void this.#scheduledCompletion.then(
         () => this.#disposeScheduledShutdownRegistration(),
         () => this.#disposeScheduledShutdownRegistration(),
@@ -2945,6 +2953,7 @@ export class Realm<F extends RealmFn = RealmFn> {
   call(...args: Parameters<F>): Promise<Awaited<ReturnType<F>>> {
     const callStart = performance.now();
     const kind = this.#kind;
+    this.#activeCalls++;
     // Capture at call time so the end event is always published when start was.
     const startPublished = _topicRealmCall.hasSubscribers;
     if (startPublished) {
@@ -3052,8 +3061,9 @@ export class Realm<F extends RealmFn = RealmFn> {
         port._postControl(EnvelopeKind.Call, 0, { args });
       });
     }
-    if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return base;
-    return base.then(
+    const tracked = base.finally(() => this.#activeCalls--);
+    if (!startPublished && !_topicRealmCallEnd.hasSubscribers) return tracked;
+    return tracked.then(
       (result) => {
         _topicRealmCallEnd.publish(
           otelRuntimeEvent('realm', 'call', 'end', {

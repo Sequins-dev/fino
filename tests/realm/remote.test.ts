@@ -76,14 +76,10 @@ let sharedClusterStarted = false;
 async function ensureRemoteWorker(): Promise<boolean> {
   if (!quicAvailable || !h3Available) return false;
   if (sharedWorker !== null) return true;
-  const port = await startClusterOnAvailablePort(
-    (port) => ({
-      port,
-      nodeId: `realm-remote-seed-${port}`,
-      tls: clusterTls,
-    }),
-    'startCluster',
-  );
+  const port = await startClusterOnAvailablePort({
+    nodeId: 'realm-remote-seed',
+    tls: clusterTls,
+  });
   sharedClusterStarted = true;
   try {
     sharedWorker = await waitForWorker(port);

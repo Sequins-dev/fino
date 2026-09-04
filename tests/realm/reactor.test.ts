@@ -10,6 +10,11 @@ import * as schedulerNative from 'internal:scheduler-native';
 import { onlineProcessors } from 'internal:runtime/libc';
 import { selectReactorThreadCount } from 'internal:scheduler/readiness';
 import { Process, env, execPath } from 'fino:process';
+import type echoFn from './fixtures/echo-fn.ts';
+import type sumFn from './fixtures/multi-arg-fn.ts';
+import type errorFn from './fixtures/error-fn.ts';
+import type asyncFn from './fixtures/async-fn.ts';
+import type busyLoop from './fixtures/sandbox-busy-loop-fn.ts';
 
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: string[] = [];
@@ -17,12 +22,15 @@ async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   for await (const chunk of reader) chunks.push(decoder.decode(chunk, { stream: true }));
   return chunks.join('');
 }
-// Import fixture types so the Realm<F> generic can connect call() args/return.
-import type echoFn from './fixtures/echo-fn.ts';
-import type sumFn from './fixtures/multi-arg-fn.ts';
-import type errorFn from './fixtures/error-fn.ts';
-import type asyncFn from './fixtures/async-fn.ts';
-import type busyLoop from './fixtures/sandbox-busy-loop-fn.ts';
+
+function childEnv(reactorThreads: number): Record<string, string> {
+  const child: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined) child[key] = value;
+  }
+  child.FINO_REACTOR_THREADS = String(reactorThreads);
+  return child;
+}
 
 describe('Reactor scheduler native surface', () => {
   it('reserves a processor without reducing multi-core hosts below two reactors', (t) => {
@@ -61,6 +69,9 @@ describe('Reactor scheduler native surface', () => {
     for (const name of ['startReactorPool', 'createWorkload', 'stopReactorPool']) {
       t.equal(name in schedulerNative, true, `${name} is exported`);
     }
+  });
+  it('refuses to wake an owner that is no longer active', (t) => {
+    t.equal(schedulerNative.signalReactorOwner(0), false, 'inactive owner is not signalled');
   });
 });
 
@@ -149,12 +160,7 @@ describe('Reactor-pooled Realm basics', () => {
     // therefore exercises every exit/enter handoff instead of letting each
     // realm remain resident on a different worker.
     const fixture = new URL('./fixtures/single-thread-switch.ts', import.meta.url).pathname;
-    const childEnv: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (value !== undefined) childEnv[key] = value as string;
-    }
-    childEnv.FINO_REACTOR_THREADS = '1';
-    const child = new Process(execPath, ['run', fixture], { env: childEnv });
+    const child = new Process(execPath, ['run', fixture], { env: childEnv(1) });
     child.stdin.close();
     const [stdout, stderr, result] = await Promise.all([
       readAll(child.stdout),
@@ -174,12 +180,7 @@ describe('Reactor-pooled Realm basics', () => {
       return;
     }
     const fixture = new URL('./fixtures/cpu-parallel.ts', import.meta.url).pathname;
-    const childEnv: Record<string, string> = { FINO_REACTOR_THREADS: '4' };
-    for (const [key, value] of Object.entries(env)) {
-      if (value !== undefined) childEnv[key] = value as string;
-    }
-    childEnv.FINO_REACTOR_THREADS = '4';
-    const child = new Process(execPath, ['run', fixture], { env: childEnv });
+    const child = new Process(execPath, ['run', fixture], { env: childEnv(4) });
     // Close stdin or its pipe keeps this realm's loop alive after the child exits.
     child.stdin.close();
     const [stdout, stderr, result] = await Promise.all([
@@ -218,23 +219,22 @@ describe('Reactor-pooled Realm basics', () => {
     t.equal(seen.length, 3, 'every forged frame arrived as an ordinary message');
   });
   it('terminate({ force: true }) stops a realm spinning in synchronous code', async (t) => {
-    // Cooperative termination is a message, and a realm that never returns to
-    // its loop never observes one — it holds its reactor thread indefinitely.
-    // Forcing interrupts execution so the thread is released.
-    const realm = new Realm<() => number>({
-      entry: new URL('./fixtures/runaway.ts', import.meta.url).pathname,
-    });
-    const call = realm.call();
-    // Let the realm actually enter its loop before interrupting it.
-    await new Promise((resolve) => setTimeout(resolve, 150));
-    realm.terminate({ force: true });
-    await t.rejects(() => call, /exited before returning/i, 'the pending call is settled');
-    // The pool must still be usable afterwards: a forced unwind releases the
-    // reactor thread rather than poisoning it.
-    const after = new Realm<typeof echoFn>({
-      entry: new URL('./fixtures/echo-fn.ts', import.meta.url).pathname,
-    });
-    t.equal(await after.call('still working'), 'still working', 'the pool survives a forced stop');
+    // Give this test its own pool so the synchronous runaway cannot starve its
+    // controller when the outer test runner saturates the process-wide pool.
+    const fixture = new URL('./fixtures/force-terminate.ts', import.meta.url).pathname;
+    const child = new Process(execPath, ['run', fixture], { env: childEnv(4) });
+    child.stdin.close();
+    const [stdout, stderr, result] = await Promise.all([
+      readAll(child.stdout),
+      readAll(child.stderr),
+      child.wait(),
+    ]);
+    t.equal(
+      result.code,
+      0,
+      `force-termination fixture exits cleanly${stderr ? `: ${stderr}` : ''}`,
+    );
+    t.ok(stdout.includes('force-terminated=1'), 'the pool survives a forced stop');
   });
   it('call() propagates errors thrown inside the pooled realm', async (t) => {
     const realm = new Realm<typeof errorFn>({

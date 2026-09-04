@@ -297,6 +297,12 @@ describe('TCP / UDP loopback', () => {
         const rawDeadline = Date.now() + 200;
         while (rawPayloads.length < 2 && Date.now() < rawDeadline) {
           const rawPackets = recvRaw.call(rawBatch, server);
+          if (typeof rawPackets === 'number') {
+            if (rawPackets >= 0)
+              throw new Error(`unexpected raw-address batch count ${rawPackets}`);
+            await Promise.race([loop.readable(server), loop.timeout(20)]);
+            continue;
+          }
           t.ok(Array.isArray(rawPackets), 'raw-address batch receive returned datagrams');
           if (!Array.isArray(rawPackets)) throw new Error('expected raw-address batch results');
           t.equal(

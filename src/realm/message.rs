@@ -77,12 +77,14 @@ pub fn send_message(transport: &SendTransport, message: ThreadMessage) {
 /// Drain all currently buffered messages from `transport` and drain the own
 /// wake pipe so the next `loop.readable()` arms cleanly.
 pub fn recv_messages(transport: &RecvTransport<'_>) -> Vec<ThreadMessage> {
+    // Clear the signal before draining the queue. A concurrent send after the
+    // drain then leaves its wake byte behind for the next readiness watch.
+    if let Some(wake_read) = transport.wake_read {
+        crate::fdutil::drain(wake_read);
+    }
     let mut messages = Vec::new();
     while let Ok(message) = transport.rx.try_recv() {
         messages.push(message);
-    }
-    if let Some(wake_read) = transport.wake_read {
-        crate::fdutil::drain(wake_read);
     }
     messages
 }

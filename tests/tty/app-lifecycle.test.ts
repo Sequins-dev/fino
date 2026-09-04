@@ -55,6 +55,7 @@ describe('fino:tty/tui app lifecycle', () => {
           await new Promise<void>((resolve) => setTimeout(resolve, 1));
         }
       }
+      await pty.waitFor((term) => term.text().join('').includes('press q'), { timeout: 10_000 });
       await pty.send('q');
       await pty.waitFor((term) => term.text().join('').includes('STOP RESTORED'));
       t.equal(await pty.waitExit(), 0, 'the app exits after its input reader is closed');

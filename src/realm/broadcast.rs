@@ -149,21 +149,11 @@ pub fn receive(handle: u32) -> Vec<Vec<u8>> {
         return Vec::new();
     };
 
+    super::thread::consume_wake(state.wake_read_fd);
     let mut messages = Vec::new();
     while let Ok(msg) = state.rx.try_recv() {
         messages.push(msg);
     }
-
-    // Drain the wake pipe so the fd is clean for the next registration.
-    let mut discard = [0u8; 256];
-    // SAFETY: discard is valid; fd is a valid non-blocking pipe read end.
-    unsafe {
-        libc::read(
-            state.wake_read_fd,
-            discard.as_mut_ptr() as *mut _,
-            discard.len(),
-        )
-    };
 
     messages
 }

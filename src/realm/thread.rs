@@ -53,6 +53,16 @@ pub struct ThreadMessage {
     pub transfer_ports: Vec<TransferredPortInfo>,
 }
 
+/// Clear a non-blocking wake pipe before draining its associated queue.
+///
+/// A sender always queues first and signals second. Consuming the signal first
+/// means a concurrent send after the queue drain leaves a byte behind for the
+/// next readiness watch instead of having its only wakeup erased.
+pub(crate) fn consume_wake(read: RawFd) {
+    let mut bytes = [0u8; 256];
+    while unsafe { libc::read(read, bytes.as_mut_ptr().cast(), bytes.len()) } > 0 {}
+}
+
 /// Configuration for a Linux sandbox Realm's dedicated thread.
 #[cfg(target_os = "linux")]
 pub struct SpawnConfig {
@@ -296,11 +306,15 @@ fn native_recv(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
-    // Drain the channel first (before any V8 allocations).
-    let (messages, maybe_wake_read) = {
+    // Clear the signal before draining the queue. A concurrent send after the
+    // drain then leaves its wake byte behind for the next readiness watch.
+    let messages = {
         let state_rc = get_state(scope);
         let st = state_rc.borrow();
-        let msgs: Vec<ThreadMessage> = if let Some(rx) = st.channel_rx.as_ref() {
+        if let Some(wake_read) = st.wake_read_fd {
+            consume_wake(wake_read);
+        }
+        if let Some(rx) = st.channel_rx.as_ref() {
             let mut v = Vec::new();
             while let Ok(msg) = rx.try_recv() {
                 v.push(msg);
@@ -308,14 +322,8 @@ fn native_recv(
             v
         } else {
             Vec::new()
-        };
-        (msgs, st.wake_read_fd)
+        }
     };
-
-    // Drain wake bytes so the fd doesn't remain permanently readable.
-    if let Some(wake_read) = maybe_wake_read {
-        crate::fdutil::drain(wake_read);
-    }
 
     rv.set(crate::realm::transit::build_message_array(scope, messages).into());
 }
