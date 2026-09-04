@@ -290,6 +290,38 @@ const summary = (
 );
 ```
 
+## Tables, trees, and timelines
+
+`Table`, `FileTree`, and `Timeline` keep data and interaction state controlled
+by the application. Table and tree HTML lowerings each register one grouped
+action for the whole control instead of one action per row. `visibleTreeRows()`
+is shared by HTML and terminal targets, so expansion determines the same bounded
+set of rendered rows everywhere. `createTreeState()` optionally owns expansion
+and selection signals outside component bodies.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { FileTree, Table, createTreeState } from 'fino:ui/components';
+
+const tree = createTreeState(['src'], 'main');
+
+const files = (
+  <FileTree
+    nodes={[
+      {
+        key: 'src',
+        label: 'src',
+        children: [{ key: 'main', label: 'main.ts' }],
+      },
+    ]}
+    expanded={tree.expanded.get()}
+    selectedKey={tree.selectedKey.get()}
+    onToggle={tree.toggle}
+    onSelect={tree.select}
+  />
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal
