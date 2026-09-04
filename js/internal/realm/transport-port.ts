@@ -4,7 +4,8 @@
  * Thread, process, and cluster realms expose MessagePort-compatible endpoints,
  * but their implementations are runtime transports rather than web messaging
  * globals. This module owns the shared transport lifecycle and the thread-realm
- * port used by realm bootstrap.
+ * port used by realm bootstrap. Observers can tee the ordered frame stream at
+ * its serialized boundary without changing primary delivery.
  *
  * @internal
  */
@@ -25,6 +26,47 @@ import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
+/** Direction relative to the observed transport endpoint. @internal */
+export type TransportFrameDirection = 'outbound' | 'inbound';
+
+/** Frame data available for filtering before copying its payload. @internal */
+export interface TransportFrameMetadata extends Envelope {
+  /** Order among frames seen by this port. */
+  sequence: number;
+  /** Whether the frame is leaving or entering this endpoint. */
+  direction: TransportFrameDirection;
+  /** Serialized payload and transfer-store bytes. */
+  payloadBytes: number;
+  /** Transferred `ArrayBuffer` backing stores. */
+  arrayBufferTransfers: number;
+  /** Transferred `MessagePort` channels. */
+  portTransfers: number;
+}
+
+/** An observed frame with an independently owned copy of its serialized data. @internal */
+export interface TransportFrame extends TransportFrameMetadata {
+  parts: readonly Uint8Array[];
+}
+
+/** One lazy observer of a Realm port's frame stream. @internal */
+export interface TransportObserver {
+  /** Match inexpensive metadata before serialized data is copied. */
+  filter?(metadata: TransportFrameMetadata): boolean;
+  /** Consume each matching frame. */
+  next(frame: TransportFrame): void;
+  /** Receive observer failures without affecting live channel delivery. */
+  error?(error: unknown): void;
+}
+
+interface TransportObservationInput {
+  direction: TransportFrameDirection;
+  envelope: Envelope;
+  payloadBytes: number;
+  arrayBufferTransfers: number;
+  portTransfers: number;
+  parts: readonly Uint8Array[];
+}
+
 /**
  * Shared lifecycle and dispatch logic for transport-backed realm ports.
  *
@@ -35,6 +77,8 @@ import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal
  * @internal
  */
 export abstract class BaseTransportPort extends EventTarget {
+  #observers = new Set<TransportObserver>();
+  #sequence = 0;
   /**
    * True once start() has run; _dispatchMessage drops messages while the port
    * is unstarted.
@@ -86,6 +130,57 @@ export abstract class BaseTransportPort extends EventTarget {
    */
   [Symbol.dispose](): void {
     this.close();
+  }
+  /**
+   * Observe this endpoint's ordered frame stream at the serialized boundary.
+   *
+   * Filters receive metadata before serialized data is copied. Each matching
+   * observer owns a separate copy, so observation cannot mutate primary
+   * delivery or another observer's frame. The returned function detaches the
+   * observer.
+   */
+  observe(observer: TransportObserver): () => void {
+    this.#observers.add(observer);
+    return () => this.#observers.delete(observer);
+  }
+
+  /** Offer one live frame to matching observers. */
+  #observe(input: TransportObservationInput): void {
+    const metadata: TransportFrameMetadata = {
+      sequence: this.#sequence++,
+      direction: input.direction,
+      kind: input.envelope.kind,
+      correlation: input.envelope.correlation,
+      payloadBytes: input.payloadBytes,
+      arrayBufferTransfers: input.arrayBufferTransfers,
+      portTransfers: input.portTransfers,
+    };
+    for (const observer of this.#observers) {
+      let matched = true;
+      try {
+        matched = observer.filter?.({ ...metadata }) ?? true;
+      } catch (error) {
+        this.#reportObserverError(observer, error);
+        matched = false;
+      }
+      if (!matched) continue;
+      try {
+        observer.next({
+          ...metadata,
+          parts: input.parts.map((part) => part.slice()),
+        });
+      } catch (error) {
+        this.#reportObserverError(observer, error);
+      }
+    }
+  }
+
+  #reportObserverError(observer: TransportObserver, error: unknown): void {
+    try {
+      observer.error?.(error);
+    } catch {
+      // An observer cannot break primary channel delivery.
+    }
   }
   /**
    * Subclass hook invoked when start() transitions the port to started.
@@ -173,6 +268,16 @@ export abstract class BaseTransportPort extends EventTarget {
     );
     const [data, ...stores] = parts;
     this._send(encodeEnvelope(envelope), data!, stores, portInfos);
+    if (this.#observers.size > 0) {
+      this.#observe({
+        direction: 'outbound',
+        envelope,
+        payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
+        arrayBufferTransfers: stores.length,
+        portTransfers: portInfos.length,
+        parts,
+      });
+    }
   }
   /**
    * Send runtime control traffic — a call, a result, a termination request, or
@@ -214,6 +319,17 @@ export abstract class BaseTransportPort extends EventTarget {
   ): void {
     if (!this._started) return;
     const envelope = decodeEnvelope(header);
+    if (this.#observers.size > 0) {
+      const parts = stores === undefined ? [buf] : [buf, ...stores];
+      this.#observe({
+        direction: 'inbound',
+        envelope,
+        payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
+        arrayBufferTransfers: stores?.length ?? 0,
+        portTransfers: ports.length,
+        parts,
+      });
+    }
     let value: unknown;
     try {
       value = (deserialize as (b: Uint8Array, s?: Uint8Array[]) => unknown)(
