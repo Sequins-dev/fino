@@ -3,9 +3,9 @@
  *
  * Structural primitives and semantic style tokens form the shared floor.
  * Layout, typography, icon, form, disclosure, menu, navigation, overlay,
- * feedback, display, and data families compose that floor without branching on the
- * active render target; co-located HTML and terminal lowerings own
- * target-specific presentation.
+ * feedback, display, data, and virtual-list families compose that floor
+ * without branching on the active render target; co-located HTML and terminal
+ * lowerings own target-specific presentation.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -453,6 +453,8 @@ export {
   fileIcon,
   visibleTreeRows,
 } from './components/data.ts';
+export { VirtualList, VirtualScroll } from './components/virtual.ts';
+export type { VirtualListProps, VirtualWindow } from './components/virtual.ts';
 export type {
   FileTreeNode,
   FileTreeProps,

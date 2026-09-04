@@ -322,6 +322,38 @@ const files = (
 );
 ```
 
+## Virtual lists
+
+`VirtualScroll` is a target-neutral sparse measurement model. Its memory use is
+proportional to rows with corrected heights rather than total item count, and
+`window()` returns only the indices and spacers needed for one viewport. Build
+children only for `start..end` and pass them to `VirtualList`. Browser scrolling
+and terminal wheel input remain explicit callbacks into the same model.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Text, VirtualList, VirtualScroll } from 'fino:ui/components';
+
+const model = new VirtualScroll({ estimate: 1 });
+model.setCount(1_000_000);
+const height = 20;
+const window = model.window(height);
+
+const list = (
+  <VirtualList
+    height={height}
+    window={window}
+    offset={model.offset}
+    onMouse={(event) => model.handleWheel(event, height)}
+    onScroll={(offset) => model.scrollTo(offset, height)}
+  >
+    {Array.from({ length: window.end - window.start }, (_, index) => (
+      <Text key={String(window.start + index)}>Row {window.start + index}</Text>
+    ))}
+  </VirtualList>
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

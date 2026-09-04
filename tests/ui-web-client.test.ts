@@ -93,6 +93,7 @@ function makeDom() {
     dataset: Record<string, string> = {};
     style: Record<string, string> = {};
     disabled = false;
+    scrollTop = 0;
     constructor(tagName: string) {
       super();
       this.tagName = tagName;
@@ -122,6 +123,15 @@ function makeDom() {
       let node: any = this.parentNode;
       while (node !== null) {
         if (node instanceof HTMLFormElement) return node;
+        node = node.parentNode;
+      }
+      return null;
+    }
+    closest(selector: string) {
+      if (selector !== 'form[data-fi-action]') throw new Error(`Unsupported closest: ${selector}`);
+      let node: any = this;
+      while (node !== null) {
+        if (node instanceof HTMLFormElement && node.dataset.fiAction !== undefined) return node;
         node = node.parentNode;
       }
       return null;
@@ -167,7 +177,13 @@ function makeDom() {
     method = 'POST';
     action = '';
     get elements() {
-      return this.descendants().filter((node) => node instanceof Input || node instanceof Button);
+      const controls: any = this.descendants().filter(
+        (node) => node instanceof Input || node instanceof Button,
+      );
+      controls.namedItem = (name: string) =>
+        controls.find((control: any) => (control.name || control.getAttribute('name')) === name) ??
+        null;
+      return controls;
     }
   }
 
@@ -276,6 +292,7 @@ interface Harness {
   finoUI: any;
   submit(form: any, submitter?: any): void;
   change(control: any): void;
+  scroll(element: any): void;
 }
 
 function load(options: { fetch?: any } = {}): Harness {
@@ -288,6 +305,7 @@ function load(options: { fetch?: any } = {}): Harness {
     'fetch',
     'FormData',
     'HTMLFormElement',
+    'Element',
     'CustomEvent',
     'TextDecoder',
     CLIENT_SOURCE,
@@ -303,6 +321,7 @@ function load(options: { fetch?: any } = {}): Harness {
     options.fetch ?? (() => Promise.reject(new Error('no fetch'))),
     dom.classes.FormData,
     dom.classes.HTMLFormElement,
+    dom.classes.Element,
     dom.classes.CustomEvent,
     class {
       decode() {
@@ -330,6 +349,7 @@ function load(options: { fetch?: any } = {}): Harness {
     submit: (form: any, submitter?: any) =>
       dom.doc.dispatch('submit', { target: form, submitter, preventDefault() {} }),
     change: (control: any) => dom.doc.dispatch('change', { target: control }),
+    scroll: (element: any) => dom.doc.dispatch('scroll', { target: element }),
   };
 }
 
@@ -563,7 +583,7 @@ describe('bundled browser UI client', () => {
     );
   });
 
-  it('submits the triggering button and controlled field changes', (t) => {
+  it('submits buttons, controlled changes, and virtual scrolls through one action path', async (t) => {
     const requests: any[] = [];
     const client = load({
       fetch: (_url: string, init: any) => {
@@ -595,6 +615,15 @@ describe('bundled browser UI client', () => {
             [el('input', { name: 'value', value: 'selected' }, [], 'input')],
             'change',
           ),
+          el(
+            'form',
+            { action },
+            [
+              el('input', { type: 'hidden', name: 'value', value: '0' }, [], 'offset'),
+              el('div', { 'data-fi-scroll': '1', 'data-fi-row-height': '20' }, [], 'viewport'),
+            ],
+            'scroll',
+          ),
         ]),
       ),
     );
@@ -606,6 +635,13 @@ describe('bundled browser UI client', () => {
     const changeForm = wrapper.childNodes[1];
     client.change(changeForm.childNodes[0]);
     t.equal(requests[1].input.value, 'selected', 'a controlled change submits its value');
+
+    const scrollForm = wrapper.childNodes[2];
+    const viewport = scrollForm.childNodes[1];
+    viewport.scrollTop = 100;
+    client.scroll(viewport);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    t.equal(requests[2].input.value, '5', 'pixel offset uses the shared row-height contract');
   });
 
   it('surfaces heartbeat and protocol errors as page events', (t) => {
