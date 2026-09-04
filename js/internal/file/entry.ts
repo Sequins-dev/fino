@@ -35,21 +35,7 @@
  *
  * @internal
  */
-import {
-  lib,
-  isDarwin,
-  Pointer,
-  cstr,
-  throwErrno,
-  readCStr,
-  _toPath,
-  joinPath,
-  DT_UNKNOWN,
-  DT_DIR,
-  DT_REG,
-  DT_LNK,
-  decodeUtf8,
-} from './bindings.ts';
+import { DT_UNKNOWN, DT_DIR, DT_REG, DT_LNK } from './constants.ts';
 import { Stat } from './stat.ts';
 import { Path } from '../../file/path.ts';
 /**
@@ -129,7 +115,7 @@ export class Entry {
    */
   constructor(name: string, path: Path | string, fs: EntryFileSystem | null, dtype: number) {
     this.#name = String(name);
-    this.#path = _toPath(path);
+    this.#path = Path.from(path);
     this.#fs = fs;
     this.#dtype = dtype;
   }
@@ -320,6 +306,8 @@ export class DirEntry extends Entry {
     const path = this.path;
     const s = path.toString();
     if (fs?.readdir !== undefined) return fs.readdir(path);
+    const { lib, isDarwin, Pointer, cstr, throwErrno, readCStr, decodeUtf8 } =
+      await import('./bindings.ts');
     const dirPtr = lib.symbols.opendir(cstr(s));
     if (dirPtr === null) throwErrno('opendir', s);
     const result: Entry[] = [];
