@@ -24,7 +24,6 @@
  * @internal
  */
 import {
-  isDarwin,
   S_IFMT,
   S_IFREG,
   S_IFDIR,
@@ -33,8 +32,10 @@ import {
   S_IFIFO,
   S_IFBLK,
   S_IFCHR,
-} from './bindings.ts';
-import { arch } from 'internal:process';
+} from './constants.ts';
+import { arch, os } from 'internal:process';
+
+const isDarwin = os === 'darwin';
 /**
  * File metadata parsed from a struct stat buffer.
  *

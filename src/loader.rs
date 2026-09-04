@@ -256,6 +256,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:database/sqlite", "database/sqlite"),
     // internal: file sub-modules
     source_builtin!("internal:file/provider", "internal/file/provider"),
+    source_builtin!("internal:file/constants", "internal/file/constants"),
     source_builtin!("internal:file/bindings", "internal/file/bindings"),
     source_builtin!("internal:file/stat", "internal/file/stat"),
     source_builtin!("internal:file/handle", "internal/file/handle"),
