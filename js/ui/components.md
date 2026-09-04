@@ -156,6 +156,110 @@ Numeric controls reject non-finite updates and clamp to their bounds. Terminal
 sliders use the same fraction-to-step mapping for horizontal clicks and vertical
 clicks or drags, so orientation changes presentation rather than value policy.
 
+## Disclosure and menus
+
+`Details`, `Tabs`, and `Accordion` keep their open or active state controlled by
+the application. `createDisclosure()` and `createAccordion()` provide optional
+signal-backed state without hiding ownership inside the component tree.
+`MenuList`, `Select`, and `ComboBox` share enabled-item navigation and selection
+rules. Headers, separators, and disabled rows are skipped consistently, and
+`ListSelection` keeps a bounded row window aligned with the active item.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import {
+  ComboBox,
+  Details,
+  Select,
+  Tabs,
+  createDisclosure,
+} from 'fino:ui/components';
+
+const disclosure = createDisclosure(true);
+
+const controls = (
+  <Details
+    title="Filters"
+    open={disclosure.open.get()}
+    onToggle={disclosure.set}
+  >
+    <Select
+      id="status"
+      value="open"
+      open={false}
+      options={[
+        { key: 'open', label: 'Open' },
+        { key: 'closed', label: 'Closed' },
+      ]}
+      onChange={(key) => console.log(key)}
+    />
+  </Details>
+);
+```
+
+In HTML, grouped tabs, breadcrumbs, pagination, and native selects each register
+one value action for the entire control instead of one action per row. In the
+terminal, Select and ComboBox compose the same `Popover` used by other anchored
+surfaces. Escape dismissal and enabled-item movement come from shared helpers,
+so controls do not drift into subtly different keyboard behavior.
+
+## Navigation
+
+`Breadcrumbs`, `Pagination`, and `Steps` present location and progress without
+owning routing state. `paginationRange()` is the shared boundary and ellipsis
+algorithm used by both render targets.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Breadcrumbs, Pagination, Steps, VStack } from 'fino:ui/components';
+
+const navigation = (
+  <VStack gap={1}>
+    <Breadcrumbs
+      items={[
+        { key: 'home', label: 'Home' },
+        { key: 'project', label: 'Project' },
+      ]}
+      onNavigate={(key) => console.log(key)}
+    />
+    <Pagination page={7} pages={20} onChange={(page) => console.log(page)} />
+    <Steps
+      current="review"
+      steps={[
+        { key: 'draft', label: 'Draft' },
+        { key: 'review', label: 'Review' },
+        { key: 'done', label: 'Done' },
+      ]}
+    />
+  </VStack>
+);
+```
+
+## Anchored and overlay surfaces
+
+`Popover`, `Tooltip`, `HoverCard`, and `FloatingActionBar` all anchor to a stable
+component `id`. `Select` and `ComboBox` build their terminal option surfaces on
+that same Popover contract. `Modal` and `ContextMenu` add dismissal boundaries;
+their terminal lowerings share one Escape handler, and context menus add an
+outside-click catch layer. `Toast` and `ToastStack` provide transient status
+surfaces without introducing hidden timers.
+
+```ts no_run
+/** @jsxImportSource fino:ui */
+import { Button, Modal, Popover, ToastStack } from 'fino:ui/components';
+
+const overlays = (
+  <>
+    <Button id="actions" label="Actions" onClick={() => {}} />
+    <Popover open anchorId="actions" onDismiss={() => {}}>
+      Anchored actions
+    </Popover>
+    <Modal title="Confirm" onDismiss={() => {}}>Review the operation.</Modal>
+    <ToastStack toasts={[{ id: 'saved', message: 'Saved', variant: 'success' }]} />
+  </>
+);
+```
+
 ## Semantic icons
 
 `Icon` and `IconButton` resolve names through one semantic registry. Terminal

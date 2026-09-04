@@ -2,9 +2,9 @@
  * fino:ui/components — host-neutral UI component primitives.
  *
  * Structural primitives and semantic style tokens form the shared floor.
- * Layout, typography, icon, and form families compose that floor without
- * branching on the active render target; co-located HTML and terminal
- * lowerings own the target-specific presentation.
+ * Layout, typography, icon, form, disclosure, menu, navigation, and overlay
+ * families compose that floor without branching on the active render target;
+ * co-located HTML and terminal lowerings own target-specific presentation.
  *
  * ```ts no_run
  * /** @jsxImportSource fino:ui *\/
@@ -355,3 +355,73 @@ export type {
 } from './components/forms.ts';
 export { createTextArea, createTextField } from './components/text-edit.ts';
 export type { TextEditController } from './components/text-edit.ts';
+export {
+  Accordion,
+  Details,
+  Expander,
+  TabList,
+  Tabs,
+  createAccordion,
+  createDisclosure,
+} from './components/disclosure.ts';
+export type {
+  AccordionProps,
+  AccordionSection,
+  AccordionState,
+  DetailsProps,
+  Disclosure,
+  ExpanderPosition,
+  ExpanderProps,
+  TabItem,
+  TabListProps,
+  TabsProps,
+} from './components/disclosure.ts';
+export {
+  ComboBox,
+  ListSelection,
+  MenuHeader,
+  MenuList,
+  MenuRow,
+  MenuSeparator,
+  Select,
+  defaultComboBoxFilter,
+} from './components/menu.ts';
+export type {
+  ComboBoxOption,
+  ComboBoxProps,
+  MenuHeaderProps,
+  MenuItem,
+  MenuListProps,
+  MenuRowProps,
+  SelectOption,
+  SelectProps,
+} from './components/menu.ts';
+export { Breadcrumbs, Pagination, Steps, paginationRange } from './components/navigation.ts';
+export type {
+  BreadcrumbsProps,
+  NavigationItem,
+  PaginationProps,
+  StepsProps,
+} from './components/navigation.ts';
+export {
+  ContextMenu,
+  FloatingActionBar,
+  HoverCard,
+  Modal,
+  Popover,
+  Toast,
+  ToastStack,
+  Tooltip,
+} from './components/overlay.ts';
+export type {
+  ContextMenuProps,
+  FloatingActionBarProps,
+  HoverCardProps,
+  ModalProps,
+  PopoverProps,
+  StatusVariant,
+  ToastEntry,
+  ToastProps,
+  ToastStackProps,
+  TooltipProps,
+} from './components/overlay.ts';
