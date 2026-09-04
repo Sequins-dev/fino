@@ -53,6 +53,9 @@ describe('fino:tty/tui app lifecycle', () => {
     const pty = await openPty(execPath, [script], { cols: 30, rows: 6 });
     try {
       await pty.waitFor((term) => term.text().join('').includes('press q'));
+      // The PTY retains input until the reader consumes it. Send one probe and
+      // wait for its acknowledgement so it cannot coalesce with the later q.
+      await pty.send('r');
       const readyDeadline = performance.now() + 10_000;
       while (true) {
         try {
@@ -61,7 +64,6 @@ describe('fino:tty/tui app lifecycle', () => {
         } catch {
           if (performance.now() >= readyDeadline) throw new Error('TUI input did not become ready');
         }
-        await pty.send('r');
         await new Promise<void>((resolve) => setTimeout(resolve, 10));
       }
       await pty.waitFor((term) => term.text().join('').includes('press q'), { timeout: 10_000 });
