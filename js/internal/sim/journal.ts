@@ -1,10 +1,12 @@
 /**
- * Project copied Realm RPC frames into an ordered simulation journal.
+ * Project copied Realm RPC frames into journals and persistent cassettes.
  *
  * The live transport remains the sole owner of delivery. This module consumes
  * the independently owned serialized copies supplied by `observe()` and turns
- * the request, chunk, and terminal protocol frames into completed calls. Empty
- * terminal payloads are protocol signals only and are never exposed as data.
+ * the request, chunk, and terminal protocol frames into completed calls. A
+ * recording retains those same copies and base64-encodes their bytes for JSON
+ * persistence without serializing values again. Empty terminal payloads are
+ * protocol signals only and are never exposed as data.
  *
  * @internal
  */
@@ -12,6 +14,7 @@ import { EnvelopeKind, type EnvelopeKindValue } from 'internal:realm/envelope';
 import { deserialize } from 'internal:serializer';
 import type {
   TransportFrame,
+  TransportFrameDirection,
   TransportFrameMetadata,
   TransportObserver,
 } from 'internal:realm/transport-port';
@@ -36,6 +39,21 @@ export interface SimCall {
   error?: string;
 }
 
+/** JSON-safe storage form of one copied transport frame. @internal */
+export interface CassetteFrame {
+  direction: TransportFrameDirection;
+  kind: EnvelopeKindValue;
+  correlation: number;
+  /** Base64 main payload followed by transferred backing stores. */
+  parts: string[];
+}
+
+/** Versioned recording of Realm RPC traffic. @internal */
+export interface Cassette {
+  version: 1;
+  frames: CassetteFrame[];
+}
+
 interface ObservableTransportPort {
   observe(observer: TransportObserver): () => void;
 }
@@ -58,6 +76,7 @@ const RPC_KINDS = new Set<EnvelopeKindValue>([
   EnvelopeKind.RpcError,
   EnvelopeKind.SinkStart,
   EnvelopeKind.SinkChunk,
+  EnvelopeKind.SinkEnd,
   EnvelopeKind.SinkError,
 ]);
 
@@ -86,9 +105,95 @@ function errorText(value: unknown): string {
   return String(value);
 }
 
+function toBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function isCanonicalBase64(text: string): boolean {
+  return (
+    text.length % 4 === 0 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(text)
+  );
+}
+
+function fromBase64(text: string): Uint8Array {
+  if (!isCanonicalBase64(text)) {
+    throw invalidCassette('frame parts must contain canonical base64');
+  }
+  const binary = atob(text);
+  return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+}
+
+function invalidCassette(reason: string): TypeError {
+  return new TypeError(`Invalid simulation cassette: ${reason}`);
+}
+
+function parseCassette(value: unknown): Cassette {
+  if (typeof value !== 'object' || value === null) {
+    throw invalidCassette('expected an object');
+  }
+  const candidate = value as { version?: unknown; frames?: unknown };
+  if (candidate.version !== 1) throw invalidCassette('version 1 is required');
+  if (!Array.isArray(candidate.frames)) throw invalidCassette('frames must be an array');
+  for (const [index, valueFrame] of candidate.frames.entries()) {
+    if (typeof valueFrame !== 'object' || valueFrame === null) {
+      throw invalidCassette(`frame ${index} must be an object`);
+    }
+    const frame = valueFrame as {
+      direction?: unknown;
+      kind?: unknown;
+      correlation?: unknown;
+      parts?: unknown;
+    };
+    if (frame.direction !== 'inbound' && frame.direction !== 'outbound') {
+      throw invalidCassette(`frame ${index} has an invalid direction`);
+    }
+    if (typeof frame.kind !== 'number' || !RPC_KINDS.has(frame.kind as EnvelopeKindValue)) {
+      throw invalidCassette(`frame ${index} has an invalid RPC kind`);
+    }
+    if (!Number.isSafeInteger(frame.correlation) || (frame.correlation as number) < 0) {
+      throw invalidCassette(`frame ${index} has an invalid correlation`);
+    }
+    if (!Array.isArray(frame.parts) || frame.parts.length === 0) {
+      throw invalidCassette(`frame ${index} must have serialized parts`);
+    }
+    for (const part of frame.parts) {
+      if (typeof part !== 'string') {
+        throw invalidCassette(`frame ${index} parts must be base64 strings`);
+      }
+      if (!isCanonicalBase64(part)) {
+        throw invalidCassette(`frame ${index} parts must contain canonical base64`);
+      }
+    }
+  }
+  return candidate as Cassette;
+}
+
+/** Restore persisted frames to the runtime transport frame contract. @internal */
+export function decodeCassette(value: unknown): TransportFrame[] {
+  const cassette = parseCassette(value);
+  return cassette.frames.map((frame, sequence) => {
+    const parts = frame.parts.map(fromBase64);
+    return {
+      sequence,
+      direction: frame.direction,
+      kind: frame.kind,
+      correlation: frame.correlation,
+      payloadBytes: parts.reduce((sum, part) => sum + part.byteLength, 0),
+      arrayBufferTransfers: parts.length - 1,
+      portTransfers: 0,
+      parts,
+    };
+  });
+}
+
 /** Ordered record projected from a live Realm transport. @internal */
 export class SimJournal {
   #entries: SimCall[] = [];
+  #frames: TransportFrame[] = [];
+  #recordingError: TypeError | null = null;
   #nextSequence = 0;
 
   get entries(): readonly SimCall[] {
@@ -103,13 +208,47 @@ export class SimJournal {
    * in the journal.
    */
   observe(port: unknown): () => void {
+    return this.#attach(port, false);
+  }
+
+  /** Observe and retain exact copied RPC frames for cassette encoding. */
+  record(port: unknown): () => void {
+    return this.#attach(port, true);
+  }
+
+  /** Encode retained frame bytes without serializing their values again. */
+  toCassette(): Cassette {
+    if (this.#recordingError !== null) throw this.#recordingError;
+    return {
+      version: 1,
+      frames: this.#frames.map((frame) => ({
+        direction: frame.direction,
+        kind: frame.kind,
+        correlation: frame.correlation,
+        parts: frame.parts.map(toBase64),
+      })),
+    };
+  }
+
+  #attach(port: unknown, recordFrames: boolean): () => void {
     if (!isObservablePort(port)) {
       throw new TypeError('SimJournal requires an observable Realm transport port');
     }
     const pending = new Map<number, PendingCall>();
     const detach = port.observe({
       filter: isRpcFrame,
-      next: (frame) => this.#project(frame, pending),
+      next: (frame) => {
+        if (recordFrames) {
+          if (frame.portTransfers > 0) {
+            this.#recordingError ??= new TypeError(
+              'MessagePort transfers cannot be persisted in a simulation cassette',
+            );
+          } else {
+            this.#frames.push(frame);
+          }
+        }
+        this.#project(frame, pending);
+      },
     });
     return () => {
       detach();
