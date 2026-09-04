@@ -13,8 +13,9 @@
  * SSE event used by other hosts. If any element carries a `data-fi-view`
  * attribute it opens a long-lived `EventSource` to `/_fino/live`; the first
  * event is the current render, followed by later renders or navigation
- * instructions. Controlled native fields share one delegated change bridge
- * through the same action protocol.
+ * instructions. Controlled native fields share one delegated change bridge,
+ * while virtual lists use a debounced scroll bridge that converts pixels to
+ * model rows and submits through the same action protocol.
  *
  * Consumers should not parse or mutate the source; import the two exported
  * constants and serve them. `CLIENT_SOURCE` is the script body and
@@ -401,6 +402,28 @@ document.addEventListener('change', (event) => {
   if (form.dataset.fiChange === undefined || form.dataset.fiBusy !== undefined) return;
   void submitAction(form);
 });
+
+// Scroll events do not bubble, so virtual-list containers use one captured,
+// debounced bridge rather than installing a listener per list instance.
+document.addEventListener(
+  'scroll',
+  (event) => {
+    const el = event.target;
+    if (!(el instanceof Element) || el.dataset.fiScroll === undefined) return;
+    const form = el.closest('form[data-fi-action]');
+    if (!(form instanceof HTMLFormElement)) return;
+    if (el.__fiScrollTimer) clearTimeout(el.__fiScrollTimer);
+    el.__fiScrollTimer = setTimeout(() => {
+      el.__fiScrollTimer = null;
+      if (form.dataset.fiBusy !== undefined) return;
+      const rowHeight = Number(el.dataset.fiRowHeight) || 1;
+      const field = form.elements.namedItem('value');
+      if (field) field.value = String(Math.max(0, Math.round(el.scrollTop / rowHeight)));
+      void submitAction(form);
+    }, 60);
+  },
+  true,
+);
 
 function connectLive() {
   const views = Array.from(document.querySelectorAll('[data-fi-view]')).map((el) => el.id).filter(Boolean);

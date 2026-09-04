@@ -19,6 +19,7 @@ import 'internal:ui/components/overlay.tui';
 import 'internal:ui/components/feedback.tui';
 import 'internal:ui/components/display.tui';
 import 'internal:ui/components/data.tui';
+import 'internal:ui/components/virtual.tui';
 
 export { holdSpinnerClock } from 'internal:ui/components/feedback.tui';
 
