@@ -499,6 +499,23 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:ui/components/virtual.preview",
         "ui/components/virtual.preview"
     ),
+    source_builtin!(
+        "internal:ui/components/color.tui",
+        "ui/components/color.tui"
+    ),
+    source_builtin!("internal:ui/components/pickers", "ui/components/pickers"),
+    source_builtin!(
+        "internal:ui/components/pickers.html",
+        "ui/components/pickers.html"
+    ),
+    source_builtin!(
+        "internal:ui/components/pickers.tui",
+        "ui/components/pickers.tui"
+    ),
+    source_builtin!(
+        "internal:ui/components/pickers.preview",
+        "ui/components/pickers.preview"
+    ),
     // net
     source_builtin!("internal:net/provider", "internal/net/provider"),
     source_builtin!(
