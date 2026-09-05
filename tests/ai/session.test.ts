@@ -20,7 +20,7 @@ import { tool } from 'fino:ai/tool';
 import { SuspendSignal } from 'fino:ai/runtime';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent, ModelMessage } from 'fino:ai/model';
-import type { Memory, MemoryMessage, MemoryQuery, RecalledContext } from 'fino:ai/memory';
+import type { AgentMemoryController, MemoryQuery } from 'fino:ai/memory';
 import { DiskFileSystem } from 'fino:file';
 import { MessageHistory } from 'fino:ai/context';
 import type { HistoryStrategy } from 'fino:ai/context';
@@ -209,7 +209,7 @@ describe('Session', () => {
     t.ok(rendered.includes(winnerIndex === 0 ? 'alpha' : 'beta'));
     t.ok(!rendered.includes(loserIndex === 0 ? 'alpha' : 'beta'));
   });
-  it('memory recall receives input text and hydrates working/recalled context into the model request', async (t) => {
+  it('recalls only semantic memory and retains its selection for eval feedback', async (t) => {
     const path = tmpPath();
     const fs = new DiskFileSystem();
     try {
@@ -218,62 +218,42 @@ describe('Session', () => {
     const store = await sqliteStore({ path });
     try {
       let recalledQuery: MemoryQuery | undefined;
-      const appended: Array<{
-        role: ModelMessage['role'];
-        content: ModelMessage['content'];
-      }> = [];
-      const mem: Memory = {
-        threadId: 'memory-thread',
-        semanticAvailable: true,
-        async append(msg) {
-          appended.push({
-            role: msg.role,
-            content: msg.content,
-          });
-          return {
-            id: `m${appended.length}`,
-            threadId: 'memory-thread',
-            role: msg.role,
-            content: msg.content,
-            createdAt: Date.now(),
-          };
-        },
-        async history(): Promise<MemoryMessage[]> {
-          return [];
-        },
-        async recall(query: MemoryQuery = {}): Promise<RecalledContext> {
+      const mem = {
+        async recall(query: MemoryQuery) {
           recalledQuery = query;
           return {
-            messages: [
+            selectionId: 'selection-1',
+            labels: { topic: ['account'] },
+            hits: [
               {
-                id: 'old',
-                threadId: 'memory-thread',
-                role: 'user',
-                content: 'prior fact',
-                createdAt: 1,
-              },
-            ],
-            recalled: [
-              {
+                id: 'memory-1',
                 text: 'semantic hit',
+                scope: { type: 'shared', namespace: 'test' },
+                labels: {},
+                importance: .5,
+                createdAt: 1,
+                updatedAt: 1,
+                expiresAt: null,
+                utility: {
+                  exposures: 1,
+                  lastExposedAt: 1,
+                  evalCount: 0,
+                  evalSum: 0,
+                  manual: null,
+                  manualUpdatedAt: null,
+                  reinforcedAt: null,
+                  contexts: [],
+                },
+                similarity: .9,
                 score: .9,
+                retention: 1,
                 metadata: { source: 'fixture' },
+                citation: { id: 'memory-1', metadata: { source: 'fixture' } },
               },
             ],
-            workingMemory: { account: 'active' },
           };
         },
-        async ingest() {},
-        async getWorkingMemory() {
-          return { account: 'active' };
-        },
-        async setWorkingMemory() {},
-        thread() {
-          return this;
-        },
-        async close() {},
-        async [Symbol.asyncDispose]() {},
-      };
+      } as AgentMemoryController;
       const cap = captureModel();
       const sess = session({
         store,
@@ -283,13 +263,14 @@ describe('Session', () => {
       const result = await sess.start('new question about account');
       t.equal(result.status, 'done', 'session completed');
       t.equal(recalledQuery?.text, 'new question about account', 'recall query uses input text');
+      t.equal(recalledQuery?.sessionId, result.state.threadId, 'session scope is explicit');
+      t.equal(recalledQuery?.runId, result.runId, 'work chunk carries the run id');
+      t.equal(result.state.scratch.memorySelectionId, 'selection-1');
       const joined = cap
         .getLastMessages()
         .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
         .join('\n');
-      t.ok(joined.includes('prior fact'), 'durable history is included');
       t.ok(joined.includes('semantic hit'), 'semantic recall is included');
-      t.ok(joined.includes('account'), 'working memory is included');
     } finally {
       await store.close();
       try {

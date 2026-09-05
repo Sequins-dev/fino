@@ -31,8 +31,8 @@
  *   wrapped around any chat model.
  * - `fino:ai/session` — `session()` and `Session`: durable agent runs with
  *   session-owned history in an in-memory or SQLite store.
- * - `fino:ai/memory` — `memory()`, `retriever()`, and `SqliteMemory`: thread
- *   memory, working memory, and vector recall that outlive one context window.
+ * - `fino:ai/memory` — durable cross-session semantic memory, bounded utility
+ *   evidence, labels, optional reinforcement, and optional forgetting.
  * - `fino:ai/eval` — `evaluate()` with scorers (`exactMatch`, `contains`,
  *   `semanticSimilarity`, `llmJudge`, `schemaScorer`) and reporters.
  * - `fino:ai/skill` — `skill()` and `skillRegistry()`: lazily loaded
@@ -205,17 +205,36 @@ export type {
   ThreadState,
   ToolApprovalDecision,
 } from 'fino:ai/session';
-export { memory, retriever, SqliteMemory } from 'fino:ai/memory';
+export {
+  agentMemory,
+  AgentMemoryController,
+  memory,
+  memoryTool,
+  retriever,
+  SqliteMemory,
+} from 'fino:ai/memory';
 export type {
-  ChunkOptions,
+  AgentMemoryOptions,
+  ContextualMemoryUtility,
   Embedder,
-  Memory,
-  MemoryDocument,
-  MemoryIngestOptions,
-  MemoryIngestProgress,
-  MemoryMessage,
+  MemoryCandidate,
+  MemoryForgettingOptions,
+  MemoryLabeler,
+  MemoryLabelInput,
+  MemoryLabelRules,
+  MemoryLabels,
+  MemoryOptions,
   MemoryQuery,
-  RecalledContext,
+  MemoryRecord,
+  MemoryRememberScope,
+  MemoryScope,
+  MemorySelection,
+  MemorySelectionReceipt,
+  MemoryStore,
+  MemoryStoreInput,
+  MemoryToolOptions,
+  MemoryUtility,
+  RememberMemoryInput,
   RecallHit,
   Retriever,
   SqliteMemoryOptions,

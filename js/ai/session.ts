@@ -30,9 +30,9 @@
  *
  * Every step is committed through the store's atomic capability before the
  * next one begins, so a crash never loses more than the in-flight step. The
- * live run state is observable through `watch()` for reactive consumers, and
- * an optional `Memory` feeds recalled context into new runs and records every
- * appended message.
+ * live run state is observable through `watch()` for reactive consumers. An
+ * optional `AgentMemoryController` feeds cross-session semantic hits into new
+ * runs without storing conversation transcripts.
  *
  * ```ts no_run
  * import { agent } from 'fino:ai/agent';
@@ -59,7 +59,7 @@ import { createSignal } from 'fino:signals';
 import type { AgentState, StepResult, ToolApprovalRequest } from 'fino:ai/runtime';
 import type { Agent } from 'fino:ai/agent';
 import type { ModelMessage, Usage } from 'fino:ai/model';
-import type { Memory } from 'fino:ai/memory';
+import type { AgentMemoryController, MemorySelection } from 'fino:ai/memory';
 import { MessageHistory } from 'fino:ai/context';
 import type {
   MessageHistoryEntry,
@@ -372,11 +372,11 @@ export interface SessionOptions {
    */
   agent: Agent;
   /**
-   * Optional long-term memory. On `start()` its recalled context (prior
-   * messages, semantic hits, working memory) is folded in ahead of the input,
-   * and every new message produced by the run is appended to it.
+   * Optional long-term semantic memory. On `start()` matching hits are folded
+   * in ahead of the input. Conversation messages are never written to memory;
+   * use the opt-in memory creation tool or call `remember()` explicitly.
    */
-  memory?: Memory;
+  memory?: AgentMemoryController;
   /**
    * Thread to continue. Defaults to a freshly generated id, i.e. a new
    * conversation.
@@ -422,26 +422,18 @@ function inputText(messages: ModelMessage[]): string | undefined {
   }
   return parts.length > 0 ? parts.join('\n') : undefined;
 }
-function memoryContextMessage(ctx: Awaited<ReturnType<Memory['recall']>>): ModelMessage | null {
-  const sections: string[] = [];
-  if (ctx.workingMemory) {
-    sections.push(`Working memory:\n${JSON.stringify(ctx.workingMemory)}`);
-  }
-  if (ctx.recalled.length > 0) {
-    sections.push(
-      'Semantic recall:\n' +
-        ctx.recalled
-          .map((hit, i) => {
-            const metadata = hit.metadata ? `\nmetadata: ${JSON.stringify(hit.metadata)}` : '';
-            return `${i + 1}. ${hit.text}${metadata}`;
-          })
-          .join('\n\n'),
-    );
-  }
-  if (sections.length === 0) return null;
+function memoryContextMessage(selection: MemorySelection): ModelMessage | null {
+  if (selection.hits.length === 0) return null;
   return {
     role: 'system',
-    content: `[Memory context]\n${sections.join('\n\n')}`,
+    content:
+      '[Semantic memory]\n' +
+      selection.hits
+        .map((hit, i) => {
+          const metadata = hit.metadata ? `\nmetadata: ${JSON.stringify(hit.metadata)}` : '';
+          return `${i + 1}. ${hit.text}${metadata}`;
+        })
+        .join('\n\n'),
   };
 }
 async function historyFromMessages(messages: ModelMessage[]): Promise<MessageHistory> {
@@ -936,9 +928,9 @@ export class Session {
    * Input is a plain user string or pre-built messages. If the thread already
    * has committed history, the new run continues from its head — this is how
    * a conversation carries across runs, restarts, and requests. When the
-   * session has a `Memory`, recalled context (prior messages, semantic hits,
-   * working memory) is folded in ahead of the input and the input is appended
-   * to memory.
+   * session has an `AgentMemoryController`, semantic hits are folded in ahead
+   * of the input and the selection id is retained in `state.scratch` for a
+   * later eval outcome. Conversation history remains entirely separate.
    *
    * Resolves with a `'done'` or `'suspended'` result. Agent errors, aborts
    * via `opts.signal`, and exceeding the 100-step budget commit the matching
@@ -977,23 +969,18 @@ export class Session {
       : new MessageHistory();
     const baseRevisionId = thread.historyRevisionId;
     let messages: ModelMessage[] = [...history.render(), ...inputMessages];
-    if (this.#opts.memory) {
-      const ctx = await this.#opts.memory.recall({ text: inputText(inputMessages) });
-      const historyMsgs = ctx.messages.map((m) => ({
-        role: m.role as ModelMessage['role'],
-        content: m.content as ModelMessage['content'],
-      }));
-      const memoryContext = memoryContextMessage(ctx);
-      for (const msg of [...historyMsgs, ...(memoryContext ? [memoryContext] : [])]) {
-        history = await history.append(msg);
-      }
+    let memorySelectionId: string | undefined;
+    const queryText = inputText(inputMessages);
+    if (this.#opts.memory && queryText) {
+      const selection = await this.#opts.memory.recall({
+        text: queryText,
+        sessionId: this.#threadId,
+        runId,
+      });
+      memorySelectionId = selection.selectionId;
+      const memoryContext = memoryContextMessage(selection);
+      if (memoryContext) history = await history.append(memoryContext);
       messages = [...history.render(), ...inputMessages];
-      for (const msg of inputMessages) {
-        await this.#opts.memory.append({
-          role: msg.role,
-          content: msg.content,
-        });
-      }
     }
     const state: RunState = {
       runId,
@@ -1005,7 +992,7 @@ export class Session {
         inputTokens: 0,
         outputTokens: 0,
       },
-      scratch: {},
+      scratch: memorySelectionId ? { memorySelectionId } : {},
     };
     this.#setState(state);
     return this.#drive(state, signal, history, messages, baseRevisionId, thread);
@@ -1381,7 +1368,6 @@ export class Session {
             await this.#commit(state, history, baseRevisionId, thread);
             throw err;
           }
-          const prevLen = history.render().length;
           history = r.state.history ?? history;
           pendingMessages = undefined;
           state = {
@@ -1392,15 +1378,6 @@ export class Session {
             ...(r.state.cost !== undefined ? { cost: r.state.cost } : {}),
           };
           if (r.state.cost === undefined) delete state.cost;
-          if (this.#opts.memory) {
-            const newMsgs = history.render().slice(prevLen);
-            for (const msg of newMsgs) {
-              await this.#opts.memory.append({
-                role: msg.role,
-                content: msg.content,
-              });
-            }
-          }
           this.#setState(state);
           thread = await this.#commit(state, history, baseRevisionId, thread);
           baseRevisionId = history.revisionId;

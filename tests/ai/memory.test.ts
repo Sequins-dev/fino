@@ -1,484 +1,260 @@
 import { describe, it } from 'fino:test/test';
-import { retriever, SqliteMemory } from 'fino:ai/memory';
-import type { Embedder } from 'fino:ai/memory';
-import { IterableDataset } from 'fino:data/dataset';
+import { agentMemory, memoryTool, retriever, SqliteMemory } from 'fino:ai/memory';
+import type { Embedder, MemoryLabeler } from 'fino:ai/memory';
 import { DiskFileSystem } from 'fino:file';
-function deterministicEmbedder(dim: number): Embedder {
+
+function keywordEmbedder(): Embedder {
+  const words = ['refund', 'deploy', 'concise', 'verbose'];
   return {
-    dimensions: dim,
-    async embed(texts: string[]): Promise<Float32Array[]> {
-      return texts.map((t) => {
-        const arr = new Float32Array(dim);
-        for (let i = 0; i < dim; i++) {
-          let h = 2166136261;
-          for (let j = 0; j < t.length; j++) {
-            h ^= t.charCodeAt(j) + i;
-            h = Math.imul(h, 16777619) >>> 0;
-          }
-          arr[i] = (h % 1e4) / 1e4 - .5;
-        }
-        return arr;
+    dimensions: words.length,
+    async embed(texts) {
+      return texts.map((text) => {
+        const lower = text.toLowerCase();
+        return new Float32Array(words.map((word) => (lower.includes(word) ? 1 : 0)));
       });
     },
   };
 }
+
 function tmpPath(): string {
   return `/tmp/fino-memory-test-${Math.floor(Math.random() * 1e9)}.db`;
 }
-describe('SqliteMemory', () => {
-  it('appends messages and retrieves them in chronological order', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-    });
-    try {
-      const m1 = await mem.append({
-        role: 'user',
-        content: 'hello',
-      });
-      const m2 = await mem.append({
-        role: 'assistant',
-        content: 'hi there',
-      });
-      const m3 = await mem.append({
-        role: 'user',
-        content: 'bye',
-      });
-      t.equal(m1.role, 'user');
-      t.equal(m1.threadId, mem.threadId);
-      t.equal(m2.role, 'assistant');
-      t.ok(m2.createdAt >= m1.createdAt, 'timestamps increase');
-      const all = await mem.history();
-      t.equal(all.length, 3, 'three messages returned');
-      t.equal(all[0].content, 'hello', 'first message is chronologically earliest');
-      t.equal(all[2].content, 'bye');
-      const last2 = await mem.history({ last: 2 });
-      t.equal(last2.length, 2, 'last:2 limits correctly');
-      t.equal(last2[0].content, 'hi there');
-      const before = await mem.history({ before: m3.createdAt });
-      t.ok(
-        before.every((m) => m.createdAt < m3.createdAt),
-        'before filter applied',
-      );
-    } finally {
-      await mem.close();
+
+async function fixture(
+  opts: {
+    now?: () => number;
+    labeler?: MemoryLabeler;
+    reinforcement?: boolean;
+    forgetting?: false | { halfLifeMs: number; suppressBelow?: number };
+    maxContexts?: number;
+    maxSelections?: number;
+  } = {},
+) {
+  const path = tmpPath();
+  const fs = new DiskFileSystem();
+  try {
+    await fs.unlink(path);
+  } catch {}
+  const store = await SqliteMemory.open({ path, embedder: keywordEmbedder(), fs });
+  const controller = agentMemory({ store, namespace: 'workspace', ...opts });
+  return {
+    path,
+    fs,
+    store,
+    controller,
+    async close() {
+      await store.close();
       try {
         await fs.unlink(path);
       } catch {}
-    }
-  });
-  it('round-trips structured content as JSON', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
+    },
+  };
+}
+
+describe('agent memory', () => {
+  it('shares durable memories across sessions while isolating session scope', async (t) => {
+    const f = await fixture();
     try {
-      await fs.unlink(path);
-    } catch {}
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-    });
-    try {
-      const parts = [
-        {
-          type: 'text',
-          text: 'structured message',
-        },
-      ];
-      const appended = await mem.append({
-        role: 'assistant',
-        content: parts as never,
+      await f.controller.remember({ text: 'refunds are available for thirty days' });
+      await f.controller.remember({
+        text: 'deployment scratch note',
+        scope: { type: 'session', sessionId: 'session-a' },
       });
-      t.deepEqual(appended.content, parts, 'content returned from append');
-      const history = await mem.history();
-      t.deepEqual(history[0].content, parts, 'content round-trips through sqlite');
+      const shared = await f.controller.recall({ text: 'refund', sessionId: 'session-b' });
+      t.equal(shared.hits[0]?.text, 'refunds are available for thirty days');
+      const isolated = await f.controller.recall({ text: 'deploy', sessionId: 'session-b' });
+      t.equal(isolated.hits.length, 0, 'another session cannot recall session memory');
+      const local = await f.controller.recall({ text: 'deploy', sessionId: 'session-a' });
+      t.equal(local.hits[0]?.text, 'deployment scratch note');
     } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
+      await f.close();
     }
   });
-  it('working memory: set, get, merge, replace', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
+
+  it('records exposure without reinforcement and applies an eval exactly once', async (t) => {
+    const f = await fixture({ reinforcement: true });
     try {
-      await fs.unlink(path);
-    } catch {}
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-    });
-    try {
-      t.equal(await mem.getWorkingMemory(), null, 'null before first write');
-      await mem.setWorkingMemory({
-        name: 'Alice',
-        score: 10,
-      });
-      t.deepEqual(
-        await mem.getWorkingMemory(),
-        {
-          name: 'Alice',
-          score: 10,
-        },
-        'initial set',
-      );
-      await mem.setWorkingMemory(
-        {
-          score: 20,
-          rank: 1,
-        },
-        'merge',
-      );
-      t.deepEqual(
-        await mem.getWorkingMemory(),
-        {
-          name: 'Alice',
-          score: 20,
-          rank: 1,
-        },
-        'merge preserves existing keys',
-      );
-      await mem.setWorkingMemory({ x: 99 }, 'replace');
-      t.deepEqual(await mem.getWorkingMemory(), { x: 99 }, 'replace discards prior state');
-      t.deepEqual(mem.workingMemory.get(), { x: 99 }, 'working memory signal retains replacement');
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('recall without query text returns history and workingMemory, no recalled items', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-    });
-    try {
-      await mem.append({
-        role: 'user',
-        content: 'msg1',
-      });
-      await mem.append({
-        role: 'assistant',
-        content: 'msg2',
-      });
-      await mem.setWorkingMemory({ task: 'active' });
-      const ctx = await mem.recall({});
-      t.equal(ctx.messages.length, 2, 'history returned');
-      t.deepEqual(ctx.workingMemory, { task: 'active' }, 'working memory returned');
-      t.equal(ctx.recalled.length, 0, 'no recalled items without query.text');
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('thread(id) re-scopes to a separate conversation on the same store', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const memA = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(4),
-    });
-    try {
-      await memA.append({
-        role: 'user',
-        content: 'in thread A',
-      });
-      const memB = memA.thread('thread-B');
-      t.ok(memB.threadId !== memA.threadId, 'different threadId');
-      await memB.append({
-        role: 'user',
-        content: 'in thread B',
-      });
-      const histA = await memA.history();
-      t.equal(histA.length, 1, 'thread A has its message');
-      t.equal(histA[0].content, 'in thread A');
-      const histB = await memB.history();
-      t.equal(histB.length, 1, 'thread B has its message');
-      t.equal(histB[0].content, 'in thread B');
-    } finally {
-      await memA.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('semantic recall: ingest and KNN when available; degrades gracefully otherwise', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const dim = 8;
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(dim),
-      dimensions: dim,
-    });
-    try {
-      if (mem.semanticAvailable) {
-        await mem.ingest([
-          {
-            text: 'the quick brown fox',
-            metadata: { tag: 'fox' },
-          },
-          {
-            text: 'lazy dog sleeping',
-            metadata: { tag: 'dog' },
-          },
-          {
-            text: 'a fast orange fox running',
-            metadata: { tag: 'fox2' },
-          },
-        ]);
-        const ctx = await mem.recall({
-          text: 'quick fox',
-          topK: 2,
-        });
-        t.ok(ctx.recalled.length > 0, 'KNN returned results');
-        t.ok(ctx.recalled.length <= 2, 'topK honoured');
-        t.ok(ctx.recalled[0].score > 0 && ctx.recalled[0].score <= 1, 'score in range');
-        t.ok(ctx.recalled[0].text.length > 0, 'text is present');
-      } else {
-        await mem.ingest([{ text: 'no vectors' }]);
-        const ctx = await mem.recall({ text: 'no vectors' });
-        t.equal(ctx.recalled.length, 0, 'degrades to empty recalled without semantic');
-        t.equal(mem.semanticAvailable, false, 'semanticAvailable flag is false');
-      }
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('ingestProgress signal reports stored chunks', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const mem = await SqliteMemory.open({ path, embedder: deterministicEmbedder(4), fs });
-    try {
-      const seen: number[] = [];
-      const dispose = mem.ingestProgress.subscribe((progress) => seen.push(progress.stored));
-      await mem.ingest([{ text: 'alpha beta gamma' }], { chunk: { size: 5, overlap: 1 } });
-      dispose();
-      t.equal(mem.ingestProgress.get().active, false, 'ingest progress ends inactive');
-      t.ok(mem.ingestProgress.get().chunks > 1, 'ingest progress records chunk count');
-      t.equal(
-        mem.ingestProgress.get().stored,
-        mem.ingestProgress.get().chunks,
-        'all chunks are stored',
-      );
-      t.ok(
-        seen.some((stored) => stored > 0),
-        'subscriber saw stored progress',
-      );
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('ingests lazy datasets in pull-driven embedding batches', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const embedded: string[][] = [];
-    let pulled = 0;
-    const pullsAtEmbed: number[] = [];
-    const embedder: Embedder = {
-      dimensions: 4,
-      async embed(texts) {
-        embedded.push([...texts]);
-        pullsAtEmbed.push(pulled);
-        return texts.map(() => new Float32Array(4));
-      },
-    };
-    const mem = await SqliteMemory.open({ path, embedder, fs });
-    try {
-      const documents = new IterableDataset(async function* () {
-        for (const text of ['alpha', 'beta', 'gamma']) {
-          pulled++;
-          yield { text };
-        }
-      });
-      await mem.ingest(documents, { batchSize: 2 });
-      t.equal(pulled, 3, 'lazy source is traversed once');
-      t.deepEqual(
-        embedded.map((batch) => batch.length),
-        [2, 1],
-        'DataLoader bounds embedding work by document batch',
-      );
-      t.deepEqual(pullsAtEmbed, [2, 3], 'the loader does not read ahead of each batch');
-      t.deepEqual(mem.ingestProgress.get(), {
-        active: false,
-        documents: 3,
-        chunks: 3,
-        embedded: 3,
-        stored: 3,
-      });
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('cancels lazy ingestion and closes its source', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const controller = new AbortController();
-    let closed = false;
-    const embedder: Embedder = {
-      dimensions: 4,
-      async embed(texts) {
-        controller.abort(new Error('stop ingest'));
-        return texts.map(() => new Float32Array(4));
-      },
-    };
-    const mem = await SqliteMemory.open({ path, embedder, fs });
-    try {
-      const documents = new IterableDataset(async function* () {
-        try {
-          yield { text: 'alpha' };
-          yield { text: 'beta' };
-        } finally {
-          closed = true;
-        }
-      });
-      await t.rejects(
-        () => mem.ingest(documents, { signal: controller.signal }),
-        /stop ingest/,
-        'abort reason rejects ingestion',
-      );
-      t.equal(closed, true, 'source iterator is closed after cancellation');
-      t.equal(mem.ingestProgress.get().active, false, 'progress is inactive after cancellation');
-    } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
-    }
-  });
-  it('semantic recall filters by metadata and returns citations', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
-    try {
-      await fs.unlink(path);
-    } catch {}
-    const dim = 8;
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(dim),
-      dimensions: dim,
-    });
-    try {
-      if (!mem.semanticAvailable) {
-        t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
-        return;
-      }
-      await mem.ingest([
-        {
-          text: 'refund policy is thirty days',
-          metadata: {
-            topic: 'billing',
-            source: 'policy',
-          },
-        },
-        {
-          text: 'deployment runbook uses blue green',
-          metadata: {
-            topic: 'ops',
-            source: 'runbook',
-          },
-        },
-      ]);
-      const ctx = await mem.recall({
+      const memory = await f.controller.remember({ text: 'refund preference' });
+      const selection = await f.controller.recall({
         text: 'refund',
-        topK: 5,
-        filter: { metadata: { topic: 'billing' } },
+        labels: { task: ['billing'] },
       });
-      t.ok(ctx.recalled.length > 0, 'filtered recall returned a hit');
-      t.equal(
-        ctx.recalled.every((hit) => hit.metadata?.topic === 'billing'),
-        true,
-      );
-      t.ok(ctx.recalled[0].id, 'hit id is exposed');
-      t.equal(ctx.recalled[0].citation?.id, ctx.recalled[0].id, 'citation points at the hit');
-      t.deepEqual(ctx.recalled[0].citation?.metadata, ctx.recalled[0].metadata);
+      let stored = await f.controller.get(memory.id);
+      t.equal(stored!.utility.exposures, 1);
+      t.equal(stored!.utility.evalCount, 0, 'exposure is not reinforcement');
+      t.equal(await f.controller.complete(selection.selectionId, { score: 1 }), true);
+      t.equal(await f.controller.complete(selection.selectionId, { score: 0 }), false);
+      stored = await f.controller.get(memory.id);
+      t.equal(stored!.utility.evalCount, 1, 'selection completion is idempotent');
+      t.ok(stored!.utility.evalSum > 0, 'positive bundle eval reinforces');
+      t.equal(stored!.utility.contexts.length, 1, 'context is aggregated by labels');
     } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
+      await f.close();
     }
   });
-  it('retriever returns recalled hits with default query options', async (t) => {
-    const path = tmpPath();
-    const fs = new DiskFileSystem();
+
+  it('does not lose exposure updates from concurrent session recalls', async (t) => {
+    const f = await fixture();
     try {
-      await fs.unlink(path);
-    } catch {}
-    const dim = 8;
-    const mem = await SqliteMemory.open({
-      path,
-      embedder: deterministicEmbedder(dim),
-      dimensions: dim,
-    });
+      const memory = await f.controller.remember({ text: 'refund preference' });
+      await Promise.all(
+        Array.from({ length: 12 }, (_, index) =>
+          f.controller.recall({ text: 'refund', sessionId: `session-${index}` }),
+        ),
+      );
+      t.equal((await f.controller.get(memory.id))!.utility.exposures, 12);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('stores mutable manual feedback instead of an evidence ledger', async (t) => {
+    const f = await fixture({ reinforcement: true });
     try {
-      if (!mem.semanticAvailable) {
-        t.equal(mem.semanticAvailable, false, 'semantic recall unavailable on this sqlite build');
-        return;
+      const memory = await f.controller.remember({ text: 'be concise' });
+      await f.controller.feedback(memory.id, { value: 1 });
+      t.equal((await f.controller.get(memory.id))!.utility.manual, 1);
+      await f.controller.feedback(memory.id, { value: -1 });
+      t.equal((await f.controller.get(memory.id))!.utility.manual, -1, 'feedback replaces');
+      await f.controller.feedback(memory.id, { value: null });
+      t.equal((await f.controller.get(memory.id))!.utility.manual, null, 'feedback clears');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('bounds contextual utility and outstanding selection receipts', async (t) => {
+    const f = await fixture({ reinforcement: true, maxContexts: 2, maxSelections: 2 });
+    try {
+      const memory = await f.controller.remember({ text: 'refund rule' });
+      for (const task of ['one', 'two', 'three']) {
+        const selected = await f.controller.recall({ text: 'refund', labels: { task: [task] } });
+        await f.controller.complete(selected.selectionId, { score: 1 });
       }
-      await mem.ingest([
-        {
-          text: 'refund policy is thirty days',
-          metadata: { topic: 'billing' },
-        },
-        {
-          text: 'incident runbook escalates pages',
-          metadata: { topic: 'ops' },
-        },
-      ]);
-      const retrieveBilling = retriever(mem, {
-        topK: 3,
-        filter: { metadata: { topic: 'billing' } },
-      });
-      const hits = await retrieveBilling.retrieve('refund');
-      t.ok(hits.length > 0, 'retriever returned hits');
+      const stored = await f.controller.get(memory.id);
+      t.equal(stored!.utility.contexts.length, 2, 'oldest context aggregate is replaced');
+      const first = await f.controller.recall({ text: 'refund' });
+      await f.controller.recall({ text: 'refund' });
+      await f.controller.recall({ text: 'refund' });
       t.equal(
-        hits.every((hit) => hit.metadata?.topic === 'billing'),
-        true,
-        'default metadata filter applied',
+        await f.controller.complete(first.selectionId, { score: 1 }),
+        false,
+        'oldest receipt is pruned',
       );
     } finally {
-      await mem.close();
-      try {
-        await fs.unlink(path);
-      } catch {}
+      await f.close();
+    }
+  });
+
+  it('makes forgetting optional and uses an injected clock', async (t) => {
+    let now = 1_000;
+    const decaying = await fixture({
+      now: () => now,
+      forgetting: { halfLifeMs: 100, suppressBelow: .2 },
+    });
+    try {
+      await decaying.controller.remember({ text: 'refund rule' });
+      now += 1_000;
+      t.equal((await decaying.controller.recall({ text: 'refund' })).hits.length, 0);
+    } finally {
+      await decaying.close();
+    }
+    const retained = await fixture({ now: () => now, forgetting: false });
+    try {
+      await retained.controller.remember({ text: 'refund rule' });
+      now += 1_000_000;
+      t.equal((await retained.controller.recall({ text: 'refund' })).hits.length, 1);
+    } finally {
+      await retained.close();
+    }
+  });
+
+  it('suppresses expired session memories without deleting their inspectable state', async (t) => {
+    let now = 100;
+    const f = await fixture({ now: () => now });
+    try {
+      const memory = await f.controller.remember({
+        text: 'deployment scratch note',
+        scope: { type: 'session', sessionId: 'session-a' },
+        expiresAt: 200,
+      });
+      t.equal(
+        (await f.controller.recall({ text: 'deploy', sessionId: 'session-a' })).hits.length,
+        1,
+      );
+      now = 201;
+      t.equal(
+        (await f.controller.recall({ text: 'deploy', sessionId: 'session-a' })).hits.length,
+        0,
+      );
+      t.equal((await f.controller.get(memory.id))!.text, 'deployment scratch note');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('normalizes bounded labels and survives automatic labeler failure', async (t) => {
+    let fail = false;
+    const labeler: MemoryLabeler = {
+      async label() {
+        if (fail) throw new Error('classifier unavailable');
+        return { topic: [' Billing ', 'billing', 'ops'], ignored: ['x'] };
+      },
+    };
+    const f = await fixture({ labeler });
+    try {
+      const labeled = await f.controller.remember({ text: 'refund details' });
+      t.deepEqual(labeled.labels, { topic: ['billing', 'ops'] });
+      t.deepEqual(await f.controller.labels({ text: 'session summary', source: 'session' }), {
+        topic: ['billing', 'ops'],
+      });
+      fail = true;
+      const unlabeled = await f.controller.remember({ text: 'refund fallback' });
+      t.deepEqual(unlabeled.labels, {}, 'memory remains valid when labeling fails');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('filters explicit labels and uses query labels only as a boost', async (t) => {
+    const f = await fixture();
+    try {
+      await f.controller.remember({
+        text: 'refund billing version',
+        labels: { topic: ['billing'] },
+      });
+      await f.controller.remember({
+        text: 'refund support version',
+        labels: { topic: ['support'] },
+      });
+      const filtered = await f.controller.recall({
+        text: 'refund',
+        filter: { labels: { topic: ['support'] } },
+      });
+      t.equal(filtered.hits.length, 1);
+      t.equal(filtered.hits[0].labels.topic[0], 'support');
+      const boosted = await f.controller.recall({ text: 'refund', labels: { topic: ['support'] } });
+      t.equal(boosted.hits[0].labels.topic[0], 'support');
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('provides retriever and opt-in creation tool adapters', async (t) => {
+    const f = await fixture();
+    try {
+      const remember = memoryTool(f.controller, { sessionId: 'session-a' });
+      const result = await remember.run({
+        text: 'deploy using blue green',
+        durability: 'session',
+        labels: { topic: ['ops'] },
+      });
+      t.ok(result.content.includes('Remembered'));
+      const hits = await retriever(f.controller, { sessionId: 'session-a' }).retrieve('deploy');
+      t.equal(hits.length, 1);
+      t.equal(hits[0].scope.type, 'session', 'tool binds the supplied session authority');
+    } finally {
+      await f.close();
     }
   });
 });
