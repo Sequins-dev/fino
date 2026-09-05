@@ -264,9 +264,24 @@ function deterministicEffectsConfig(
   if (options.startTime !== undefined && !Number.isFinite(options.startTime)) {
     throw new TypeError('fino:realm — deterministic.startTime must be a finite number');
   }
+  const responseLatency = options.responseLatency;
+  if (
+    responseLatency !== undefined &&
+    (responseLatency.length !== 2 ||
+      !responseLatency.every(Number.isFinite) ||
+      responseLatency[0] < 0 ||
+      responseLatency[1] < responseLatency[0])
+  ) {
+    throw new TypeError(
+      'fino:realm — deterministic.responseLatency must be a finite [minimum, maximum] range',
+    );
+  }
   return {
     seed: options.seed,
     startTime: options.startTime ?? 1_700_000_000_000,
+    ...(responseLatency === undefined
+      ? {}
+      : { responseLatency: [responseLatency[0], responseLatency[1]] as [number, number] }),
   };
 }
 function currentRealmBootstrapData(): RealmBootstrapData | undefined {
@@ -1505,7 +1520,9 @@ export interface RealmOptions {
    *
    * The child starts at `startTime`, timers advance virtual time when the
    * Realm is otherwise idle, and `Math.random()` plus runtime random bytes draw
-   * from `seed`. The default start is `2023-11-14T22:13:20Z`.
+   * from `seed`. The default start is `2023-11-14T22:13:20Z`. An optional
+   * `responseLatency` range charges Facade results to the same virtual clock
+   * without waiting in real time.
    *
    * This option does not simulate or deny I/O. Use import-map policy to control
    * external effects. It is not inherited by nested Realms and is not supported
@@ -1516,7 +1533,11 @@ export interface RealmOptions {
    *
    * const realm = new Realm({
    *   entry: './worker.ts',
-   *   deterministic: { seed: 'checkout-flow', startTime: 0 },
+   *   deterministic: {
+   *     seed: 'checkout-flow',
+   *     startTime: 0,
+   *     responseLatency: [10, 100],
+   *   },
    * });
    * ```
    */
@@ -1642,6 +1663,14 @@ export interface DeterministicRealmOptions {
   seed: number | string;
   /** Initial virtual Unix time in milliseconds. Defaults to `1700000000000`. */
   startTime?: number;
+  /**
+   * Inclusive virtual-millisecond range charged to each Facade response.
+   *
+   * Scalar results and sink results draw once. Read-stream chunks draw
+   * independently and remain ordered; the terminal frame adds no extra delay.
+   * Delays use a seed-derived stream independent of guest randomness.
+   */
+  responseLatency?: [number, number];
 }
 /**
  * Options for creating a Realm from in-memory entrypoint source.

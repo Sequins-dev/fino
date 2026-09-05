@@ -9,7 +9,8 @@
  *
  * When the parent sends back `{__rpc_res, reqId, result|error}`, the port drain
  * loop in `internal:realm/transport-port` calls `resolveRpc` or `rejectRpc` here
- * to settle the pending Promise.
+ * to settle the pending Promise. Deterministic Realms may schedule that final
+ * settlement against their virtual clock without changing the transport.
  *
  * Streaming calls use `callStream(specifier, method, args)` which returns an
  * `AsyncIterable<unknown>` directly.  The parent sends `__rpc_chunk` / `__rpc_end` /
@@ -81,6 +82,47 @@ const _pendingStreams = new Map<number, UnboundedChannel<unknown>>();
 // ---------------------------------------------------------------------------
 const _ser = serialize;
 const _send = nativeSend;
+
+let _responseDelay: (() => Promise<void>) | null = null;
+const _streamDelays = new Map<number, Promise<void>>();
+
+/** Install child-side scheduling for settled Facade responses. @internal */
+export function _installResponseDelay(delay: (() => Promise<void>) | null): void {
+  _responseDelay = delay;
+}
+
+function _afterResponseDelay(settle: () => void): void {
+  if (_responseDelay === null) {
+    settle();
+    return;
+  }
+  void _responseDelay().then(settle, settle);
+}
+
+function _afterStreamDelay(reqId: number, drawDelay: boolean, deliver: () => void): void {
+  if (_responseDelay === null) {
+    deliver();
+    return;
+  }
+  const responseDelay = _responseDelay;
+  const previous = _streamDelays.get(reqId) ?? Promise.resolve();
+  const next = previous
+    .then(() => (drawDelay ? responseDelay() : undefined))
+    .then(deliver, deliver);
+  _streamDelays.set(reqId, next);
+}
+
+/**
+ * Return scalar and sink calls still awaiting a parent response.
+ *
+ * Read streams are excluded because an open subscription must not prevent
+ * virtual time from advancing between chunks.
+ *
+ * @internal
+ */
+export function outstandingCalls(): number {
+  return _pending.size + _pendingSinks.size;
+}
 // ---------------------------------------------------------------------------
 // Internal send helper
 // ---------------------------------------------------------------------------
@@ -171,25 +213,27 @@ export function resolveRpc(reqId: number, result: unknown): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
     _pending.delete(reqId);
-    // Auto-wrap handle results in a transparent method proxy.
-    if (
-      result !== null &&
-      typeof result === 'object' &&
-      typeof (
-        result as {
-          __handle?: unknown;
-        }
-      ).__handle === 'string'
-    ) {
-      const h = result as {
-        __handle: string;
-        streams?: string[];
-        sinks?: string[];
-      };
-      entry.resolve(_makeHandleProxy(h.__handle, h.streams ?? [], h.sinks ?? []));
-    } else {
-      entry.resolve(result);
-    }
+    _afterResponseDelay(() => {
+      // Auto-wrap handle results in a transparent method proxy.
+      if (
+        result !== null &&
+        typeof result === 'object' &&
+        typeof (
+          result as {
+            __handle?: unknown;
+          }
+        ).__handle === 'string'
+      ) {
+        const h = result as {
+          __handle: string;
+          streams?: string[];
+          sinks?: string[];
+        };
+        entry.resolve(_makeHandleProxy(h.__handle, h.streams ?? [], h.sinks ?? []));
+      } else {
+        entry.resolve(result);
+      }
+    });
     return true;
   }
   // Fall through: the __rpc_res may be the final result of a write-stream (sink).
@@ -237,7 +281,7 @@ export function rejectRpc(reqId: number, error: string): boolean {
   const entry = _pending.get(reqId);
   if (entry) {
     _pending.delete(reqId);
-    entry.reject(new Error(error));
+    _afterResponseDelay(() => entry.reject(new Error(error)));
     return true;
   }
   // Fall through: error may belong to a write-stream (sink).
@@ -292,7 +336,9 @@ export function callStream(
  */
 export function pushChunk(reqId: number, chunk: unknown): void {
   const channel = _pendingStreams.get(reqId);
-  if (channel !== undefined) void channel.writer.write(chunk);
+  if (channel !== undefined) {
+    _afterStreamDelay(reqId, true, () => void channel.writer.write(chunk));
+  }
 }
 /**
  * Signal end-of-stream for a pending streaming call.
@@ -312,7 +358,10 @@ export function endStream(reqId: number): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
   _pendingStreams.delete(reqId);
-  void q.writer.close();
+  _afterStreamDelay(reqId, false, () => {
+    _streamDelays.delete(reqId);
+    void q.writer.close();
+  });
 }
 /**
  * Signal an error on a pending streaming call.
@@ -333,7 +382,10 @@ export function errStream(reqId: number, error: string): void {
   const q = _pendingStreams.get(reqId);
   if (!q) return;
   _pendingStreams.delete(reqId);
-  void q.writer.close(new Error(error));
+  _afterStreamDelay(reqId, false, () => {
+    _streamDelays.delete(reqId);
+    void q.writer.close(new Error(error));
+  });
 }
 // ---------------------------------------------------------------------------
 // Public API — write-stream (sink) calls  [QUIC: client-initiated unidirectional stream]
@@ -563,7 +615,7 @@ export function resolveSink(reqId: number, result: unknown): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
   _pendingSinks.delete(reqId);
-  sink._resolve(result);
+  _afterResponseDelay(() => sink._resolve(result));
   return true;
 }
 /**
@@ -586,6 +638,6 @@ export function rejectSink(reqId: number, error: string): boolean {
   const sink = _pendingSinks.get(reqId);
   if (!sink) return false;
   _pendingSinks.delete(reqId);
-  sink._reject(error);
+  _afterResponseDelay(() => sink._reject(error));
   return true;
 }
