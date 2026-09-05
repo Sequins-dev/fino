@@ -337,6 +337,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tty/lower", "internal/tty/lower"),
     source_builtin!("internal:tty/vt", "internal/tty/vt"),
     source_builtin!("fino:tty/tui", "tty/tui"),
+    source_builtin!("fino:tty/inline", "tty/inline"),
     source_builtin!(
         "internal:ui/components/html-runtime",
         "ui/components/html-runtime"

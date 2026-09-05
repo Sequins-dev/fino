@@ -53,34 +53,37 @@ preview against the branch rather than trusting this summary.
 
 ## Required work, in order
 
-### 1. Inline terminal regions
+### 1. Inline terminal regions — done
 
-This is the only capability `main` lacks, and everything else here depends on
-it. `render()` in `js/tty/tui.ts` is fullscreen: it enters the alternate
-screen, hides the cursor and owns the viewport until `stop()`. A coding agent
-needs the opposite — a region that paints above the prompt, grows and shrinks
-with its content, and leaves the transcript in the terminal's scrollback when
-it finishes.
+`fino:tty/inline` provides `renderInline()`. `render()` still owns the
+alternate screen; the inline renderer stays in the primary buffer, pushes
+finalized content into the terminal's own scrollback, and repaints a footer
+pinned above it.
 
-#34 has a working implementation in `js/tty/inline.ts` (828 lines):
-`renderInline`, `withInlineApp`, an overlay handle, and `composeInlineFrame` /
-`footerTop` for placing a footer against the bottom of the region. It predates
-the retained host, so it composes rows itself rather than going through
-`internal:tty/layout` and `fino:tty/frame`.
+The footer is a component tree laid out through the same `retainedTerminal`
+pipeline `render()` uses, so focus, key dispatch and the whole catalog work
+inside it. `render()` and `renderInline()` now differ in viewport ownership and
+nothing else.
 
-Rebuild it on the landed stack rather than porting it:
+`InlineApp` gives `fino code` what it needs: `printAbove()` takes a component
+tree or pre-wrapped strings, `update()` replaces the footer, `resetHistory()`
+rebuilds from the top, `setMouse()` toggles capture, and `focus` exposes the
+footer's traversal. Mouse capture is off by default so the terminal keeps
+selection, scrolling and find.
 
-- Reuse `layoutRetained` and the `Frame` model; an inline region is a viewport
-  with a height the app chooses, not a new layout engine.
-- Reuse `frameToScreen` row diffing. Inline mode differs in cursor placement
-  and in scrolling the region, not in how a row is encoded.
-- Keep the existing `TuiApp` shape where it fits, so `render()` and
-  `renderInline()` differ in viewport ownership and nothing else.
-- Overlays should be `Layer`, which the layout engine already supports, rather
-  than a second out-of-flow mechanism.
+Two behaviours are worth knowing when building on it:
 
-Carry over the behaviour `inline.ts` already gets right — footer placement
-under a growing history, and reflow on resize without corrupting scrollback.
+- The footer is sized to the height its content asks for, not to the row
+  budget. Laying it out at the maximum claims every spare row, which pins the
+  footer to the top and leaves the transcript one row — the bug the growth
+  test now guards.
+- Transcript rows use the full width; footer rows stop one column short. A
+  footer row that fills the last column can be recorded as soft-wrapped, and a
+  later re-wrap joins it with the row below.
+
+Not carried over from #34: `withInlineApp` and the fullscreen overlay handle.
+Overlays should be `Layer`, which the layout engine already supports, rather
+than a second out-of-flow mechanism; add it when a caller needs it.
 
 ### 2. Rebuild `fino code` on the framework
 
@@ -115,10 +118,12 @@ Order 1 and 3 can proceed in parallel with 2; only step 4 needs all of them.
 
 ## Risks
 
-- **Inline scrollback is hard to assert.** The pty harness models a screen, not
-  scrollback, so "the transcript survives after exit" needs either an emulator
-  addition or a test that reads the raw byte stream. Decide this before writing
-  step 2's tests, not after.
+- **Scrollback itself is still unasserted.** The pty harness models a screen,
+  not scrollback. `tests/tty/inline.test.ts` covers what the screen can show —
+  eviction order, the footer never being overwritten, the transcript surviving
+  exit — and asserts the DECSTBM region directly through the pure composer. It
+  does not prove an evicted row reached the terminal's saved scrollback; that
+  needs an emulator addition or a raw-byte test.
 - **`fino code`'s value is in the agent, not the chrome.** The catalog rewrite
   is mechanical; the risk is spending the budget there and re-landing the agent
   unreviewed. Keep step 3 reviewable on its own.
