@@ -10,6 +10,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | --- | --- |
 | `fino:ffi` | `benchmarks/ffi.bench.ts` |
 | `fino:commands/root` | not yet benchmarked |
+| `fino:commands/preview` | not yet benchmarked |
 | `fino:commands/run` | not yet benchmarked |
 | `fino:commands/repl` | not yet benchmarked |
 | `fino:commands/test` | not yet benchmarked |
@@ -39,6 +40,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:ui/components` | not yet benchmarked |
 | `fino:ui/components/html` | not yet benchmarked |
 | `fino:ui/components/theme` | not yet benchmarked |
+| `fino:ui/preview` | not yet benchmarked |
 | `fino:ui/jsx-runtime` | `benchmarks/ui.bench.ts` |
 | `fino:ui/html` | `benchmarks/ui.bench.ts` |
 | `fino:ui/portable` | `benchmarks/ui.bench.ts` |

@@ -743,9 +743,16 @@ function sseResponse(
         write(chunk) {
           controller.enqueue(chunk);
         },
+        close() {
+          controller.close();
+        },
       }).getWriter();
-      for (const event of events) await writeEvent(writer, event);
-      controller.close();
+      try {
+        for (const event of events) await writeEvent(writer, event);
+        await writer.close();
+      } finally {
+        writer.releaseLock();
+      }
     },
   });
   return new Response(stream, {

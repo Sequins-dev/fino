@@ -32,6 +32,12 @@ export interface PreviewGroup {
   previews: Preview[];
 }
 
+/** Selected preview and its parsed control values. */
+export interface PreviewSelection {
+  preview: Preview | undefined;
+  args: PreviewArgs;
+}
+
 /** Return the declared default values for a preview. */
 export function defaultArgs(preview: Preview): PreviewArgs {
   return Object.fromEntries(
@@ -55,4 +61,66 @@ export function parseArgs(preview: Preview, raw: Record<string, string>): Previe
     } else args[name] = value;
   }
   return args;
+}
+
+/** Find a preview by its catalog-wide key. */
+export function findPreview(
+  groups: readonly PreviewGroup[],
+  key: string | null,
+): Preview | undefined {
+  for (const group of groups) {
+    for (const preview of group.previews) {
+      if (preview.key === key) return preview;
+    }
+  }
+  return undefined;
+}
+
+/** Select a requested preview or the catalog's first entry, then parse controls. */
+export function selectPreview(
+  groups: readonly PreviewGroup[],
+  key: string | null,
+  raw: Record<string, string> = {},
+): PreviewSelection {
+  const preview =
+    findPreview(groups, key) ?? groups.find((group) => group.previews.length > 0)?.previews[0];
+  return { preview, args: preview === undefined ? {} : parseArgs(preview, raw) };
+}
+
+/** Validate custom preview modules and enforce catalog-wide key uniqueness. */
+export function validatePreviewGroups(value: unknown): PreviewGroup[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new TypeError('preview groups must be a non-empty array');
+  }
+  const keys = new Set<string>();
+  for (const group of value as unknown[]) {
+    if (typeof group !== 'object' || group === null) {
+      throw new TypeError('each preview group must be an object');
+    }
+    const candidate = group as { title?: unknown; previews?: unknown };
+    if (
+      typeof candidate.title !== 'string' ||
+      !Array.isArray(candidate.previews) ||
+      candidate.previews.length === 0
+    ) {
+      throw new TypeError('each preview group needs a title and non-empty previews array');
+    }
+    for (const preview of candidate.previews as unknown[]) {
+      if (typeof preview !== 'object' || preview === null) {
+        throw new TypeError(`preview entries in ${candidate.title} must be objects`);
+      }
+      const entry = preview as { key?: unknown; name?: unknown; view?: unknown };
+      if (
+        typeof entry.key !== 'string' ||
+        entry.key.length === 0 ||
+        typeof entry.name !== 'string' ||
+        typeof entry.view !== 'function'
+      ) {
+        throw new TypeError(`preview entries in ${candidate.title} need key, name, and view`);
+      }
+      if (keys.has(entry.key)) throw new TypeError(`duplicate preview key: ${entry.key}`);
+      keys.add(entry.key);
+    }
+  }
+  return value as PreviewGroup[];
 }

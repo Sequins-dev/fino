@@ -433,6 +433,8 @@ forms remain compact monochrome glyphs, while HTML can use richer forms. Pass an
 `icons` table to either component to override names without branching in the
 application tree; unknown names consistently fall back to `file`.
 
-Each family also owns a small preview descriptor beside its implementation.
-The preview host can aggregate those descriptors later without coupling the
-components to a CLI or browser runtime.
+Each family also owns preview descriptors beside its implementation. The
+[`fino:ui/preview`](./preview.md) catalog validates and orders those descriptors,
+then supplies the same views to terminal and browser runners. Component
+contracts stay tested with their families; catalog uniqueness, dual-target
+renderability, navigation, and live server actions stay in the preview suite.

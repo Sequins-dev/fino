@@ -3,8 +3,8 @@
  *
  * Composes the top-level `fino` command from the built-in subcommand tasks —
  * `run`, `test`, `coverage`, `bench`, `load`, `install`, `init`, `doc`, `fmt`,
- * `lint`,
- * `task`, and `repl` — and layers the shorthand behavior on top: `fino <script>`
+ * `lint`, `preview`, `task`, and `repl` — and layers the shorthand behavior on
+ * top: `fino <script>`
  * executes the script directly (delegating to `fino:commands/run`), and bare
  * `fino` with no arguments starts the interactive REPL.
  *
@@ -37,6 +37,7 @@ import docCommand from './doc.ts';
 import fmtCommand from './fmt.ts';
 import lintCommand from './lint.ts';
 import replCommand from './repl.ts';
+import previewCommand from './preview.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
 /**
@@ -142,6 +143,7 @@ const command = new Task({
     lintCommand,
     taskCommand,
     replCommand,
+    previewCommand,
   ],
 });
 export { command as default };
