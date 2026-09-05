@@ -297,6 +297,36 @@ export abstract class BaseTransportPort extends EventTarget {
     this._postEnvelope({ kind, correlation }, message, transfer);
   }
   /**
+   * Send an already serialized control payload.
+   *
+   * This preserves recorded structured-clone bytes and transferred backing
+   * stores instead of decoding and serializing them a second time.
+   *
+   * @internal
+   */
+  _postSerializedControl(
+    kind: Envelope['kind'],
+    correlation: number,
+    sourceParts: readonly Uint8Array[],
+  ): void {
+    if (this._closed) return;
+    const parts = sourceParts.map((part) => part.slice());
+    const [data, ...stores] = parts;
+    if (data === undefined) throw new TypeError('Serialized control payload requires data');
+    const envelope = { kind, correlation };
+    this._send(encodeEnvelope(envelope), data, stores, []);
+    if (this.#observers.size > 0) {
+      this.#observe({
+        direction: 'outbound',
+        envelope,
+        payloadBytes: parts.reduce((total, part) => total + part.byteLength, 0),
+        arrayBufferTransfers: stores.length,
+        portTransfers: 0,
+        parts,
+      });
+    }
+  }
+  /**
    * Send an application message.
    */
   postMessage(message: any, transferOrOpts?: Transferable[] | StructuredSerializeOptions): void {
@@ -392,8 +422,15 @@ export abstract class BaseTransportPort extends EventTarget {
    *
    * @internal
    */
-  _addControlHandler(handler: (envelope: Envelope, value: unknown) => boolean): () => void {
-    this.#controlHandlers.add(handler);
+  _addControlHandler(
+    handler: (envelope: Envelope, value: unknown) => boolean,
+    options: { first?: boolean } = {},
+  ): () => void {
+    if (options.first === true) {
+      this.#controlHandlers = new Set([handler, ...this.#controlHandlers]);
+    } else {
+      this.#controlHandlers.add(handler);
+    }
     return () => {
       this.#controlHandlers.delete(handler);
     };
