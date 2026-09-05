@@ -20,10 +20,10 @@
  *   [48] xDelete       ptr
  *   [56] xAccess       ptr
  *   [64] xFullPathname ptr
- *   [72] xDlOpen       ptr   (null)
- *   [80] xDlError      ptr   (null)
- *   [88] xDlSym        ptr   (null)
- *   [96] xDlClose      ptr   (null)
+ *   [72] xDlOpen       ptr   (inherited from native VFS)
+ *   [80] xDlError      ptr   (inherited from native VFS)
+ *   [88] xDlSym        ptr   (inherited from native VFS)
+ *   [96] xDlClose      ptr   (inherited from native VFS)
  *   [104] xRandomness  ptr
  *   [112] xSleep       ptr
  *   [120] xCurrentTime ptr
@@ -928,7 +928,17 @@ export class FinoVFS {
     _writeFnPtr(buf, 48, xDelete);
     _writeFnPtr(buf, 56, xAccess);
     _writeFnPtr(buf, 64, xFullPathname);
-    // xDlOpen/xDlError/xDlSym/xDlClose at [72..103]: leave zero
+    const nativeVfs = requireSqlite().symbols.sqlite3_vfs_find(null) as ArrayBuffer | null;
+    if (nativeVfs) {
+      for (const offset of [72, 80, 88, 96]) {
+        const pointer = Pointer.readPointer(nativeVfs, offset);
+        _dv(buf).setBigUint64(
+          offset,
+          pointer === null ? 0n : new DataView(pointer).getBigUint64(0, true),
+          true,
+        );
+      }
+    }
     _writeFnPtr(buf, 104, xRandomness);
     _writeFnPtr(buf, 112, xSleep);
     _writeFnPtr(buf, 120, xCurrentTime);

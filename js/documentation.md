@@ -25,6 +25,8 @@ agents, sessions, and how the layers fit together.
   behavior like tests, with scorers, reporters, and traces.
 - [Skills](./ai/skills.md) — optional expert instructions and tools, loaded
   only when relevant.
+- [Agent Memory](./ai/memory-design.md) — durable cross-session semantic
+  memory, scoped recall, labels, feedback, reinforcement, and forgetting.
 
 ## Isolate Code
 

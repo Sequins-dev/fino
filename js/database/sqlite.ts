@@ -58,6 +58,7 @@
 import { Pointer } from 'fino:ffi';
 import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
+import { env } from 'internal:process';
 import { registerShutdownHook } from 'internal:shutdown';
 import {
   sqliteAvailable,
@@ -1057,14 +1058,7 @@ export class Database {
       '/usr/lib/sqlite-vec.so',
       'vec0.so',
     ];
-    const envPath =
-      typeof process !== 'undefined'
-        ? (
-            process as {
-              env?: Record<string, string>;
-            }
-          ).env?.['FINO_SQLITE_VEC_PATH']
-        : undefined;
+    const envPath = env['FINO_SQLITE_VEC_PATH'];
     if (envPath) candidates.unshift(envPath);
     const ppErr = new ArrayBuffer(8);
     for (const p of candidates) {

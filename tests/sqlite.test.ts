@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { Database, sqliteAvailable, vec, vecDecode } from 'fino:database/sqlite';
 import { DiskFileSystem } from 'fino:file';
+import { env } from 'fino:process';
 if (!sqliteAvailable) {
   if (process.env['FINO_REQUIRE_SQLITE'] === '1') {
     throw new Error('libsqlite3 not found and FINO_REQUIRE_SQLITE=1');
@@ -176,6 +177,20 @@ describe('fino:database/sqlite — basic', () => {
       const second = db.vectorsAvailable;
       t.equal(typeof first, 'boolean', 'probe returns a boolean');
       t.equal(second, first, 'probe result is cached');
+    } finally {
+      await db.close();
+    }
+  });
+  it('vectorsAvailable loads FINO_SQLITE_VEC_PATH when configured', async (t) => {
+    if (!env.FINO_SQLITE_VEC_PATH) {
+      t.ok(true, 'FINO_SQLITE_VEC_PATH is not configured');
+      return;
+    }
+    const db = await Database.open(':memory:');
+    try {
+      t.equal(db.vectorsAvailable, true, 'configured sqlite-vec extension loads');
+      const row = await db.prepare(`SELECT vec_version() AS version`).get();
+      t.ok(typeof row?.version === 'string', 'loaded extension exposes vec_version()');
     } finally {
       await db.close();
     }

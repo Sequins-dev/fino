@@ -4,9 +4,9 @@ import * as ai from 'fino:ai';
 import * as runtime from 'fino:ai/runtime';
 import { ModelStreamImpl } from 'internal:ai/shared';
 import type { Model, ModelStream, GenerateRequest, StreamEvent } from 'fino:ai/model';
-import type { MemoryDocument, MemoryIngestOptions } from 'fino:ai';
-const memoryDocument: MemoryDocument = { text: 'shared dataset document' };
-const memoryIngestOptions: MemoryIngestOptions = { batchSize: 8 };
+import type { MemoryQuery, RememberMemoryInput } from 'fino:ai';
+const memoryInput: RememberMemoryInput = { text: 'shared durable memory' };
+const memoryQuery: MemoryQuery = { text: 'durable' };
 function modelWithText(text: string): Model {
   const events: StreamEvent[] = [
     {
@@ -47,8 +47,8 @@ function modelWithText(text: string): Model {
 }
 describe('AI public surface', () => {
   it('root module exports the happy-path AI surface', async (t) => {
-    t.equal(memoryDocument.text, 'shared dataset document');
-    t.equal(memoryIngestOptions.batchSize, 8);
+    t.equal(memoryInput.text, 'shared durable memory');
+    t.equal(memoryQuery.text, 'durable');
     t.equal(typeof ai.agent, 'function');
     t.equal(typeof ai.task, 'function');
     t.equal(typeof ai.tool, 'function');
@@ -57,6 +57,8 @@ describe('AI public surface', () => {
     t.equal(typeof ai.local, 'function');
     t.equal(typeof ai.session, 'function');
     t.equal(typeof ai.memory, 'function');
+    t.equal(typeof ai.agentMemory, 'function');
+    t.equal(typeof ai.memoryTool, 'function');
     t.equal(typeof ai.evaluate, 'function');
     t.equal(typeof ai.streamText, 'function');
     t.equal(typeof ai.mcpClient, 'function');
