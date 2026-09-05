@@ -22,7 +22,7 @@ function realmFor(
   });
 }
 
-describe('simulation RPC faults', () => {
+describe('simulation RPC faults', { exclusive: true }, () => {
   it('claims selected scalar calls before the live Facade handler', async (t) => {
     let calls = 0;
     const facade = new Facade('app:cassette', []).handle('fast', async () => {
