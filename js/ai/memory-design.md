@@ -27,8 +27,10 @@ inspection.
 
 `MemoryStore` is the durable mechanism. It stores entries, embeddings, compact
 utility aggregates, and short-lived selection receipts. `SqliteMemory` is the
-first store implementation. Its contract is not tied to sqlite representations
-so another durable or simulated store can implement it later.
+first store implementation. It records its schema version and embedding width,
+rejecting incompatible stores before search can mix vector spaces. Its contract
+is not tied to sqlite representations so another durable or simulated store can
+implement it later.
 
 `AgentMemoryController` owns policy. It applies scope, labels, semantic
 candidate selection, utility reranking, bounded evidence aggregation,

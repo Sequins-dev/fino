@@ -309,6 +309,8 @@ const EMPTY_UTILITY: MemoryUtility = {
   contexts: [],
 };
 
+const MEMORY_SCHEMA_VERSION = 1;
+
 let idCounter = 0;
 function newId(): string {
   return `${Date.now().toString(36)}-${++idCounter}-${Math.random().toString(36).slice(2)}`;
@@ -404,6 +406,36 @@ export class SqliteMemory implements MemoryStore {
     if (opts.embedder.dimensions <= 0)
       throw new RangeError('Memory embedder dimensions must be positive');
     const db = await Database.open(opts.path, { fs: opts.fs as never });
+    await db.exec(`CREATE TABLE IF NOT EXISTS memory_store_config (
+      singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+      schema_version INTEGER NOT NULL,
+      embedding_dimensions INTEGER NOT NULL
+    )`);
+    const configure = db.prepare(`INSERT OR IGNORE INTO memory_store_config VALUES(1, ?, ?)`);
+    const readConfig = db.prepare(
+      `SELECT schema_version, embedding_dimensions FROM memory_store_config WHERE singleton = 1`,
+    );
+    let config: Record<string, unknown> | undefined;
+    try {
+      await configure.run(MEMORY_SCHEMA_VERSION, opts.embedder.dimensions);
+      config = await readConfig.get();
+    } finally {
+      configure.finalize();
+      readConfig.finalize();
+    }
+    const schemaVersion = Number(config?.schema_version);
+    if (schemaVersion !== MEMORY_SCHEMA_VERSION) {
+      await db.close();
+      throw new Error(`Unsupported memory schema version ${schemaVersion}`);
+    }
+    const configuredDimensions = Number(config?.embedding_dimensions);
+    if (configuredDimensions !== opts.embedder.dimensions) {
+      await db.close();
+      throw new RangeError(
+        `Memory store is configured for ${configuredDimensions} embedding values; ` +
+          `received ${opts.embedder.dimensions}`,
+      );
+    }
     await db.exec(`CREATE TABLE IF NOT EXISTS memory_entries (
       id TEXT PRIMARY KEY,
       namespace TEXT NOT NULL,
@@ -476,12 +508,16 @@ export class SqliteMemory implements MemoryStore {
     return next;
   }
 
+  #validateEmbedding(embedding: Float32Array): void {
+    if (embedding.length !== this.#embedder.dimensions) {
+      throw new RangeError(`Expected ${this.#embedder.dimensions} embedding values`);
+    }
+  }
+
   /** Persist one memory after validating its embedding width. */
   put(input: MemoryStoreInput): Promise<MemoryRecord> {
     return this.#write(async () => {
-      if (input.embedding.length !== this.#embedder.dimensions) {
-        throw new RangeError(`Expected ${this.#embedder.dimensions} embedding values`);
-      }
+      this.#validateEmbedding(input.embedding);
       const id = newId();
       const utility = structuredClone(EMPTY_UTILITY);
       const entry = this.#db.prepare(`INSERT INTO memory_entries(
@@ -575,6 +611,7 @@ export class SqliteMemory implements MemoryStore {
     embedding: Float32Array;
     limit: number;
   }): Promise<MemoryCandidate[]> {
+    this.#validateEmbedding(input.embedding);
     if (input.limit <= 0) return [];
     if (this.#vectorSearch) return this.#searchVectors(input);
     const sql = input.sessionId

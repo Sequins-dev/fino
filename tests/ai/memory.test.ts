@@ -54,6 +54,65 @@ async function fixture(
 }
 
 describe('agent memory', () => {
+  it('rejects query embeddings with the wrong dimensions', async (t) => {
+    const f = await fixture();
+    try {
+      await t.rejects(
+        () =>
+          f.store.search({
+            namespace: 'workspace',
+            embedding: new Float32Array(3),
+            limit: 1,
+          }),
+        /Expected 4 embedding values/,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('rejects reopening a store with incompatible embedding dimensions', async (t) => {
+    const f = await fixture();
+    try {
+      await f.store.close();
+      await t.rejects(
+        () =>
+          SqliteMemory.open({
+            path: f.path,
+            fs: f.fs,
+            embedder: {
+              dimensions: 3,
+              async embed(texts) {
+                return texts.map(() => new Float32Array(3));
+              },
+            },
+          }),
+        /configured for 4 embedding values/,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('rejects unsupported memory schema versions', async (t) => {
+    const f = await fixture();
+    try {
+      await f.store.close();
+      const db = await Database.open(f.path, { fs: f.fs });
+      try {
+        await db.exec(`UPDATE memory_store_config SET schema_version = 99`);
+      } finally {
+        await db.close();
+      }
+      await t.rejects(
+        () => SqliteMemory.open({ path: f.path, fs: f.fs, embedder: keywordEmbedder() }),
+        /Unsupported memory schema version 99/,
+      );
+    } finally {
+      await f.close();
+    }
+  });
+
   it('uses a scoped sqlite-vec cosine index when the extension is available', async (t) => {
     const probe = await Database.open(':memory:');
     const available = probe.vectorsAvailable;
