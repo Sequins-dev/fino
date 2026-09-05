@@ -81,10 +81,16 @@ recovery. Physical pruning is a separate explicit maintenance action.
 
 ## Recall and selections
 
-Recall embeds the query, performs an over-fetched semantic search, applies
-scope and explicit filters, then reranks the candidates. Semantic similarity
-remains the gate: utility and automatic-label matches may reorder plausible
-candidates but may not promote unrelated entries into the result set.
+Recall embeds the query and performs an over-fetched cosine search. When
+sqlite-vec is available, `SqliteMemory` stores embeddings in a `vec0` virtual
+table partitioned by namespace, with shared or session scope applied as a KNN
+prefilter. Shared and requested-session partitions are queried independently
+and merged so one scope cannot crowd the other out of the candidate pool. The
+portable fallback computes the same search over stored embeddings when the
+extension is unavailable. The controller then applies explicit filters and
+reranks the candidates. Semantic similarity remains the gate: utility and
+automatic-label matches may reorder plausible candidates but may not promote
+unrelated entries into the result set.
 
 The result includes an immutable `MemorySelection` id plus the ranked hits.
 The controller increments only compact exposure counters and stores one

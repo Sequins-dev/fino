@@ -170,6 +170,10 @@ const _SYMBOLS = {
     parameters: ['pointer', 'pointer', 'pointer', 'pointer'],
     result: 'i32',
   },
+  sqlite3_vfs_find: {
+    parameters: ['pointer'],
+    result: 'pointer',
+  },
   sqlite3_vfs_register: {
     parameters: ['pointer', 'i32'],
     result: 'i32',

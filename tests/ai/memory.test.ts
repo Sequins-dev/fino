@@ -1,7 +1,9 @@
 import { describe, it } from 'fino:test/test';
 import { agentMemory, memoryTool, retriever, SqliteMemory } from 'fino:ai/memory';
 import type { Embedder, MemoryLabeler } from 'fino:ai/memory';
+import { Database } from 'fino:database/sqlite';
 import { DiskFileSystem } from 'fino:file';
+import { env } from 'fino:process';
 
 function keywordEmbedder(): Embedder {
   const words = ['refund', 'deploy', 'concise', 'verbose'];
@@ -52,6 +54,80 @@ async function fixture(
 }
 
 describe('agent memory', () => {
+  it('uses a scoped sqlite-vec cosine index when the extension is available', async (t) => {
+    const probe = await Database.open(':memory:');
+    const available = probe.vectorsAvailable;
+    await probe.close();
+    if (!available) {
+      t.equal(
+        env.FINO_SQLITE_VEC_PATH,
+        undefined,
+        'an explicitly configured sqlite-vec extension must load',
+      );
+      t.ok(true, 'sqlite-vec is unavailable');
+      return;
+    }
+
+    const f = await fixture();
+    try {
+      const other = agentMemory({ store: f.store, namespace: 'other-workspace' });
+      await other.remember({ text: 'refund noise from another namespace' });
+      await f.controller.remember({ text: 'refund shared target' });
+      await f.controller.remember({
+        text: 'refund session target',
+        scope: { type: 'session', sessionId: 'session-a' },
+      });
+      await f.controller.remember({
+        text: 'refund hidden session',
+        scope: { type: 'session', sessionId: 'session-b' },
+      });
+
+      const selected = await f.controller.recall({ text: 'refund', sessionId: 'session-a' });
+      t.deepEqual(
+        selected.hits.map((hit) => hit.text).sort(),
+        ['refund session target', 'refund shared target'],
+        'KNN prefilter includes shared and matching-session partitions only',
+      );
+
+      const inspect = await Database.open(f.path, { fs: f.fs });
+      try {
+        t.equal(inspect.vectorsAvailable, true, 'inspection connection loads sqlite-vec');
+        const table = await inspect
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'memory_vectors'`,
+          )
+          .get();
+        t.equal(table?.name, 'memory_vectors', 'memory vectors use the existing vec0 support');
+        const count = await inspect.prepare(`SELECT count(*) AS count FROM memory_vectors`).get();
+        t.equal(Number(count?.count), 4, 'every committed memory is indexed');
+        await inspect
+          .prepare(
+            `DELETE FROM memory_vectors WHERE rowid = (SELECT min(rowid) FROM memory_vectors)`,
+          )
+          .run();
+      } finally {
+        await inspect.close();
+      }
+      await f.store.close();
+      const reopened = await SqliteMemory.open({
+        path: f.path,
+        embedder: keywordEmbedder(),
+        fs: f.fs,
+      });
+      const verify = await Database.open(f.path, { fs: f.fs });
+      try {
+        t.equal(verify.vectorsAvailable, true, 'verification connection loads sqlite-vec');
+        const count = await verify.prepare(`SELECT count(*) AS count FROM memory_vectors`).get();
+        t.equal(Number(count?.count), 4, 'opening the store repairs missing vector rows');
+      } finally {
+        await verify.close();
+        await reopened.close();
+      }
+    } finally {
+      await f.close();
+    }
+  });
+
   it('shares durable memories across sessions while isolating session scope', async (t) => {
     const f = await fixture();
     try {

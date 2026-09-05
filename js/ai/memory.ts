@@ -2,10 +2,12 @@
  * fino:ai/memory — durable, cross-session semantic memory for agents.
  *
  * Memory stores embedding-backed facts and behaviours, not conversation
- * history. `SqliteMemory` supplies durable storage and `agentMemory()` adds
- * recall policy, labels, bounded utility evidence, optional reinforcement,
- * and optional forgetting. Controllers sharing a namespace and store see the
- * same committed memories, including from concurrent sessions.
+ * history. `SqliteMemory` supplies durable storage, uses sqlite-vec for scoped
+ * cosine search when available, and falls back to an exact scan otherwise.
+ * `agentMemory()` adds recall policy, labels, bounded utility evidence,
+ * optional reinforcement, and optional forgetting. Controllers sharing a
+ * namespace and store see the same committed memories, including from
+ * concurrent sessions.
  *
  * ## Signals and storage
  *
@@ -29,7 +31,7 @@
  * await memory.complete(selection.selectionId, { score: .9 });
  * ```
  */
-import { Database, vecDecode } from 'fino:database/sqlite';
+import { Database, vec, vecDecode } from 'fino:database/sqlite';
 import { Tool } from 'fino:ai/tool';
 
 /** Minimal embedding provider required by semantic memory. */
@@ -356,6 +358,10 @@ function cosine(left: Float32Array, right: Float32Array): number {
   return leftNorm === 0 || rightNorm === 0 ? 0 : dot / Math.sqrt(leftNorm * rightNorm);
 }
 
+function vectorScopeKey(scope: MemoryScope): string {
+  return scope.type === 'shared' ? 'shared' : `session:${scope.sessionId}`;
+}
+
 /** Options for opening the sqlite-backed durable memory store. */
 export interface SqliteMemoryOptions {
   /** Filesystem path of the database, created when absent. */
@@ -370,12 +376,14 @@ export interface SqliteMemoryOptions {
 export class SqliteMemory implements MemoryStore {
   #db: Database;
   #embedder: Embedder;
+  #vectorSearch: boolean;
   #closed = false;
   #writes: Promise<unknown> = Promise.resolve();
 
-  private constructor(db: Database, embedder: Embedder) {
+  private constructor(db: Database, embedder: Embedder, vectorSearch: boolean) {
     this.#db = db;
     this.#embedder = embedder;
+    this.#vectorSearch = vectorSearch;
   }
 
   /** Embedding search is available whenever the configured dimension is positive. */
@@ -422,7 +430,41 @@ export class SqliteMemory implements MemoryStore {
     )`);
     await db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_selections
       ON memory_selections(namespace, created_at)`);
-    return new SqliteMemory(db, opts.embedder);
+    let vectorSearch = db.vectorsAvailable;
+    if (vectorSearch) {
+      try {
+        await db.exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_vectors USING vec0(
+          namespace TEXT partition key,
+          scope_key TEXT,
+          embedding float[${opts.embedder.dimensions}] distance_metric=cosine
+        )`);
+        const missing = db.prepare(`SELECT rowid, namespace, scope_type, session_id, embedding
+          FROM memory_entries WHERE rowid NOT IN (SELECT rowid FROM memory_vectors)`);
+        const insert = db.prepare(
+          `INSERT INTO memory_vectors(rowid, namespace, scope_key, embedding) VALUES(?, ?, ?, ?)`,
+        );
+        try {
+          const rows = await missing.all();
+          await db.transaction(async () => {
+            for (const row of rows) {
+              const scope = parseScope(row);
+              await insert.run(
+                row.rowid as bigint,
+                scope.namespace,
+                vectorScopeKey(scope),
+                vec(vecDecode(row.embedding as Uint8Array)),
+              );
+            }
+          });
+        } finally {
+          missing.finalize();
+          insert.finalize();
+        }
+      } catch {
+        vectorSearch = false;
+      }
+    }
+    return new SqliteMemory(db, opts.embedder, vectorSearch);
   }
 
   #write<T>(operation: () => Promise<T>): Promise<T> {
@@ -442,32 +484,47 @@ export class SqliteMemory implements MemoryStore {
       }
       const id = newId();
       const utility = structuredClone(EMPTY_UTILITY);
-      const stmt = this.#db.prepare(`INSERT INTO memory_entries(
+      const entry = this.#db.prepare(`INSERT INTO memory_entries(
         id, namespace, scope_type, session_id, text, labels, metadata, importance,
         created_at, updated_at, expires_at, utility, embedding
       ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      const vector = this.#vectorSearch
+        ? this.#db.prepare(
+            `INSERT INTO memory_vectors(rowid, namespace, scope_key, embedding)
+              VALUES(?, ?, ?, ?)`,
+          )
+        : null;
       try {
-        await stmt.run(
-          id,
-          input.scope.namespace,
-          input.scope.type,
-          input.scope.type === 'session' ? input.scope.sessionId : null,
-          input.text,
-          JSON.stringify(input.labels),
-          input.metadata === undefined ? null : JSON.stringify(input.metadata),
-          input.importance,
-          input.createdAt,
-          input.createdAt,
-          input.expiresAt,
-          JSON.stringify(utility),
-          new Uint8Array(
-            input.embedding.buffer,
-            input.embedding.byteOffset,
-            input.embedding.byteLength,
-          ),
-        );
+        await this.#db.transaction(async () => {
+          const result = await entry.run(
+            id,
+            input.scope.namespace,
+            input.scope.type,
+            input.scope.type === 'session' ? input.scope.sessionId : null,
+            input.text,
+            JSON.stringify(input.labels),
+            input.metadata === undefined ? null : JSON.stringify(input.metadata),
+            input.importance,
+            input.createdAt,
+            input.createdAt,
+            input.expiresAt,
+            JSON.stringify(utility),
+            new Uint8Array(
+              input.embedding.buffer,
+              input.embedding.byteOffset,
+              input.embedding.byteLength,
+            ),
+          );
+          await vector?.run(
+            result.lastInsertRowid,
+            input.scope.namespace,
+            vectorScopeKey(input.scope),
+            vec(input.embedding),
+          );
+        });
       } finally {
-        stmt.finalize();
+        entry.finalize();
+        vector?.finalize();
       }
       return {
         id,
@@ -518,6 +575,8 @@ export class SqliteMemory implements MemoryStore {
     embedding: Float32Array;
     limit: number;
   }): Promise<MemoryCandidate[]> {
+    if (input.limit <= 0) return [];
+    if (this.#vectorSearch) return this.#searchVectors(input);
     const sql = input.sessionId
       ? `SELECT * FROM memory_entries WHERE namespace = ? AND
           (scope_type = 'shared' OR (scope_type = 'session' AND session_id = ?))`
@@ -536,6 +595,56 @@ export class SqliteMemory implements MemoryStore {
         .slice(0, input.limit);
     } finally {
       stmt.finalize();
+    }
+  }
+
+  async #searchVectors(input: {
+    namespace: string;
+    sessionId?: string;
+    embedding: Float32Array;
+    limit: number;
+  }): Promise<MemoryCandidate[]> {
+    const knn = this.#db.prepare(`SELECT rowid, distance FROM memory_vectors
+      WHERE embedding MATCH ? AND k = ? AND namespace = ? AND scope_key = ?
+      ORDER BY distance`);
+    try {
+      const scopes = ['shared'];
+      if (input.sessionId) scopes.push(`session:${input.sessionId}`);
+      const nearest = new Map<string, { rowid: bigint | number; similarity: number }>();
+      for (const scope of scopes) {
+        const rows = await knn.all(vec(input.embedding), input.limit, input.namespace, scope);
+        for (const row of rows) {
+          const rowid = row.rowid as bigint | number;
+          const key = String(rowid);
+          const similarity = 1 - Number(row.distance);
+          const previous = nearest.get(key);
+          if (!previous || similarity > previous.similarity) {
+            nearest.set(key, { rowid, similarity });
+          }
+        }
+      }
+      const hits = [...nearest.values()];
+      if (hits.length === 0) return [];
+      const load = this.#db.prepare(
+        `SELECT rowid AS vector_rowid, * FROM memory_entries WHERE rowid IN (${hits
+          .map(() => '?')
+          .join(', ')})`,
+      );
+      try {
+        const rows = await load.all(...hits.map((hit) => hit.rowid));
+        const similarities = new Map(hits.map((hit) => [String(hit.rowid), hit.similarity]));
+        return rows
+          .map((row) => ({
+            ...parseRecord(row),
+            similarity: similarities.get(String(row.vector_rowid))!,
+          }))
+          .sort((a, b) => b.similarity - a.similarity || a.id.localeCompare(b.id))
+          .slice(0, input.limit);
+      } finally {
+        load.finalize();
+      }
+    } finally {
+      knn.finalize();
     }
   }
 
