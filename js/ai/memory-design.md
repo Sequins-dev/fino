@@ -1,47 +1,84 @@
 # Agent Memory
 
-This document defines Fino's durable agent-memory subsystem. Memory is a
-semantic, embedding-backed pool of information and behaviours that can outlive
-one model context or conversation. Conversation history and summarization are
-separate systems; memory neither stores transcripts nor reconstructs a prompt
-history.
+Fino agent memory is a semantic, embedding-backed pool of information and
+behaviours that can outlive one model context or conversation. Use it to help
+agents carry durable knowledge between sessions without treating conversation
+history as permanent memory.
 
-## Goals and non-goals
+## When to use memory
 
-Memory should let concurrent sessions remember and recall the same durable
-facts, decisions, preferences, and behaviours. It should also support
-explicitly session-scoped, semi-ephemeral entries when a caller wants semantic
-recall without making an entry permanent.
+Store facts, decisions, preferences, and behaviours that should remain useful
+after the current conversation ends. Controllers using the same namespace can
+share these entries across concurrent sessions. Use session scope only for
+semi-ephemeral information that still benefits from semantic recall but should
+not join the durable shared pool.
 
-Recall quality must be tunable without treating every vector hit as useful.
-The subsystem records cheap exposure counts automatically, accepts stronger
-manual feedback, and accepts observational scores from evals. Reinforcement and
-forgetting are independent optional policies. Raw prompts, responses, and
-per-signal evidence are deliberately not retained.
+Conversation history and summarization remain separate. Memory does not store
+transcripts or reconstruct prompt history, and messages do not become memories
+unless the agent uses the memory tool or application code calls `remember()`.
 
-This subsystem does not own conversation history, history summarization,
-model-declared attribution, counterfactual experiments, or structural prompt
-inspection.
+Recall records cheap exposure counts automatically. Applications can add
+stronger manual feedback or observational scores from evals. Reinforcement and
+forgetting are independent and optional, so an application can use semantic
+recall without either policy. Raw prompts, responses, and per-signal evidence
+are not retained by the memory store.
 
-## Decomposition
+## Choosing an API
 
-`MemoryStore` is the durable mechanism. It stores entries, embeddings, compact
-utility aggregates, and short-lived selection receipts. `SqliteMemory` is the
-first store implementation. It records its schema version and embedding width,
-rejecting incompatible stores before search can mix vector spaces. Its contract
-is not tied to sqlite representations so another durable or simulated store can
-implement it later.
+Use `SqliteMemory` when an application needs a ready-to-use durable store. It
+stores entries, embeddings, compact utility aggregates, and short-lived
+selection receipts. The database records its schema version and embedding
+width and rejects incompatible configurations before search can mix vector
+spaces.
 
-`AgentMemoryController` owns policy. It applies scope, labels, semantic
-candidate selection, utility reranking, bounded evidence aggregation,
-reinforcement, and forgetting. Sessions and tools depend on this controller,
-not the sqlite implementation.
+Use `AgentMemoryController` for application-facing operations such as
+`remember()`, `recall()`, `complete()`, and `feedback()`. The controller applies
+scope, labels, semantic candidate selection, utility reranking, bounded
+evidence aggregation, reinforcement, and forgetting. A custom durable or
+simulated backend can implement `MemoryStore` and use the same controller.
 
 `memoryTool(controller)` is an opt-in adapter around Fino's existing `Tool`
 primitive. Adding it to an agent lets the model create memories; calling
 `tool.run()` lets an application or person trigger the same validated write.
 The tool factory binds namespace and session authority so model arguments
 cannot select another tenant or session.
+
+## Quick start
+
+Create one controller for a durable namespace, then share that controller—or
+controllers opened against the same database and namespace—with agent
+sessions:
+
+```ts no_run
+import { memory, memoryTool } from 'fino:ai/memory';
+
+const engineeringMemory = await memory({
+  path: './agent-memory.db',
+  embedder,
+  namespace: 'engineering',
+  reinforcement: true,
+  forgetting: { halfLifeMs: 30 * 24 * 60 * 60 * 1000 },
+});
+
+const remember = memoryTool(engineeringMemory, { sessionId: 'incident-42' });
+await remember.run({
+  text: 'Production deploys require a database snapshot.',
+  durability: 'shared',
+  labels: { topic: ['deploys'] },
+});
+
+const selection = await engineeringMemory.recall({
+  text: 'What should I check before deploying?',
+  sessionId: 'incident-42',
+});
+
+await engineeringMemory.complete(selection.selectionId, { score: .9 });
+await engineeringMemory.close();
+```
+
+Omit `reinforcement` and `forgetting` to use semantic recall without utility
+reranking or age-based suppression. Keep the controller open while its sessions
+are active, and close it when the application no longer needs the store.
 
 ## Scope and sharing
 
@@ -179,17 +216,10 @@ read-mostly apart from compact exposure and receipt updates. Labeler failure is
 best-effort; embedding and storage failures reject the operation. Closing a
 store is idempotent at the owning API boundary, and callers own its lifetime.
 
-## Initial proof plan
+## Runtime availability
 
-Tests must establish shared cross-session visibility, session isolation and
-expiry, semantic-first ranking, label filtering and boosting, label bounds and
-failure fallback, exposure without reinforcement, idempotent eval completion,
-mutable manual feedback, bounded contextual summaries and receipts, enabled and
-disabled forgetting, creation-tool authority binding, session recall without
-transcript writes, concurrent aggregate updates, and resource cleanup.
-
-The initial implementation supports scheduled Realms and any other Realm mode
-that can access the configured store and embedder. Process and remote sharing
-requires a store path or future store implementation reachable from those
-processes; the controller contract and serialized values do not otherwise
-change.
+Memory works in scheduled Realms and in other Realm modes that can access the
+configured store and embedder. To share memory with process or remote Realms,
+provide a store path or `MemoryStore` implementation reachable from those
+processes. Controller inputs and results are plain structured data and do not
+otherwise change across Realm modes.

@@ -18,7 +18,7 @@
  *
  * Conversation history and summarization remain in `fino:ai/context` and
  * `fino:ai/session`. See [Agent Memory](./ai/memory-design.md) for the full
- * design and lifecycle.
+ * usage and lifecycle guide.
  *
  * ```ts no_run
  * import { agentMemory, memoryTool, SqliteMemory } from 'fino:ai/memory';
