@@ -14,7 +14,7 @@ import {
   _reverseIP,
 } from 'internal:net/dns-wire';
 import { dlopen } from 'fino:ffi';
-import { os } from 'fino:process';
+import { env, os } from 'fino:process';
 import * as sock from 'fino:net/socket';
 import * as loop from 'internal:runtime/loop';
 import { Socket } from 'fino:net/socket';
@@ -1046,12 +1046,19 @@ describe('Integration', { exclusive: true }, () => {
       ipv6Dns.close();
     }
   });
-  it('lookup — example.com family 4', async (t) => {
-    const result = await lookup('example.com');
-    t.ok(typeof result.address === 'string', 'has address');
-    t.equal(result.family, 4, 'family = 4');
-    t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
-  });
+  // Live resolver checks are opt-in, as documented by fino:net/dns.
+  it(
+    'lookup — example.com family 4',
+    {
+      skip: env.FINO_DNS_LIVE !== '1' && 'set FINO_DNS_LIVE=1 to test the configured live resolver',
+    },
+    async (t) => {
+      const result = await lookup('example.com');
+      t.ok(typeof result.address === 'string', 'has address');
+      t.equal(result.family, 4, 'family = 4');
+      t.ok(/^\d+\.\d+\.\d+\.\d+$/.test(result.address), 'address is IPv4');
+    },
+  );
   it('lookup — localhost resolves without DNS I/O', async (t) => {
     const result = await lookup('localhost');
     t.equal(result.address, '127.0.0.1', 'default lookup returns IPv4 loopback');
