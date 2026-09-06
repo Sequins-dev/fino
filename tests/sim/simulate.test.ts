@@ -14,7 +14,7 @@ describe('simulate()', { exclusive: true }, () => {
   it('runs a deterministic Realm against object providers and journals its calls', async (t) => {
     const values = new Map<string, unknown>();
     const report = await simulate({
-      entry: HARNESS_GUEST,
+      entry: 'tests/sim/fixtures/harness-guest.ts',
       args: ['greeting', 'hello'],
       seed: 'public-harness',
       startTime: 1_234,
