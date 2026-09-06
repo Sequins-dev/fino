@@ -53,14 +53,10 @@ async function findValidator(): Promise<string | null> {
 }
 
 /** Read a pipe to end-of-stream as text. */
-async function drain(reader: { read(): Promise<Uint8Array | null> }): Promise<string> {
+async function drain(pipe: AsyncIterable<Uint8Array>): Promise<string> {
   const decoder = new TextDecoder();
   let text = '';
-  for (;;) {
-    const chunk = await reader.read();
-    if (chunk === null) break;
-    text += decoder.decode(chunk, { stream: true });
-  }
+  for await (const chunk of pipe) text += decoder.decode(chunk, { stream: true });
   return text + decoder.decode();
 }
 
