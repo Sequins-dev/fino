@@ -29,6 +29,8 @@
  * ```
  */
 import { Facade, ImportMap, Realm, type ImportRule } from 'fino:realm';
+import { resolve } from 'fino:file/path';
+import { cwd } from 'fino:process';
 import { createSeededRandom } from 'internal:runtime/random';
 import { bindRpcFaults } from 'internal:sim/faults';
 import { CassetteReplay, SimJournal as InternalSimJournal } from 'internal:sim/journal';
@@ -38,6 +40,127 @@ export type { Cassette, CassetteFrame, SimCall, SimCallKind };
 
 /** A parent-owned implementation exposed to the guest through one module specifier. */
 export type SimProvider = Facade | Record<string, unknown>;
+
+/** An adapter that contributes one or more parent-owned modules to a simulation world. */
+export interface SimMock {
+  /** Return the world entries installed by this adapter, keyed by module specifier. */
+  world(): Record<string, SimProvider>;
+}
+
+/** Copied HTTP request delivered to a `FakeNet` route handler. */
+export interface FakeRequest {
+  /** Absolute request URL. */
+  url: string;
+  /** Normalized uppercase HTTP method. */
+  method: string;
+  /** Normalized request headers keyed by lowercase name. */
+  headers: Record<string, string>;
+  /** Buffered request body, or `null` for requests without a body. */
+  body: Uint8Array<ArrayBuffer> | null;
+}
+
+/** HTTP response returned by a `FakeNet` route. */
+export interface FakeResponse {
+  /** HTTP status code. Defaults to `200`. */
+  status?: number;
+  /** HTTP reason phrase. Defaults to the empty string. */
+  statusText?: string;
+  /** Response headers. */
+  headers?: Record<string, string>;
+  /** Buffered response body. Strings are UTF-8 encoded. */
+  body?: string | Uint8Array;
+}
+
+/** Static response or request-aware handler stored in a `FakeNet` route table. */
+export type FakeRoute =
+  | FakeResponse
+  | ((request: FakeRequest) => FakeResponse | undefined | Promise<FakeResponse | undefined>);
+
+/**
+ * Parent-owned HTTP route table for a simulated Realm's ambient `fetch()`.
+ *
+ * Method-specific keys such as `POST https://api.example.com/orders` take
+ * precedence over URL-only keys. A handler that returns `undefined`, or a URL
+ * with no matching route, produces a diagnostic `502` response without
+ * touching the operating-system network.
+ *
+ * ```ts no_run
+ * const net = new FakeNet().route('GET https://api.example.com/health', {
+ *   body: 'ok',
+ * });
+ *
+ * const report = await simulate({
+ *   entry: './worker.ts',
+ *   world: net.world(),
+ * });
+ * ```
+ */
+export class FakeNet implements SimMock {
+  /** Facade specifier used by the simulation's ambient Fetch adapter. */
+  static readonly specifier = 'fino:net/fetch';
+  #routes: Map<string, FakeRoute>;
+
+  /** Create a route table from optional initial entries. */
+  constructor(routes: Record<string, FakeRoute> = {}) {
+    this.#routes = new Map(Object.entries(routes));
+  }
+
+  /** Add or replace `pattern`, returning this route table for chaining. */
+  route(pattern: string, handler: FakeRoute): this {
+    this.#routes.set(pattern, handler);
+    return this;
+  }
+
+  /** Return the fetch Facade entry expected by `simulate()`. */
+  world(): Record<string, SimProvider> {
+    return { [FakeNet.specifier]: this.provider() };
+  }
+
+  /** Return the parent-side provider independently for custom world composition. */
+  provider(): Record<string, unknown> {
+    return {
+      handleRequest: async (value: unknown) => {
+        const request = value as {
+          method: string;
+          url: string;
+          headers: Array<[string, string]>;
+          body: Uint8Array | null;
+        };
+        const publicRequest: FakeRequest = {
+          method: request.method,
+          url: request.url,
+          headers: Object.fromEntries(request.headers),
+          body: request.body === null ? null : copyBytes(request.body),
+        };
+        const route =
+          this.#routes.get(`${request.method} ${request.url}`) ?? this.#routes.get(request.url);
+        const response =
+          typeof route === 'function' ? await route(publicRequest) : (route as FakeResponse);
+        if (response === undefined) {
+          return {
+            status: 502,
+            statusText: 'No simulated route',
+            headers: [['content-type', 'text/plain']],
+            body: new TextEncoder().encode(
+              `fino:sim — no route for ${request.method} ${request.url}`,
+            ),
+          };
+        }
+        return {
+          status: response.status ?? 200,
+          statusText: response.statusText ?? '',
+          headers: Object.entries(response.headers ?? {}),
+          body:
+            response.body === undefined
+              ? null
+              : typeof response.body === 'string'
+                ? new TextEncoder().encode(response.body)
+                : copyBytes(response.body),
+        };
+      },
+    };
+  }
+}
 
 /** Options for one deterministic simulation run. */
 export interface SimulateOptions {
@@ -107,6 +230,18 @@ export interface SweepOutcome<Result = unknown> {
 }
 
 const DEFAULT_START_TIME = 1_700_000_000_000;
+const SCHEME_RE = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
+
+function copyBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy;
+}
+
+function resolveEntry(entry: string): string {
+  if (entry.startsWith('/') || SCHEME_RE.test(entry)) return entry;
+  return resolve(cwd(), entry).toString();
+}
 
 function worldRules(world: Record<string, SimProvider>): ImportRule[] {
   return Object.entries(world).map(([specifier, provider]) => ({
@@ -132,8 +267,9 @@ export async function simulate<Result = unknown>(
 ): Promise<SimReport<Result>> {
   const seed = options.seed ?? 0;
   const startTime = options.startTime ?? DEFAULT_START_TIME;
-  using realm = new Realm<(...args: unknown[]) => Result>({
-    entry: options.entry,
+  const entry = resolveEntry(options.entry);
+  using realm = new Realm<(entry: string, args: unknown[]) => Result>({
+    entry: 'internal:sim/guest',
     deterministic: {
       seed,
       startTime,
@@ -141,6 +277,7 @@ export async function simulate<Result = unknown>(
     },
     overrides: ImportMap.deny([
       { pattern: 'internal:runtime/loop', directive: 'inherit' },
+      { pattern: entry, directive: 'inherit' },
       ...worldRules(options.world ?? {}),
       ...(options.overrides ?? []),
     ]),
@@ -162,7 +299,7 @@ export async function simulate<Result = unknown>(
         });
   const stopReplay = replay?.bind(realm.port);
   try {
-    const result = await realm.call(...(options.args ?? []));
+    const result = await realm.call(entry, options.args ?? []);
     replay?.assertComplete();
     return {
       result,
