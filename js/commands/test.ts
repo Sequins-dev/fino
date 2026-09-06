@@ -35,7 +35,7 @@
  * await testCommand.parse(['--filter', 'socket', 'tests/net']);
  * ```
  */
-import { cwd, env } from '../process.ts';
+import { cwd, env, exit as processExit } from '../process.ts';
 import { Task } from '../task.ts';
 import { DiskFileSystem } from 'fino:file';
 import { Realm } from 'fino:realm';
@@ -44,7 +44,11 @@ import { startCoverage } from 'internal:coverage';
 import { formatDurationMs } from 'internal:duration';
 import { ConcurrentTaskChannel } from 'internal:concurrent-task-channel';
 import { captureProcessOutput } from 'internal:runtime/output-capture';
-import { timeout as loopTimeout } from 'internal:runtime/loop';
+import {
+  _activeHandleCounts as activeHandleCounts,
+  alive as loopAlive,
+  timeout as loopTimeout,
+} from 'internal:runtime/loop';
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
 import type {
@@ -62,6 +66,15 @@ type ParallelLineWriter = (line?: string) => void;
 
 const DEFAULT_PARALLEL_GROUPS_PER_REACTOR = 10;
 const PARALLEL_REALM_EXIT_DIAGNOSTIC_MS = 5_000;
+/**
+ * How long the parallel coordinator tolerates no progress at all.
+ *
+ * Generous against the per-test deadline: a test that hangs fails itself, so
+ * reaching this means the coordinator is stuck somewhere no test owns — a
+ * worker Realm that never exits, a result that never arrives. Those are the
+ * stalls that cost a whole CI job and report nothing.
+ */
+const PARALLEL_STALL_MS = 120_000;
 
 /**
  * Calculate the parallel test admission limit from the configured reactor pool
@@ -342,6 +355,56 @@ function parallelResultPointCount(result: ParallelTestResult): number {
   return result.result.tests + (result.result.error === undefined ? 0 : 1);
 }
 
+/**
+ * Fail the run if the parallel coordinator makes no progress.
+ *
+ * A hung test fails itself against its own deadline, so a coordinator that
+ * stops advancing is stuck on something no test owns — most often a worker
+ * Realm whose loop never drains, which leaves an orphaned child and a CI job
+ * that gets cancelled at its own timeout with nothing after the last group.
+ *
+ * The watchdog timer is unreferenced, so it cannot keep the Realm alive by
+ * itself; it only fires while something else is holding the run open.
+ */
+function startStallWatchdog(
+  write: (text: string) => void,
+  pending: () => string[],
+): { progress: () => void; stop: () => void } {
+  let last = performance.now();
+  let stopped = false;
+  let armed: ReturnType<typeof loopTimeout> | null = null;
+  const arm = (): void => {
+    if (stopped) return;
+    const timer = loopTimeout(Math.max(1_000, PARALLEL_STALL_MS / 4));
+    timer.unref();
+    armed = timer;
+    void timer.then(() => {
+      if (stopped) return;
+      if (performance.now() - last < PARALLEL_STALL_MS) {
+        arm();
+        return;
+      }
+      const waiting = pending();
+      write(
+        `Bail out! no test progress for ${Math.round(PARALLEL_STALL_MS / 1000)}s; the run is stalled`,
+      );
+      write(`# still pending: ${waiting.length > 0 ? waiting.join(', ') : '(none reported)'}`);
+      write(`# active handles: ${JSON.stringify(activeHandleCounts())}`);
+      processExit(1);
+    });
+  };
+  arm();
+  return {
+    progress: (): void => {
+      last = performance.now();
+    },
+    stop: (): void => {
+      stopped = true;
+      armed?.cancel();
+      armed = null;
+    },
+  };
+}
 async function runParallelTests(
   files: ParallelTestFile[],
   options: Parameters<typeof runTestFile>[1],
@@ -357,6 +420,9 @@ async function runParallelTests(
       outputOrder: ordered ? 'claim' : 'completion',
     });
     write('TAP version 13');
+    const watchdog = startStallWatchdog(write, () => [...pendingFiles.keys()]);
+    const progress = watchdog.progress;
+    const stopStallWatchdog = watchdog.stop;
     const output = (async () => {
       let total = 0;
       let passed = 0;
@@ -451,6 +517,7 @@ async function runParallelTests(
               },
             });
           } finally {
+            progress();
             release();
           }
         })();
@@ -462,6 +529,7 @@ async function runParallelTests(
     const totals = await output;
     await Promise.all(fileCompletions);
     await capture.finish();
+    stopStallWatchdog();
     if (totals.total !== registeredTests) {
       write(`Bail out! registered ${registeredTests} test groups but emitted ${totals.total}`);
       throw new Error('parallel test registration count changed during execution');
@@ -601,6 +669,43 @@ async function expandArg(arg: string): Promise<string[]> {
  * await test.parse(['--coverage=artifacts/socket.json', 'tests/net']);
  * ```
  */
+/**
+ * How long the runner waits, after every test has reported, for the Realm to
+ * fall idle before it treats the remainder as a leak.
+ */
+const SHUTDOWN_GRACE_MS = 5_000;
+/**
+ * Fail the run if the Realm is still held open once the results are in.
+ *
+ * A test that leaks a descriptor watch, a timer, or a child process does not
+ * fail — it finishes, reports `ok`, and then keeps the loop alive so the
+ * process never exits. CI sees no failure at all, just a job cancelled at its
+ * own timeout with nothing in the log after the last group. This turns that
+ * into a diagnosis: which handle kinds are still registered, printed against
+ * the run that leaked them.
+ *
+ * The watchdog timer is unreferenced, so it can only fire while something else
+ * is holding the Realm open — exactly the condition worth reporting.
+ */
+async function reportLeakedHandles(): Promise<boolean> {
+  if (!loopAlive()) return false;
+  const grace = loopTimeout(SHUTDOWN_GRACE_MS);
+  grace.unref();
+  await grace;
+  if (!loopAlive()) return false;
+  const counts = activeHandleCounts();
+  const held = Object.entries(counts)
+    .filter(([, value]) => (typeof value === 'number' ? value > 0 : value === true))
+    .map(([name, value]) => `${name}=${String(value)}`);
+  // console goes to the same stdout `exit()` flushes synchronously; a task
+  // writer buffers separately and would lose the diagnostic on the way out.
+  console.log(`# leaked handles: still alive ${SHUTDOWN_GRACE_MS}ms after the last test reported`);
+  console.log(
+    `# ${held.length > 0 ? held.join(' ') : 'no counted handles; V8 tasks or a wake source'}`,
+  );
+  console.log('# exiting rather than hanging; find the test that did not clean up');
+  return true;
+}
 const command = new Task({
   name: 'test',
   description: 'Run test files',
@@ -614,6 +719,7 @@ const command = new Task({
       parallel?: unknown;
       ordered?: unknown;
       coverage?: unknown;
+      timeout?: unknown;
     },
     ctx,
   ) {
@@ -624,6 +730,10 @@ const command = new Task({
     const parallel = input.parallel === true;
     const ordered = input.ordered === true;
     const coveragePath = typeof input.coverage === 'string' ? input.coverage : undefined;
+    const timeout = typeof input.timeout === 'number' ? input.timeout : undefined;
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0)) {
+      throw new Error(`Invalid --timeout value "${String(input.timeout)}" (expected ms >= 0)`);
+    }
     if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
       throw new Error(
         `Invalid --show-output value "${showOutput}" (expected failures, always, or never)`,
@@ -650,11 +760,13 @@ const command = new Task({
         ? {
             showOutput,
             durations,
+            timeout,
           }
         : {
             filter,
             showOutput,
             durations,
+            timeout,
           };
     let output: unknown;
     if (parallel) {
@@ -675,6 +787,12 @@ const command = new Task({
       const { run } = await import('fino:test/test');
       output = await run(runOptions);
     }
+    if (await reportLeakedHandles()) {
+      // Throwing would not help: whatever leaked still holds the loop open, so
+      // the process would report the failure and then hang anyway. Exiting is
+      // the only way to turn the leak into a result CI can see.
+      processExit(1);
+    }
     if (ctx.writer.mode === 'json') {
       const result = {
         command: 'test',
@@ -684,6 +802,7 @@ const command = new Task({
         filter,
         showOutput,
         durations,
+        timeout,
         parallel,
         ordered,
         coverage: coveragePath,
@@ -720,6 +839,11 @@ const command = new Task({
         flags: '--ordered',
         type: 'boolean',
         description: 'Emit parallel test groups in deterministic registration order',
+      },
+      {
+        flags: '--timeout',
+        type: 'number',
+        description: 'Per-test deadline in ms (default 60000; 0 waits forever)',
       },
       {
         flags: '--coverage',

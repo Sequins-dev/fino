@@ -60,15 +60,17 @@
  * The release contract is intentionally smaller than Node's `node:test` API:
  * TAP output, name filters, skip reasons, per-test metadata, duration
  * annotations, lifecycle hooks, captured output, and exclusive parallel groups
- * are supported. `only`, `todo`, per-test timeouts, general intra-file
- * concurrency, subtest creation from an assertion object, and pluggable
- * reporters are not part of this module.
+ * are supported, as are per-test timeouts: every test runs under a deadline
+ * (60s by default, `--timeout` or `RunOptions.timeout` to change it, `0` to
+ * disable) so a hang fails the test that hung instead of stalling the run.
+ * `only`, `todo`, general intra-file concurrency, subtest creation from an
+ * assertion object, and pluggable reporters are not part of this module.
  *
  * ## Internal representation
  *
  * Both APIs share a tree of nodes:
  *
- *   Leaf:  { name, fn, children: null, skip: string|null, exclusive: boolean }
+ *   Leaf:  { name, fn, children: null, skip, exclusive, timeout }
  *   Group: { name, kind: 'suite'|'describe', children: [],
  *            before, beforeEach, after, afterEach,
  *            skip: string|null, exclusive: boolean }
@@ -81,6 +83,7 @@ import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../glob
 import { Assert, AssertionError, type AssertCallbacks } from './assert.ts';
 import { formatDurationMs } from 'internal:duration';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
+import { timeout as _loopTimeout } from 'internal:runtime/loop';
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
@@ -90,6 +93,8 @@ interface LeafNode {
   children: null;
   skip: string | null;
   exclusive: boolean;
+  /** Per-test deadline in ms; null uses the run default. */
+  timeout: number | null;
 }
 interface GroupNode {
   name: string;
@@ -123,6 +128,8 @@ interface LeafRunResult {
 interface RunContext {
   showOutput: ShowOutputMode;
   durations: boolean;
+  /** Default per-test deadline in ms; `0` waits indefinitely. */
+  timeout: number;
 }
 /**
  * Primitive value accepted by `TestContext#meta()`.
@@ -154,6 +161,13 @@ export interface RunOptions {
   filter?: string;
   showOutput?: ShowOutputMode;
   durations?: boolean;
+  /**
+   * Default per-test deadline in milliseconds; `0` waits indefinitely.
+   *
+   * A hung test otherwise costs the whole CI job timeout and reports nothing
+   * about itself, so the run fails the test that hung and carries on.
+   */
+  timeout?: number;
 }
 /**
  * Opaque snapshot of registered tests created by `_prepareRun()`.
@@ -215,6 +229,14 @@ export type RegisterOptions = {
    * top-level group exclusive because root groups are the admission unit.
    */
   exclusive?: boolean;
+  /**
+   * Fail this test if it has not settled within this many milliseconds.
+   *
+   * Overrides the run default. Use `0` to wait indefinitely, which should be
+   * rare: a test that can hang is a test that can stall CI for the job's whole
+   * timeout instead of naming itself.
+   */
+  timeout?: number;
 };
 /**
  * Callback used by `test()` and `it()`.
@@ -351,6 +373,26 @@ function _skipReason(opts: RegisterOptions | null): string | null {
   if (!opts || !opts.skip) return null;
   return typeof opts.skip === 'string' ? opts.skip : '';
 }
+/**
+ * Default per-test deadline.
+ *
+ * Long enough that no honest test trips it — the slowest suites here spawn
+ * child processes and drive real terminals — and short enough that a hang
+ * names itself long before a CI job is cancelled for running over.
+ */
+const DEFAULT_TEST_TIMEOUT_MS = 60_000;
+function _runTimeout(options: RunOptions): number {
+  const value = options.timeout;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return DEFAULT_TEST_TIMEOUT_MS;
+  }
+  return value;
+}
+function _timeoutOption(opts: RegisterOptions | null): number | null {
+  const value = opts?.timeout;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return value;
+}
 function _requireOutside(kind: 'suite' | 'describe', callerName: string): void {
   if (_current !== null && _current.kind !== kind) {
     const other = kind === 'suite' ? 'describe' : 'suite';
@@ -400,6 +442,7 @@ export function test(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?:
     children: null,
     skip: _skipReason(opts),
     exclusive: opts?.exclusive === true,
+    timeout: _timeoutOption(opts),
   });
 }
 /**
@@ -507,6 +550,7 @@ export function it(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?: T
     children: null,
     skip: _skipReason(opts),
     exclusive: opts?.exclusive === true,
+    timeout: _timeoutOption(opts),
   });
 }
 /**
@@ -721,6 +765,45 @@ async function _captureConsole<T>(
  * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
  * @returns {'pass'|'fail'|'skip'}
  */
+/**
+ * Error thrown when a test body outlives its deadline.
+ *
+ * Named so a reader of a TAP failure can tell "this hung" from "this threw",
+ * because the two want completely different investigations.
+ */
+export class TestTimeoutError extends Error {
+  /** Deadline the test exceeded, in milliseconds. */
+  readonly timeoutMs: number;
+  constructor(name: string, timeoutMs: number) {
+    super(`test "${name}" exceeded its ${timeoutMs}ms timeout`);
+    this.name = 'TestTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+/**
+ * Settle `work`, or reject once `timeoutMs` has passed.
+ *
+ * The deadline timer is unreferenced so it cannot by itself keep the Realm
+ * alive, and cancelled as soon as the work settles so a passing test leaves
+ * nothing armed behind it. Losing the race does not stop the work: a hung test
+ * is reported and the run continues, but whatever it leaked is still leaked —
+ * which is what the end-of-run handle report is for.
+ */
+async function _withTimeout<T>(timeoutMs: number, name: string, work: Promise<T>): Promise<T> {
+  if (timeoutMs <= 0) return work;
+  const deadline = _loopTimeout(timeoutMs);
+  deadline.unref();
+  try {
+    return await Promise.race([
+      work,
+      deadline.then((): never => {
+        throw new TestTimeoutError(name, timeoutMs);
+      }),
+    ]);
+  } finally {
+    deadline.cancel();
+  }
+}
 async function _runLeaf(
   ctx: RunContext,
   path: string[],
@@ -769,7 +852,11 @@ async function _runLeaf(
         try {
           // Call via scheduleSync so the function executes outside the microtask
           // checkpoint — this allows spin() to drain microtasks correctly.
-          await _scheduleSync(() => entry.fn(t));
+          await _withTimeout(
+            entry.timeout ?? ctx.timeout,
+            entry.name,
+            _scheduleSync(() => entry.fn(t)),
+          );
         } catch (e) {
           bodyError = e;
         }
@@ -1058,6 +1145,7 @@ export async function _runPreparedEntry(
       {
         showOutput,
         durations: options.durations === true,
+        timeout: _runTimeout(options),
       },
       [entry],
       0,
@@ -1106,6 +1194,7 @@ export async function _runPrepared(
     {
       showOutput,
       durations,
+      timeout: _runTimeout(options),
     },
     entries,
     0,
