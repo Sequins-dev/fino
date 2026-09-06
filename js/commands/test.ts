@@ -169,6 +169,7 @@ async function prepareParallelFile(
 
   let registered = false;
   let canStart = true;
+  let startFailure: string | undefined;
   let workerCompletion: TestFileCompletion | undefined;
   let resolveCompletionReported!: (completion: TestFileCompletion) => void;
   const completionReported = new Promise<TestFileCompletion>((resolve) => {
@@ -225,16 +226,35 @@ async function prepareParallelFile(
   realm.port.start();
   void callOutcome.then((outcome) => {
     if ('error' in outcome) {
+      startFailure ??= outcome.error;
       finishRegistration([{ exclusive: false }], false);
       failPending(outcome.error);
     }
   });
   void completionOutcome.then((error) => {
     if (error !== undefined) {
+      startFailure ??= error;
       finishRegistration([{ exclusive: false }], false);
       failPending(error);
     }
   });
+  // A Realm that neither registers, fails, nor exits would hold the file loop
+  // here for the life of the job. Terminating it turns that into one reported
+  // failure; the outcome handlers above then supply the text.
+  const registrationDeadline = workerResultDeadlineMs(options);
+  if (registrationDeadline > 0) {
+    const expiry = loopTimeout(registrationDeadline);
+    expiry.unref();
+    const arrived = await Promise.race([registration.then(() => true), expiry.then(() => false)]);
+    if (!arrived) {
+      startFailure ??= `${file.display} test Realm did not register within ${registrationDeadline}ms`;
+      realm.terminate({ force: true });
+      finishRegistration([{ exclusive: false }], false);
+      failPending(startFailure);
+    } else {
+      expiry.cancel();
+    }
+  }
   const registeredTests = await registration;
   const fileCompletion = Promise.all([callOutcome, completionOutcome]).then(
     ([callResult, realmError]): ParallelFileCompletion => {
@@ -260,11 +280,11 @@ async function prepareParallelFile(
     completionReported,
     async execute(index: number): Promise<ParallelTestResult> {
       if (!canStart) {
-        const [callResult, realmError] = await Promise.all([callOutcome, completionOutcome]);
-        const error =
-          ('error' in callResult ? callResult.error : undefined) ??
-          realmError ??
-          `${file.display} stopped before test execution`;
+        // `canStart` only goes false from a handler that has already recorded
+        // why. Awaiting the call and Realm outcomes here to re-derive the text
+        // would block on a Realm that failed to load but has not exited, which
+        // holds an admission slot and deadlocks any exclusive group behind it.
+        const error = startFailure ?? `${file.display} stopped before test execution`;
         return {
           file,
           result: {
@@ -463,9 +483,8 @@ function startStallWatchdog(
 function workerResultDeadlineMs(options: Parameters<typeof runTestFile>[1]): number {
   const perTest = options.timeout;
   if (perTest === 0) return 0;
-  const base = typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0
-    ? perTest
-    : 60_000;
+  const base =
+    typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0 ? perTest : 60_000;
   return base + 30_000;
 }
 async function runParallelTests(
@@ -595,6 +614,10 @@ async function runParallelTests(
     channel.close();
     await Promise.all(taskCompletions);
     const totals = await output;
+    // Past this point there is no test progress left to watch, and the wait
+    // below has its own deadline. Leaving the watchdog armed would let it race
+    // that deadline and report a legitimate slow shutdown as a stall.
+    stopStallWatchdog();
     // Every group has reported by here; what is left is each worker Realm
     // shutting down. A Realm that never exits would otherwise hold the run
     // open forever with nothing left to report — the original shape of this
