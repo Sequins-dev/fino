@@ -52,7 +52,7 @@ import {
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
 import { _runActive as testRunActive } from '../test/test.ts';
-import { currentProcessReadinessController } from '../internal/scheduler/reactor.ts';
+import { reactorPoolStats } from 'internal:scheduler-native';
 import type {
   TestFileCompletion,
   TestFileCompletionAck,
@@ -343,13 +343,14 @@ async function prepareParallelFile(
         // group -- twelve groups is eighteen minutes of dead run. One missed
         // reply is enough to call the Realm lost: stop it and fail the rest
         // immediately.
-        // Include the readiness controller's view: a Realm that stopped waking
-        // has either lost the watch that would signal it or is not being
-        // signalled despite one, and only the controller can tell those apart.
-        const watches = currentProcessReadinessController()?.stats();
+        // Include the pool's own view. A Realm that stopped making progress is
+        // either parked with nothing queued to wake it, or queued behind work
+        // that never drains; `parkedWithNothingQueued` separates the two, and
+        // nothing visible from TypeScript otherwise can.
+        const pool = reactorPoolStats();
         const error =
           `${file.display} test Realm did not report group ${index} within ${deadline}ms` +
-          (watches === undefined ? '' : `; readiness watches ${JSON.stringify(watches)}`);
+          (pool === null ? '' : `; reactor pool ${JSON.stringify(pool)}`);
         startFailure ??= error;
         canStart = false;
         failPending(error);
@@ -610,13 +611,8 @@ async function runParallelTests(
         write(
           `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage} and ${group.nudges} retransmit(s); its own deadline did not fire`,
         );
-        // A Realm that stopped waking has either lost the watch that would
-        // signal it or is not being signalled despite one. The controller's
-        // own view is the only thing that tells those apart.
-        const readiness = currentProcessReadinessController();
-        if (readiness !== undefined) {
-          write(`# readiness watches: ${JSON.stringify(readiness.stats())}`);
-        }
+        const pool = reactorPoolStats();
+        if (pool !== null) write(`# reactor pool: ${JSON.stringify(pool)}`);
         group.force({
           file: { display: group.label, specifier: group.label },
           result: {

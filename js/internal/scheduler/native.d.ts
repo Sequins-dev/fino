@@ -51,6 +51,23 @@ export function createReactorThread(): number;
 export function closeReactorThread(thread: number): void;
 /** Signal an active owner, returning false once that owner has retired. */
 export function signalReactorOwner(owner: number): boolean;
+/**
+ * Read-only snapshot of the reactor pool's scheduling state, or `null` when the
+ * process reactor is not running.
+ *
+ * `parkedWithNothingQueued` is the diagnostic that matters: those realms cannot
+ * be claimed by any worker no matter how long it waits.
+ */
+export function reactorPoolStats(): {
+  parked: number;
+  residents: number;
+  ready: number;
+  waitingWorkers: number;
+  workers: number;
+  queuedEvents: number;
+  priorities: number;
+  parkedWithNothingQueued: number;
+} | null;
 export function takeReactorEvents(): Array<{
   kind: 'activated' | 'settled' | 'error';
   worker: number;

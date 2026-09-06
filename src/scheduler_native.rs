@@ -1738,6 +1738,54 @@ fn close_reactor_thread(
     thread.shutdown();
 }
 
+/// Read-only snapshot of the reactor pool's scheduling state.
+///
+/// A realm that stops making progress is either parked with nothing queued to
+/// wake it, or queued behind work that never drains. Those look identical from
+/// TypeScript, which can see neither the parked set nor the ready heap, so this
+/// reports both along with the entered realms and the idle worker count.
+/// Diagnostic only: it takes the queue lock, copies counters, and mutates
+/// nothing.
+fn reactor_pool_stats(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let pool = process_pool().lock().unwrap().clone();
+    let Some(pool) = pool else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    let inner = pool.inner.lock().unwrap();
+    let object = v8::Object::new(scope);
+    for (name, value) in [
+        ("parked", inner.parked.len() as f64),
+        ("residents", inner.residents.len() as f64),
+        ("ready", inner.ready.len() as f64),
+        ("waitingWorkers", inner.waiting.len() as f64),
+        ("workers", inner.wakes.len() as f64),
+        ("queuedEvents", inner.events.len() as f64),
+        ("priorities", inner.priorities.len() as f64),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let number = v8::Number::new(scope, value);
+        object.set(scope, key.into(), number.into());
+    }
+    // Which parked realms have nothing in the ready heap: the set that cannot
+    // be claimed by any worker no matter how long it waits.
+    let queued: std::collections::HashSet<u32> =
+        inner.ready.iter().map(|entry| entry.owner).collect();
+    let unclaimable = inner
+        .parked
+        .keys()
+        .filter(|owner| !queued.contains(owner))
+        .count();
+    let key = v8::String::new(scope, "parkedWithNothingQueued").unwrap();
+    let number = v8::Number::new(scope, unclaimable as f64);
+    object.set(scope, key.into(), number.into());
+    rv.set(object.into());
+}
+
 fn signal_reactor_owner(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -2032,6 +2080,7 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
+        "reactorPoolStats",
         "takeReactorEvents",
         "stopReactorPool",
         "processReadinessControlFd",
@@ -2093,6 +2142,7 @@ fn eval_steps<'a>(
     crate::set_fn!(scope, module, "createReactorThread", create_reactor_thread);
     crate::set_fn!(scope, module, "closeReactorThread", close_reactor_thread);
     crate::set_fn!(scope, module, "signalReactorOwner", signal_reactor_owner);
+    crate::set_fn!(scope, module, "reactorPoolStats", reactor_pool_stats);
     crate::set_fn!(scope, module, "takeReactorEvents", take_reactor_events);
     crate::set_fn!(scope, module, "stopReactorPool", stop_reactor_pool);
     crate::set_fn!(
