@@ -4,15 +4,17 @@
  *
  * `openPty()` allocates a pseudo-terminal pair, spawns a child process whose
  * stdin/stdout/stderr are the slave side, and feeds every byte the child
- * writes into a VT terminal emulator (`internal:tty/vt`). Tests interact with
+ * writes into a VT terminal emulator (`internal:tty/vt`). On macOS, the parent
+ * retains the slave until close drains pending output, so child exit cannot
+ * discard bytes before the emulator reads them. Tests interact with
  * the child as a user would — keystrokes, mouse clicks, window resizes — and
  * assert on the emulated screen: visible text, styled spans, tracked DEC
  * modes, the alternate screen, and cursor state.
  *
- * The child runs with the slave as its controlling terminal (a new session is
- * created via `POSIX_SPAWN_SETSID`, and opening the slave binds it), so raw
- * mode, `ioctl(TIOCGWINSZ)`, mouse reporting, and `SIGWINCH` all behave as
- * they do in a real terminal.
+ * The child runs in a new session with its standard descriptors connected to
+ * the slave. Raw mode, terminal geometry, and mouse reporting use that terminal;
+ * `resize()` updates the geometry and explicitly signals the child with
+ * `SIGWINCH`.
  *
  * All I/O is asynchronous: the master fd is read through the event loop, and
  * child exit is observed with kernel notifications (kqueue `EVFILT_PROC` on
@@ -22,6 +24,7 @@
  *
  * - [POSIX terminal interface](https://pubs.opengroup.org/onlinepubs/9799919799/basedefs/V1_chap11.html)
  * - [Linux pseudoterminals](https://man7.org/linux/man-pages/man7/pty.7.html)
+ * - [POSIX terminal output draining](https://pubs.opengroup.org/onlinepubs/9799919799/functions/tcdrain.html)
  *
  * ```ts no_run
  * import { openPty } from 'fino:test/pty';
@@ -65,6 +68,7 @@ const CATCHABLE_SIGNALS = [1, 2, 3, 13, 14, 15, 28];
 
 const lib = dlopen(LIBC, {
   posix_openpt: { parameters: ['i32'], result: 'i32' },
+  tcdrain: { parameters: ['i32'], result: 'i32', async: true },
   grantpt: { parameters: ['i32'], result: 'i32' },
   unlockpt: { parameters: ['i32'], result: 'i32' },
   ptsname_r: { parameters: ['i32', 'buffer', 'usize'], result: 'i32' },
@@ -126,7 +130,7 @@ function spawnOnSlave(
     createSession: true,
     closeOnExecDefault: true,
     configure(actions) {
-      // Opening the first tty in a fresh session makes it the controlling tty.
+      // Wire all standard descriptors to the slave in the new session.
       actions.open(0, slavePath, O_RDWR);
       actions.dup2(0, 1);
       actions.dup2(0, 2);
@@ -225,6 +229,7 @@ class Pty implements PtyHandle {
   #term: Terminal;
   #pid: number;
   #master: number;
+  #retainedSlave: number | null;
   #reader: FdReader;
   #writer: FdWriter;
   #anchor: 'cursor' | 'bottom';
@@ -234,9 +239,16 @@ class Pty implements PtyHandle {
   #closePromise: Promise<void> | null = null;
   #masterClosed = false;
 
-  constructor(pid: number, master: number, term: Terminal, anchor: 'cursor' | 'bottom') {
+  constructor(
+    pid: number,
+    master: number,
+    term: Terminal,
+    anchor: 'cursor' | 'bottom',
+    retainedSlave: number | null,
+  ) {
     this.#pid = pid;
     this.#master = master;
+    this.#retainedSlave = retainedSlave;
     this.#term = term;
     this.#anchor = anchor;
     const closeMaster = () => {
@@ -365,7 +377,18 @@ class Pty implements PtyHandle {
         await this.#exit;
       }
     }
-    // The child's death closes the slave, which surfaces as EOF on the
+    if (this.#retainedSlave !== null) {
+      const slave = this.#retainedSlave;
+      this.#retainedSlave = null;
+      try {
+        // Keep the slave open until the pump consumes its final output. Native
+        // tcdrain waits on a blocking-pool thread, leaving the Realm free to read.
+        await lib.symbols.tcdrain(slave);
+      } finally {
+        closeFd(slave);
+      }
+    }
+    // Once every slave descriptor is closed, EOF becomes visible on the
     // master; wait briefly for the pump to drain before closing the fd so no
     // read is left pending against a closed descriptor.
     const drain = loop.timeout(250);
@@ -388,7 +411,7 @@ class Pty implements PtyHandle {
  *
  * The returned {@link PtyHandle} exposes the child's screen as a live VT
  * emulator plus input, resize, exit, and teardown primitives. The child gets
- * a fresh session with the slave as its controlling terminal, sized to
+ * a fresh session with its standard streams connected to the slave, sized to
  * `cols`x`rows` before it starts.
  *
  * ```ts no_run
@@ -412,6 +435,7 @@ export async function openPty(
   }
   const master = Number(lib.symbols.posix_openpt(O_RDWR | O_NOCTTY));
   if (master < 0) throw new Error(`posix_openpt failed: errno ${getErrno()}`);
+  let retainedSlave: number | null = null;
   try {
     if (Number(lib.symbols.grantpt(master)) !== 0) {
       throw new Error(`grantpt failed: errno ${getErrno()}`);
@@ -424,23 +448,26 @@ export async function openPty(
     // owned by this call instead on both Linux and macOS.
     const slavePath = slaveName(master);
     // macOS masters reject winsize ioctls until a slave is open, so the
-    // initial size is set through a short-lived parent-side slave fd. It is
-    // closed only after spawn: posix_spawn's file actions complete before it
-    // returns, so the child already holds the slave and the master never
-    // observes an all-slaves-closed EOF.
+    // initial size is set through a parent-side slave fd. Linux can release
+    // it after spawn. macOS needs it until the PTY pump drains final output:
+    // closing the last slave descriptor otherwise discards unread bytes.
     const slaveFd = Number(lib.symbols.open(cstr(slavePath), O_RDWR | O_NOCTTY, 0));
     if (slaveFd < 0) throw new Error(`open('${slavePath}') failed: errno ${getErrno()}`);
     let pid: number;
+    let spawned = false;
     try {
       setWinsize(slaveFd, cols, rows);
       pid = spawnOnSlave(command, args, slavePath, master, slaveFd, options);
+      spawned = true;
     } finally {
-      closeFd(slaveFd);
+      if (isLinux || !spawned) closeFd(slaveFd);
+      else retainedSlave = slaveFd;
     }
     setFdNonblocking(master);
     const term = new Terminal({ cols, rows });
-    return new Pty(pid, master, term, options.anchor ?? 'cursor');
+    return new Pty(pid, master, term, options.anchor ?? 'cursor', retainedSlave);
   } catch (err) {
+    if (retainedSlave !== null) closeFd(retainedSlave);
     closeFd(master);
     throw err;
   }
