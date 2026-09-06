@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ::v8;
+use libffi::middle::CodePtr;
 
 use library::{DynLib, FfiSymbol};
 use types::{NativeType, StructField, StructFieldKind, StructLayout, align_to};
@@ -19,11 +20,16 @@ use crate::v8util;
 use call::{CallScratch, ffi_call};
 
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
-    let export_names: Vec<v8::Local<v8::String>> =
-        ["dlopen", "Pointer", "FfiCallback", "structType"]
-            .iter()
-            .map(|n| v8::String::new(scope, n).unwrap())
-            .collect();
+    let export_names: Vec<v8::Local<v8::String>> = [
+        "dlopen",
+        "ffiFunction",
+        "Pointer",
+        "FfiCallback",
+        "structType",
+    ]
+    .iter()
+    .map(|n| v8::String::new(scope, n).unwrap())
+    .collect();
     let name = v8::String::new(scope, "fino:ffi").unwrap();
     v8::Module::create_synthetic_module(scope, name, &export_names, ffi_eval)
 }
@@ -38,6 +44,11 @@ fn ffi_eval<'a>(
     let dlopen_fn = dlopen_tmpl.get_function(scope)?;
     let dlopen_key = v8::String::new(scope, "dlopen")?;
     module.set_synthetic_module_export(scope, dlopen_key, dlopen_fn.into())?;
+
+    let ffi_fn_tmpl = v8::FunctionTemplate::new(scope, ffi_function_callback);
+    let ffi_fn_fn = ffi_fn_tmpl.get_function(scope)?;
+    let ffi_fn_key = v8::String::new(scope, "ffiFunction")?;
+    module.set_synthetic_module_export(scope, ffi_fn_key, ffi_fn_fn.into())?;
 
     let ptr_ns = pointer::namespace(scope);
     let ptr_key = v8::String::new(scope, "Pointer")?;
@@ -140,68 +151,6 @@ fn dlopen_callback(
             }
         };
 
-        let params_key = v8::String::new(scope, "parameters").unwrap();
-        let params_val = def_obj
-            .get(scope, params_key.into())
-            .unwrap_or_else(|| v8::undefined(scope).into());
-        let param_types = match parse_type_array(scope, params_val) {
-            Ok(t) => t,
-            Err(e) => {
-                v8util::throw_error(scope, &format!("dlopen: '{key_str}'.parameters: {e}"));
-                return;
-            }
-        };
-
-        let result_key = v8::String::new(scope, "result").unwrap();
-        let result_val = def_obj
-            .get(scope, result_key.into())
-            .unwrap_or_else(|| v8::undefined(scope).into());
-        let result_type = match parse_native_type(scope, result_val) {
-            Ok(t) => t,
-            Err(e) => {
-                v8util::throw_error(scope, &format!("dlopen: '{key_str}'.result: {e}"));
-                return;
-            }
-        };
-
-        // Parse optional `async: true` flag.
-        let nonblocking = {
-            let async_key = v8::String::new(scope, "async").unwrap();
-            def_obj
-                .get(scope, async_key.into())
-                .map(|v| v.boolean_value(scope))
-                .unwrap_or(false)
-        };
-
-        // Parse optional `fast: false` flag. Some native functions synchronously
-        // invoke FFI callbacks back into JS and must use the normal HandleScope
-        // path instead of V8 Fast API.
-        let fast_enabled = {
-            let fast_key = v8::String::new(scope, "fast").unwrap();
-            def_obj
-                .get(scope, fast_key.into())
-                .map(|v| !v.is_boolean() || v.boolean_value(scope))
-                .unwrap_or(true)
-        };
-
-        // Parse optional `variadic: N` — number of fixed named parameters for
-        // variadic C functions (e.g. fcntl has 2 fixed params: fd, cmd).
-        // Using the correct variadic CIF (ffi_prep_cif_var) is required on
-        // ARM64 macOS to pass the trailing arguments with the right ABI.
-        let variadic: Option<usize> = {
-            let var_key = v8::String::new(scope, "variadic").unwrap();
-            def_obj
-                .get(scope, var_key.into())
-                .and_then(|v| {
-                    if v.is_number() {
-                        v.integer_value(scope)
-                    } else {
-                        None
-                    }
-                })
-                .map(|n| n as usize)
-        };
-
         // Get the code pointer from the library.
         let code_ptr = {
             let borrow = lib_rc.borrow();
@@ -220,48 +169,15 @@ fn dlopen_callback(
             }
         };
 
-        let sym = match FfiSymbol::new(
+        let sym_fn = match build_symbol_function(
+            scope,
             code_ptr,
-            param_types,
-            result_type,
-            nonblocking,
-            fast_enabled,
-            variadic,
+            def_obj,
+            Rc::clone(&lib_rc),
+            &format!("dlopen: '{key_str}'"),
         ) {
-            Ok(s) => s,
-            Err(e) => {
-                v8util::throw_error(scope, &format!("dlopen: symbol '{key_str}': {e}"));
-                return;
-            }
-        };
-
-        let sym_data = Box::new(SymbolData {
-            symbol: sym,
-            scratch: RefCell::new(CallScratch::new()),
-            lib_rc: Rc::clone(&lib_rc),
-        });
-
-        // Try to build a V8 Fast API overload for this symbol.
-        let fast_cfn = fast::build_fast_cfunction(&sym_data.symbol);
-
-        let sym_ptr = Box::into_raw(sym_data);
-        let ext = v8::External::new(scope, sym_ptr as *mut std::ffi::c_void);
-
-        let sym_tmpl = if let Some(cfn) = fast_cfn {
-            // V8 retains the overload table for the lifetime of the function
-            // template, so rusty_v8 now requires static storage here.
-            let overloads = Box::leak(Box::new([cfn]));
-            v8::FunctionTemplate::builder(symbol_call_callback)
-                .data(ext.into())
-                .build_fast(scope, overloads)
-        } else {
-            v8::FunctionTemplate::builder(symbol_call_callback)
-                .data(ext.into())
-                .build(scope)
-        };
-        let sym_fn = match sym_tmpl.get_function(scope) {
             Some(f) => f,
-            None => continue,
+            None => return,
         };
 
         let name_key = v8::String::new(scope, &key_str).unwrap();
@@ -289,6 +205,185 @@ fn dlopen_callback(
     result_obj.set(scope, close_key.into(), close_fn.into());
 
     rv.set(result_obj.into());
+}
+
+// ---------------------------------------------------------------------------
+// Shared symbol construction
+// ---------------------------------------------------------------------------
+
+/// Parse one symbol definition (`{ parameters, result, async?, fast?, variadic? }`)
+/// and build the callable JS function bound to `code_ptr`.
+///
+/// `lib_rc` keeps the providing library loaded for as long as the returned
+/// function exists. `ffiFunction` passes a permanently-empty cell because the
+/// caller owns the code pointer's lifetime.
+///
+/// `describe` prefixes thrown errors, e.g. `dlopen: 'strlen'` or `ffiFunction`.
+/// Returns `None` after throwing.
+fn build_symbol_function<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    code_ptr: CodePtr,
+    def_obj: v8::Local<v8::Object>,
+    lib_rc: Rc<RefCell<Option<DynLib>>>,
+    describe: &str,
+) -> Option<v8::Local<'s, v8::Function>> {
+    let params_key = v8::String::new(scope, "parameters").unwrap();
+    let params_val = def_obj
+        .get(scope, params_key.into())
+        .unwrap_or_else(|| v8::undefined(scope).into());
+    let param_types = match parse_type_array(scope, params_val) {
+        Ok(t) => t,
+        Err(e) => {
+            v8util::throw_error(scope, &format!("{describe}.parameters: {e}"));
+            return None;
+        }
+    };
+
+    let result_key = v8::String::new(scope, "result").unwrap();
+    let result_val = def_obj
+        .get(scope, result_key.into())
+        .unwrap_or_else(|| v8::undefined(scope).into());
+    let result_type = match parse_native_type(scope, result_val) {
+        Ok(t) => t,
+        Err(e) => {
+            v8util::throw_error(scope, &format!("{describe}.result: {e}"));
+            return None;
+        }
+    };
+
+    // Parse optional `async: true` flag.
+    let nonblocking = {
+        let async_key = v8::String::new(scope, "async").unwrap();
+        def_obj
+            .get(scope, async_key.into())
+            .map(|v| v.boolean_value(scope))
+            .unwrap_or(false)
+    };
+
+    // Parse optional `fast: false` flag. Some native functions synchronously
+    // invoke FFI callbacks back into JS and must use the normal HandleScope
+    // path instead of V8 Fast API.
+    let fast_enabled = {
+        let fast_key = v8::String::new(scope, "fast").unwrap();
+        def_obj
+            .get(scope, fast_key.into())
+            .map(|v| !v.is_boolean() || v.boolean_value(scope))
+            .unwrap_or(true)
+    };
+
+    // Parse optional `variadic: N` — number of fixed named parameters for
+    // variadic C functions (e.g. fcntl has 2 fixed params: fd, cmd).
+    // Using the correct variadic CIF (ffi_prep_cif_var) is required on
+    // ARM64 macOS to pass the trailing arguments with the right ABI.
+    let variadic: Option<usize> = {
+        let var_key = v8::String::new(scope, "variadic").unwrap();
+        def_obj
+            .get(scope, var_key.into())
+            .and_then(|v| {
+                if v.is_number() {
+                    v.integer_value(scope)
+                } else {
+                    None
+                }
+            })
+            .map(|n| n as usize)
+    };
+
+    let sym = match FfiSymbol::new(
+        code_ptr,
+        param_types,
+        result_type,
+        nonblocking,
+        fast_enabled,
+        variadic,
+    ) {
+        Ok(s) => s,
+        Err(e) => {
+            v8util::throw_error(scope, &format!("{describe}: {e}"));
+            return None;
+        }
+    };
+
+    let sym_data = Box::new(SymbolData {
+        symbol: sym,
+        scratch: RefCell::new(CallScratch::new()),
+        lib_rc,
+    });
+
+    // Try to build a V8 Fast API overload for this symbol.
+    let fast_cfn = fast::build_fast_cfunction(&sym_data.symbol);
+
+    let sym_ptr = Box::into_raw(sym_data);
+    let ext = v8::External::new(scope, sym_ptr as *mut std::ffi::c_void);
+
+    let sym_tmpl = if let Some(cfn) = fast_cfn {
+        // V8 retains the overload table for the lifetime of the function
+        // template, so rusty_v8 requires static storage here.
+        let overloads = Box::leak(Box::new([cfn]));
+        v8::FunctionTemplate::builder(symbol_call_callback)
+            .data(ext.into())
+            .build_fast(scope, overloads)
+    } else {
+        v8::FunctionTemplate::builder(symbol_call_callback)
+            .data(ext.into())
+            .build(scope)
+    };
+    sym_tmpl.get_function(scope)
+}
+
+// ---------------------------------------------------------------------------
+// ffiFunction
+// ---------------------------------------------------------------------------
+
+/// `ffiFunction(pointer, definition)` — bind a code pointer obtained at runtime.
+///
+/// `dlopen` can only reach symbols by name. Function pointers handed back by
+/// native code — `vkGetInstanceProcAddr` results, C struct callback fields,
+/// `FfiCallback.pointer` — have no name to look up, so this is the only way to
+/// call them.
+///
+/// The returned function does not keep anything alive: the caller must retain
+/// whatever provides the code (library handle, `FfiCallback`) for as long as the
+/// function is callable.
+fn ffi_function_callback(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let ptr_val: v8::Local<v8::Value> = args.get(0);
+    let def_val: v8::Local<v8::Value> = args.get(1);
+
+    // Accept a BigInt address directly as well as a pointer buffer, since
+    // `Pointer.addr` and `usizeBig` returns both yield BigInts.
+    let raw = if let Ok(big) = v8::Local::<v8::BigInt>::try_from(ptr_val) {
+        let (addr, _) = big.u64_value();
+        addr as *mut std::ffi::c_void
+    } else {
+        match pointer::from_js(scope, ptr_val) {
+            Some(p) => p,
+            None => return,
+        }
+    };
+
+    if raw.is_null() {
+        v8util::throw_error(scope, "ffiFunction: pointer must not be null");
+        return;
+    }
+
+    let def_obj = match v8::Local::<v8::Object>::try_from(def_val) {
+        Ok(o) => o,
+        Err(_) => {
+            v8util::throw_error(scope, "ffiFunction: expected object as second argument");
+            return;
+        }
+    };
+
+    let code_ptr = CodePtr::from_ptr(raw);
+    let lib_rc: Rc<RefCell<Option<DynLib>>> = Rc::new(RefCell::new(None));
+
+    if let Some(f) = build_symbol_function(scope, code_ptr, def_obj, lib_rc, "ffiFunction") {
+        rv.set(f.into());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,8 +512,15 @@ fn ffi_callback_constructor(
     };
     let func_global = v8::Global::new(scope, func_local);
 
+    // `deferred: true` — the native call returns as soon as the handler is queued.
+    let deferred_key = v8::String::new(scope, "deferred").unwrap();
+    let deferred = def_obj
+        .get(scope, deferred_key.into())
+        .map(|v| v.boolean_value(scope))
+        .unwrap_or(false);
+
     let (handle_ptr, code_ptr) =
-        match closure::new_callback(scope, param_types, result_type, func_global) {
+        match closure::new_callback(scope, param_types, result_type, func_global, deferred) {
             Ok(pair) => pair,
             Err(e) => {
                 v8util::throw_error(scope, &format!("FfiCallback: {e}"));

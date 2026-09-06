@@ -51,7 +51,15 @@ for as long as native code may call it; dropping it while native code still has
 the function pointer is unsafe.
 
 Mark long-running symbols `async` or `nonblocking` so they run on the native
-blocking pool instead of stalling the JS event loop.
+blocking pool instead of stalling the JS event loop. Async symbols accept
+pointer, buffer, and by-value struct parameters; buffer backing stores stay
+pinned until the promise settles, while raw pointers are passed as plain
+addresses that the caller must keep valid. A `buffer` result is rejected.
+
+`ffiFunction()` binds a code pointer that has no symbol name to look up, such as
+a pointer returned by another native call or read out of a struct field. It takes
+the same definition as a single `dlopen` symbol and keeps nothing alive, so the
+library or callback providing the code must be retained separately.
 
 The full `fino:ffi` surface — types, struct layout, callbacks, and pointer
 helpers — is documented in the generated API reference.

@@ -34,6 +34,8 @@ struct CallbackData {
     func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
     wake_write: RawFd,
+    /// Whether a cross-thread call returns without waiting for the handler.
+    deferred: bool,
 }
 
 // SAFETY: only primitive types and Arc (Send).
@@ -53,7 +55,13 @@ unsafe extern "C" fn trampoline(
     let data = userdata;
     let result_ptr: *mut c_void = result as *mut c_void;
 
-    if crate::async_rt::is_v8_thread() {
+    // A deferred callback always queues, even on the V8 thread. Re-entering JS from
+    // inside a native call is a different thing from being told the work finished: it
+    // runs the handler in the middle of whatever the caller was doing, and a completion
+    // handler wants the next turn of the loop. Keeping one behaviour also means the
+    // path that matters — a foreign thread queueing without waiting — is the same path
+    // a test on this thread can exercise.
+    if crate::async_rt::is_v8_thread() && !data.deferred {
         let mut isolate = unsafe { v8__Isolate__GetCurrent() };
         if isolate.is_null() {
             unsafe {
@@ -93,15 +101,23 @@ unsafe extern "C" fn trampoline(
         })
         .collect();
 
-    // Create a condvar slot for the result.
-    let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
-        Arc::new((Mutex::new(None), Condvar::new()));
+    // A deferred callback wants nothing back, so it queues the call, wakes the loop,
+    // and returns. Waiting would park whichever thread the foreign library happened to
+    // call on — one of libdispatch's workers, say — for as long as the event loop takes
+    // to come round, which is a thread this process does not own and did not budget.
+    //
+    // Everything else needs a value, so it has to wait for one.
+    let slot = if data.deferred {
+        None
+    } else {
+        Some(Arc::new((Mutex::new(None), Condvar::new())))
+    };
 
     let request = JsCallRequest {
         callback_id: data.callback_id,
         args: send_args,
         param_types: data.param_types.clone(),
-        result_slot: Arc::clone(&slot),
+        result_slot: slot.clone(),
     };
 
     // Submit to the V8 thread queue and wake the event loop.
@@ -109,6 +125,11 @@ unsafe extern "C" fn trampoline(
     unsafe {
         libc::write(data.wake_write, b"\x01".as_ptr() as *const c_void, 1);
     }
+
+    let Some(slot) = slot else {
+        // Void by construction, so there is no return value to write.
+        return;
+    };
 
     // Block until the V8 thread fills the slot.
     let (lock, cvar) = slot.as_ref();
@@ -175,7 +196,11 @@ pub fn new_callback(
     param_types: Vec<NativeType>,
     result_type: NativeType,
     func_global: v8::Global<v8::Function>,
+    deferred: bool,
 ) -> Result<(*mut CallbackHandle, *mut c_void), String> {
+    if deferred && !matches!(result_type, NativeType::Void) {
+        return Err("FfiCallback: a deferred callback must return void".into());
+    }
     let (js_call_requests, wake_write) =
         crate::async_rt::js_call_handle().ok_or("FfiCallback: runtime not initialised")?;
 
@@ -200,6 +225,7 @@ pub fn new_callback(
         func,
         js_call_requests,
         wake_write,
+        deferred,
     });
     let userdata_ptr: *mut CallbackData = Box::into_raw(userdata);
     let userdata_ref: &'static CallbackData = unsafe { &*userdata_ptr };

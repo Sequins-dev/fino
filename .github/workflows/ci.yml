@@ -190,14 +190,22 @@ jobs:
       FINO_REQUIRE_H2: "1"
       FINO_REQUIRE_H3: "1"
       FINO_REQUIRE_TLS: "1"
+      # Without this the Vulkan suite skips itself when the driver is missing, and a
+      # skipped suite is indistinguishable from a passing one.
+      FINO_REQUIRE_VULKAN: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install SQLite
+      # lavapipe is Mesa's software Vulkan implementation. It runs on any runner and is
+      # the only second implementation this project has: the SPIR-V emitter is otherwise
+      # only ever executed by MoltenVK on a developer's Mac, and a single driver's
+      # tolerance is not a specification. Three defects reached the tree while this job
+      # ran the tensor tests and silently skipped every one that needed a device.
+      - name: Install SQLite and a software Vulkan driver
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libsqlite3-0
+          sudo apt-get install -y --no-install-recommends libsqlite3-0 mesa-vulkan-drivers
 
       - name: Restore Linux build
         uses: actions/cache/restore@v4
@@ -244,6 +252,11 @@ jobs:
     runs-on: blacksmith-6vcpu-macos-15
     timeout-minutes: 15
     needs: macos-build
+    env:
+      # The Linux job's counterpart. Whether a hosted macOS runner exposes a Metal device
+      # is not something this repository has ever established — the Metal tests skip when
+      # it does not, so the job has looked the same either way. This makes it report.
+      FINO_REQUIRE_METAL: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

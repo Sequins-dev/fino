@@ -909,6 +909,109 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:format/thrift/value",
         "internal/format/thrift/value"
     ),
+    // tensor
+    source_builtin!("fino:tensor", "tensor/index"),
+    source_builtin!("fino:tensor/graph", "tensor/graph"),
+    source_builtin!("fino:tensor/backend", "tensor/backend"),
+    source_builtin!("fino:tensor/nn", "tensor/nn/index"),
+    source_builtin!("fino:tensor/optim", "tensor/optim/index"),
+    source_builtin!("internal:tensor/dtype", "tensor/dtype"),
+    source_builtin!("internal:tensor/shape", "tensor/shape"),
+    source_builtin!("internal:tensor/tensor", "tensor/tensor"),
+    source_builtin!("internal:tensor/dispatch", "tensor/dispatch"),
+    source_builtin!("internal:tensor/pool", "tensor/pool"),
+    source_builtin!("internal:tensor/readback", "tensor/readback"),
+    source_builtin!("internal:tensor/transfer", "tensor/transfer"),
+    source_builtin!("internal:tensor/fusion", "tensor/fusion"),
+    source_builtin!("internal:tensor/amp", "tensor/amp"),
+    source_builtin!("internal:tensor/autograd", "tensor/autograd"),
+    source_builtin!("internal:tensor/ops", "tensor/ops/index"),
+    source_builtin!("internal:tensor/ops/registry", "tensor/ops/registry"),
+    source_builtin!("internal:tensor/ops/elementwise", "tensor/ops/elementwise"),
+    source_builtin!("internal:tensor/ops/reduce", "tensor/ops/reduce"),
+    source_builtin!("internal:tensor/ops/linalg", "tensor/ops/linalg"),
+    source_builtin!("internal:tensor/ops/movement", "tensor/ops/movement"),
+    source_builtin!("internal:tensor/ops/random", "tensor/ops/random"),
+    source_builtin!("internal:tensor/ref", "tensor/ref/backend"),
+    source_builtin!("internal:tensor/cpu", "tensor/cpu/index"),
+    source_builtin!("internal:tensor/cpu/blas", "tensor/cpu/blas"),
+    source_builtin!("internal:tensor/harness", "tensor/harness"),
+    source_builtin!("internal:tensor/kernel-cache", "tensor/kernel-cache"),
+    source_builtin!("internal:tensor/gpu", "tensor/gpu/index"),
+    source_builtin!("internal:tensor/gpu/driver", "tensor/gpu/driver"),
+    source_builtin!("internal:tensor/gpu/backend", "tensor/gpu/backend"),
+    source_builtin!("internal:tensor/gpu/cuda-driver", "tensor/gpu/cuda-driver"),
+    source_builtin!(
+        "internal:tensor/gpu/metal-driver",
+        "tensor/gpu/metal-driver"
+    ),
+    source_builtin!(
+        "internal:tensor/gpu/vulkan-driver",
+        "tensor/gpu/vulkan-driver"
+    ),
+    source_builtin!("internal:tensor/create", "tensor/create"),
+    source_builtin!("internal:tensor/generator", "tensor/generator"),
+    source_builtin!("fino:tensor/io", "tensor/io/index"),
+    source_builtin!("fino:tensor/conformance", "tensor/conformance/index"),
+    source_builtin!(
+        "internal:tensor/conformance/suite",
+        "tensor/conformance/suite"
+    ),
+    source_builtin!("internal:tensor/io/safetensors", "tensor/io/safetensors"),
+    source_builtin!("internal:tensor/io/npy", "tensor/io/npy"),
+    source_builtin!("internal:tensor/nn/module", "tensor/nn/module"),
+    source_builtin!("internal:tensor/nn/layers", "tensor/nn/layers"),
+    source_builtin!("internal:tensor/nn/attention", "tensor/nn/attention"),
+    source_builtin!("internal:tensor/nn/functional", "tensor/nn/functional"),
+    source_builtin!("internal:tensor/nn/init", "tensor/nn/init"),
+    source_builtin!("internal:tensor/optim/optim", "tensor/optim/optim"),
+    source_builtin!("internal:tensor/optim/schedule", "tensor/optim/schedule"),
+    source_builtin!("internal:tensor/ref/view", "tensor/ref/view"),
+    // tensor kernel IR
+    source_builtin!("internal:tensor/ir", "tensor/ir/index"),
+    source_builtin!("internal:tensor/ir/types", "tensor/ir/types"),
+    source_builtin!("internal:tensor/ir/builder", "tensor/ir/builder"),
+    source_builtin!("internal:tensor/ir/typing", "tensor/ir/typing"),
+    source_builtin!("internal:tensor/ir/layout", "tensor/ir/layout"),
+    source_builtin!("internal:tensor/ir/key", "tensor/ir/key"),
+    source_builtin!("internal:tensor/ir/msl", "tensor/ir/lower/msl"),
+    source_builtin!("internal:tensor/ir/spirv", "tensor/ir/lower/spirv"),
+    source_builtin!("internal:tensor/ir/cuda", "tensor/ir/lower/cuda"),
+    source_builtin!(
+        "internal:tensor/ir/templates/elementwise",
+        "tensor/ir/templates/elementwise"
+    ),
+    source_builtin!(
+        "internal:tensor/ir/templates/gemm",
+        "tensor/ir/templates/gemm"
+    ),
+    source_builtin!(
+        "internal:tensor/ir/templates/gemm-mma",
+        "tensor/ir/templates/gemm-mma"
+    ),
+    source_builtin!(
+        "internal:tensor/ir/templates/reduce",
+        "tensor/ir/templates/reduce"
+    ),
+    source_builtin!(
+        "internal:tensor/ir/templates/structural",
+        "tensor/ir/templates/structural"
+    ),
+    // vulkan
+    source_builtin!("internal:vulkan", "internal/vulkan/index"),
+    source_builtin!("internal:vulkan/loader", "internal/vulkan/loader"),
+    source_builtin!("internal:vulkan/structs", "internal/vulkan/structs"),
+    source_builtin!("internal:vulkan/device", "internal/vulkan/device"),
+    // metal
+    source_builtin!("internal:metal", "internal/metal/index"),
+    source_builtin!("internal:metal/objc", "internal/metal/objc"),
+    source_builtin!("internal:metal/bindings", "internal/metal/bindings"),
+    // spirv
+    source_builtin!("internal:spirv", "internal/spirv/index"),
+    source_builtin!("internal:spirv/opcodes", "internal/spirv/opcodes"),
+    source_builtin!("internal:spirv/writer", "internal/spirv/writer"),
+    source_builtin!("internal:spirv/module", "internal/spirv/module"),
+    source_builtin!("internal:spirv/disasm", "internal/spirv/disasm"),
     source_builtin!("fino:format/typescript", "format/typescript"),
     source_builtin!("fino:format/toml", "format/toml"),
     source_builtin!("fino:format/xml", "format/xml"),
@@ -2009,7 +2112,20 @@ fn get_or_load_builtin_inner<'s>(
     }
 
     // 3. Fall back to the static BUILTINS registry.
-    let entry = BUILTINS.iter().find(|(s, _)| *s == spec)?;
+    //
+    // Returning `None` without throwing would leave V8 with no pending exception, and
+    // everything downstream reports the failure as `undefined`: a dynamic import
+    // rejects with `undefined`, and a caller that logs the reason prints nothing worth
+    // reading. An unresolved specifier has to raise something.
+    let Some(entry) = BUILTINS.iter().find(|(s, _)| *s == spec) else {
+        let from = from
+            .map(|f| format!(" imported from '{f}'"))
+            .unwrap_or_default();
+        let msg = v8::String::new(scope, &format!("Cannot find module '{spec}'{from}"))?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    };
     let (spec_key, kind) = entry;
 
     let module = match kind {

@@ -151,6 +151,11 @@ declare module 'fino:ffi' {
      * Raw symbol addresses keyed by their C symbol name.
      */
     pointers: NativeSymbolPointers<TSymbols>;
+    /**
+     * Unload the library. Calling any bound symbol afterwards is undefined
+     * behaviour, so only close a library once nothing can call into it.
+     */
+    close(): void;
   }
   /**
    * A native pointer value: an 8-byte `ArrayBuffer` holding the address as a
@@ -438,7 +443,26 @@ declare module 'fino:ffi' {
    */
   export const FfiCallback: {
     new (
-      spec: Pick<NativeSymbolSpec, 'parameters' | 'result'>,
+      spec: Pick<NativeSymbolSpec, 'parameters' | 'result'> & {
+        /**
+         * Queue the handler and return, instead of waiting for it.
+         *
+         * A callback normally delivers its handler's return value back to C, which
+         * means the calling thread waits for JavaScript to run. For a completion
+         * handler there is nothing to deliver, and the waiting is the problem: the
+         * caller is whichever thread the framework chose — one of libdispatch's
+         * workers, say — and parking it costs a thread this process neither owns nor
+         * budgeted.
+         *
+         * A deferred callback queues the call, wakes the event loop, and returns. The
+         * handler runs on a later turn, on the JavaScript thread, and its value is
+         * discarded. The result type must be `'void'`, since nothing can receive one.
+         *
+         * This also holds on the JavaScript thread itself: a deferred handler is never
+         * re-entered in the middle of the native call that triggered it.
+         */
+        deferred?: boolean;
+      },
       callback: (...args: any[]) => unknown,
     ): FfiCallbackHandle;
   };
@@ -489,6 +513,42 @@ declare module 'fino:ffi' {
     path: string | null,
     symbols: TSymbols,
   ): DynamicLibrary<TSymbols>;
+
+  /**
+   * Bind a function pointer obtained at runtime.
+   *
+   * `dlopen()` can only reach symbols by name. Function pointers handed back by
+   * native code have no name to look up: `vkGetInstanceProcAddr` results,
+   * callback fields read out of a C struct, and `FfiCallback.pointer` all need
+   * this instead.
+   *
+   * `pointer` accepts a pointer buffer, an `ArrayBufferView` over one, or a
+   * `BigInt` address. The definition is the same shape `dlopen()` takes for a
+   * single symbol, including `async`, `fast`, and `variadic`.
+   *
+   * The returned function keeps nothing alive. Whatever provides the code — a
+   * `DynamicLibrary` handle, an `FfiCallback` — must be retained for as long as
+   * the function may be called, or the call will jump into freed memory.
+   *
+   * ```ts no_run
+   * import { dlopen, ffiFunction } from 'fino:ffi';
+   *
+   * const libc = dlopen('/usr/lib/libSystem.B.dylib', {
+   *   strlen: { parameters: ['buffer'], result: 'usize' },
+   * });
+   *
+   * const strlen = ffiFunction(libc.pointers.strlen, {
+   *   parameters: ['buffer'],
+   *   result: 'usizeBig',
+   * });
+   *
+   * console.log(strlen(new TextEncoder().encode('hello\0')));
+   * ```
+   */
+  export function ffiFunction(
+    pointer: NativePointer | bigint,
+    definition: NativeSymbolSpec,
+  ): (...args: any[]) => any;
 }
 
 /**

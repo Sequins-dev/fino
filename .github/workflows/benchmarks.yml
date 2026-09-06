@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   linux-build:
-    name: Linux Release Build
+    name: Linux Optimized Build
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - name: Check out repository
@@ -49,7 +49,12 @@ jobs:
         with:
           prefix: ${{ runner.temp }}/fino-protocol-deps
 
-      - name: Build release binary
+      # "Optimized", not "release": this is cargo's release *profile*, because timing a
+      # debug build would measure the wrong thing. Nothing here publishes anything. It
+      # was once uploaded as an artifact named `fino-linux-release`, which read like
+      # something worth preserving — thirty accumulated and filled the account's
+      # artifact quota, blocking every upload in the repository.
+      - name: Build the optimized binary
         run: cargo build --release
 
       - name: Check V8 artifact cache readiness
@@ -70,11 +75,11 @@ jobs:
             target/release/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
-      - name: Save Linux release build
+      - name: Save the optimized binary
         uses: actions/cache/save@v4
         with:
           path: target/release/fino
-          key: fino-linux-release-${{ github.run_id }}-${{ github.run_attempt }}
+          key: fino-linux-optimized-${{ github.run_id }}-${{ github.run_attempt }}
 
   linux-benchmarks:
     name: Linux Benchmarks (benchmarks/${{ matrix.path }})
@@ -107,12 +112,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsqlite3-0
 
-      - name: Restore Linux release build
+      - name: Restore the optimized binary
         uses: actions/cache/restore@v4
         with:
           path: target/release/fino
-          key: fino-linux-release-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: fino-linux-release-${{ github.run_id }}-
+          key: fino-linux-optimized-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: fino-linux-optimized-${{ github.run_id }}-
           fail-on-cache-miss: true
 
       - name: Prepare binary

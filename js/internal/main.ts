@@ -64,6 +64,16 @@ function processProfileRequested(args: string[]): boolean {
 }
 
 let done = false;
+/**
+ * Whether the command failed, kept apart from what it failed with.
+ *
+ * `throw undefined` is legal, and a rejection carries whatever was thrown — so using
+ * the error value as the flag makes a command that fails with `undefined` look exactly
+ * like one that succeeded. That is not hypothetical: an unresolved module specifier
+ * rejected with `undefined`, and a whole test run reported success having executed
+ * nothing at all.
+ */
+let failed = false;
 let caughtError: unknown;
 const profileRequested = processProfileRequested(argv.slice(1));
 if (profileRequested) beginProcessProfiling();
@@ -72,15 +82,19 @@ installProcessReadinessController(readiness);
 readiness.start();
 const command = runReactorPool('internal:scheduler/bootstrap');
 
-async function settleCommand(error?: unknown): Promise<void> {
+async function settleCommand(error?: unknown, commandFailed = false): Promise<void> {
   caughtError = error;
+  failed = commandFailed;
   if (profileRequested) {
     try {
       const profile = finishProcessProfiling();
       const { DiskFileSystem } = await import('../file/fs.ts');
       await new DiskFileSystem().writeFile('profile.pb', profile);
     } catch (profileError) {
-      if (caughtError === undefined) caughtError = profileError;
+      if (!failed) {
+        caughtError = profileError;
+        failed = true;
+      }
       else
         console.error(
           `[profile] ${profileError instanceof Error ? profileError.message : String(profileError)}`,
@@ -96,7 +110,7 @@ void command.then(
     return settleCommand();
   },
   function onCommandError(error) {
-    return settleCommand(error);
+    return settleCommand(error, true);
   },
 );
 
@@ -105,8 +119,10 @@ driveLoop(
     return done;
   },
   function onMainLoopDone() {
-    if (caughtError !== undefined) {
-      console.error(caughtError);
+    if (failed) {
+      // Something was thrown, but not necessarily anything worth printing. Say so
+      // rather than printing `undefined` and leaving the reader no better off.
+      console.error(caughtError ?? new Error('the command failed without an error value'));
       exit(1);
     }
   },
