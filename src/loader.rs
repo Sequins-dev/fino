@@ -886,6 +886,11 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/protobuf", "format/protobuf"),
+    source_builtin!("internal:spirv", "internal/spirv/index"),
+    source_builtin!("internal:spirv/writer", "internal/spirv/writer"),
+    source_builtin!("internal:spirv/opcodes", "internal/spirv/opcodes"),
+    source_builtin!("internal:spirv/module", "internal/spirv/module"),
+    source_builtin!("internal:spirv/disasm", "internal/spirv/disasm"),
     source_builtin!("internal:format/thrift", "internal/format/thrift/index"),
     source_builtin!(
         "internal:format/thrift/types",
