@@ -58,6 +58,8 @@ export function signalReactorOwner(owner: number): boolean;
  * `parkedWithNothingQueued` is the diagnostic that matters: those realms cannot
  * be claimed by any worker no matter how long it waits.
  */
+/** Publish the readiness controller's registration count for diagnostics. */
+export function setReadinessHeartbeat(registrations: number): void;
 export function reactorPoolStats(): {
   parked: number;
   residents: number;
@@ -67,6 +69,8 @@ export function reactorPoolStats(): {
   queuedEvents: number;
   priorities: number;
   parkedWithNothingQueued: number;
+  controllerRegistrations: number;
+  controllerRouted: number;
   mailboxChanges: number;
   mailboxOwnersWithEvents: number;
   mailboxEvents: number;

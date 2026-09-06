@@ -16,6 +16,7 @@ import {
   signalReactorOwner,
   takeSharedReadinessChanges,
   type ReadinessChangeTuple,
+  setReadinessHeartbeat,
 } from 'internal:scheduler-native';
 
 interface ReadinessChange {
@@ -318,6 +319,10 @@ export class ProcessReadinessController {
     for (const tuple of takeSharedReadinessChanges()) {
       this.#apply(decodeReadinessChange(tuple));
     }
+    // A scheduled realm cannot see this realm's loop, yet every one of its
+    // readiness watches lives here. Publishing the count lets a stalled run
+    // tell "the controller lost my watch" from "the controller is not running".
+    setReadinessHeartbeat(this.#registrations.size);
   }
   /** Drain queued registrations and begin watching the native mailbox. */
   start(): void {

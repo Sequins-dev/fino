@@ -608,7 +608,14 @@ async function runParallelTests(
           // retransmit is evidence of a lost wake-up, not of a slow test.
           if (waited >= groupDeadline / 4) {
             if (group.nudges === 0) {
-              write(`# re-sending start for ${group.label} after ${Math.round(waited)}ms`);
+              // Sampled here and again when the group is abandoned. Whether
+              // `controllerRouted` advanced between the two says whether the
+              // readiness controller kept running through the strand.
+              const pool = reactorPoolStats();
+              write(
+                `# re-sending start for ${group.label} after ${Math.round(waited)}ms` +
+                  (pool === null ? '' : `; reactor pool ${JSON.stringify(pool)}`),
+              );
             }
             group.nudges++;
             group.nudge();

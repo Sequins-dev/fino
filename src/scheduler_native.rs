@@ -331,6 +331,25 @@ impl Mailbox {
     }
 }
 
+/// Liveness counters published by the readiness controller in the main realm.
+///
+/// A scheduled realm cannot see the main realm's loop state, and every one of
+/// its readiness watches lives there. When reads and timers go silent together
+/// the question is whether the controller is still routing at all, so it
+/// publishes its registration count and a monotonically increasing routed
+/// count here for any realm to read.
+static CONTROLLER_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+static CONTROLLER_ROUTED: AtomicU64 = AtomicU64::new(0);
+
+fn set_readiness_heartbeat(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let registrations = args.get(0).uint32_value(scope).unwrap_or(0);
+    CONTROLLER_REGISTRATIONS.store(registrations as u64, Ordering::Relaxed);
+}
+
 fn mailbox() -> &'static Mailbox {
     static MAILBOX: std::sync::OnceLock<Mailbox> = std::sync::OnceLock::new();
     MAILBOX.get_or_init(Mailbox::new)
@@ -1805,6 +1824,14 @@ fn reactor_pool_stats(
     // events mean a realm was signalled but never came back to collect them.
     let mail = mailbox().inner.lock().unwrap();
     for (name, value) in [
+        (
+            "controllerRegistrations",
+            CONTROLLER_REGISTRATIONS.load(Ordering::Relaxed) as f64,
+        ),
+        (
+            "controllerRouted",
+            CONTROLLER_ROUTED.load(Ordering::Relaxed) as f64,
+        ),
         ("mailboxChanges", mail.changes.len() as f64),
         ("mailboxOwnersWithEvents", mail.events.len() as f64),
         (
@@ -2028,6 +2055,7 @@ fn route_process_readiness(
     for (slot, value) in completion.iter_mut().enumerate() {
         *value = args.get(slot as i32 + 1).number_value(scope).unwrap_or(0.0);
     }
+    CONTROLLER_ROUTED.fetch_add(1, Ordering::Relaxed);
     mailbox()
         .inner
         .lock()
@@ -2114,6 +2142,7 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "closeReactorThread",
         "signalReactorOwner",
         "reactorPoolStats",
+        "setReadinessHeartbeat",
         "takeReactorEvents",
         "stopReactorPool",
         "processReadinessControlFd",
@@ -2176,6 +2205,12 @@ fn eval_steps<'a>(
     crate::set_fn!(scope, module, "closeReactorThread", close_reactor_thread);
     crate::set_fn!(scope, module, "signalReactorOwner", signal_reactor_owner);
     crate::set_fn!(scope, module, "reactorPoolStats", reactor_pool_stats);
+    crate::set_fn!(
+        scope,
+        module,
+        "setReadinessHeartbeat",
+        set_readiness_heartbeat
+    );
     crate::set_fn!(scope, module, "takeReactorEvents", take_reactor_events);
     crate::set_fn!(scope, module, "stopReactorPool", stop_reactor_pool);
     crate::set_fn!(
