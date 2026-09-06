@@ -531,10 +531,7 @@ export interface Partition {
  * it is hardware-agnostic, and the recording is the only thing that sees the
  * whole computation.
  */
-export function partition(
-  view: GraphView,
-  targets: readonly PartitionTarget[],
-): Partition[] {
+export function partition(view: GraphView, targets: readonly PartitionTarget[]): Partition[] {
   if (targets.length === 0) throw new Error('partitioning needs at least one target');
   const nodes = [...view.nodes()];
   const assignment = new Map<NodeId, string>();
@@ -543,9 +540,7 @@ export function partition(
   for (const node of nodes) {
     const target = targets.find((t) => t.supports(node)) ?? targets.find((t) => t.fallback);
     if (!target) {
-      throw new Error(
-        `no target can execute '${node.op}' and no fallback target is registered`,
-      );
+      throw new Error(`no target can execute '${node.op}' and no fallback target is registered`);
     }
     assignment.set(node.id, target.name);
     for (const out of node.outputs) produced.set(out, node.id);

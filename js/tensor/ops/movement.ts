@@ -58,8 +58,7 @@ MOVE.reshape = registerOp({
   arity: 1,
   dtypeRule: (inputs) => inputs[0]!.dtype,
   shapeRule: (inputs, attrs) => attrs!.shape as readonly number[],
-  enqueue: (backend, inputs, out, _attrs, stream) =>
-    backend.copyStrided(inputs[0]!, out, stream),
+  enqueue: (backend, inputs, out, _attrs, stream) => backend.copyStrided(inputs[0]!, out, stream),
   vjp: {
     saves: () => [],
     backward: (cot, _saved, attrs, needs) => [
@@ -75,8 +74,7 @@ MOVE.permute = registerOp({
   group: 'movement',
   arity: 1,
   dtypeRule: (inputs) => inputs[0]!.dtype,
-  shapeRule: (inputs, attrs) =>
-    permuteShape(inputs[0]!.shape, attrs!.order as readonly number[]),
+  shapeRule: (inputs, attrs) => permuteShape(inputs[0]!.shape, attrs!.order as readonly number[]),
   enqueue: (backend, inputs, out, attrs, stream) => {
     // Re-express the source as a view with the output's shape and reordered
     // strides, so the backend's one strided copy performs the permutation.
@@ -128,8 +126,7 @@ MOVE.expand = registerOp({
   group: 'movement',
   arity: 1,
   dtypeRule: (inputs) => inputs[0]!.dtype,
-  shapeRule: (inputs, attrs) =>
-    expandShape(inputs[0]!.shape, attrs!.shape as readonly number[]),
+  shapeRule: (inputs, attrs) => expandShape(inputs[0]!.shape, attrs!.shape as readonly number[]),
   enqueue: (backend, inputs, out, _attrs, stream) => {
     // A broadcast read is the output's shape walked with zero strides on the
     // stretched axes, so no data is duplicated to perform it.
@@ -521,11 +518,16 @@ MOVE.arange = registerOp({
 export function reshape(t: Tensor, shape: readonly number[]): Tensor {
   const resolved = resolveReshape(t.shape, shape);
   if (t.contiguous) {
-    return dispatch(MOVE.reshape!, [t], { shape: resolved, inputShape: t.shape }, {
-      aliasOf: t,
-      strides: contiguousStrides(resolved),
-      offset: t.offset,
-    });
+    return dispatch(
+      MOVE.reshape!,
+      [t],
+      { shape: resolved, inputShape: t.shape },
+      {
+        aliasOf: t,
+        strides: contiguousStrides(resolved),
+        offset: t.offset,
+      },
+    );
   }
   return dispatch(MOVE.reshape!, [t], { shape: resolved, inputShape: t.shape });
 }
@@ -589,23 +591,13 @@ export function gather(t: Tensor, indices: Tensor, axis = 0): Tensor {
 }
 
 /** Accumulate one element of `src` per position, at `indices`, along an axis. */
-export function scatterAddAt(
-  dest: Tensor,
-  indices: Tensor,
-  src: Tensor,
-  axis = 0,
-): Tensor {
+export function scatterAddAt(dest: Tensor, indices: Tensor, src: Tensor, axis = 0): Tensor {
   const resolved = normalizeAxis(axis, dest.rank);
   return dispatch(MOVE.scatterAddAt!, [dest, indices, src], { axis: resolved });
 }
 
 /** Accumulate `src` into `dest` at `indices` along an axis. */
-export function scatterAdd(
-  dest: Tensor,
-  indices: Tensor,
-  src: Tensor,
-  axis = 0,
-): Tensor {
+export function scatterAdd(dest: Tensor, indices: Tensor, src: Tensor, axis = 0): Tensor {
   const resolved = normalizeAxis(axis, dest.rank);
   return dispatch(MOVE.scatterAdd!, [dest, indices, src], { axis: resolved });
 }
@@ -623,7 +615,10 @@ export function concat(tensors: readonly Tensor[], axis = 0): Tensor {
   if (tensors.length === 1) return tensors[0]!;
   const first = tensors[0]!;
   const resolved = normalizeAxis(axis, first.rank);
-  const shape = concatShape(tensors.map((t) => t.shape), resolved);
+  const shape = concatShape(
+    tensors.map((t) => t.shape),
+    resolved,
+  );
   let dtype = first.dtype;
   for (const t of tensors) if (isFloat(t.dtype)) dtype = t.dtype;
 
@@ -667,7 +662,15 @@ export function emptyTensor(
 ): Tensor {
   const backend = backendFor(device);
   const stream = computeStream(backend);
-  const bytes = numel(shape) * (dtype === 'f64' || dtype === 'i64' ? 8 : dtype === 'f32' || dtype === 'i32' ? 4 : dtype === 'u8' || dtype === 'bool' ? 1 : 2);
+  const bytes =
+    numel(shape) *
+    (dtype === 'f64' || dtype === 'i64'
+      ? 8
+      : dtype === 'f32' || dtype === 'i32'
+        ? 4
+        : dtype === 'u8' || dtype === 'bool'
+          ? 1
+          : 2);
   const storage = allocStorage(backend, device, Math.max(bytes, 1), stream);
   return new TensorClass({
     storage,

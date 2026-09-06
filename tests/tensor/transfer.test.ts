@@ -117,10 +117,7 @@ describe('device transfer', () => {
         loss.dispose();
       }
       const after = await objective().item();
-      t.ok(
-        after < before,
-        `training reduces the loss on ${target.type} (${before} -> ${after})`,
-      );
+      t.ok(after < before, `training reduces the loss on ${target.type} (${before} -> ${after})`);
       model.dispose();
       x.dispose();
       y.dispose();

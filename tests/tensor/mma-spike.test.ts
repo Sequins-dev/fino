@@ -140,7 +140,6 @@ kernel void mma_gemm(
 }
 `;
 
-
 /**
  * The same arrangement over 16-bit operands, accumulating in `float`.
  *

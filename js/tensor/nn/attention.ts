@@ -190,9 +190,7 @@ export class TransformerBlock extends Module {
     );
     const residual = x.add(attention);
     const hidden = gelu(
-      (this.child('fc1') as Linear).forward(
-        (this.child('norm2') as LayerNorm).forward(residual),
-      ),
+      (this.child('fc1') as Linear).forward((this.child('norm2') as LayerNorm).forward(residual)),
     );
     return residual.add((this.child('fc2') as Linear).forward(hidden));
   }

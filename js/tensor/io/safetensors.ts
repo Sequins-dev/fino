@@ -329,7 +329,9 @@ export async function saveSafetensors(
     const tensor = tensors.get(name)!;
     const encoded = NAMES_BY_DTYPE[tensor.dtype];
     if (!encoded) {
-      throw new Error(`cannot write tensor '${name}': dtype ${tensor.dtype} has no safetensors name`);
+      throw new Error(
+        `cannot write tensor '${name}': dtype ${tensor.dtype} has no safetensors name`,
+      );
     }
     const bytes = await readBytes(tensor);
     header[name] = {

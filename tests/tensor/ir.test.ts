@@ -56,11 +56,23 @@ describe('shape and layout analysis', () => {
   });
   it('keeps axes separate when an operand breaks contiguity', (t) => {
     // Second operand is broadcast along the middle axis.
-    const out = collapseAxes([2, 3, 4], [[12, 4, 1], [4, 0, 1]]);
+    const out = collapseAxes(
+      [2, 3, 4],
+      [
+        [12, 4, 1],
+        [4, 0, 1],
+      ],
+    );
     t.ok(out.shape.length > 1, `broadcast axis prevents a full collapse (${out.shape})`);
   });
   it('classifies matching shapes as contiguous', (t) => {
-    const { layouts, count } = classifyOperands([2, 3], [[2, 3], [2, 3]]);
+    const { layouts, count } = classifyOperands(
+      [2, 3],
+      [
+        [2, 3],
+        [2, 3],
+      ],
+    );
     t.equal(count, 6, 'element count');
     t.deepEqual(
       layouts.map((l) => l.class),
@@ -74,13 +86,25 @@ describe('shape and layout analysis', () => {
   });
   it('classifies a trailing-axis broadcast as outer', (t) => {
     // [N,1] against [N,M]: each element of the first spans M outputs.
-    const { layouts } = classifyOperands([4, 5], [[4, 5], [4, 1]]);
+    const { layouts } = classifyOperands(
+      [4, 5],
+      [
+        [4, 5],
+        [4, 1],
+      ],
+    );
     t.equal(layouts[1]!.class, 'outerBroadcast', 'column vector is an outer broadcast');
     t.equal(layouts[1]!.inner, 5, 'inner span is the row length');
   });
   it('classifies a leading-axis broadcast as inner', (t) => {
     // [1,M] against [N,M]: the row repeats, so index is i % M.
-    const { layouts } = classifyOperands([4, 5], [[4, 5], [1, 5]]);
+    const { layouts } = classifyOperands(
+      [4, 5],
+      [
+        [4, 5],
+        [1, 5],
+      ],
+    );
     t.equal(layouts[1]!.class, 'innerBroadcast', 'row vector is an inner broadcast');
     t.equal(layouts[1]!.inner, 5, 'inner span is the row length');
   });
@@ -182,7 +206,11 @@ describe('cache keys', () => {
     const a = cacheKeyText({ spec: 'x', target: 'yz' });
     const b = cacheKeyText({ spec: 'xy', target: 'z' });
     t.notEqual(a, b, 'field boundaries cannot be forged by concatenation');
-    t.notEqual(cacheKeyHash({ spec: 'x', target: 'yz' }), cacheKeyHash({ spec: 'xy', target: 'z' }), 'hashes differ too');
+    t.notEqual(
+      cacheKeyHash({ spec: 'x', target: 'yz' }),
+      cacheKeyHash({ spec: 'xy', target: 'z' }),
+      'hashes differ too',
+    );
   });
   it('changes the key when the target changes', (t) => {
     t.notEqual(
@@ -236,11 +264,7 @@ describe('elementwise template', () => {
     const bindings = insts.filter(
       (x) => x.opcode === Op.Decorate && x.operands[1] === 33 /* Binding */,
     );
-    t.deepEqual(
-      bindings.map((d) => d.operands[2]).sort(),
-      [0, 1, 2],
-      'three sequential bindings',
-    );
+    t.deepEqual(bindings.map((d) => d.operands[2]).sort(), [0, 1, 2], 'three sequential bindings');
   });
   it('rounds 16-bit stores through the compute type', (t) => {
     const { ir } = unaryKernel('relu', { dtype: 'f16', layout: 'cont' }, 'f16');
@@ -290,8 +314,7 @@ describe('elementwise template', () => {
   });
   it('refuses strided operands, directing callers to the right template', (t) => {
     t.throws(
-      () =>
-        unaryKernel('neg', { dtype: 'f32', layout: 'strided' }, 'f32'),
+      () => unaryKernel('neg', { dtype: 'f32', layout: 'strided' }, 'f32'),
       /stridedCopy template/,
       'strided elementwise is explicitly out of scope',
     );
@@ -391,9 +414,30 @@ describe('two-dialect neutrality', () => {
       unaryKernel('relu', { dtype: 'f32', layout: 'cont' }, 'f32'),
       unaryKernel('gelu', { dtype: 'f32', layout: 'cont' }, 'f32'),
       unaryKernel('exp', { dtype: 'f16', layout: 'cont' }, 'f16'),
-      binaryKernel('add', [{ dtype: 'f32', layout: 'cont' }, { dtype: 'f32', layout: 'scalar' }], 'f32'),
-      binaryKernel('mul', [{ dtype: 'f32', layout: 'cont' }, { dtype: 'f32', layout: 'innerBroadcast' }], 'f32'),
-      binaryKernel('ge', [{ dtype: 'i32', layout: 'cont' }, { dtype: 'i32', layout: 'cont' }], 'bool'),
+      binaryKernel(
+        'add',
+        [
+          { dtype: 'f32', layout: 'cont' },
+          { dtype: 'f32', layout: 'scalar' },
+        ],
+        'f32',
+      ),
+      binaryKernel(
+        'mul',
+        [
+          { dtype: 'f32', layout: 'cont' },
+          { dtype: 'f32', layout: 'innerBroadcast' },
+        ],
+        'f32',
+      ),
+      binaryKernel(
+        'ge',
+        [
+          { dtype: 'i32', layout: 'cont' },
+          { dtype: 'i32', layout: 'cont' },
+        ],
+        'bool',
+      ),
       castKernel('f32', 'i32'),
       castKernel('bool', 'f32'),
       gemmKernel({ dtype: 'f32', tiling: SMALL_TILING }),
@@ -412,8 +456,22 @@ describe('two-dialect neutrality', () => {
       unaryKernel('relu', { dtype: 'f32', layout: 'cont' }, 'f32').key,
       unaryKernel('relu', { dtype: 'f16', layout: 'cont' }, 'f16').key,
       unaryKernel('exp', { dtype: 'f32', layout: 'cont' }, 'f32').key,
-      binaryKernel('add', [{ dtype: 'f32', layout: 'cont' }, { dtype: 'f32', layout: 'cont' }], 'f32').key,
-      binaryKernel('add', [{ dtype: 'f32', layout: 'cont' }, { dtype: 'f32', layout: 'scalar' }], 'f32').key,
+      binaryKernel(
+        'add',
+        [
+          { dtype: 'f32', layout: 'cont' },
+          { dtype: 'f32', layout: 'cont' },
+        ],
+        'f32',
+      ).key,
+      binaryKernel(
+        'add',
+        [
+          { dtype: 'f32', layout: 'cont' },
+          { dtype: 'f32', layout: 'scalar' },
+        ],
+        'f32',
+      ).key,
       gemmKernel({ dtype: 'f32' }).key,
     ];
     t.equal(new Set(keys).size, keys.length, 'no two distinct kernels share a key');

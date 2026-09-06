@@ -75,29 +75,29 @@ async function rate(
   // gigabytes of live tensors here — enough that allocation, not the kernel, is what
   // gets measured. Only the one-element probes are kept, and only the last is read.
   async function once(): Promise<number> {
-  const start = performance.now();
-  let seconds: number;
-  if (deferred) {
-    const probes: Tensor[] = [];
-    for (let i = 0; i < iterations; i++) {
-      const out = make();
-      probes.push(out.reshape([out.size]).slice([{ end: 1 }]));
-      out.dispose();
+    const start = performance.now();
+    let seconds: number;
+    if (deferred) {
+      const probes: Tensor[] = [];
+      for (let i = 0; i < iterations; i++) {
+        const out = make();
+        probes.push(out.reshape([out.size]).slice([{ end: 1 }]));
+        out.dispose();
+      }
+      await probes[probes.length - 1]!.data();
+      seconds = (performance.now() - start) / 1000 / iterations;
+      for (const probe of probes) probe.dispose();
+    } else {
+      let last: Tensor | null = null;
+      for (let i = 0; i < iterations; i++) {
+        last?.dispose();
+        last = make();
+      }
+      await drain(last!);
+      seconds = (performance.now() - start) / 1000 / iterations;
+      last!.dispose();
     }
-    await probes[probes.length - 1]!.data();
-    seconds = (performance.now() - start) / 1000 / iterations;
-    for (const probe of probes) probe.dispose();
-  } else {
-    let last: Tensor | null = null;
-    for (let i = 0; i < iterations; i++) {
-      last?.dispose();
-      last = make();
-    }
-    await drain(last!);
-    seconds = (performance.now() - start) / 1000 / iterations;
-    last!.dispose();
-  }
-  return seconds;
+    return seconds;
   }
 }
 

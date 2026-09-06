@@ -249,7 +249,9 @@ export class Tensor {
     this.dtype = init.dtype;
     this.device = init.storage.device;
     this.offset = init.offset ?? 0;
-    this.strides = init.strides ? Object.freeze([...init.strides]) : Object.freeze(contiguousStrides(init.shape));
+    this.strides = init.strides
+      ? Object.freeze([...init.strides])
+      : Object.freeze(contiguousStrides(init.shape));
     this.valueId = init.valueId;
     this.#requiresGrad = init.requiresGrad ?? false;
     this.gradFn = init.gradFn ?? null;

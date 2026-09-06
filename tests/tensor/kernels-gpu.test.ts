@@ -604,10 +604,7 @@ describe('kernel library on Metal', () => {
     for (const testCase of cases()) {
       const got = await runMetal(testCase);
       const worst = worstError(got, testCase.expect);
-      t.ok(
-        worst <= (testCase.tolerance ?? 1e-6),
-        `${testCase.name}: worst deviation ${worst}`,
-      );
+      t.ok(worst <= (testCase.tolerance ?? 1e-6), `${testCase.name}: worst deviation ${worst}`);
     }
   });
 });
@@ -627,10 +624,7 @@ describe('kernel library on Vulkan', () => {
         continue;
       }
       const worst = worstError(got, testCase.expect);
-      t.ok(
-        worst <= (testCase.tolerance ?? 1e-6),
-        `${testCase.name}: worst deviation ${worst}`,
-      );
+      t.ok(worst <= (testCase.tolerance ?? 1e-6), `${testCase.name}: worst deviation ${worst}`);
     }
   });
 });

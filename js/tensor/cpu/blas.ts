@@ -120,10 +120,7 @@ export interface BlasGemm {
  *
  * @internal
  */
-let resolved:
-  | { library: DynamicLibrary; path: string }
-  | { error: string }
-  | null = null;
+let resolved: { library: DynamicLibrary; path: string } | { error: string } | null = null;
 
 /**
  * Find a BLAS, or record why there is none.

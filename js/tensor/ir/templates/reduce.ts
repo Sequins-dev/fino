@@ -50,11 +50,19 @@ const SHAPES: Record<ReduceOp, ReduceShape> = {
   prod: { init: (lit) => lit(1), fold: (acc, value) => E.mul(acc, value) },
   any: {
     init: (lit) => lit(0),
-    fold: (acc, value) => E.max(acc, E.select(E.ne(value, E.const(vt('f32'), 0)), E.const(vt('f32'), 1), E.const(vt('f32'), 0))),
+    fold: (acc, value) =>
+      E.max(
+        acc,
+        E.select(E.ne(value, E.const(vt('f32'), 0)), E.const(vt('f32'), 1), E.const(vt('f32'), 0)),
+      ),
   },
   all: {
     init: (lit) => lit(1),
-    fold: (acc, value) => E.min(acc, E.select(E.ne(value, E.const(vt('f32'), 0)), E.const(vt('f32'), 1), E.const(vt('f32'), 0))),
+    fold: (acc, value) =>
+      E.min(
+        acc,
+        E.select(E.ne(value, E.const(vt('f32'), 0)), E.const(vt('f32'), 1), E.const(vt('f32'), 0)),
+      ),
   },
 };
 
@@ -188,11 +196,7 @@ function treeReduce(
     const stride = wg >> (step + 1);
     b.barrier();
     b.if(E.lt(lid, E.u32(stride)), () => {
-      b.shstore(
-        red,
-        lid,
-        combine(E.shload(red, lid), E.shload(red, E.add(lid, E.u32(stride)))),
-      );
+      b.shstore(red, lid, combine(E.shload(red, lid), E.shload(red, E.add(lid, E.u32(stride)))));
     });
   });
   b.barrier();
@@ -234,10 +238,7 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   if (spec.perThread) return softmaxPerThread(spec);
   const wg = spec.wg ?? 256;
   const compute = vt('f32');
-  const b = new KernelBuilder(
-    `${spec.log ? 'logsoftmax' : 'softmax'}_${spec.dtype}`,
-    [wg, 1, 1],
-  );
+  const b = new KernelBuilder(`${spec.log ? 'logsoftmax' : 'softmax'}_${spec.dtype}`, [wg, 1, 1]);
   b.buffer('in0', vt(spec.dtype), 'read');
   b.buffer('out0', vt(spec.dtype), 'write');
   const cols = b.param('cols');
@@ -250,11 +251,7 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
   // row this group owns is `base + c * inner` for c along the axis.
   const outerIndex = b.let('o', vt('u32'), E.div(row, inner));
   const innerIndex = b.let('k', vt('u32'), E.mod(row, inner));
-  const base = b.let(
-    'base',
-    vt('u32'),
-    E.add(E.mul(E.mul(outerIndex, cols), inner), innerIndex),
-  );
+  const base = b.let('base', vt('u32'), E.add(E.mul(E.mul(outerIndex, cols), inner), innerIndex));
   const at = (c: Expr): Expr => E.add(base, E.mul(c, inner));
 
   // Row maximum.
@@ -302,10 +299,11 @@ export function softmaxKernel(spec: SoftmaxSpec): { ir: KernelIR; key: string } 
 function softmaxPerThread(spec: SoftmaxSpec): { ir: KernelIR; key: string } {
   const wg = spec.wg ?? 256;
   const compute = vt('f32');
-  const b = new KernelBuilder(
-    `${spec.log ? 'logsoftmax' : 'softmax'}_rows_${spec.dtype}`,
-    [wg, 1, 1],
-  );
+  const b = new KernelBuilder(`${spec.log ? 'logsoftmax' : 'softmax'}_rows_${spec.dtype}`, [
+    wg,
+    1,
+    1,
+  ]);
   b.buffer('in0', vt(spec.dtype), 'read');
   b.buffer('out0', vt(spec.dtype), 'write');
   const rows = b.param('rows');
@@ -332,7 +330,10 @@ function softmaxPerThread(spec: SoftmaxSpec): { ir: KernelIR; key: string } {
     b.for('c2', E.u32(0), cols, E.u32(1), (c) => {
       b.assign(
         'acc',
-        E.add(E.var('acc'), E.call('exp', E.sub(E.cast(compute, E.load('in0', at(c))), E.var('m')))),
+        E.add(
+          E.var('acc'),
+          E.call('exp', E.sub(E.cast(compute, E.load('in0', at(c))), E.var('m'))),
+        ),
       );
     });
     b.for('c3', E.u32(0), cols, E.u32(1), (c) => {
@@ -426,10 +427,7 @@ export function layerNormKernel(spec: LayerNormSpec): { ir: KernelIR; key: strin
 
   b.for('c3', lid, cols, E.u32(wg), (c) => {
     const at = E.add(base, c);
-    let value: Expr = E.mul(
-      E.sub(E.cast(compute, E.load('in0', at)), E.var('mean')),
-      scale,
-    );
+    let value: Expr = E.mul(E.sub(E.cast(compute, E.load('in0', at)), E.var('mean')), scale);
     if (spec.weight) value = E.mul(value, E.cast(compute, E.load('weight', c)));
     if (spec.bias) value = E.add(value, E.cast(compute, E.load('bias', c)));
     b.store('out0', at, E.cast(vt(spec.dtype), value));
@@ -495,10 +493,7 @@ function layerNormPerThread(spec: LayerNormSpec): { ir: KernelIR; key: string } 
     );
     b.for('c3', E.u32(0), cols, E.u32(1), (c) => {
       const index = E.add(base, c);
-      let value: Expr = E.mul(
-        E.sub(E.cast(compute, E.load('in0', index)), E.var('mean')),
-        scale,
-      );
+      let value: Expr = E.mul(E.sub(E.cast(compute, E.load('in0', index)), E.var('mean')), scale);
       if (spec.weight) value = E.mul(value, E.cast(compute, E.load('weight', c)));
       if (spec.bias) value = E.add(value, E.cast(compute, E.load('bias', c)));
       b.store('out0', index, E.cast(vt(spec.dtype), value));

@@ -204,13 +204,7 @@ describe('the fused optimizer update', () => {
       // Relative, and looser than the single-step checks above. Each step feeds the
       // next, so f32 rounding on the GPU compounds against the reference backend's f64
       // accumulation; what matters here is that it stays rounding rather than drift.
-      agrees(
-        t,
-        `${type} after 25 steps`,
-        values as unknown as ArrayLike<number>,
-        reference,
-        1e-5,
-      );
+      agrees(t, `${type} after 25 steps`, values as unknown as ArrayLike<number>, reference, 1e-5);
     }
   });
 });

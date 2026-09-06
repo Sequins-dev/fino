@@ -362,7 +362,9 @@ export function nsArray(items: readonly Id[]): Id {
 /** An `NSDictionary` pairing keys with values, positionally. */
 export function nsDictionary(keys: readonly Id[], values: readonly Id[]): Id {
   if (keys.length !== values.length) {
-    throw new Error(`nsDictionary needs matching keys and values, got ${keys.length} and ${values.length}`);
+    throw new Error(
+      `nsDictionary needs matching keys and values, got ${keys.length} and ${values.length}`,
+    );
   }
   const cls = objcClass('NSDictionary');
   if (!cls) throw new Error('NSDictionary is unavailable');

@@ -66,16 +66,7 @@ export class TypeEnv {
 }
 
 /** Operators whose result is `bool` regardless of operand type. */
-const PREDICATE_OPS = new Set([
-  'eq',
-  'ne',
-  'lt',
-  'le',
-  'gt',
-  'ge',
-  'logicalAnd',
-  'logicalOr',
-]);
+const PREDICATE_OPS = new Set(['eq', 'ne', 'lt', 'le', 'gt', 'ge', 'logicalAnd', 'logicalOr']);
 
 /** Infer the type of an expression. */
 export function typeOf(expr: Expr, env: TypeEnv): ValType {
@@ -152,9 +143,7 @@ export function checkExpr(expr: Expr, env: TypeEnv): ValType {
         );
       }
       if (a.lanes !== b.lanes && b.lanes !== 1 && a.lanes !== 1) {
-        throw new Error(
-          `operator '${expr.op}' mixes ${a.lanes} and ${b.lanes} lanes`,
-        );
+        throw new Error(`operator '${expr.op}' mixes ${a.lanes} and ${b.lanes} lanes`);
       }
       return typeOf(expr, env);
     }

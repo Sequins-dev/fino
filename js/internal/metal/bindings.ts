@@ -54,9 +54,7 @@ export class MetalError extends Error {
 /** Raised when Metal itself is unavailable. */
 export class MetalUnavailableError extends Error {
   constructor(reason: string) {
-    super(
-      `Metal is unavailable: ${reason}. The Metal backend requires macOS on Apple Silicon.`,
-    );
+    super(`Metal is unavailable: ${reason}. The Metal backend requires macOS on Apple Silicon.`);
     this.name = 'MetalUnavailableError';
   }
 }
@@ -245,11 +243,7 @@ export function createMetalApi(): MetalApi {
         return {
           name: nameObject ? readNSString(nameObject) : 'unknown',
           unifiedMemory: send.bool(device, sel('hasUnifiedMemory')) as boolean,
-          simdgroups: send.boolI64(
-            device,
-            sel('supportsFamily:'),
-            GPU_FAMILY_APPLE7,
-          ) as boolean,
+          simdgroups: send.boolI64(device, sel('supportsFamily:'), GPU_FAMILY_APPLE7) as boolean,
           // maxThreadsPerThreadgroup is an MTLSize, not a scalar; the width is
           // the limit a one-dimensional kernel cares about.
           maxThreadsPerThreadgroup: Number(
@@ -337,9 +331,7 @@ export function createMetalApi(): MetalApi {
           maxThreadsPerThreadgroup: Number(
             send.u64(state, sel('maxTotalThreadsPerThreadgroup')) as bigint,
           ),
-          threadExecutionWidth: Number(
-            send.u64(state, sel('threadExecutionWidth')) as bigint,
-          ),
+          threadExecutionWidth: Number(send.u64(state, sel('threadExecutionWidth')) as bigint),
         };
       } finally {
         popPool(pool);
@@ -405,12 +397,7 @@ export function createMetalApi(): MetalApi {
         send.void(batch.encoder, sel('endEncoding'));
         // Signalling from the command buffer, not the encoder, so the value lands
         // after every dispatch encoded into this submission.
-        send.voidPtrU64(
-          batch.commandBuffer,
-          sel('encodeSignalEvent:value:'),
-          event,
-          signalValue,
-        );
+        send.voidPtrU64(batch.commandBuffer, sel('encodeSignalEvent:value:'), event, signalValue);
         send.void(batch.commandBuffer, sel('commit'));
       } finally {
         // Metal retains a committed command buffer itself, so releasing our own

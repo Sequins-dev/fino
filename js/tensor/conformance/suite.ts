@@ -153,7 +153,12 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'forward',
       covers: ['sum', 'mean', 'max', 'min'],
       inputs: [{ shape: [4, 6] }],
-      run: (x) => x.sum([1]).add(x.mean([1])).add(x.max([1])).add(x.min([1])),
+      run: (x) =>
+        x
+          .sum([1])
+          .add(x.mean([1]))
+          .add(x.max([1]))
+          .add(x.min([1])),
       reduction: 6,
     },
     {
@@ -161,7 +166,11 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'forward',
       covers: ['sum', 'mean'],
       inputs: [{ shape: [2, 3, 4] }],
-      run: (x) => x.sum([0], true).mul(2).add(x.mean([1], true).sum([0], true)),
+      run: (x) =>
+        x
+          .sum([0], true)
+          .mul(2)
+          .add(x.mean([1], true).sum([0], true)),
       reduction: 4,
     },
     {
@@ -318,7 +327,8 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'forward',
       covers: ['sin', 'cos', 'erf', 'rsqrt', 'pow', 'div', 'neg'],
       inputs: [{ shape: [40] }],
-      run: (x) => x.sin().add(x.cos()).add(x.erf()).add(x.abs().add(1).rsqrt()).add(x.pow(2)).div(3).neg(),
+      run: (x) =>
+        x.sin().add(x.cos()).add(x.erf()).add(x.abs().add(1).rsqrt()).add(x.pow(2)).div(3).neg(),
     },
     {
       name: 'rounding',
@@ -348,7 +358,12 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'forward',
       covers: ['all', 'any'],
       inputs: [{ shape: [4, 6] }],
-      run: (x) => x.gt(0).all([1]).cast('f32').add(x.gt(0).any([1]).cast('f32')),
+      run: (x) =>
+        x
+          .gt(0)
+          .all([1])
+          .cast('f32')
+          .add(x.gt(0).any([1]).cast('f32')),
       reduction: 6,
     },
     {
@@ -418,7 +433,11 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'gradient',
       covers: ['sum'],
       inputs: [{ shape: [3, 5] }],
-      run: (x) => x.sum([0], true).mul(x.sum([1], true)).sum(),
+      run: (x) =>
+        x
+          .sum([0], true)
+          .mul(x.sum([1], true))
+          .sum(),
       reduction: 5,
     },
     {
@@ -433,7 +452,11 @@ export function conformanceCases(): ConformanceCase[] {
       group: 'gradient',
       covers: ['slice'],
       inputs: [{ shape: [6, 6] }],
-      run: (x) => x.slice([{ start: 1, step: 2 }]).mul(2).sum(),
+      run: (x) =>
+        x
+          .slice([{ start: 1, step: 2 }])
+          .mul(2)
+          .sum(),
     },
     {
       name: 'gradient through layer normalisation',

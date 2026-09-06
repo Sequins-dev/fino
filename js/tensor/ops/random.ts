@@ -58,10 +58,7 @@ for (const kind of KINDS) {
     // than each restating it, so a differential failure here means a kernel diverged
     // from the scheme rather than that two schemes disagree.
     refImpl: (_inputs, out, attrs) => {
-      const key: readonly [number, number] = [
-        attrs!.keyLo as number,
-        attrs!.keyHi as number,
-      ];
+      const key: readonly [number, number] = [attrs!.keyLo as number, attrs!.keyHi as number];
       const counter = attrs!.counter as number;
       for (let i = 0; i < out.size; i++) {
         out.set(i, sampleAt(kind, key, counter, i, attrs as Record<string, number>));
@@ -110,14 +107,10 @@ export function rand(
   shape: readonly number[],
   options: SampleOptions & { low?: number; high?: number },
 ): Tensor {
-  return sample(
-    'uniform',
-    shape,
-    options.dtype ?? 'f32',
-    options.device,
-    options.generator,
-    { low: options.low ?? 0, high: options.high ?? 1 },
-  );
+  return sample('uniform', shape, options.dtype ?? 'f32', options.device, options.generator, {
+    low: options.low ?? 0,
+    high: options.high ?? 1,
+  });
 }
 
 /** Normal samples. */
@@ -147,12 +140,7 @@ export function bernoulli(
   shape: readonly number[],
   options: SampleOptions & { p?: number },
 ): Tensor {
-  return sample(
-    'bernoulli',
-    shape,
-    options.dtype ?? 'f32',
-    options.device,
-    options.generator,
-    { p: options.p ?? 0.5 },
-  );
+  return sample('bernoulli', shape, options.dtype ?? 'f32', options.device, options.generator, {
+    p: options.p ?? 0.5,
+  });
 }

@@ -58,7 +58,12 @@ describe('device sampling', () => {
   it('draws integers inside the range', async (t) => {
     const dev = await device('auto');
     const values = [
-      ...(await randint([256], { generator: new Generator(5), device: dev, low: 3, high: 9 }).data()),
+      ...(await randint([256], {
+        generator: new Generator(5),
+        device: dev,
+        low: 3,
+        high: 9,
+      }).data()),
     ].map(Number);
     t.ok(
       values.every((v) => Number.isInteger(v) && v >= 3 && v < 9),
@@ -71,7 +76,10 @@ describe('device sampling', () => {
     const values = [
       ...(await bernoulli([256], { generator: new Generator(11), device: dev, p: 0.5 }).data()),
     ].map(Number);
-    t.ok(values.every((v) => v === 0 || v === 1), 'bernoulli is a mask');
+    t.ok(
+      values.every((v) => v === 0 || v === 1),
+      'bernoulli is a mask',
+    );
     const ones = values.filter((v) => v === 1).length;
     // Far too loose to be a distribution test — it catches a kernel that returns a
     // constant, which is the failure worth catching here.
@@ -106,8 +114,12 @@ describe('device sampling', () => {
   it('splits into independent substreams', async (t) => {
     const dev = await device('auto');
     const parent = new Generator(21);
-    const a = [...(await rand([32], { generator: parent.split(0), device: dev }).data())].map(Number);
-    const b = [...(await rand([32], { generator: parent.split(1), device: dev }).data())].map(Number);
+    const a = [...(await rand([32], { generator: parent.split(0), device: dev }).data())].map(
+      Number,
+    );
+    const b = [...(await rand([32], { generator: parent.split(1), device: dev }).data())].map(
+      Number,
+    );
     t.ok(
       a.some((v, i) => v !== b[i]),
       'two substreams of one generator are different',

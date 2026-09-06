@@ -100,9 +100,9 @@ describe('a miniature transformer', () => {
       });
       // One row of positions per batch item, which broadcasting handles from a single
       // [1, tokens] lookup.
-      const positions = (
-        await arange(TOKENS, { dtype: 'i32', device: dev })
-      ).reshape([1, TOKENS]).expand([BATCH, TOKENS]);
+      const positions = (await arange(TOKENS, { dtype: 'i32', device: dev }))
+        .reshape([1, TOKENS])
+        .expand([BATCH, TOKENS]);
 
       const loss = (): Tensor => {
         const logits = model.forward(input, positions);
@@ -163,10 +163,7 @@ describe('a miniature transformer', () => {
       const model = new MiniTransformer();
       await model.to(dev);
       const ids = sequences(TOKENS, 11);
-      const positions = (await arange(TOKENS, { dtype: 'i32', device: dev })).reshape([
-        1,
-        TOKENS,
-      ]);
+      const positions = (await arange(TOKENS, { dtype: 'i32', device: dev })).reshape([1, TOKENS]);
 
       const original = await tensor(ids, { shape: [1, TOKENS], dtype: 'i32', device: dev });
       const changed = [...ids];
@@ -209,10 +206,7 @@ describe('a miniature transformer', () => {
     const state = reference.stateDict();
 
     const cpuIds = await tensor(ids, { shape: [2, TOKENS], dtype: 'i32', device: cpu });
-    const cpuPositions = (await arange(TOKENS, { dtype: 'i32', device: cpu })).reshape([
-      1,
-      TOKENS,
-    ]);
+    const cpuPositions = (await arange(TOKENS, { dtype: 'i32', device: cpu })).reshape([1, TOKENS]);
     const expected = [...(await reference.forward(cpuIds, cpuPositions).data())].map(Number);
 
     for (const dev of await listDevices()) {

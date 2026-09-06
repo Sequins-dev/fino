@@ -218,9 +218,7 @@ export class Generator {
       // Each block yields two normal pairs; pick the lane this element needs.
       const lane = i & 3;
       const pair =
-        lane < 2
-          ? normalFromBits(words[0]!, words[1]!)
-          : normalFromBits(words[2]!, words[3]!);
+        lane < 2 ? normalFromBits(words[0]!, words[1]!) : normalFromBits(words[2]!, words[3]!);
       out[i] = mean + pair[lane % 2]! * stddev;
     }
     return out;
@@ -263,9 +261,7 @@ export function sampleAt(
     }
     case 'normal': {
       const pair =
-        lane < 2
-          ? normalFromBits(words[0]!, words[1]!)
-          : normalFromBits(words[2]!, words[3]!);
+        lane < 2 ? normalFromBits(words[0]!, words[1]!) : normalFromBits(words[2]!, words[3]!);
       return (attrs.mean ?? 0) + pair[lane % 2]! * (attrs.stddev ?? 1);
     }
     case 'bernoulli':

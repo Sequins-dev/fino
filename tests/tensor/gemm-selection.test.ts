@@ -208,9 +208,7 @@ describe('half-precision GEMM kernel selection', () => {
       for (const buffer of [a, b, outMma, outScalar]) api.destroy(buffer);
     }
 
-    console.log(
-      ['half-precision GEMM, GFLOP/s, alternated pass by pass:', ...rows].join('\n'),
-    );
+    console.log(['half-precision GEMM, GFLOP/s, alternated pass by pass:', ...rows].join('\n'));
     t.ok(
       worstDisagreement < 2e-2,
       `both kernels compute the same product everywhere (worst ${worstDisagreement.toExponential(2)})`,

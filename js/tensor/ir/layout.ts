@@ -13,12 +13,7 @@
  *
  * This module is re-exported through `internal:tensor/ir`; import from there.
  */
-import {
-  broadcastShapes,
-  broadcastStrides,
-  contiguousStrides,
-  numel,
-} from '../shape.ts';
+import { broadcastShapes, broadcastStrides, contiguousStrides, numel } from '../shape.ts';
 
 export { broadcastShapes, broadcastStrides, contiguousStrides, numel };
 

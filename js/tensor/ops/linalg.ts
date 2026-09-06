@@ -141,7 +141,10 @@ function reshapeCotangent(
   if (a.rank > 1 && b.rank > 1) return cot;
   const m = lhs2d.shape[lhs2d.rank - 2]!;
   const n = rhs2d.shape[rhs2d.rank - 1]!;
-  const batch = cot.shape.slice(0, Math.max(cot.rank - (a.rank > 1 ? 1 : 0) - (b.rank > 1 ? 1 : 0), 0));
+  const batch = cot.shape.slice(
+    0,
+    Math.max(cot.rank - (a.rank > 1 ? 1 : 0) - (b.rank > 1 ? 1 : 0), 0),
+  );
   return reshape(cot, [...batch, m, n]);
 }
 

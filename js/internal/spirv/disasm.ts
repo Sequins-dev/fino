@@ -78,10 +78,7 @@ export function formatDisassembly(words: Uint32Array): string {
     let rendered: string;
     if (stringAt !== undefined && inst.operands.length > stringAt) {
       const head = inst.operands.slice(0, stringAt);
-      const { text } = decodeLiteralString(
-        new Uint32Array(inst.operands.slice(stringAt)),
-        0,
-      );
+      const { text } = decodeLiteralString(new Uint32Array(inst.operands.slice(stringAt)), 0);
       rendered = [...head.map((w) => `%${w}`), JSON.stringify(text)].join(' ');
     } else {
       rendered = inst.operands.map((w) => `%${w}`).join(' ');

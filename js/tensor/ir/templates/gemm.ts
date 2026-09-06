@@ -155,11 +155,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
   const zero = E.const(accT, 0);
 
   // Number of K tiles, rounded up so a partial tail tile is still staged.
-  const kTiles = b.let(
-    'kTiles',
-    vt('u32'),
-    E.div(E.add(K, E.u32(t.bk - 1)), E.u32(t.bk)),
-  );
+  const kTiles = b.let('kTiles', vt('u32'), E.div(E.add(K, E.u32(t.bk - 1)), E.u32(t.bk)));
 
   b.for('kt', E.u32(0), kTiles, E.u32(1), (kt) => {
     const kBase = b.let('kBase', vt('u32'), E.mul(kt, E.u32(t.bk)));
@@ -174,11 +170,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
       const guardBody = () => {
         const r = b.letTemp(vt('u32'), E.div(flat, E.u32(t.bk)), 'ar');
         const kk = b.letTemp(vt('u32'), E.mod(flat, E.u32(t.bk)), 'ak');
-        const globalRow = b.letTemp(
-          vt('u32'),
-          E.add(E.mul(gy, E.u32(t.bm)), r),
-          'agr',
-        );
+        const globalRow = b.letTemp(vt('u32'), E.add(E.mul(gy, E.u32(t.bm)), r), 'agr');
         const globalK = b.letTemp(vt('u32'), E.add(kBase, kk), 'agk');
         // A is [M,K] normally, [K,M] transposed.
         let index = spec.transA
@@ -208,11 +200,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
         const kk = b.letTemp(vt('u32'), E.div(flat, E.u32(t.bn)), 'bk');
         const c = b.letTemp(vt('u32'), E.mod(flat, E.u32(t.bn)), 'bc');
         const globalK = b.letTemp(vt('u32'), E.add(kBase, kk), 'bgk');
-        const globalCol = b.letTemp(
-          vt('u32'),
-          E.add(E.mul(gx, E.u32(t.bn)), c),
-          'bgc',
-        );
+        const globalCol = b.letTemp(vt('u32'), E.add(E.mul(gx, E.u32(t.bn)), c), 'bgc');
         // B is [K,N] normally, [N,K] transposed.
         let index = spec.transB
           ? E.add(E.mul(globalCol, K), globalK)
@@ -243,10 +231,7 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
         aVals.push(
           b.letTemp(
             accT,
-            E.shload(
-              tileA,
-              E.add(E.mul(E.add(E.mul(ly, E.u32(t.tm)), E.u32(i)), E.u32(t.bk)), kk),
-            ),
+            E.shload(tileA, E.add(E.mul(E.add(E.mul(ly, E.u32(t.tm)), E.u32(i)), E.u32(t.bk)), kk)),
             'a',
           ),
         );
@@ -256,19 +241,13 @@ export function gemmKernel(spec: GemmSpec): { ir: KernelIR; key: string } {
         bVals.push(
           b.letTemp(
             accT,
-            E.shload(
-              tileB,
-              E.add(E.mul(kk, E.u32(t.bn)), E.add(E.mul(lx, E.u32(t.tn)), E.u32(j))),
-            ),
+            E.shload(tileB, E.add(E.mul(kk, E.u32(t.bn)), E.add(E.mul(lx, E.u32(t.tn)), E.u32(j)))),
             'b',
           ),
         );
       });
       unroll2(t.tm, t.tn, (i, j) => {
-        b.assign(
-          `acc${i}_${j}`,
-          E.call('fma', aVals[i]!, bVals[j]!, E.var(`acc${i}_${j}`)),
-        );
+        b.assign(`acc${i}_${j}`, E.call('fma', aVals[i]!, bVals[j]!, E.var(`acc${i}_${j}`)));
       });
     });
 

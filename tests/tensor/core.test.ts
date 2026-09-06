@@ -139,7 +139,10 @@ describe('matmul shape inference', () => {
 
 describe('creation and readback', () => {
   it('builds from a nested array', async (t) => {
-    const x = await tensor([[1, 2, 3], [4, 5, 6]]);
+    const x = await tensor([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
     t.deepEqual([...x.shape], [2, 3], 'shape is inferred');
     t.equal(x.dtype, 'f32', 'f32 by default');
     t.deepEqual(Array.from(await x.data()), [1, 2, 3, 4, 5, 6], 'row-major values');
@@ -200,7 +203,10 @@ describe('elementwise operations', () => {
     t.ok(Object.is((await x.neg().data())[0], -0), 'neg(0) is -0');
   });
   it('applies binary functions with broadcasting', async (t) => {
-    const a = await tensor([[1, 2], [3, 4]]);
+    const a = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const b = await tensor([10, 20]);
     t.deepEqual(Array.from(await a.add(b).data()), [11, 22, 13, 24], 'row broadcast');
     t.deepEqual(Array.from(await a.mul(b).data()), [10, 40, 30, 80], 'row broadcast mul');
@@ -253,7 +259,10 @@ describe('elementwise operations', () => {
 
 describe('reductions', () => {
   it('reduces fully and along axes', async (t) => {
-    const x = await tensor([[1, 2, 3], [4, 5, 6]]);
+    const x = await tensor([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
     t.equal(await x.sum().item(), 21, 'full sum');
     t.equal(await x.mean().item(), 3.5, 'full mean');
     t.deepEqual(Array.from(await x.sum([0]).data()), [5, 7, 9], 'column sums');
@@ -262,17 +271,26 @@ describe('reductions', () => {
     t.equal(await x.min().item(), 1, 'min');
   });
   it('keeps reduced axes when asked', async (t) => {
-    const x = await tensor([[1, 2], [3, 4]]);
+    const x = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const kept = x.sum([1], true);
     t.deepEqual([...kept.shape], [2, 1], 'keepDims retains the axis');
   });
   it('produces a rank-0 tensor from a full reduction', async (t) => {
-    const x = await tensor([[1, 2], [3, 4]]);
+    const x = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     t.deepEqual([...x.sum().shape], [], 'full reduction is rank 0');
     t.equal(x.sum().size, 1, 'and holds one element');
   });
   it('finds argmax along an axis', async (t) => {
-    const x = await tensor([[1, 9, 3], [7, 2, 5]]);
+    const x = await tensor([
+      [1, 9, 3],
+      [7, 2, 5],
+    ]);
     const idx = x.argmax(1);
     t.equal(idx.dtype, 'i32', 'indices are i32');
     t.deepEqual(Array.from(await idx.data()), [1, 0], 'per-row argmax');
@@ -281,7 +299,10 @@ describe('reductions', () => {
     // Without subtracting the row maximum this overflows to NaN.
     const x = await tensor([[1000, 1001, 1002]]);
     const values = Array.from(await x.softmax(1).data());
-    t.ok(values.every((v) => Number.isFinite(v)), 'no overflow');
+    t.ok(
+      values.every((v) => Number.isFinite(v)),
+      'no overflow',
+    );
     const total = values.reduce((a, b) => a + b, 0);
     t.ok(Math.abs(total - 1) < 1e-6, `softmax sums to 1, got ${total}`);
     t.ok(values[2]! > values[1]! && values[1]! > values[0]!, 'ordering is preserved');
@@ -298,8 +319,14 @@ describe('reductions', () => {
 
 describe('matmul', () => {
   it('multiplies matrices', async (t) => {
-    const a = await tensor([[1, 2], [3, 4]]);
-    const b = await tensor([[5, 6], [7, 8]]);
+    const a = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
+    const b = await tensor([
+      [5, 6],
+      [7, 8],
+    ]);
     t.deepEqual(Array.from(await a.matmul(b).data()), [19, 22, 43, 50], 'result');
   });
   it('handles non-square shapes', async (t) => {
@@ -308,8 +335,26 @@ describe('matmul', () => {
     t.deepEqual(Array.from(await a.matmul(b).data()), [14], 'inner product');
   });
   it('multiplies batches', async (t) => {
-    const a = await tensor([[[1, 0], [0, 1]], [[2, 0], [0, 2]]]);
-    const b = await tensor([[[1, 2], [3, 4]], [[1, 1], [1, 1]]]);
+    const a = await tensor([
+      [
+        [1, 0],
+        [0, 1],
+      ],
+      [
+        [2, 0],
+        [0, 2],
+      ],
+    ]);
+    const b = await tensor([
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      [
+        [1, 1],
+        [1, 1],
+      ],
+    ]);
     const out = a.matmul(b);
     t.deepEqual([...out.shape], [2, 2, 2], 'batch shape');
     t.deepEqual(
@@ -323,14 +368,20 @@ describe('matmul', () => {
 describe('movement', () => {
   it('reshapes without copying when contiguous', async (t) => {
     const dev = await device();
-    const x = await tensor([[1, 2], [3, 4]]);
+    const x = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const before = poolStats(dev).liveBuffers;
     const y = x.reshape([4]);
     t.equal(poolStats(dev).liveBuffers, before, 'no allocation for a contiguous reshape');
     t.deepEqual(Array.from(await y.data()), [1, 2, 3, 4], 'values are unchanged');
   });
   it('resolves a -1 placeholder', async (t) => {
-    const x = await tensor([[1, 2, 3], [4, 5, 6]]);
+    const x = await tensor([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
     t.deepEqual([...x.reshape([3, -1]).shape], [3, 2], 'placeholder is filled in');
   });
   it('rejects a reshape that changes the element count', async (t) => {
@@ -338,13 +389,25 @@ describe('movement', () => {
     t.throws(() => x.reshape([2, 2]), /cannot reshape/, 'element count must match');
   });
   it('transposes', async (t) => {
-    const x = await tensor([[1, 2, 3], [4, 5, 6]]);
+    const x = await tensor([
+      [1, 2, 3],
+      [4, 5, 6],
+    ]);
     const y = x.transpose();
     t.deepEqual([...y.shape], [3, 2], 'shape swaps');
     t.deepEqual(Array.from(await y.data()), [1, 4, 2, 5, 3, 6], 'values transpose');
   });
   it('permutes three axes', async (t) => {
-    const x = await tensor([[[1, 2], [3, 4]], [[5, 6], [7, 8]]]);
+    const x = await tensor([
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      [
+        [5, 6],
+        [7, 8],
+      ],
+    ]);
     const y = x.permute([2, 0, 1]);
     t.deepEqual([...y.shape], [2, 2, 2], 'shape follows the permutation');
     t.deepEqual(Array.from(await y.data()), [1, 3, 5, 7, 2, 4, 6, 8], 'values follow');
@@ -359,14 +422,21 @@ describe('movement', () => {
     t.throws(() => x.expand([1, 4]), /cannot expand/, 'only size-1 axes stretch');
   });
   it('selects rows by index', async (t) => {
-    const table = await tensor([[1, 2], [3, 4], [5, 6]]);
+    const table = await tensor([
+      [1, 2],
+      [3, 4],
+      [5, 6],
+    ]);
     const idx = await tensor([2, 0], { dtype: 'i32' });
     const out = table.indexSelect(idx, 0);
     t.deepEqual([...out.shape], [2, 2], 'one row per index');
     t.deepEqual(Array.from(await out.data()), [5, 6, 1, 2], 'rows are gathered');
   });
   it('rejects an out-of-range index', async (t) => {
-    const table = await tensor([[1, 2], [3, 4]]);
+    const table = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const idx = await tensor([5], { dtype: 'i32' });
     // The reference backend executes inline and throws at dispatch; an accelerated
     // backend cannot throw from a kernel, so it records the fault and raises it at
@@ -382,7 +452,10 @@ describe('movement', () => {
   });
   it('concatenates along an axis', async (t) => {
     const a = await tensor([[1, 2]]);
-    const b = await tensor([[3, 4], [5, 6]]);
+    const b = await tensor([
+      [3, 4],
+      [5, 6],
+    ]);
     const out = concat([a, b], 0);
     t.deepEqual([...out.shape], [3, 2], 'shapes add along the axis');
     t.deepEqual(Array.from(await out.data()), [1, 2, 3, 4, 5, 6], 'values are placed in order');
@@ -467,7 +540,10 @@ describe('graph recording', () => {
   });
   it('records shapes, dtypes, and the operation kind', async (t) => {
     const graph = currentGraph();
-    const x = await tensor([[1, 2], [3, 4]]);
+    const x = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const before = graph.length;
     x.sum([1]);
     const node = graph.node(before);
@@ -548,7 +624,10 @@ describe('autodiff', () => {
   });
   it('accumulates into a broadcast operand', async (t) => {
     const bias = await tensor([1, 2], { requiresGrad: true });
-    const x = await tensor([[1, 1], [1, 1]]);
+    const x = await tensor([
+      [1, 1],
+      [1, 1],
+    ]);
     x.add(bias).sum().backward();
     // Each bias element participated in two rows.
     t.deepEqual(Array.from(await bias.grad!.data()), [2, 2], 'broadcast axes are summed');
@@ -616,7 +695,13 @@ describe('autodiff', () => {
     t.ok(!y.requiresGrad, 'and the result is untracked');
   });
   it('differentiates a two-layer network', async (t) => {
-    const w1 = await tensor([[1, 0], [0, 1]], { requiresGrad: true });
+    const w1 = await tensor(
+      [
+        [1, 0],
+        [0, 1],
+      ],
+      { requiresGrad: true },
+    );
     const w2 = await tensor([[1], [1]], { requiresGrad: true });
     const x = await tensor([[2, 3]]);
     x.matmul(w1).relu().matmul(w2).sum().backward();
@@ -741,7 +826,10 @@ describe('reductions that keep their dimensions', () => {
   });
 
   it('reduces a rank-four leading axis', async (t) => {
-    const x = await tensor(Array.from({ length: 24 }, (_, i) => i), { shape: [2, 2, 3, 2] });
+    const x = await tensor(
+      Array.from({ length: 24 }, (_, i) => i),
+      { shape: [2, 2, 3, 2] },
+    );
     // Summing the outermost axis adds 12 to each of the first twelve elements.
     t.deepEqual(
       Array.from(await x.sum([0], true).data()),

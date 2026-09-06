@@ -12,15 +12,7 @@
  *
  * This module is re-exported through `internal:tensor/ir`; import from there.
  */
-import type {
-  BinOp,
-  Expr,
-  KernelIR,
-  MathFn,
-  ScalarDType,
-  Stmt,
-  ValType,
-} from '../types.ts';
+import type { BinOp, Expr, KernelIR, MathFn, ScalarDType, Stmt, ValType } from '../types.ts';
 import { validateKernel } from '../types.ts';
 import { TypeEnv, checkExpr, typeOf } from '../typing.ts';
 
@@ -296,9 +288,7 @@ export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
           checkExpr(s.value, env);
           const binding = ir.buffers.find((b) => b.name === s.buf);
           const value =
-            binding?.elem.scalar === 'bool'
-              ? `(${expr(s.value)} ? 1 : 0)`
-              : expr(s.value);
+            binding?.elem.scalar === 'bool' ? `(${expr(s.value)} ? 1 : 0)` : expr(s.value);
           lines.push(`${pad}${s.buf}[${expr(s.index)}] = ${value};`);
           break;
         }
@@ -334,9 +324,7 @@ export function lowerToMSL(ir: KernelIR, options: MslOptions = {}): string {
           );
           break;
         case 'matMulAdd':
-          lines.push(
-            `${pad}simdgroup_multiply_accumulate(${s.acc}, ${s.a}, ${s.b}, ${s.acc});`,
-          );
+          lines.push(`${pad}simdgroup_multiply_accumulate(${s.acc}, ${s.a}, ${s.b}, ${s.acc});`);
           break;
         case 'matStore':
           lines.push(

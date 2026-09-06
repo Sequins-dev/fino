@@ -32,7 +32,16 @@ import {
   StorageClass,
   GroupOperation,
 } from 'internal:spirv';
-import type { BinOp, Expr, KernelIR, MathFn, ScalarDType, Stmt, ValType, VecWidth } from '../types.ts';
+import type {
+  BinOp,
+  Expr,
+  KernelIR,
+  MathFn,
+  ScalarDType,
+  Stmt,
+  ValType,
+  VecWidth,
+} from '../types.ts';
 import { scalarBytes, validateKernel } from '../types.ts';
 import { TypeEnv, checkExpr, typeOf } from '../typing.ts';
 
@@ -137,7 +146,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       case 'f16':
         if (!caps.f16) {
           throw new Error(
-            "kernel needs f16 but the target lacks 16-bit storage; lower with caps.f16 or specialize to f32",
+            'kernel needs f16 but the target lacks 16-bit storage; lower with caps.f16 or specialize to f32',
           );
         }
         m.capability(Capability.StorageBuffer16BitAccess);
@@ -211,7 +220,9 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
   >();
   ir.buffers.forEach((b, index) => {
     const asFloatBits = atomicFloatBuffers.has(b.name);
-    const storage = asFloatBits ? { scalar: 'u32' as const, lanes: b.elem.lanes } : storageValType(b.elem);
+    const storage = asFloatBits
+      ? { scalar: 'u32' as const, lanes: b.elem.lanes }
+      : storageValType(b.elem);
     const elemType = valType(storage);
     const runtime = m.typeRuntimeArray(elemType);
     m.decorate(runtime, Decoration.ArrayStride, scalarBytes(storage.scalar) * storage.lanes);
@@ -441,7 +452,9 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       const widened = fn.emit(Op.UConvert, u32, [value]);
       const shifted = fn.emit(Op.ShiftLeftLogical, u32, [widened, m.constU32(16)]);
       const asF32 = fn.emit(Op.Bitcast, f32, [shifted]);
-      return to.scalar === 'f32' ? asF32 : convert(valType(to), to.scalar, { scalar: 'f32', lanes: 1 }, asF32);
+      return to.scalar === 'f32'
+        ? asF32
+        : convert(valType(to), to.scalar, { scalar: 'f32', lanes: 1 }, asF32);
     }
     return convert(valType(to), to.scalar, fromType, value);
   }
@@ -508,10 +521,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       case 'load': {
         const buf = bufferVars.get(e.buf);
         if (!buf) throw new Error(`unknown buffer binding '${e.buf}'`);
-        const chain = fn.accessChain(buf.pointee, buf.variable, [
-          m.constU32(0),
-          expr(e.index),
-        ]);
+        const chain = fn.accessChain(buf.pointee, buf.variable, [m.constU32(0), expr(e.index)]);
         const raw = fn.load(valType(buf.storage), chain);
         if (buf.asFloatBits) return fn.emit(Op.Bitcast, valType(buf.elem), [raw]);
         if (buf.elem.scalar !== 'bool') return raw;
@@ -605,10 +615,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
       case 'bitcast':
         return fn.emit(Op.Bitcast, valType(e.to), [expr(e.a)]);
       case 'lane':
-        return fn.emit(Op.CompositeExtract, scalarType(typeOf(e.a, env).scalar), [
-          expr(e.a),
-          e.i,
-        ]);
+        return fn.emit(Op.CompositeExtract, scalarType(typeOf(e.a, env).scalar), [expr(e.a), e.i]);
       case 'vec':
         return fn.emit(Op.CompositeConstruct, valType(e.type), e.lanes.map(expr));
       case 'subgroup': {
@@ -674,10 +681,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
           if (!buf) throw new Error(`unknown buffer binding '${s.buf}'`);
           checkExpr(s.index, env);
           checkExpr(s.value, env);
-          const chain = fn.accessChain(buf.pointee, buf.variable, [
-            m.constU32(0),
-            expr(s.index),
-          ]);
+          const chain = fn.accessChain(buf.pointee, buf.variable, [m.constU32(0), expr(s.index)]);
           let value = expr(s.value);
           if (buf.asFloatBits) {
             value = fn.emit(Op.Bitcast, valType(buf.storage), [value]);
@@ -705,10 +709,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
           checkExpr(s.value, env);
           const buf = bufferVars.get(s.buf);
           if (!buf) throw new Error(`unknown buffer binding '${s.buf}'`);
-          const chain = fn.accessChain(buf.pointee, buf.variable, [
-            m.constU32(0),
-            expr(s.index),
-          ]);
+          const chain = fn.accessChain(buf.pointee, buf.variable, [m.constU32(0), expr(s.index)]);
           const elemType = valType(buf.elem);
           const scope = m.constU32(Scope.Device);
           const semantics = m.constU32(MemorySemantics.None);
@@ -772,11 +773,7 @@ export function lowerToSPIRV(ir: KernelIR, options: SpirvOptions = {}): Uint32Ar
         case 'if': {
           checkExpr(s.cond, env);
           const cond = expr(s.cond);
-          fn.ifThen(
-            cond,
-            () => stmts(s.then),
-            s.else ? () => stmts(s.else!) : undefined,
-          );
+          fn.ifThen(cond, () => stmts(s.then), s.else ? () => stmts(s.else!) : undefined);
           break;
         }
       }

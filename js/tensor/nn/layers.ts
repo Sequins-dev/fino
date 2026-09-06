@@ -54,10 +54,7 @@ export class Linear extends Module {
       // Matching the weight's scale keeps the initial output centred; a zero bias
       // would be defensible too, and this follows PyTorch.
       const bound = 1 / Math.sqrt(inFeatures);
-      this.registerParameter(
-        'bias',
-        normal([outFeatures], 0, bound, generator, options),
-      );
+      this.registerParameter('bias', normal([outFeatures], 0, bound, generator, options));
     }
   }
 
@@ -80,10 +77,7 @@ export class Embedding extends Module {
     this.numEmbeddings = numEmbeddings;
     this.dim = dim;
     const generator = options.generator ?? new Generator(0);
-    this.registerParameter(
-      'weight',
-      normal([numEmbeddings, dim], 0, 1, generator, options),
-    );
+    this.registerParameter('weight', normal([numEmbeddings, dim], 0, 1, generator, options));
   }
 
   /**
@@ -106,10 +100,7 @@ export class LayerNorm extends Module {
   readonly epsilon: number;
   readonly affine: boolean;
 
-  constructor(
-    size: number,
-    options: LayerOptions & { epsilon?: number; affine?: boolean } = {},
-  ) {
+  constructor(size: number, options: LayerOptions & { epsilon?: number; affine?: boolean } = {}) {
     super();
     this.size = size;
     this.epsilon = options.epsilon ?? 1e-5;

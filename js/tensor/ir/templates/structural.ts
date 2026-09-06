@@ -158,10 +158,7 @@ export function indexSelectKernel(spec: { dtype: ScalarDType; wg?: number }): {
     b.if(
       E.lt(wrapped, axisSize),
       () => {
-        const src = E.add(
-          E.mul(E.add(E.mul(outer, axisSize), wrapped), inner),
-          offset,
-        );
+        const src = E.add(E.mul(E.add(E.mul(outer, axisSize), wrapped), inner), offset);
         b.store('out0', i, E.load('in0', src));
       },
       () => {
@@ -330,10 +327,7 @@ export function scatterAddKernel(spec: { dtype: ScalarDType; wg?: number }): {
     b.if(
       E.lt(wrapped, axisSize),
       () => {
-        const dst = E.add(
-          E.mul(E.add(E.mul(outer, axisSize), wrapped), inner),
-          offset,
-        );
+        const dst = E.add(E.mul(E.add(E.mul(outer, axisSize), wrapped), inner), offset);
         b.atomicAdd('out0', dst, E.load('src', i));
       },
       () => {
@@ -392,8 +386,7 @@ export function optimizerKernel(spec: OptimizerSpec): { ir: KernelIR; key: strin
   const n = b.param('n');
   const lr = b.param('lr', 'f32');
   const decay = b.param('decay', 'f32');
-  const momentum =
-    spec.kind === 'sgd' && spec.momentum ? b.param('momentum', 'f32') : null;
+  const momentum = spec.kind === 'sgd' && spec.momentum ? b.param('momentum', 'f32') : null;
   const beta1 = spec.kind === 'adam' ? b.param('beta1', 'f32') : null;
   const beta2 = spec.kind === 'adam' ? b.param('beta2', 'f32') : null;
   const epsilon = spec.kind === 'adam' ? b.param('epsilon', 'f32') : null;
@@ -420,29 +413,16 @@ export function optimizerKernel(spec: OptimizerSpec): { ir: KernelIR; key: strin
         // to be interchangeable while nothing called this kernel.
         const velocity = b.letTemp(
           compute,
-          E.add(
-            E.mul(E.cast(compute, E.load('velocity', i)), momentum!),
-            E.var('g'),
-          ),
+          E.add(E.mul(E.cast(compute, E.load('velocity', i)), momentum!), E.var('g')),
           'vel',
         );
         b.store('velocity', i, E.cast(vt(spec.dtype), velocity));
         // Nesterov steps along the gradient *plus* the look-ahead velocity, which is
         // what makes it anticipate the next position rather than the current one.
-        const direction = spec.nesterov
-          ? E.add(E.var('g'), E.mul(velocity, momentum!))
-          : velocity;
-        b.store(
-          'param',
-          i,
-          E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(direction, lr))),
-        );
+        const direction = spec.nesterov ? E.add(E.var('g'), E.mul(velocity, momentum!)) : velocity;
+        b.store('param', i, E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(direction, lr))));
       } else {
-        b.store(
-          'param',
-          i,
-          E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(E.var('g'), lr))),
-        );
+        b.store('param', i, E.cast(vt(spec.dtype), E.sub(E.var('base'), E.mul(E.var('g'), lr))));
       }
       return;
     }
@@ -531,10 +511,7 @@ function philox(b: KernelBuilder, key0: Expr, key1: Expr, counter: Expr): Expr[]
 
 /** A `u32` word turned into a float in `[0, 1)`, matching the host derivation. */
 function uniformFrom(word: Expr): Expr {
-  return E.mul(
-    E.cast(vt('f32'), E.bin('shr', word, E.u32(8))),
-    E.const(vt('f32'), 2 ** -24),
-  );
+  return E.mul(E.cast(vt('f32'), E.bin('shr', word, E.u32(8))), E.const(vt('f32'), 2 ** -24));
 }
 
 /**
@@ -544,11 +521,10 @@ function uniformFrom(word: Expr): Expr {
  * distribution's own — `low`/`high` for uniform and randint, `mean`/`stddev` for
  * normal, `p` for bernoulli.
  */
-export function randomKernel(spec: {
-  kind: RandomKind;
-  dtype: ScalarDType;
-  wg?: number;
-}): { ir: KernelIR; key: string } {
+export function randomKernel(spec: { kind: RandomKind; dtype: ScalarDType; wg?: number }): {
+  ir: KernelIR;
+  key: string;
+} {
   const wg = spec.wg ?? 256;
   const f32 = vt('f32');
   const b = new KernelBuilder(`random_${spec.kind}_${spec.dtype}`, [wg, 1, 1]);
@@ -590,11 +566,7 @@ export function randomKernel(spec: {
         value = E.add(low!, E.mul(uniformFrom(word), E.sub(high!, low!)));
         break;
       case 'bernoulli':
-        value = E.select(
-          E.lt(uniformFrom(word), p!),
-          E.const(f32, 1),
-          E.const(f32, 0),
-        );
+        value = E.select(E.lt(uniformFrom(word), p!), E.const(f32, 1), E.const(f32, 0));
         break;
       case 'randint': {
         // Multiply-shift over the range: the high word of the 64-bit product is

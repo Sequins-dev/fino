@@ -7,11 +7,7 @@
  */
 import { describe, it } from 'fino:test/test';
 import { compareValues } from 'internal:tensor/harness';
-import {
-  conformanceCases,
-  formatReport,
-  runConformanceEverywhere,
-} from 'fino:tensor/conformance';
+import { conformanceCases, formatReport, runConformanceEverywhere } from 'fino:tensor/conformance';
 
 describe('conformance', () => {
   it('passes on every device the registry produces', async (t) => {
@@ -94,10 +90,7 @@ describe('comparison tolerance', () => {
     const want = [9.4, -8.2, 0.030572308, 7.1, -6.5];
     const rounded = [...want];
     rounded[2] = 0.030573219;
-    t.ok(
-      compareValues(rounded, want, 'f32', 32).ok,
-      'rounding on a cancelled element passes',
-    );
+    t.ok(compareValues(rounded, want, 'f32', 32).ok, 'rounding on a cancelled element passes');
 
     // The same element, wrong by a part in fifty of the range rather than by rounding.
     const wrong = [...want];

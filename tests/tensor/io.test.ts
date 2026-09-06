@@ -28,10 +28,7 @@ function scratch(name: string): string {
 }
 
 /** Build a safetensors file byte by byte, the way another writer would. */
-function buildSafetensors(
-  header: Record<string, unknown>,
-  data: Uint8Array,
-): Uint8Array {
+function buildSafetensors(header: Record<string, unknown>, data: Uint8Array): Uint8Array {
   const headerBytes = new TextEncoder().encode(JSON.stringify(header));
   const out = new Uint8Array(8 + headerBytes.length + data.length);
   new DataView(out.buffer).setBigUint64(0, BigInt(headerBytes.length), true);
@@ -43,10 +40,20 @@ function buildSafetensors(
 describe('safetensors', () => {
   it('round trips a state dictionary', async (t) => {
     const path = scratch('roundtrip');
-    const a = await tensor([[1.5, -2.5, 3.5], [4.5, 5.5, 6.5]]);
+    const a = await tensor([
+      [1.5, -2.5, 3.5],
+      [4.5, 5.5, 6.5],
+    ]);
     const b = await tensor([7, 8], { dtype: 'i32' });
     try {
-      await saveSafetensors(path, new Map([['w', a], ['bias', b]]), { format: 'test' });
+      await saveSafetensors(
+        path,
+        new Map([
+          ['w', a],
+          ['bias', b],
+        ]),
+        { format: 'test' },
+      );
       const loaded = await loadSafetensors(path, { device: await device('cpu') });
       t.deepEqual([...loaded.keys()].sort(), ['bias', 'w'], 'both tensors come back');
       t.deepEqual([...loaded.get('w')!.shape], [2, 3], 'the shape survives');
@@ -100,7 +107,10 @@ describe('safetensors', () => {
       const opened = await openSafetensors(path);
       t.equal(opened.metadata.framework, 'pt', 'metadata is exposed, not treated as a tensor');
       t.deepEqual(
-        opened.list().map((info) => info.name).sort(),
+        opened
+          .list()
+          .map((info) => info.name)
+          .sort(),
         ['first', 'second'],
         'and is not listed among the tensors',
       );
@@ -121,7 +131,13 @@ describe('safetensors', () => {
     const a = await tensor([1, 2]);
     const b = await tensor([3, 4]);
     try {
-      await saveSafetensors(path, new Map([['a', a], ['b', b]]));
+      await saveSafetensors(
+        path,
+        new Map([
+          ['a', a],
+          ['b', b],
+        ]),
+      );
       const loaded = await loadSafetensors(path, {
         names: ['b'],
         device: await device('cpu'),

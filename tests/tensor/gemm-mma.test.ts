@@ -59,10 +59,7 @@ describe('cooperative matrix gemm', () => {
     const mmaPipe = api.createPipeline(device, mmaLib, mma.ir.name);
 
     const scalar = gemmKernel({ dtype: 'f16', tiling: DEFAULT_TILING, noEdgeGuards: true });
-    const scalarLib = await api.compileLibrary(
-      device,
-      lowerToMSL(scalar.ir, { fastMath: false }),
-    );
+    const scalarLib = await api.compileLibrary(device, lowerToMSL(scalar.ir, { fastMath: false }));
     const scalarPipe = api.createPipeline(device, scalarLib, scalar.ir.name);
 
     let signal = 0n;

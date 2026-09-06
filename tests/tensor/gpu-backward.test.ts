@@ -38,10 +38,22 @@ const CASES: Case[] = [
     run: (x) => x.softmax(-1).mul(3).sum(),
   },
   { name: 'log softmax', shape: [4, 6], run: (x) => x.logSoftmax(1).mul(3).sum() },
-  { name: 'batched matmul with a transpose', shape: [3, 4, 5], run: (x) => x.matmul(x.transpose()).sum() },
-  { name: 'reduction keeping dimensions', shape: [4, 6], run: (x) => x.sum([1], true).mul(2).sum() },
+  {
+    name: 'batched matmul with a transpose',
+    shape: [3, 4, 5],
+    run: (x) => x.matmul(x.transpose()).sum(),
+  },
+  {
+    name: 'reduction keeping dimensions',
+    shape: [4, 6],
+    run: (x) => x.sum([1], true).mul(2).sum(),
+  },
   { name: 'broadcast', shape: [4, 1], run: (x) => x.expand([4, 6]).mul(2).sum() },
-  { name: 'permuted rank four', shape: [2, 2, 3, 4], run: (x) => x.permute([0, 2, 1, 3]).mul(2).sum() },
+  {
+    name: 'permuted rank four',
+    shape: [2, 2, 3, 4],
+    run: (x) => x.permute([0, 2, 1, 3]).mul(2).sum(),
+  },
   {
     name: 'reshape around a permute, as attention does',
     shape: [2, 6, 4],
@@ -120,7 +132,10 @@ describe('GPU gradients against the oracle', () => {
           const result = compareValues(await x.grad!.data(), expected, 'f32', count);
           t.ok(
             result.ok,
-            describeComparison(result, `softmax axis ${axis} of [${shape.join(', ')}] on ${dev.type}`),
+            describeComparison(
+              result,
+              `softmax axis ${axis} of [${shape.join(', ')}] on ${dev.type}`,
+            ),
           );
           x.dispose();
         }

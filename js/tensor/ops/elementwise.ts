@@ -120,11 +120,7 @@ function unaryRef(f: (x: number) => number) {
  * @internal
  */
 function binaryRef(f: (a: number, b: number) => number) {
-  return (
-    inputs: readonly RefAccessor[],
-    out: RefAccessor,
-    attrs: OpAttrs | null,
-  ): void => {
+  return (inputs: readonly RefAccessor[], out: RefAccessor, attrs: OpAttrs | null): void => {
     const scalar = scalarOf(attrs);
     const a = inputs[0]!;
     if (scalar !== null) {
@@ -231,8 +227,7 @@ function unary(def: UnaryDef): void {
     vjp: def.grad
       ? {
           saves: (inputs, output) => (def.savesOutput ? [output] : [inputs[0]!]),
-          backward: (cot, saved, _attrs, needs) =>
-            needs[0] ? [def.grad!(cot, saved)] : [null],
+          backward: (cot, saved, _attrs, needs) => (needs[0] ? [def.grad!(cot, saved)] : [null]),
         }
       : undefined,
     refImpl: unaryRef(def.f),
@@ -297,7 +292,6 @@ function binary(def: BinaryDef): void {
     refImpl: binaryRef(def.f),
   });
 }
-
 
 /**
  * Operand helpers for gradient rules.
@@ -464,10 +458,7 @@ binary({
 binary({
   name: 'mul',
   f: (a, b) => a * b,
-  grad: (cot, a, b, needs) => [
-    needs[0] ? mul(cot, b) : null,
-    needs[1] ? mul(cot, a) : null,
-  ],
+  grad: (cot, a, b, needs) => [needs[0] ? mul(cot, b) : null, needs[1] ? mul(cot, a) : null],
 });
 binary({
   name: 'div',
@@ -483,9 +474,7 @@ binary({
   f: Math.pow,
   grad: (cot, a, b, needs) => [
     // b * a^(b-1)
-    needs[0]
-      ? mul(mul(cot, typeof b === 'number' ? b : b), powAny(a, addAny(b, -1)))
-      : null,
+    needs[0] ? mul(mul(cot, typeof b === 'number' ? b : b), powAny(a, addAny(b, -1))) : null,
     // a^b * ln(a)
     needs[1] && typeof a !== 'number' ? mul(cot, mul(powAny(a, b), log(a))) : null,
   ],
@@ -495,10 +484,7 @@ binary({
   f: Math.max,
   grad: (cot, a, b, needs) => {
     const mask = castTo(geAny(a, b), cot.dtype);
-    return [
-      needs[0] ? mul(cot, mask) : null,
-      needs[1] ? mul(cot, subFrom(1, mask)) : null,
-    ];
+    return [needs[0] ? mul(cot, mask) : null, needs[1] ? mul(cot, subFrom(1, mask)) : null];
   },
 });
 binary({
@@ -506,10 +492,7 @@ binary({
   f: Math.min,
   grad: (cot, a, b, needs) => {
     const mask = castTo(leAny(a, b), cot.dtype);
-    return [
-      needs[0] ? mul(cot, mask) : null,
-      needs[1] ? mul(cot, subFrom(1, mask)) : null,
-    ];
+    return [needs[0] ? mul(cot, mask) : null, needs[1] ? mul(cot, subFrom(1, mask)) : null];
   },
 });
 
@@ -537,11 +520,7 @@ EW.where = registerOp({
     saves: (inputs) => [inputs[0]!],
     backward: (cot, [cond], _attrs, needs) => {
       const mask = castTo(cond!, cot.dtype);
-      return [
-        null,
-        needs[1] ? mul(cot, mask) : null,
-        needs[2] ? mul(cot, subFrom(1, mask)) : null,
-      ];
+      return [null, needs[1] ? mul(cot, mask) : null, needs[2] ? mul(cot, subFrom(1, mask)) : null];
     },
   },
   refImpl: (inputs, out) => {

@@ -137,10 +137,7 @@ export function normalizeAxis(axis: number, rank: number, what = 'axis'): number
 }
 
 /** Normalise and sort a list of axes, rejecting duplicates. */
-export function normalizeAxes(
-  axes: readonly number[] | undefined,
-  rank: number,
-): number[] {
+export function normalizeAxes(axes: readonly number[] | undefined, rank: number): number[] {
   if (axes === undefined) return Array.from({ length: rank }, (_, i) => i);
   const seen = new Set<number>();
   const out: number[] = [];
@@ -175,10 +172,7 @@ export function reduceShape(
 /**
  * Resolve a reshape target, expanding a single `-1` placeholder.
  */
-export function resolveReshape(
-  from: readonly number[],
-  to: readonly number[],
-): number[] {
+export function resolveReshape(from: readonly number[], to: readonly number[]): number[] {
   const total = numel(from);
   const placeholders = to.filter((d) => d === -1).length;
   if (placeholders > 1) throw new Error('reshape accepts at most one -1');
@@ -275,10 +269,7 @@ export function sliceShape(resolved: readonly ResolvedSlice[]): number[] {
 }
 
 /** Output shape of concatenating shapes along an axis. */
-export function concatShape(
-  shapes: readonly (readonly number[])[],
-  axis: number,
-): number[] {
+export function concatShape(shapes: readonly (readonly number[])[], axis: number): number[] {
   if (shapes.length === 0) throw new Error('concat needs at least one tensor');
   const rank = shapes[0]!.length;
   const resolved = normalizeAxis(axis, rank);
@@ -368,10 +359,7 @@ export function matmulShape(a: readonly number[], b: readonly number[]): MatmulS
  * must be summed over the axes broadcasting stretched, then reshaped. Getting
  * this wrong is the classic autodiff bug, so it is computed once here.
  */
-export function broadcastReduceAxes(
-  shape: readonly number[],
-  target: readonly number[],
-): number[] {
+export function broadcastReduceAxes(shape: readonly number[], target: readonly number[]): number[] {
   const axes: number[] = [];
   const offset = target.length - shape.length;
   for (let i = 0; i < target.length; i++) {

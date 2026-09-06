@@ -255,25 +255,15 @@ export const UNARY: Record<string, UnaryBuilder> = {
    */
   erf: (x, ctx) => {
     const magnitude = E.un('abs', x);
-    const t = E.div(
-      ctx.lit(1),
-      E.add(ctx.lit(1), E.mul(ctx.lit(0.3275911), magnitude)),
-    );
+    const t = E.div(ctx.lit(1), E.add(ctx.lit(1), E.mul(ctx.lit(0.3275911), magnitude)));
     let poly = E.add(E.mul(ctx.lit(1.061405429), t), ctx.lit(-1.453152027));
     poly = E.add(E.mul(poly, t), ctx.lit(1.421413741));
     poly = E.add(E.mul(poly, t), ctx.lit(-0.284496736));
     poly = E.add(E.mul(poly, t), ctx.lit(0.254829592));
     poly = E.mul(poly, t);
-    const magnitudeResult = E.sub(
-      ctx.lit(1),
-      E.mul(poly, E.call('exp', E.un('neg', E.mul(x, x)))),
-    );
+    const magnitudeResult = E.sub(ctx.lit(1), E.mul(poly, E.call('exp', E.un('neg', E.mul(x, x)))));
     // Odd about zero, and the series above is only valid for the positive half.
-    return E.select(
-      E.lt(x, ctx.lit(0)),
-      E.un('neg', magnitudeResult),
-      magnitudeResult,
-    );
+    return E.select(E.lt(x, ctx.lit(0)), E.un('neg', magnitudeResult), magnitudeResult);
   },
   logicalNot: (x, ctx) => E.select(E.eq(x, ctx.lit(0)), ctx.lit(1), ctx.lit(0)),
 };
@@ -365,8 +355,7 @@ export function binaryKernel(
       compute,
       vec: options.vec,
       wg: options.wg,
-      body: ([a, bb], ctx) =>
-        E.select(compare(a!, bb!, ctx), ctx.lit(1), ctx.lit(0)),
+      body: ([a, bb], ctx) => E.select(compare(a!, bb!, ctx), ctx.lit(1), ctx.lit(0)),
     });
   }
   const build = BINARY[op];

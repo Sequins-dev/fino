@@ -15,16 +15,7 @@
 export type DType = 'f64' | 'f32' | 'f16' | 'bf16' | 'i64' | 'i32' | 'u8' | 'bool';
 
 /** Every dtype, in promotion-rank order. */
-export const DTYPES: readonly DType[] = [
-  'bool',
-  'u8',
-  'i32',
-  'i64',
-  'f16',
-  'bf16',
-  'f32',
-  'f64',
-];
+export const DTYPES: readonly DType[] = ['bool', 'u8', 'i32', 'i64', 'f16', 'bf16', 'f32', 'f64'];
 
 /** Bytes one element occupies. Booleans are one byte, never bit-packed. */
 export const DTYPE_BYTES: Readonly<Record<DType, number>> = {
@@ -110,7 +101,12 @@ export function hostArrayFor(dtype: DType, count: number): HostArray {
 /**
  * Wrap an existing buffer as the host array for a dtype, without copying.
  */
-export function viewAs(dtype: DType, buffer: ArrayBuffer, byteOffset = 0, count?: number): HostArray {
+export function viewAs(
+  dtype: DType,
+  buffer: ArrayBuffer,
+  byteOffset = 0,
+  count?: number,
+): HostArray {
   const length = count ?? (buffer.byteLength - byteOffset) / DTYPE_BYTES[dtype];
   switch (dtype) {
     case 'f64':

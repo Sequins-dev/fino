@@ -34,10 +34,14 @@ export abstract class Optimizer {
   /** Steps taken so far, which the schedules and Adam's bias correction read. */
   #steps = 0;
 
-  constructor(params: Tensor[] | ParamGroup[], protected defaults: { lr: number; weightDecay?: number }) {
-    const groups: ParamGroup[] = Array.isArray(params) && params.length > 0 && 'params' in (params[0] as object)
-      ? (params as ParamGroup[])
-      : [{ params: params as Tensor[] }];
+  constructor(
+    params: Tensor[] | ParamGroup[],
+    protected defaults: { lr: number; weightDecay?: number },
+  ) {
+    const groups: ParamGroup[] =
+      Array.isArray(params) && params.length > 0 && 'params' in (params[0] as object)
+        ? (params as ParamGroup[])
+        : [{ params: params as Tensor[] }];
     this.groups = groups;
   }
 
@@ -103,11 +107,7 @@ export abstract class Optimizer {
    *
    * @internal
    */
-  protected fused(
-    kind: 'sgd' | 'adam',
-    tensors: readonly Tensor[],
-    attrs: OpAttrs,
-  ): boolean {
+  protected fused(kind: 'sgd' | 'adam', tensors: readonly Tensor[], attrs: OpAttrs): boolean {
     const backend = tensors[0]!.backend;
     // A fresh descriptor per operand: the shared scratch that dispatch uses is reused
     // between operands, and these are all live at once.
@@ -127,12 +127,7 @@ export abstract class Optimizer {
   }
 
   /** Update one parameter in place. */
-  protected abstract update(
-    parameter: Tensor,
-    grad: Tensor,
-    lr: number,
-    weightDecay: number,
-  ): void;
+  protected abstract update(parameter: Tensor, grad: Tensor, lr: number, weightDecay: number): void;
 
   /** Clear every gradient. */
   zeroGrad(options: { setToNull?: boolean } = {}): void {
@@ -225,9 +220,7 @@ export class SGD extends Optimizer {
     let direction = weightDecay !== 0 ? grad.add(parameter.mul(weightDecay)) : grad;
     if (this.#momentum !== 0) {
       const previous = this.#velocity.get(parameter);
-      const velocity = previous
-        ? previous.mul(this.#momentum).add(direction)
-        : direction.mul(1);
+      const velocity = previous ? previous.mul(this.#momentum).add(direction) : direction.mul(1);
       previous?.dispose();
       keep(velocity);
       this.#velocity.set(parameter, velocity);
@@ -319,9 +312,7 @@ export class Adam extends Optimizer {
     }
 
     const m = state.m.mul(this.#beta1).add(direction.mul(1 - this.#beta1));
-    const v = state.v
-      .mul(this.#beta2)
-      .add(direction.mul(direction).mul(1 - this.#beta2));
+    const v = state.v.mul(this.#beta2).add(direction.mul(direction).mul(1 - this.#beta2));
     state.m.dispose();
     state.v.dispose();
     state.m = keep(m);
@@ -380,10 +371,7 @@ export class AdamW extends Adam {
  * around that for norm-based clipping; a training loop that cannot afford a fence
  * here should clip by a fixed scale instead.
  */
-export async function clipGradNorm(
-  params: readonly Tensor[],
-  maxNorm: number,
-): Promise<number> {
+export async function clipGradNorm(params: readonly Tensor[], maxNorm: number): Promise<number> {
   const totalSquares = noGrad(() => {
     let total: Tensor | null = null;
     for (const parameter of params) {

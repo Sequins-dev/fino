@@ -131,18 +131,14 @@ describe('gradcheck: binary operations', () => {
   });
   it('checks broadcasting gradients', async (t) => {
     // The operand shapes differ, so each gradient must be summed back down.
-    await check(
-      t,
-      'broadcast add',
-      (a, b) => a.add(b).sum(),
-      [await input([3, 4], 47), await input([4], 53)],
-    );
-    await check(
-      t,
-      'broadcast mul',
-      (a, b) => a.mul(b).sum(),
-      [await input([3, 4], 59), await input([3, 1], 61)],
-    );
+    await check(t, 'broadcast add', (a, b) => a.add(b).sum(), [
+      await input([3, 4], 47),
+      await input([4], 53),
+    ]);
+    await check(t, 'broadcast mul', (a, b) => a.mul(b).sum(), [
+      await input([3, 4], 59),
+      await input([3, 1], 61),
+    ]);
   });
 });
 
@@ -172,41 +168,27 @@ describe('gradcheck: reductions', () => {
   it('checks softmax and log-softmax', async (t) => {
     await check(t, 'softmax', (x) => x.softmax(1).sum(), [await input([3, 4], 79)]);
     // Summing log-softmax directly is degenerate; weight it so the gradient bites.
-    await check(
-      t,
-      'logSoftmax',
-      (x) => x.logSoftmax(1).mul(x).sum(),
-      [await input([3, 4], 83)],
-    );
+    await check(t, 'logSoftmax', (x) => x.logSoftmax(1).mul(x).sum(), [await input([3, 4], 83)]);
   });
 });
 
 describe('gradcheck: matmul and movement', () => {
   it('checks matmul', async (t) => {
-    await check(
-      t,
-      'matmul',
-      (a, b) => a.matmul(b).sum(),
-      [await input([3, 4], 89), await input([4, 2], 97)],
-    );
+    await check(t, 'matmul', (a, b) => a.matmul(b).sum(), [
+      await input([3, 4], 89),
+      await input([4, 2], 97),
+    ]);
   });
   it('checks batched matmul', async (t) => {
-    await check(
-      t,
-      'batched matmul',
-      (a, b) => a.matmul(b).sum(),
-      [await input([2, 3, 4], 101), await input([2, 4, 3], 103)],
-    );
+    await check(t, 'batched matmul', (a, b) => a.matmul(b).sum(), [
+      await input([2, 3, 4], 101),
+      await input([2, 4, 3], 103),
+    ]);
   });
   it('checks reshape, transpose, and permute', async (t) => {
     await check(t, 'reshape', (x) => x.reshape([4, 3]).sum(), [await input([3, 4], 107)]);
     await check(t, 'transpose', (x) => x.transpose().mul(2).sum(), [await input([3, 4], 109)]);
-    await check(
-      t,
-      'permute',
-      (x) => x.permute([1, 2, 0]).sum(),
-      [await input([2, 3, 4], 113)],
-    );
+    await check(t, 'permute', (x) => x.permute([1, 2, 0]).sum(), [await input([2, 3, 4], 113)]);
   });
   it('checks expand', async (t) => {
     await check(t, 'expand', (x) => x.expand([3, 4]).sum(), [await input([3, 1], 127)]);
@@ -246,12 +228,7 @@ describe('gradcheck: matmul and movement', () => {
       dtype: 'i32',
       device: cpu,
     });
-    await check(
-      t,
-      'scatterAddAt',
-      (src) => scatterAddAt(dest, idx, src, 1).mul(2).sum(),
-      [source],
-    );
+    await check(t, 'scatterAddAt', (src) => scatterAddAt(dest, idx, src, 1).mul(2).sum(), [source]);
   });
 });
 
@@ -260,12 +237,7 @@ describe('gradcheck: composed expressions', () => {
     const x = await input([2, 3], 137);
     const w1 = await input([3, 4], 139);
     const w2 = await input([4, 1], 149);
-    await check(
-      t,
-      'mlp',
-      (xx, a, b) => xx.matmul(a).tanh().matmul(b).sum(),
-      [x, w1, w2],
-    );
+    await check(t, 'mlp', (xx, a, b) => xx.matmul(a).tanh().matmul(b).sum(), [x, w1, w2]);
   });
   it('checks a softmax cross-entropy loss', async (t) => {
     const logits = await input([3, 4], 151);
@@ -280,12 +252,7 @@ describe('gradcheck: composed expressions', () => {
       ],
       { dtype: 'f64', device: dev },
     );
-    await check(
-      t,
-      'cross entropy',
-      (l) => l.logSoftmax(1).mul(oneHot).sum().neg(),
-      [logits],
-    );
+    await check(t, 'cross entropy', (l) => l.logSoftmax(1).mul(oneHot).sum().neg(), [logits]);
   });
   it('checks an attention-shaped expression', async (t) => {
     const q = await input([2, 3], 157);
@@ -302,30 +269,23 @@ describe('gradcheck: composed expressions', () => {
     const { layerNorm } = await import('fino:tensor/nn');
     // The gradient rule views the tensor as [rows, n] using the recorded extent, so
     // both spans have to be checked rather than assuming the last axis.
-    await check(
-      t,
-      'layerNorm one axis',
-      (x) => layerNorm(x, null, null, 1e-5, 1).mul(x).sum(),
-      [await input([3, 4], 181)],
-    );
-    await check(
-      t,
-      'layerNorm two axes',
-      (x) => layerNorm(x, null, null, 1e-5, 2).mul(x).sum(),
-      [await input([2, 3, 4], 191)],
-    );
+    await check(t, 'layerNorm one axis', (x) => layerNorm(x, null, null, 1e-5, 1).mul(x).sum(), [
+      await input([3, 4], 181),
+    ]);
+    await check(t, 'layerNorm two axes', (x) => layerNorm(x, null, null, 1e-5, 2).mul(x).sum(), [
+      await input([2, 3, 4], 191),
+    ]);
   });
   it('checks affine layer norm', async (t) => {
     const { layerNorm } = await import('fino:tensor/nn');
     const x = await input([3, 4], 193);
     const weight = await input([4], 197);
     const bias = await input([4], 199);
-    await check(
-      t,
-      'affine layerNorm',
-      (xx, w, b) => layerNorm(xx, w, b, 1e-5, 1).sum(),
-      [x, weight, bias],
-    );
+    await check(t, 'affine layerNorm', (xx, w, b) => layerNorm(xx, w, b, 1e-5, 1).sum(), [
+      x,
+      weight,
+      bias,
+    ]);
   });
   it('checks a residual and normalisation chain', async (t) => {
     const x = await input([2, 4], 173);
@@ -346,12 +306,9 @@ describe('gradcheck: composed expressions', () => {
 
 describe('gradcheck: slicing', () => {
   it('checks a contiguous sub-region', async (t) => {
-    await check(
-      t,
-      'slice',
-      (x) => x.slice([{ start: 1, end: 3 }, { start: 1 }]).sum(),
-      [await input([4, 4], 71)],
-    );
+    await check(t, 'slice', (x) => x.slice([{ start: 1, end: 3 }, { start: 1 }]).sum(), [
+      await input([4, 4], 71),
+    ]);
   });
   it('checks a strided sub-region', async (t) => {
     // A step greater than one is where the adjoint stops being a contiguous write:
@@ -359,17 +316,19 @@ describe('gradcheck: slicing', () => {
     await check(
       t,
       'strided slice',
-      (x) => x.slice([{ step: 2 }, { start: 1, step: 3 }]).mul(2).sum(),
+      (x) =>
+        x
+          .slice([{ step: 2 }, { start: 1, step: 3 }])
+          .mul(2)
+          .sum(),
       [await input([5, 7], 73)],
     );
   });
   it('checks a slice feeding a matmul', async (t) => {
-    await check(
-      t,
-      'slice then matmul',
-      (x, y) => x.narrow(0, 1, 2).matmul(y).sum(),
-      [await input([4, 3], 77), await input([3, 2], 79)],
-    );
+    await check(t, 'slice then matmul', (x, y) => x.narrow(0, 1, 2).matmul(y).sum(), [
+      await input([4, 3], 77),
+      await input([3, 2], 79),
+    ]);
   });
 });
 
@@ -420,10 +379,6 @@ describe('gradcheck coverage', () => {
     const uncovered = differentiableOps()
       .map((op) => op.name)
       .filter((name) => !covered.has(name));
-    t.deepEqual(
-      uncovered,
-      [],
-      'every operation with a gradient rule is listed in this suite',
-    );
+    t.deepEqual(uncovered, [], 'every operation with a gradient rule is listed in this suite');
   });
 });

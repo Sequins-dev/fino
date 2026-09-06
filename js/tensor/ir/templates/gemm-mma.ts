@@ -145,10 +145,7 @@ export function gemmMmaKernel(spec: GemmMmaSpec): { ir: KernelIR; key: string } 
         b.matLoad(
           `fragB${j}`,
           Bs,
-          E.add(
-            E.u32(kk * TILE),
-            E.add(E.mul(sgCol, E.u32(32)), E.u32(j * FRAGMENT)),
-          ),
+          E.add(E.u32(kk * TILE), E.add(E.mul(sgCol, E.u32(32)), E.u32(j * FRAGMENT))),
           E.u32(TILE),
         ),
       );

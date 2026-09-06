@@ -28,7 +28,10 @@ describe('Module', () => {
     t.equal(layer.parameters().length, 2, 'weight and bias');
     t.equal(layer.parameterCount(), 3 * 2 + 2, 'scalar count');
     t.deepEqual(
-      layer.namedParameters().map((p) => p.name).sort(),
+      layer
+        .namedParameters()
+        .map((p) => p.name)
+        .sort(),
       ['bias', 'weight'],
       'named parameters',
     );
@@ -40,7 +43,10 @@ describe('Module', () => {
   it('reports nested parameters with dot-paths', (t) => {
     const model = new Sequential(new Linear(2, 3), new Linear(3, 1));
     t.deepEqual(
-      model.namedParameters().map((p) => p.name).sort(),
+      model
+        .namedParameters()
+        .map((p) => p.name)
+        .sort(),
       ['0.bias', '0.weight', '1.bias', '1.weight'],
       'child paths are prefixed',
     );
@@ -92,7 +98,10 @@ describe('Module', () => {
 describe('layers', () => {
   it('applies a linear layer', async (t) => {
     const layer = new Linear(2, 3, { generator: new Generator(7) });
-    const x = await tensor([[1, 2], [3, 4]]);
+    const x = await tensor([
+      [1, 2],
+      [3, 4],
+    ]);
     const y = layer.forward(x);
     t.deepEqual([...y.shape], [2, 3], 'batch is preserved, features change');
   });
@@ -106,7 +115,10 @@ describe('layers', () => {
   });
   it('normalises to zero mean and unit variance', async (t) => {
     const norm = new LayerNorm(4, { affine: false });
-    const x = await tensor([[1, 2, 3, 4], [10, 20, 30, 40]]);
+    const x = await tensor([
+      [1, 2, 3, 4],
+      [10, 20, 30, 40],
+    ]);
     const out = norm.forward(x);
     const values = Array.from(await out.data());
     for (const row of [values.slice(0, 4), values.slice(4, 8)]) {
@@ -159,7 +171,10 @@ describe('layers', () => {
     t.ok(Math.abs(mean - 1) < 0.15, `mean is preserved (${mean})`);
     dropout.eval();
     const evaluated = Array.from(await dropout.forward(x).data());
-    t.ok(evaluated.every((v) => v === 1), 'evaluation is a no-op');
+    t.ok(
+      evaluated.every((v) => v === 1),
+      'evaluation is a no-op',
+    );
   });
   it('is reproducible from a seed', async (t) => {
     const a = new Linear(4, 4, { generator: new Generator(99) });
@@ -303,10 +318,7 @@ describe('training an MLP', () => {
     // XOR is not linearly separable, so success requires the hidden layer and a
     // working gradient path through its nonlinearity.
     const generator = new Generator(1234);
-    const model = new Sequential(
-      new Linear(2, 8, { generator }),
-      new Linear(8, 1, { generator }),
-    );
+    const model = new Sequential(new Linear(2, 8, { generator }), new Linear(8, 1, { generator }));
     // The activation lives between the layers; Sequential applies them directly,
     // so the nonlinearity is applied explicitly here.
     const forward = (x: Tensor): Tensor => {
@@ -314,7 +326,12 @@ describe('training an MLP', () => {
       return (model.child('1') as Linear).forward(hidden);
     };
 
-    const x = await tensor([[0, 0], [0, 1], [1, 0], [1, 1]]);
+    const x = await tensor([
+      [0, 0],
+      [0, 1],
+      [1, 0],
+      [1, 1],
+    ]);
     const y = await tensor([[0], [1], [1], [0]]);
     const optimizer = new Adam(model.parameters(), { lr: 0.05 });
 
@@ -406,13 +423,18 @@ describe('training a transformer block', () => {
         const scores = query.matmul(key.transpose()).mul(scale);
         const attention = softmax(scores, 1).matmul(value);
         const afterAttention = embedded.add(this.proj.forward(attention));
-        const feedForward = this.down.forward(gelu(this.up.forward(this.norm2.forward(afterAttention))));
+        const feedForward = this.down.forward(
+          gelu(this.up.forward(this.norm2.forward(afterAttention))),
+        );
         return this.head.forward(afterAttention.add(feedForward));
       }
     }
 
     const model = new Block();
-    t.ok(model.parameterCount() > 1000, `the block has real parameters (${model.parameterCount()})`);
+    t.ok(
+      model.parameterCount() > 1000,
+      `the block has real parameters (${model.parameterCount()})`,
+    );
 
     // Task: predict each position's own token. Solvable, and it still requires the
     // whole stack to be differentiated correctly.

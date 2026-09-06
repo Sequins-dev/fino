@@ -18,10 +18,5 @@
  */
 export { Optimizer, SGD, Adam, AdamW, clipGradNorm } from './optim.ts';
 export type { ParamGroup } from './optim.ts';
-export {
-  ConstantSchedule,
-  LinearWarmup,
-  CosineSchedule,
-  StepSchedule,
-} from './schedule.ts';
+export { ConstantSchedule, LinearWarmup, CosineSchedule, StepSchedule } from './schedule.ts';
 export type { Schedule } from './schedule.ts';

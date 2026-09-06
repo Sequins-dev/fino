@@ -24,19 +24,28 @@ import { runConformance } from 'fino:tensor/conformance';
 import { bench } from 'fino:bench';
 
 const cpu = await device('cpu');
-const small = await tensor(Array.from({ length: 1024 }, (_, i) => i / 1024), {
-  shape: [32, 32],
-  device: cpu,
-});
-const other = await tensor(Array.from({ length: 1024 }, (_, i) => (i % 7) / 7), {
-  shape: [32, 32],
-  device: cpu,
-});
-const weights = await tensor(Array.from({ length: 1024 }, (_, i) => (i % 5) / 5), {
-  shape: [32, 32],
-  device: cpu,
-  requiresGrad: true,
-});
+const small = await tensor(
+  Array.from({ length: 1024 }, (_, i) => i / 1024),
+  {
+    shape: [32, 32],
+    device: cpu,
+  },
+);
+const other = await tensor(
+  Array.from({ length: 1024 }, (_, i) => (i % 7) / 7),
+  {
+    shape: [32, 32],
+    device: cpu,
+  },
+);
+const weights = await tensor(
+  Array.from({ length: 1024 }, (_, i) => (i % 5) / 5),
+  {
+    shape: [32, 32],
+    device: cpu,
+    requiresGrad: true,
+  },
+);
 const vector = await zeros([4096], { device: cpu });
 
 bench('dispatch', (b) => {
@@ -58,9 +67,11 @@ bench('dispatch', (b) => {
     });
   });
   b.measure('no-grad chain of four ops (32x32)', () => {
-    noGrad(() => tidy(() => {
-      small.add(other).mul(2).relu().neg();
-    }));
+    noGrad(() =>
+      tidy(() => {
+        small.add(other).mul(2).relu().neg();
+      }),
+    );
   });
 });
 

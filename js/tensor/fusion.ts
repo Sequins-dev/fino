@@ -190,11 +190,11 @@ export function chainKey(steps: readonly ChainStep[]): string {
   // and double between steps stay unambiguous — two different chains cannot produce the
   // same key, which matters because the key is what decides a cache hit.
   return steps
-    .map(
-      (step) =>
-        [step.op, ...step.args.map((arg) => (arg.from === 'scalar' ? 'k' : `${arg.from[0]}${arg.index}`))].join(
-          '_',
-        ),
+    .map((step) =>
+      [
+        step.op,
+        ...step.args.map((arg) => (arg.from === 'scalar' ? 'k' : `${arg.from[0]}${arg.index}`)),
+      ].join('_'),
     )
     .join('__');
 }

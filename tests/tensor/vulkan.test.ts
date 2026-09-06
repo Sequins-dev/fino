@@ -310,7 +310,14 @@ describe('Vulkan kernel execution', () => {
     // GLSL.std.450, a composed activation, and a broadcast index computation.
     const context = VulkanCompute.create();
     const count = 256;
-    const cases: { name: string; words: Uint32Array; entry: string; wg: number; params: ArrayBuffer; expect: (x: number) => number }[] = [];
+    const cases: {
+      name: string;
+      words: Uint32Array;
+      entry: string;
+      wg: number;
+      params: ArrayBuffer;
+      expect: (x: number) => number;
+    }[] = [];
     for (const [name, expect] of [
       ['exp', Math.exp],
       ['sqrt', Math.sqrt],
@@ -318,8 +325,7 @@ describe('Vulkan kernel execution', () => {
       ['sigmoid', (x: number) => 1 / (1 + Math.exp(-x))],
       [
         'gelu',
-        (x: number) =>
-          0.5 * x * (1 + Math.tanh(0.7978845608028654 * (x + 0.044715 * x * x * x))),
+        (x: number) => 0.5 * x * (1 + Math.tanh(0.7978845608028654 * (x + 0.044715 * x * x * x))),
       ],
     ] as const) {
       const { ir } = unaryKernel(name, { dtype: 'f32', layout: 'cont' }, 'f32');

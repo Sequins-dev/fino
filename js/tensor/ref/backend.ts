@@ -79,12 +79,7 @@ function viewOf(desc: TensorDesc): RefView {
  *
  * @internal
  */
-function blasGemm2D(
-  a: TensorDesc,
-  b: TensorDesc,
-  out: TensorDesc,
-  opts: GemmOpts,
-): boolean {
+function blasGemm2D(a: TensorDesc, b: TensorDesc, out: TensorDesc, opts: GemmOpts): boolean {
   if (out.dtype !== 'f32' && out.dtype !== 'f64') return false;
   if (a.dtype !== out.dtype || b.dtype !== out.dtype) return false;
   // The framework materialises transposes before reaching a backend, so these are
@@ -145,11 +140,7 @@ function isContiguous(desc: TensorDesc): boolean {
  *
  * @internal
  */
-function elementsOf(
-  desc: TensorDesc,
-  offset: number,
-  count: number,
-): Float32Array | Float64Array {
+function elementsOf(desc: TensorDesc, offset: number, count: number): Float32Array | Float64Array {
   const bytes = (desc.buffer as RefBuffer).bytes;
   const start = desc.offset + offset;
   return desc.dtype === 'f64'
@@ -199,12 +190,7 @@ export class RefBackend implements DeviceBackend {
     new Uint8Array((dst as unknown as RefBuffer).bytes).set(src, dstOffset);
   }
 
-  copyD2H(
-    dst: PinnedBuffer,
-    src: DeviceBuffer,
-    srcOffset: number,
-    bytes: number,
-  ): void {
+  copyD2H(dst: PinnedBuffer, src: DeviceBuffer, srcOffset: number, bytes: number): void {
     const from = new Uint8Array((src as unknown as RefBuffer).bytes, srcOffset, bytes);
     new Uint8Array((dst as unknown as RefBuffer).bytes).set(from);
   }
@@ -248,12 +234,7 @@ export class RefBackend implements DeviceBackend {
    *
    * @internal
    */
-  #run(
-    name: OpKind,
-    inputs: readonly TensorDesc[],
-    out: TensorDesc,
-    attrs: OpAttrs | null,
-  ): void {
+  #run(name: OpKind, inputs: readonly TensorDesc[], out: TensorDesc, attrs: OpAttrs | null): void {
     const spec = opByName(name);
     const views: RefAccessor[] = inputs.map(viewOf);
     spec.refImpl(views, viewOf(out), attrs);
@@ -272,12 +253,7 @@ export class RefBackend implements DeviceBackend {
     this.#run('cast', [x], out, null);
   }
 
-  reduce(
-    op: RedOp,
-    x: TensorDesc,
-    out: TensorDesc,
-    axes: readonly number[],
-  ): void {
+  reduce(op: RedOp, x: TensorDesc, out: TensorDesc, axes: readonly number[]): void {
     this.#run(op, [x], out, { axes });
   }
 
@@ -341,21 +317,11 @@ export class RefBackend implements DeviceBackend {
     this.#run('gather', [x, indices], out, { axis });
   }
 
-  scatterAddAt(
-    out: TensorDesc,
-    indices: TensorDesc,
-    src: TensorDesc,
-    axis: number,
-  ): void {
+  scatterAddAt(out: TensorDesc, indices: TensorDesc, src: TensorDesc, axis: number): void {
     this.#run('scatterAddAt', [indices, src], out, { axis });
   }
 
-  scatterAdd(
-    out: TensorDesc,
-    indices: TensorDesc,
-    src: TensorDesc,
-    axis: number,
-  ): void {
+  scatterAdd(out: TensorDesc, indices: TensorDesc, src: TensorDesc, axis: number): void {
     this.#run('scatterAdd', [indices, src], out, { axis });
   }
 
@@ -391,11 +357,7 @@ export class RefBackend implements DeviceBackend {
    * The arithmetic is the same as `optimizerKernel` emits, statement for statement,
    * because this is the oracle that kernel is checked against.
    */
-  optimizerStep(
-    kind: 'sgd' | 'adam',
-    tensors: readonly TensorDesc[],
-    attrs: OpAttrs,
-  ): void {
+  optimizerStep(kind: 'sgd' | 'adam', tensors: readonly TensorDesc[], attrs: OpAttrs): void {
     const parameter = viewOf(tensors[0]!);
     const gradient = viewOf(tensors[1]!);
     const lr = Number(attrs.lr ?? 0);

@@ -98,11 +98,7 @@ describe('CoreML through FFI', () => {
       const MLModel = objcClass('MLModel')!;
       const slot = errorSlot();
 
-      const source = send.ptrPtr(
-        objcClass('NSURL')!,
-        sel('fileURLWithPath:'),
-        nsString(FIXTURE),
-      );
+      const source = send.ptrPtr(objcClass('NSURL')!, sel('fileURLWithPath:'), nsString(FIXTURE));
       const compiled = send.ptrPtrBuf(MLModel, sel('compileModelAtURL:error:'), source, slot);
       if (!compiled) throw new Error(`compile failed: ${takeError(slot) ?? 'no error given'}`);
 
@@ -151,11 +147,19 @@ describe('CoreML through FFI', () => {
       );
       if (!features) throw new Error(`features failed: ${takeError(slot) ?? 'no error'}`);
 
-      const prediction = send.ptrPtrBuf(model, sel('predictionFromFeatures:error:'), features, slot);
+      const prediction = send.ptrPtrBuf(
+        model,
+        sel('predictionFromFeatures:error:'),
+        features,
+        slot,
+      );
       if (!prediction) throw new Error(`predict failed: ${takeError(slot) ?? 'no error'}`);
 
       outputName = readNSString(
-        send.ptr(send.ptr(send.ptr(prediction, sel('featureNames')), sel('allObjects')), sel('firstObject')),
+        send.ptr(
+          send.ptr(send.ptr(prediction, sel('featureNames')), sel('allObjects')),
+          sel('firstObject'),
+        ),
       );
       const value = send.ptrPtr(prediction, sel('featureValueForName:'), nsString(outputName));
       const result = send.ptr(value, sel('multiArrayValue'));

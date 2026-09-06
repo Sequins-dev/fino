@@ -110,7 +110,12 @@ function programs(): Program[] {
     {
       name: 'axis reductions',
       inputs: [{ shape: [4, 6], seed: 13 }],
-      run: (x) => x.sum([1]).add(x.mean([1])).add(x.max([1])).add(x.min([1])),
+      run: (x) =>
+        x
+          .sum([1])
+          .add(x.mean([1]))
+          .add(x.max([1]))
+          .add(x.min([1])),
     },
     {
       name: 'scattered reduction axes',
@@ -311,7 +316,11 @@ function programs(): Program[] {
       // beginning and not the buffer's.
       name: 'strided slice',
       inputs: [{ shape: [7, 8], seed: 63 }],
-      run: (x) => x.slice([{ start: 1, step: 2 }, { start: 3, step: 3 }]),
+      run: (x) =>
+        x.slice([
+          { start: 1, step: 2 },
+          { start: 3, step: 3 },
+        ]),
     },
     {
       name: 'narrow on an interior axis',
@@ -353,9 +362,7 @@ async function build(program: Program, on: Device): Promise<Tensor[]> {
       const raw = values(count, spec.seed).map((v) => Math.abs(Math.round(v * 5)) % 6);
       out.push(await tensor(raw, { shape: spec.shape, dtype: 'i32', device: on }));
     } else {
-      out.push(
-        await tensor(values(count, spec.seed), { shape: spec.shape, device: on }),
-      );
+      out.push(await tensor(values(count, spec.seed), { shape: spec.shape, device: on }));
     }
   }
   return out;
@@ -579,7 +586,10 @@ describe('training on the GPU', () => {
 
       const predictions = Array.from(await forward(x).data());
       t.ok(
-        predictions[0]! < 0.5 && predictions[1]! > 0.5 && predictions[2]! > 0.5 && predictions[3]! < 0.5,
+        predictions[0]! < 0.5 &&
+          predictions[1]! > 0.5 &&
+          predictions[2]! > 0.5 &&
+          predictions[3]! < 0.5,
         `${gpu.type}: XOR learned (${predictions.map((v) => v.toFixed(2)).join(', ')})`,
       );
       optimizer.dispose();

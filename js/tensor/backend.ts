@@ -307,13 +307,7 @@ export interface DeviceBackend {
   /** Element type conversion. */
   cast(x: TensorDesc, out: TensorDesc, stream: Stream): void;
   /** Reduction over `axes`. */
-  reduce(
-    op: RedOp,
-    x: TensorDesc,
-    out: TensorDesc,
-    axes: readonly number[],
-    stream: Stream,
-  ): void;
+  reduce(op: RedOp, x: TensorDesc, out: TensorDesc, axes: readonly number[], stream: Stream): void;
   /** Softmax or log-softmax along one axis. */
   softmax(x: TensorDesc, out: TensorDesc, axis: number, log: boolean, stream: Stream): void;
   /**
@@ -332,23 +326,11 @@ export interface DeviceBackend {
     stream: Stream,
   ): void;
   /** Matrix multiply. */
-  gemm(
-    a: TensorDesc,
-    b: TensorDesc,
-    out: TensorDesc,
-    opts: GemmOpts,
-    stream: Stream,
-  ): void;
+  gemm(a: TensorDesc, b: TensorDesc, out: TensorDesc, opts: GemmOpts, stream: Stream): void;
   /** Strided copy, which backs transpose, permute, slice, concat, and expand. */
   copyStrided(x: TensorDesc, out: TensorDesc, stream: Stream): void;
   /** Gather along an axis using an index tensor. */
-  gather(
-    x: TensorDesc,
-    indices: TensorDesc,
-    out: TensorDesc,
-    axis: number,
-    stream: Stream,
-  ): void;
+  gather(x: TensorDesc, indices: TensorDesc, out: TensorDesc, axis: number, stream: Stream): void;
   /** Scatter-add into `out` along an axis. */
   /**
    * Accumulate one element per source position along an axis.
@@ -386,13 +368,7 @@ export interface DeviceBackend {
   /** Fill with an arithmetic sequence. */
   arange(out: TensorDesc, start: number, step: number, stream: Stream): void;
   /** Sample random values from a counter-based generator. */
-  random(
-    op: RngOp,
-    out: TensorDesc,
-    key: RngKey,
-    attrs: OpAttrs | null,
-    stream: Stream,
-  ): void;
+  random(op: RngOp, out: TensorDesc, key: RngKey, attrs: OpAttrs | null, stream: Stream): void;
   /**
    * Run a chain of elementwise steps as one kernel.
    *

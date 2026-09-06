@@ -192,10 +192,7 @@ export class Module {
    * Shapes and dtypes must match: silently reinterpreting a mismatched tensor
    * would produce a model that runs and is wrong.
    */
-  loadStateDict(
-    state: ReadonlyMap<string, Tensor>,
-    options: { strict?: boolean } = {},
-  ): void {
+  loadStateDict(state: ReadonlyMap<string, Tensor>, options: { strict?: boolean } = {}): void {
     const strict = options.strict ?? true;
     const own = this.stateDict();
     const missing: string[] = [];
@@ -210,10 +207,7 @@ export class Module {
           `state entry '${name}' has dtype ${source.dtype}, expected ${target.dtype}`,
         );
       }
-      if (
-        source.rank !== target.rank ||
-        !source.shape.every((d, i) => d === target.shape[i])
-      ) {
+      if (source.rank !== target.rank || !source.shape.every((d, i) => d === target.shape[i])) {
         throw new Error(
           `state entry '${name}' has shape [${source.shape.join(', ')}], expected [${target.shape.join(', ')}]`,
         );

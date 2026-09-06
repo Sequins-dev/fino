@@ -111,7 +111,10 @@ describe('capture plane', () => {
     const device = backend.device;
     // A shape whose kernel has never been compiled, so the launch has to go through the
     // queue — which would leave it outside the recording.
-    const a = await tensor(Array.from({ length: 37 }, (_, i) => i), { device });
+    const a = await tensor(
+      Array.from({ length: 37 }, (_, i) => i),
+      { device },
+    );
     const out = await tensor(new Array(37).fill(0), { device });
     // Drain first: capture refuses to start while earlier launches are still queued.
     await out.data();
@@ -126,7 +129,7 @@ describe('capture plane', () => {
     out.dispose();
   });
 
-  it('does not hand a recording\'s intermediate to the next allocation', async (t) => {
+  it("does not hand a recording's intermediate to the next allocation", async (t) => {
     const backends = await capturing();
     if (backends.length === 0) {
       t.ok(true, 'SKIP: no backend here records');

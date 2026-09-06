@@ -389,11 +389,7 @@ function attachGrad(
  * Only creation operations use this — `fill`, `arange`, `random` — where the
  * output is the whole point and there are no inputs to differentiate.
  */
-export function dispatchInto(
-  op: OpId,
-  out: Tensor,
-  attrs: OpAttrs | null = null,
-): Tensor {
+export function dispatchInto(op: OpId, out: Tensor, attrs: OpAttrs | null = null): Tensor {
   const spec = opById(op);
   out.check();
   const backend = backendFor(out.device);

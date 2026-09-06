@@ -245,10 +245,7 @@ function describePhysicalDevice(
     .decode(bytes.subarray(DEVICE_NAME_OFFSET, end < 0 ? DEVICE_NAME_OFFSET + 256 : end))
     .trim();
 
-  const reported = new DataView(bytes.buffer).getUint32(
-    MAX_WORKGROUP_INVOCATIONS_OFFSET,
-    true,
-  );
+  const reported = new DataView(bytes.buffer).getUint32(MAX_WORKGROUP_INVOCATIONS_OFFSET, true);
   // Vulkan guarantees at least 128 and nothing sane reports more than a few thousand.
   // Outside that the offset is wrong, and the guaranteed floor beats a launch the
   // device refuses.
@@ -471,10 +468,7 @@ export class VulkanCompute {
 
     // Every heap being host-visible is what makes readback a mapping rather than
     // a staging copy, which is the case on Apple Silicon and other integrated GPUs.
-    const typeCount = VkPhysicalDeviceMemoryProperties.getU32(
-      memoryProperties,
-      'memoryTypeCount',
-    );
+    const typeCount = VkPhysicalDeviceMemoryProperties.getU32(memoryProperties, 'memoryTypeCount');
     let allHostVisible = typeCount > 0;
     for (let i = 0; i < typeCount; i++) {
       if ((memoryTypeFlags(memoryProperties, i) & MemoryProperty.HostVisible) === 0) {
@@ -657,8 +651,7 @@ export class VulkanCompute {
       VkBufferCreateInfo.make({
         sType: StructureType.BufferCreateInfo,
         size,
-        usage:
-          BufferUsage.StorageBuffer | BufferUsage.TransferSrc | BufferUsage.TransferDst,
+        usage: BufferUsage.StorageBuffer | BufferUsage.TransferSrc | BufferUsage.TransferDst,
         sharingMode: 0,
       }),
     );
@@ -693,12 +686,7 @@ export class VulkanCompute {
     const memorySlot = slot();
     check(
       'vkAllocateMemory',
-      this.#lib.symbols.vkAllocateMemory(
-        this.#device,
-        allocateInfo,
-        null,
-        memorySlot,
-      ) as number,
+      this.#lib.symbols.vkAllocateMemory(this.#device, allocateInfo, null, memorySlot) as number,
     );
     const memory = readHandle(memorySlot);
     check(
@@ -771,11 +759,7 @@ export class VulkanCompute {
     const commandSlot = slot();
     check(
       'vkAllocateCommandBuffers',
-      this.#lib.symbols.vkAllocateCommandBuffers(
-        this.#device,
-        allocateInfo,
-        commandSlot,
-      ) as number,
+      this.#lib.symbols.vkAllocateCommandBuffers(this.#device, allocateInfo, commandSlot) as number,
     );
     const commandBuffer = readPointer(commandSlot);
     const beginInfo = chain.hold(
@@ -802,10 +786,7 @@ export class VulkanCompute {
       1,
       new Uint8Array(region),
     );
-    check(
-      'vkEndCommandBuffer',
-      this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number,
-    );
+    check('vkEndCommandBuffer', this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number);
 
     const signalValue = ++this.#counter;
     const timelineInfo = chain.hold(
@@ -820,9 +801,7 @@ export class VulkanCompute {
         sType: StructureType.SubmitInfo,
         pNext: timelineInfo,
         commandBufferCount: 1,
-        pCommandBuffers: chain.addressOf(
-          BigUint64Array.from([handleValue(commandBuffer)]),
-        ),
+        pCommandBuffers: chain.addressOf(BigUint64Array.from([handleValue(commandBuffer)])),
         signalSemaphoreCount: 1,
         pSignalSemaphores: chain.handleArray([this.#timeline]),
       }),
@@ -871,12 +850,7 @@ export class VulkanCompute {
     const moduleSlot = slot();
     check(
       'vkCreateShaderModule',
-      this.#lib.symbols.vkCreateShaderModule(
-        this.#device,
-        moduleInfo,
-        null,
-        moduleSlot,
-      ) as number,
+      this.#lib.symbols.vkCreateShaderModule(this.#device, moduleInfo, null, moduleSlot) as number,
     );
     const module = readHandle(moduleSlot);
 
@@ -929,7 +903,6 @@ export class VulkanCompute {
    */
   #encoded = 0;
 
-
   /**
    * Argument graphs belonging to calls that have not returned.
    *
@@ -978,11 +951,7 @@ export class VulkanCompute {
     const commandSlot = slot();
     check(
       'vkAllocateCommandBuffers',
-      this.#lib.symbols.vkAllocateCommandBuffers(
-        this.#device,
-        allocateInfo,
-        commandSlot,
-      ) as number,
+      this.#lib.symbols.vkAllocateCommandBuffers(this.#device, allocateInfo, commandSlot) as number,
     );
     const commandBuffer = readPointer(commandSlot);
     const beginInfo = chain.hold(
@@ -1304,10 +1273,7 @@ export class VulkanCompute {
     this.#encoded = 0;
     const signalValue = this.#counter;
 
-    check(
-      'vkEndCommandBuffer',
-      this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number,
-    );
+    check('vkEndCommandBuffer', this.#lib.symbols.vkEndCommandBuffer(commandBuffer) as number);
     const chain = new StructChain();
     const timelineInfo = chain.hold(
       VkTimelineSemaphoreSubmitInfo.make({
@@ -1321,9 +1287,7 @@ export class VulkanCompute {
         sType: StructureType.SubmitInfo,
         pNext: timelineInfo,
         commandBufferCount: 1,
-        pCommandBuffers: chain.addressOf(
-          BigUint64Array.from([handleValue(commandBuffer)]),
-        ),
+        pCommandBuffers: chain.addressOf(BigUint64Array.from([handleValue(commandBuffer)])),
         signalSemaphoreCount: 1,
         pSignalSemaphores: chain.handleArray([this.#timeline]),
       }),
@@ -1364,11 +1328,7 @@ export class VulkanCompute {
     this.#awaited.add(chain);
     let result: number;
     try {
-      result = (await this.#lib.symbols.vkWaitSemaphores(
-        this.#device,
-        info,
-        VK_FOREVER,
-      )) as number;
+      result = (await this.#lib.symbols.vkWaitSemaphores(this.#device, info, VK_FOREVER)) as number;
     } finally {
       this.#awaited.delete(chain);
     }
@@ -1489,10 +1449,7 @@ function availableInstanceExtensions(lib: VulkanLibrary): string[] {
  *
  * @internal
  */
-function availableDeviceExtensions(
-  lib: VulkanLibrary,
-  physicalDevice: ArrayBuffer,
-): string[] {
+function availableDeviceExtensions(lib: VulkanLibrary, physicalDevice: ArrayBuffer): string[] {
   const countSlot = new Uint8Array(4);
   check(
     'vkEnumerateDeviceExtensionProperties',

@@ -153,7 +153,10 @@ function allKernels(): { name: string; words: Uint32Array }[] {
     ['gemm_default', gemmKernel({ dtype: 'f32' })],
     ['gemm_transA', gemmKernel({ dtype: 'f32', tiling: SMALL_TILING, transA: true })],
     ['gemm_transB', gemmKernel({ dtype: 'f32', tiling: SMALL_TILING, transB: true })],
-    ['gemm_exact_beta', gemmKernel({ dtype: 'f32', tiling: SMALL_TILING, noEdgeGuards: true, withBeta: true })],
+    [
+      'gemm_exact_beta',
+      gemmKernel({ dtype: 'f32', tiling: SMALL_TILING, noEdgeGuards: true, withBeta: true }),
+    ],
     ['gemm_f16', gemmKernel({ dtype: 'f16', tiling: SMALL_TILING })],
     ['reduce_sum', reduceKernel({ op: 'sum', dtype: 'f32' })],
     ['reduce_mean', reduceKernel({ op: 'mean', dtype: 'f32' })],
@@ -173,7 +176,10 @@ function allKernels(): { name: string; words: Uint32Array }[] {
     ['indexselect', indexSelectKernel({ dtype: 'f32' })],
     ['scatteradd', scatterAddKernel({ dtype: 'f32' })],
     ['sgd', optimizerKernel({ kind: 'sgd', dtype: 'f32' })],
-    ['sgd_momentum', optimizerKernel({ kind: 'sgd', dtype: 'f32', momentum: true, weightDecay: true })],
+    [
+      'sgd_momentum',
+      optimizerKernel({ kind: 'sgd', dtype: 'f32', momentum: true, weightDecay: true }),
+    ],
     ['adam', optimizerKernel({ kind: 'adam', dtype: 'f32' })],
     ['adamw', optimizerKernel({ kind: 'adam', dtype: 'f32', weightDecay: true, decoupled: true })],
     ['random_uniform', randomKernel({ kind: 'uniform', dtype: 'f32' })],

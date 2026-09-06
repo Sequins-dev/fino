@@ -93,9 +93,17 @@ async function placement(fixture: string): Promise<Map<string, string>> {
   withPool(() => {
     const slot = errorSlot();
     const source = send.ptrPtr(objcClass('NSURL')!, sel('fileURLWithPath:'), nsString(fixture));
-    const compiled = send.ptrPtrBuf(objcClass('MLModel')!, sel('compileModelAtURL:error:'), source, slot);
+    const compiled = send.ptrPtrBuf(
+      objcClass('MLModel')!,
+      sel('compileModelAtURL:error:'),
+      source,
+      slot,
+    );
     if (!compiled) throw new Error(`compile failed: ${takeError(slot) ?? 'no error'}`);
-    const config = send.ptr(send.ptr(objcClass('MLModelConfiguration')!, sel('alloc')), sel('init'));
+    const config = send.ptr(
+      send.ptr(objcClass('MLModelConfiguration')!, sel('alloc')),
+      sel('init'),
+    );
     send.voidI64(config, sel('setComputeUnits:'), CPU_AND_NEURAL_ENGINE);
     send.voidPtrPtrPtr(
       objcClass('MLComputePlan')!,
@@ -111,7 +119,11 @@ async function placement(fixture: string): Promise<Map<string, string>> {
 
   withPool(() => {
     const program = send.ptr(send.ptr(plan as never, sel('modelStructure')), sel('program'));
-    const main = send.ptrPtr(send.ptr(program, sel('functions')), sel('objectForKey:'), nsString('main'));
+    const main = send.ptrPtr(
+      send.ptr(program, sel('functions')),
+      sel('objectForKey:'),
+      nsString('main'),
+    );
     const operations = send.ptr(send.ptr(main, sel('block')), sel('operations'));
     const count = Number(send.u64(operations, sel('count')));
     for (let i = 0; i < count; i++) {

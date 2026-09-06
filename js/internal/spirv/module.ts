@@ -146,12 +146,7 @@ export class SpirvModule {
   }
 
   /** Decorate a struct member. */
-  memberDecorate(
-    structType: Id,
-    member: number,
-    decoration: number,
-    ...literals: number[]
-  ): void {
+  memberDecorate(structType: Id, member: number, decoration: number, ...literals: number[]): void {
     this.#decorations.op(Op.MemberDecorate, [structType, member, decoration, ...literals]);
   }
 
@@ -299,12 +294,7 @@ export class SpirvModule {
 
   /** `OpEntryPoint`. `iface` lists every `Input`/`Output` variable used. */
   entryPoint(executionModel: number, fn: Id, name: string, iface: readonly Id[]): void {
-    this.#entryPoints.op(Op.EntryPoint, [
-      executionModel,
-      fn,
-      ...literalString(name),
-      ...iface,
-    ]);
+    this.#entryPoints.op(Op.EntryPoint, [executionModel, fn, ...literalString(name), ...iface]);
   }
 
   /** `OpExecutionMode`. */
@@ -479,12 +469,7 @@ export class FnBuilder {
    *
    * Callers get correct merge/continue targets without knowing the rules.
    */
-  loop(
-    condition: () => Id,
-    body: () => void,
-    latch: () => void,
-    control = LoopControl.None,
-  ): void {
+  loop(condition: () => Id, body: () => void, latch: () => void, control = LoopControl.None): void {
     const header = this.#module.id();
     const condBlock = this.#module.id();
     const bodyBlock = this.#module.id();

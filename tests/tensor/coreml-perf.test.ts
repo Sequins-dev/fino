@@ -249,14 +249,21 @@ function load(item: Case): Loaded {
   withPool(() => {
     const MLModel = objcClass('MLModel')!;
     const slot = errorSlot();
-    const source = send.ptrPtr(objcClass('NSURL')!, sel('fileURLWithPath:'), nsString(item.fixture));
+    const source = send.ptrPtr(
+      objcClass('NSURL')!,
+      sel('fileURLWithPath:'),
+      nsString(item.fixture),
+    );
 
     const compileStart = performance.now();
     const compiled = send.ptrPtrBuf(MLModel, sel('compileModelAtURL:error:'), source, slot);
     const compileSeconds = (performance.now() - compileStart) / 1000;
     if (!compiled) throw new Error(`compile failed: ${takeError(slot) ?? 'no error given'}`);
 
-    const config = send.ptr(send.ptr(objcClass('MLModelConfiguration')!, sel('alloc')), sel('init'));
+    const config = send.ptr(
+      send.ptr(objcClass('MLModelConfiguration')!, sel('alloc')),
+      sel('init'),
+    );
     send.voidI64(config, sel('setComputeUnits:'), CPU_AND_NEURAL_ENGINE);
 
     const loadStart = performance.now();

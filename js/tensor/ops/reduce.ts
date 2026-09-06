@@ -169,13 +169,7 @@ function reduction(def: ReduceDef): void {
     shapeRule: (inputs, attrs) =>
       reduceShape(inputs[0]!.shape, axesOf(attrs, inputs[0]!.rank), keepDimsOf(attrs)),
     enqueue: (backend, inputs, out, attrs, stream) =>
-      backend.reduce(
-        def.name,
-        inputs[0]!,
-        out,
-        axesOf(attrs, inputs[0]!.shape.length),
-        stream,
-      ),
+      backend.reduce(def.name, inputs[0]!, out, axesOf(attrs, inputs[0]!.shape.length), stream),
     vjp: def.grad
       ? {
           saves: (inputs, output) => {
@@ -216,11 +210,7 @@ function reduction(def: ReduceDef): void {
  *
  * @internal
  */
-function unreduce(
-  cot: Tensor,
-  attrs: OpAttrs | null,
-  inputShape: readonly number[],
-): Tensor {
+function unreduce(cot: Tensor, attrs: OpAttrs | null, inputShape: readonly number[]): Tensor {
   const axes = axesOf(attrs, inputShape.length);
   if (keepDimsOf(attrs)) return expandTo(cot, inputShape);
   // Put the reduced axes back as size 1, then stretch.
@@ -573,11 +563,7 @@ export function rsqrt(t: Tensor): Tensor {
 }
 
 /** Sum a tensor completely or along axes. */
-export function sum(
-  t: Tensor,
-  axes?: readonly number[],
-  keepDims = false,
-): Tensor {
+export function sum(t: Tensor, axes?: readonly number[], keepDims = false): Tensor {
   return dispatch(RED.sum!, [t], {
     axes: axes ?? Array.from({ length: t.rank }, (_, i) => i),
     keepDims,
@@ -586,11 +572,7 @@ export function sum(
 }
 
 /** Mean of a tensor completely or along axes. */
-export function mean(
-  t: Tensor,
-  axes?: readonly number[],
-  keepDims = false,
-): Tensor {
+export function mean(t: Tensor, axes?: readonly number[], keepDims = false): Tensor {
   return dispatch(RED.mean!, [t], {
     axes: axes ?? Array.from({ length: t.rank }, (_, i) => i),
     keepDims,

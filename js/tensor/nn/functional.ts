@@ -81,12 +81,7 @@ function trailingSize(x: Tensor, dims: number): number {
 /**
  * Root-mean-square normalisation, which omits mean subtraction.
  */
-export function rmsNorm(
-  x: Tensor,
-  weight: Tensor | null = null,
-  epsilon = 1e-6,
-  dims = 1,
-): Tensor {
+export function rmsNorm(x: Tensor, weight: Tensor | null = null, epsilon = 1e-6, dims = 1): Tensor {
   const inputs: Tensor[] = [x];
   if (weight) inputs.push(weight);
   return dispatch(RED.layerNorm!, inputs, {

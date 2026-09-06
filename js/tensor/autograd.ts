@@ -145,11 +145,7 @@ export interface BackwardOptions {
  *
  * `seed` is the cotangent of `root`; for a scalar loss it defaults to one.
  */
-export function backward(
-  root: Tensor,
-  seed: Tensor | null,
-  options: BackwardOptions = {},
-): void {
+export function backward(root: Tensor, seed: Tensor | null, options: BackwardOptions = {}): void {
   root.check();
   if (root.gradFn === null && !root.requiresGrad) {
     throw new Error('backward() called on a tensor that does not require gradients');
@@ -213,11 +209,7 @@ export function backward(
  *
  * @internal
  */
-function accumulate(
-  cotangents: Map<Tensor, Tensor>,
-  tensor: Tensor,
-  grad: Tensor,
-): void {
+function accumulate(cotangents: Map<Tensor, Tensor>, tensor: Tensor, grad: Tensor): void {
   const existing = cotangents.get(tensor);
   cotangents.set(tensor, existing ? addInto(existing, grad) : grad);
 }

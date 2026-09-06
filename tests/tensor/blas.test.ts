@@ -132,7 +132,16 @@ describe('CPU BLAS', () => {
     const bv = sampleValues(k * n, 93);
     const a = await tensor(av, { shape: [m, k], dtype: 'f64', device: cpu });
     const b = await tensor(bv, { shape: [k, n], dtype: 'f64', device: cpu });
-    assertMultiply(t, 'dgemm', await a.matmul(b).data(), reference(av, bv, m, k, n), av, bv, k, 'f64');
+    assertMultiply(
+      t,
+      'dgemm',
+      await a.matmul(b).data(),
+      reference(av, bv, m, k, n),
+      av,
+      bv,
+      k,
+      'f64',
+    );
     a.dispose();
     b.dispose();
   });
