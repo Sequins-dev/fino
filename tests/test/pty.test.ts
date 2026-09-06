@@ -32,6 +32,20 @@ function screenIncludes(term: { text(): string[] }, needle: string): boolean {
 }
 
 describe('fino:test/pty', () => {
+  it('retains output when the child exits before the reader runs', async (t) => {
+    await withScript(
+      `import { writeStdout } from 'fino:tty'; await writeStdout('final output');`,
+      async (pty) => {
+        // Deliberately delay the pump while the child writes and exits.
+        // An async timer would let the pump consume the output immediately.
+        const until = performance.now() + 1000;
+        while (performance.now() < until) {}
+        await pty.waitFor((term) => screenIncludes(term, 'final output'), { timeout: 1000 });
+        t.equal(await pty.waitExit(), 0);
+      },
+    );
+  });
+
   it('captures plain output and reports a clean exit', async (t) => {
     await withScript(`console.log('hello pty');\n`, async (pty) => {
       t.ok(pty.pid > 0, 'child pid is reported');
