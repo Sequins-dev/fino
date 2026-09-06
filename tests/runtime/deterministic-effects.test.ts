@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import { Realm } from 'fino:realm';
+import { Facade, ImportMap, Realm } from 'fino:realm';
 import * as loop from 'internal:runtime/loop';
 import * as runtimeRandom from 'internal:runtime/random';
 import {
@@ -157,6 +157,63 @@ describe('virtual runtime timers', () => {
 });
 
 describe('deterministic Realm effects', () => {
+  it('delivers Facade responses through deterministic virtual latency', async (t) => {
+    const facade = new Facade('app:latency', [])
+      .handle('ping', async () => 'pong')
+      .stream('tail', async function* () {
+        yield 'a';
+        yield 'b';
+        yield 'c';
+      });
+    using realm = new Realm<() => Promise<unknown>>({
+      entry: new URL('./fixtures/facade-latency.ts', import.meta.url).pathname,
+      deterministic: { seed: 7, startTime: 100, responseLatency: [25, 25] },
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/deterministic-effects', directive: 'inherit' },
+        { pattern: 'app:latency', directive: facade },
+      ]),
+    });
+
+    t.deepEqual(await realm.call(), {
+      random: runtimeRandom.createSeededRandom(7).nextFloat(),
+      elapsed: 25,
+      order: ['timer', 'response'],
+      chunkTimes: [25, 50, 75],
+    });
+  });
+
+  it('carries Facade response latency across a process boundary', async (t) => {
+    const facade = new Facade('app:latency', [])
+      .handle('ping', async () => 'pong')
+      .stream('tail', async function* () {
+        yield 'a';
+        yield 'b';
+        yield 'c';
+      });
+    const realm = new Realm<() => Promise<unknown>>({
+      entry: new URL('./fixtures/facade-latency.ts', import.meta.url).pathname,
+      process: true,
+      deterministic: { seed: 7, startTime: 100, responseLatency: [25, 25] },
+      overrides: ImportMap.deny([
+        { pattern: 'internal:runtime/loop', directive: 'inherit' },
+        { pattern: 'internal:runtime/deterministic-effects', directive: 'inherit' },
+        { pattern: 'app:latency', directive: facade },
+      ]),
+    });
+    try {
+      t.deepEqual(await realm.call(), {
+        random: runtimeRandom.createSeededRandom(7).nextFloat(),
+        elapsed: 25,
+        order: ['timer', 'response'],
+        chunkTimes: [25, 50, 75],
+      });
+    } finally {
+      realm.terminate();
+      await realm.run();
+    }
+  });
+
   it('repeats time and randomness from one Realm configuration', async (t) => {
     const entry = new URL('./fixtures/deterministic-effects.ts', import.meta.url).pathname;
     const options = {
@@ -241,5 +298,19 @@ describe('deterministic Realm effects', () => {
       () => new Realm({ entry, remote: true, deterministic: { seed: 1 } }),
       /deterministic.*remote/,
     );
+    for (const responseLatency of [
+      [-1, 1],
+      [2, 1],
+      [0, Number.POSITIVE_INFINITY],
+    ]) {
+      t.throws(
+        () =>
+          new Realm({
+            entry,
+            deterministic: { seed: 1, responseLatency: responseLatency as [number, number] },
+          }),
+        /responseLatency/,
+      );
+    }
   });
 });

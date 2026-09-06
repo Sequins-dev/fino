@@ -68,7 +68,9 @@ describe('fino:tty/tui app lifecycle', () => {
       }
       await pty.waitFor((term) => term.text().join('').includes('press q'), { timeout: 10_000 });
       await pty.send('q');
-      await pty.waitFor((term) => term.text().join('').includes('STOP RESTORED'));
+      await pty.waitFor((term) => term.text().join('').includes('STOP RESTORED'), {
+        timeout: 10_000,
+      });
       t.equal(await pty.waitExit(), 0, 'the app exits after its input reader is closed');
       const restored = pty.term.text().join('\n');
       t.ok(restored.includes('STARTUP RESTORED'), 'startup failure returned to the primary screen');

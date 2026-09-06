@@ -1,9 +1,9 @@
 /**
  * internal:runtime/deterministic-effects — install reproducible ambient effects.
  *
- * This module composes the generic Realm-local clock, random source, and timer
- * queue. It controls only ambient time and randomness; filesystem, network,
- * process, and other external effects remain governed by their normal APIs and
+ * This module composes the generic Realm-local clock, random source, timer
+ * queue, and optional Facade-response scheduler. Filesystem, network, process,
+ * and other external effects remain governed by their normal APIs and
  * import-map policy.
  *
  * @internal
@@ -12,6 +12,7 @@ import { setClockOverride, wallMillis } from 'internal:runtime/clock';
 import { _setVirtualTimerQueue } from 'internal:runtime/loop';
 import { createSeededRandom, setRandomOverride } from 'internal:runtime/random';
 import { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
+import { _installResponseDelay, outstandingCalls } from 'internal:parent-rpc';
 
 /** Serializable deterministic-effect settings carried in Realm bootstrap data. @internal */
 export interface DeterministicEffectsConfig {
@@ -19,6 +20,8 @@ export interface DeterministicEffectsConfig {
   seed: number | string;
   /** Initial virtual wall time in Unix milliseconds. */
   startTime: number;
+  /** Inclusive virtual-millisecond range applied to each Facade response. */
+  responseLatency?: [number, number];
 }
 
 let installed = false;
@@ -42,7 +45,13 @@ export function installDeterministicEffects(config: DeterministicEffectsConfig):
     wallMillis: () => timers.now(),
   });
   installVirtualDate();
-  _setVirtualTimerQueue(timers);
+  _setVirtualTimerQueue(timers, () => outstandingCalls() > 0);
+  if (config.responseLatency !== undefined) {
+    const [minimum, maximum] = config.responseLatency;
+    const latencyRandom = createSeededRandom(`${String(config.seed)}:response-latency`);
+    const span = maximum - minimum;
+    _installResponseDelay(() => timers.schedule(minimum + latencyRandom.nextFloat() * span));
+  }
 }
 
 function installVirtualDate(): void {
