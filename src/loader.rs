@@ -142,6 +142,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:sim/journal", "internal/sim/journal"),
     source_builtin!("internal:sim/faults", "internal/sim/faults"),
     source_builtin!("internal:sim/guest", "internal/sim/guest"),
+    source_builtin!("internal:sim/file", "internal/sim/file"),
     source_builtin!("fino:sim", "sim"),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
@@ -1975,12 +1976,50 @@ fn get_or_load_builtin_inner<'s>(
         }
 
         Some(ImportDirective::Facade(synthetic_spec)) => {
-            let code = crate::realm::synthetic::create_module_source(&synthetic_spec);
+            let (code, source_map) = if let Some(module_specifier) = &synthetic_spec.module {
+                match BUILTINS
+                    .iter()
+                    .find(|(candidate, _)| *candidate == module_specifier.as_str())
+                {
+                    Some((
+                        _,
+                        BuiltinKind::Source {
+                            code, source_map, ..
+                        },
+                    )) => ((*code).to_string(), Some(*source_map)),
+                    Some(_) => {
+                        let msg = v8::String::new(
+                            scope,
+                            &format!("Facade module '{module_specifier}' is not a source builtin"),
+                        )?;
+                        let exc = v8::Exception::error(scope, msg);
+                        scope.throw_exception(exc);
+                        return None;
+                    }
+                    None => {
+                        let msg = v8::String::new(
+                            scope,
+                            &format!("Facade module '{module_specifier}' is not registered"),
+                        )?;
+                        let exc = v8::Exception::error(scope, msg);
+                        scope.throw_exception(exc);
+                        return None;
+                    }
+                }
+            } else {
+                (
+                    crate::realm::synthetic::create_module_source(&synthetic_spec),
+                    None,
+                )
+            };
+            if let Some(source_map) = source_map {
+                register_source_map_from_json(scope, &synthetic_spec.specifier, source_map);
+            }
             // Compile with the facade specifier so import-rule `from`-clause
             // matching works. Facade specifiers (e.g. "fino:file") fall under
             // fino:* in the default rules, granting access to internal:* without
             // explicit builtin_specifiers registration.
-            let m = compile_source_module(scope, &code, &synthetic_spec.specifier, None)?;
+            let m = compile_source_module(scope, &code, &synthetic_spec.specifier, source_map)?;
             if let Some(id) = m.script_id() {
                 state_rc
                     .borrow_mut()
