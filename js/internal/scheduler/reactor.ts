@@ -292,6 +292,28 @@ export class ProcessReadinessController {
       });
     });
   }
+  /**
+   * Snapshot of installed watches, grouped by owning realm.
+   *
+   * A scheduled realm that stops waking has either lost the watch that would
+   * signal it or is not being signalled despite one. Telling those apart from
+   * outside needs the controller's own view, so this reports how many watches
+   * each owner holds rather than only the total.
+   *
+   * @internal
+   */
+  stats(): { total: number; owners: number; perOwner: Record<string, number> } {
+    const perOwner: Record<string, number> = {};
+    for (const active of this.#registrations.values()) {
+      const key = String(active.owner);
+      perOwner[key] = (perOwner[key] ?? 0) + 1;
+    }
+    return {
+      total: this.#registrations.size,
+      owners: Object.keys(perOwner).length,
+      perOwner,
+    };
+  }
   #drainCommands(): void {
     for (const tuple of takeSharedReadinessChanges()) {
       this.#apply(decodeReadinessChange(tuple));
