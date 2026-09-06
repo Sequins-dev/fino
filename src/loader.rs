@@ -141,6 +141,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     ),
     source_builtin!("internal:sim/journal", "internal/sim/journal"),
     source_builtin!("internal:sim/faults", "internal/sim/faults"),
+    source_builtin!("fino:sim", "sim"),
     source_builtin!("internal:globals/messaging", "globals/messaging"),
     // public CLI command tasks, with internal aliases for runtime compatibility
     source_builtin!("fino:commands/root", "commands/root"),
