@@ -130,6 +130,8 @@ interface PreparedParallelTest {
   file: ParallelTestFile;
   registeredTests: TestFileRegistration['tests'];
   execute(index: number, note?: (stage: string) => void): Promise<ParallelTestResult>;
+  /** Re-send a group's start message; the worker ignores one it already ran. */
+  retryStart(index: number): void;
   completion: Promise<ParallelFileCompletion>;
   completionReported: Promise<TestFileCompletion>;
 }
@@ -278,6 +280,14 @@ async function prepareParallelFile(
     registeredTests,
     completion: fileCompletion,
     completionReported,
+    retryStart(index: number): void {
+      if (!canStart) return;
+      // The worker dedupes by index, so a group it already started ignores
+      // this. What it does do is write to the transport again, which is the
+      // only lever the coordinator has over a Realm that never woke for the
+      // first message.
+      realm.port.postMessage({ kind: 'fino:test:start', index } satisfies TestGroupStart);
+    },
     async execute(index: number, note?: (stage: string) => void): Promise<ParallelTestResult> {
       note?.('start');
       if (!canStart) {
@@ -522,7 +532,10 @@ function watchdogTickMs(options: Parameters<typeof runTestFile>[1]): number {
   const threshold = stallThresholdMs(options);
   const deadline = workerResultDeadlineMs(options);
   const bound = deadline > 0 ? Math.min(threshold, deadline) : threshold;
-  return Math.max(1_000, Math.floor(bound / 4));
+  // Eighths rather than quarters: the sweep also drives start retransmits, and
+  // a Realm that missed its wake-up should not wait a quarter of the deadline
+  // for the first one.
+  return Math.max(1_000, Math.floor(bound / 8));
 }
 function workerResultDeadlineMs(options: Parameters<typeof runTestFile>[1]): number {
   const perTest = options.timeout;
@@ -554,6 +567,8 @@ async function runParallelTests(
       label: string;
       stage: string;
       startedAt: number;
+      nudges: number;
+      nudge: () => void;
       force: (result: ParallelTestResult) => void;
     }
     const inFlight = new Map<number, InFlightGroup>();
@@ -568,10 +583,25 @@ async function runParallelTests(
       const now = performance.now();
       for (const [index, group] of inFlight) {
         const waited = now - group.startedAt;
-        if (waited < groupDeadline) continue;
+        if (waited < groupDeadline) {
+          // Past a quarter of the deadline, re-send the start message on every
+          // tick. The worker ignores a group it already started, so this is a
+          // retransmit rather than a re-run: harmless for a merely slow test,
+          // and the only lever the coordinator has over a Realm that never
+          // woke for the first message. A group that reports only after a
+          // retransmit is evidence of a lost wake-up, not of a slow test.
+          if (waited >= groupDeadline / 4) {
+            if (group.nudges === 0) {
+              write(`# re-sending start for ${group.label} after ${Math.round(waited)}ms`);
+            }
+            group.nudges++;
+            group.nudge();
+          }
+          continue;
+        }
         inFlight.delete(index);
         write(
-          `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage}; its own deadline did not fire`,
+          `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage} and ${group.nudges} retransmit(s); its own deadline did not fire`,
         );
         group.force({
           file: { display: group.label, specifier: group.label },
@@ -685,6 +715,8 @@ async function runParallelTests(
             label: groupLabel,
             stage: 'scheduled',
             startedAt: performance.now(),
+            nudges: 0,
+            nudge: () => test.retryStart(index),
             force: forceGroup,
           };
           inFlight.set(resolver.index, tracked);
