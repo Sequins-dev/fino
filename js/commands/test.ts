@@ -327,6 +327,16 @@ async function prepareParallelFile(
       ]);
       if (settled === null) {
         resultWaiters.delete(index);
+        // Groups within a file are chained, so a Realm that has stopped
+        // responding would otherwise cost the full deadline once per remaining
+        // group -- twelve groups is eighteen minutes of dead run. One missed
+        // reply is enough to call the Realm lost: stop it and fail the rest
+        // immediately.
+        const error = `${file.display} test Realm did not report group ${index} within ${deadline}ms`;
+        startFailure ??= error;
+        canStart = false;
+        failPending(error);
+        realm.terminate({ force: true });
         return {
           file,
           result: {
@@ -336,7 +346,7 @@ async function prepareParallelFile(
             passed: 0,
             failed: 0,
             skipped: 0,
-            error: `${file.display} test Realm did not report group ${index} within ${deadline}ms`,
+            error,
           },
         };
       }
@@ -1014,9 +1024,9 @@ const command = new Task({
             timeout,
           };
     let output: unknown;
+    const parallelFiles: ParallelTestFile[] = [];
     if (parallel) {
       const seen = new Set<string>();
-      const parallelFiles: ParallelTestFile[] = [];
       for (const file of importFiles) {
         const specifier = normalizeModuleSpecifier(file);
         if (seen.has(specifier)) continue;
@@ -1026,21 +1036,34 @@ const command = new Task({
           specifier,
         });
       }
-      output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
-    } else {
-      const importDeadline = workerResultDeadlineMs(runOptions);
-      for (const file of importFiles) {
-        await importWithin(normalizeModuleSpecifier(file), file, importDeadline);
+    }
+    // A failing run throws, and the leak check has to happen anyway: a test
+    // that both fails and leaks would otherwise print its failure and then
+    // hang forever on the leaked handle, since nothing after this point runs.
+    let runFailure: unknown;
+    try {
+      if (parallel) {
+        output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
+      } else {
+        const importDeadline = workerResultDeadlineMs(runOptions);
+        for (const file of importFiles) {
+          await importWithin(normalizeModuleSpecifier(file), file, importDeadline);
+        }
+        const { run } = await import('fino:test/test');
+        output = await run(runOptions);
       }
-      const { run } = await import('fino:test/test');
-      output = await run(runOptions);
+    } catch (error) {
+      runFailure = error;
     }
     if (await reportLeakedHandles(ownsProcess)) {
       // Throwing would not help: whatever leaked still holds the loop open, so
       // the process would report the failure and then hang anyway. Exiting is
-      // the only way to turn the leak into a result CI can see.
+      // the only way to turn the leak into a result CI can see. Print why the
+      // run failed first, because exiting skips the CLI's own error reporting.
+      if (runFailure !== undefined) console.log(`# ${errorText(runFailure)}`);
       processExit(1);
     }
+    if (runFailure !== undefined) throw runFailure;
     if (ctx.writer.mode === 'json') {
       const result = {
         command: 'test',

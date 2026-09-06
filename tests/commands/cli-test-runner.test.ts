@@ -651,6 +651,90 @@ describe('CLI commands: test', () => {
       },
     );
   });
+  it('fails a test that outlives the run deadline instead of hanging', async (t) => {
+    await withTempProject(
+      {
+        'hang.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "import { timeout } from 'internal:runtime/loop';",
+          "test('never settles', async () => {",
+          '  await timeout(600_000);',
+          '});',
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, result } = await runCli(['test', '--timeout', '250', 'hang.test.ts'], {
+          cwd: dir,
+        });
+        t.equal(result.code, 1, 'a test that exceeds its deadline fails the run');
+        t.ok(stdout.includes('not ok 1 - never settles'), 'the timed-out test is named');
+        t.ok(
+          stdout.includes('exceeded its 250ms timeout'),
+          'the failure reports the deadline it exceeded',
+        );
+      },
+    );
+  });
+  it('lets a test raise its own deadline above the run default', async (t) => {
+    await withTempProject(
+      {
+        'slow.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "import { timeout } from 'internal:runtime/loop';",
+          "test('under the run deadline', async () => {",
+          '  await timeout(200);',
+          '});',
+          "test('over the run deadline but under its own', { timeout: 10_000 }, async () => {",
+          '  await timeout(200);',
+          '});',
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, result } = await runCli(['test', '--timeout', '80', 'slow.test.ts'], {
+          cwd: dir,
+        });
+        t.equal(result.code, 1, 'the test left on the run deadline still fails');
+        t.ok(stdout.includes('not ok 1 - under the run deadline'), 'the run default applies');
+        t.ok(
+          stdout.includes('ok 2 - over the run deadline but under its own'),
+          'a per-test timeout overrides the run default rather than adding to it',
+        );
+      },
+    );
+  });
+  it('finishes a parallel run whose worker never reports a group', async (t) => {
+    // The original CI stall: one group that never settles holds its admission
+    // slot, and everything queued behind it waits for the life of the job.
+    await withTempProject(
+      {
+        'hang.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "import { timeout } from 'internal:runtime/loop';",
+          "test('never settles', async () => {",
+          '  await timeout(600_000);',
+          '});',
+          '',
+        ].join('\n'),
+        'pass.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "test('parallel survivor', (t) => t.ok(true));",
+          '',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stdout, result } = await runCli(
+          ['test', '--parallel', '--ordered', '--timeout', '250', 'hang.test.ts', 'pass.test.ts'],
+          { cwd: dir, env: { FINO_REACTOR_THREADS: '1' } },
+        );
+        t.equal(result.code, 1, 'the run ends rather than hanging');
+        t.ok(stdout.includes('not ok 1 - never settles'), 'the wedged group is reported by name');
+        t.ok(stdout.includes('ok 2 - parallel survivor'), 'work queued behind it still runs');
+        t.ok(!stdout.includes('Bail out!'), 'the run reports normally instead of stalling');
+      },
+    );
+  });
   it('reports a parallel file bootstrap failure after other files finish', async (t) => {
     await withTempProject(
       {
