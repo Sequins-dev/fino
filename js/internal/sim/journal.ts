@@ -19,38 +19,48 @@ import type {
   TransportObserver,
 } from 'internal:realm/transport-port';
 
-/** How a facade method crossed the Realm boundary. @internal */
+/** How a Facade method crossed the Realm boundary. */
 export type SimCallKind = 'call' | 'stream' | 'sink';
 
-/** One completed facade invocation. @internal */
+/** One completed Facade invocation in guest request order. */
 export interface SimCall {
   /** Invocation order, starting at zero. */
   seq: number;
+  /** Facade module specifier imported by the guest. */
   specifier: string;
+  /** Export invoked on the Facade. */
   method: string;
+  /** Scalar call, returned read stream, or caller-provided write stream. */
   kind: SimCallKind;
   /** Arguments copied before the parent handler can mutate them. */
   args: unknown[];
+  /** Whether the Facade operation returned or failed. */
   outcome: 'ok' | 'error';
   /** Scalar or sink result. */
   result?: unknown;
   /** Read-stream or sink chunks in transport order. */
   chunks?: unknown[];
+  /** Failure text when `outcome` is `error`. */
   error?: string;
 }
 
-/** JSON-safe storage form of one copied transport frame. @internal */
+/** JSON-safe storage form of one copied Realm transport frame. */
 export interface CassetteFrame {
+  /** Direction relative to the parent-side Realm transport. */
   direction: TransportFrameDirection;
+  /** Realm envelope kind carried by the frame. */
   kind: EnvelopeKindValue;
+  /** Request correlation identifier local to this recording. */
   correlation: number;
   /** Base64 main payload followed by transferred backing stores. */
   parts: string[];
 }
 
-/** Versioned recording of Realm RPC traffic. @internal */
+/** Versioned, JSON-safe recording of Realm RPC traffic. */
 export interface Cassette {
+  /** Cassette format version. */
   version: 1;
+  /** Serialized transport frames in observation order. */
   frames: CassetteFrame[];
 }
 
@@ -389,13 +399,19 @@ export class CassetteReplay {
   }
 }
 
-/** Ordered record projected from a live Realm transport. @internal */
+/**
+ * Ordered Facade-call journal projected from a Realm transport.
+ *
+ * A journal owns observer copies rather than values used for live delivery, so
+ * reading or mutating an entry cannot change the guest or provider result.
+ */
 export class SimJournal {
   #entries: SimCall[] = [];
   #frames: TransportFrame[] = [];
   #recordingError: TypeError | null = null;
   #nextSequence = 0;
 
+  /** Completed calls in guest invocation order. */
   get entries(): readonly SimCall[] {
     return this.#entries;
   }
@@ -411,12 +427,22 @@ export class SimJournal {
     return this.#attach(port, false);
   }
 
-  /** Observe and retain exact copied RPC frames for cassette encoding. */
+  /**
+   * Observe and retain exact copied RPC frames for cassette encoding.
+   *
+   * The returned function detaches the observer. Completed calls remain
+   * available, while incomplete calls are released.
+   */
   record(port: unknown): () => void {
     return this.#attach(port, true);
   }
 
-  /** Encode retained frame bytes without serializing their values again. */
+  /**
+   * Encode retained frame bytes without serializing their values again.
+   *
+   * Throws when a recorded frame transferred a `MessagePort`, which cannot be
+   * represented by a persistent cassette.
+   */
   toCassette(): Cassette {
     if (this.#recordingError !== null) throw this.#recordingError;
     return {
@@ -456,7 +482,7 @@ export class SimJournal {
     };
   }
 
-  /** Completed calls matching an optional facade specifier and method. */
+  /** Return completed calls matching an optional Facade specifier and method. */
   calls(specifier?: string, method?: string): SimCall[] {
     return this.#entries.filter(
       (entry) =>

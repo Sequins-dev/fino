@@ -201,10 +201,10 @@ export interface ImportRule {
    * };
    * ```
    */
-  directive: ImportDirectiveSer;
+  directive: ImportDirectiveSer | Facade;
 }
 /** Normalise a user-facing directive value to the Rust wire format. */
-function normaliseDirective(d: ImportDirectiveSer): {
+function normaliseDirective(d: ImportDirectiveSer | Facade): {
   type: string;
   [k: string]: unknown;
 } {
