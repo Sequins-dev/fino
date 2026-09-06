@@ -51,6 +51,7 @@ import {
 } from 'internal:runtime/loop';
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
+import { _runActive as testRunActive } from '../test/test.ts';
 import type {
   TestFileCompletion,
   TestFileCompletionAck,
@@ -67,14 +68,28 @@ type ParallelLineWriter = (line?: string) => void;
 const DEFAULT_PARALLEL_GROUPS_PER_REACTOR = 10;
 const PARALLEL_REALM_EXIT_DIAGNOSTIC_MS = 5_000;
 /**
- * How long the parallel coordinator tolerates no progress at all.
+ * Floor for how long the parallel coordinator tolerates no progress at all.
  *
- * Generous against the per-test deadline: a test that hangs fails itself, so
- * reaching this means the coordinator is stuck somewhere no test owns — a
- * worker Realm that never exits, a result that never arrives. Those are the
- * stalls that cost a whole CI job and report nothing.
+ * The effective threshold is always above the per-test deadline — see
+ * `stallThresholdMs`. A single slow test legitimately blocks progress for its
+ * whole deadline, so a fixed threshold below that reports a stall for a run
+ * that is merely loaded, which is exactly the false alarm this watchdog exists
+ * to avoid producing.
  */
-const PARALLEL_STALL_MS = 120_000;
+const PARALLEL_STALL_FLOOR_MS = 120_000;
+/**
+ * How long to tolerate no progress, given the run's per-test deadline.
+ *
+ * A hung test fails itself at its own deadline, so exceeding that plus slack
+ * means the coordinator is stuck on something no test owns.
+ */
+function stallThresholdMs(options: Parameters<typeof runTestFile>[1]): number {
+  const perTest = options.timeout;
+  if (perTest === 0) return 0;
+  const base =
+    typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0 ? perTest : 60_000;
+  return Math.max(PARALLEL_STALL_FLOOR_MS, base + 60_000);
+}
 
 /**
  * Calculate the parallel test admission limit from the configured reactor pool
@@ -267,7 +282,35 @@ async function prepareParallelFile(
         resultWaiters.set(index, resolve);
       });
       realm.port.postMessage({ kind: 'fino:test:start', index } satisfies TestGroupStart);
-      return { file, result: await result };
+      // The worker enforces each test's own deadline, but only while it is
+      // running one. A Realm that wedges outside a test body — or a reply that
+      // never arrives — would otherwise leave this await pending for the life
+      // of the job, which is a stall with no test to blame it on.
+      const deadline = workerResultDeadlineMs(options);
+      if (deadline <= 0) return { file, result: await result };
+      const expiry = loopTimeout(deadline);
+      expiry.unref();
+      const settled = await Promise.race([
+        result.then((value) => ({ value })),
+        expiry.then(() => null),
+      ]);
+      if (settled === null) {
+        resultWaiters.delete(index);
+        return {
+          file,
+          result: {
+            output: [],
+            diagnostics: [],
+            tests: 0,
+            passed: 0,
+            failed: 0,
+            skipped: 0,
+            error: `${file.display} test Realm did not report group ${index} within ${deadline}ms`,
+          },
+        };
+      }
+      expiry.cancel();
+      return { file, result: settled.value };
     },
   };
 }
@@ -369,26 +412,30 @@ function parallelResultPointCount(result: ParallelTestResult): number {
 function startStallWatchdog(
   write: (text: string) => void,
   pending: () => string[],
+  admission: () => unknown,
+  thresholdMs: number,
 ): { progress: () => void; stop: () => void } {
+  if (thresholdMs <= 0) return { progress: () => {}, stop: () => {} };
   let last = performance.now();
   let stopped = false;
   let armed: ReturnType<typeof loopTimeout> | null = null;
   const arm = (): void => {
     if (stopped) return;
-    const timer = loopTimeout(Math.max(1_000, PARALLEL_STALL_MS / 4));
+    const timer = loopTimeout(Math.max(1_000, thresholdMs / 4));
     timer.unref();
     armed = timer;
     void timer.then(() => {
       if (stopped) return;
-      if (performance.now() - last < PARALLEL_STALL_MS) {
+      if (performance.now() - last < thresholdMs) {
         arm();
         return;
       }
       const waiting = pending();
       write(
-        `Bail out! no test progress for ${Math.round(PARALLEL_STALL_MS / 1000)}s; the run is stalled`,
+        `Bail out! no test progress for ${Math.round(thresholdMs / 1000)}s; the run is stalled`,
       );
       write(`# still pending: ${waiting.length > 0 ? waiting.join(', ') : '(none reported)'}`);
+      write(`# admission: ${JSON.stringify(admission())}`);
       write(`# active handles: ${JSON.stringify(activeHandleCounts())}`);
       processExit(1);
     });
@@ -405,6 +452,22 @@ function startStallWatchdog(
     },
   };
 }
+/**
+ * How long the coordinator waits for a worker Realm to report one group.
+ *
+ * Derived from the per-test deadline so a legitimately slow test is never cut
+ * off by it, plus slack for the Realm's own setup and teardown. A run that
+ * disables test deadlines disables this too — the caller has said it wants to
+ * wait forever, and that should mean everywhere.
+ */
+function workerResultDeadlineMs(options: Parameters<typeof runTestFile>[1]): number {
+  const perTest = options.timeout;
+  if (perTest === 0) return 0;
+  const base = typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0
+    ? perTest
+    : 60_000;
+  return base + 30_000;
+}
 async function runParallelTests(
   files: ParallelTestFile[],
   options: Parameters<typeof runTestFile>[1],
@@ -420,7 +483,12 @@ async function runParallelTests(
       outputOrder: ordered ? 'claim' : 'completion',
     });
     write('TAP version 13');
-    const watchdog = startStallWatchdog(write, () => [...pendingFiles.keys()]);
+    const watchdog = startStallWatchdog(
+      write,
+      () => [...pendingFiles.keys()],
+      () => channel.stats(),
+      stallThresholdMs(options),
+    );
     const progress = watchdog.progress;
     const stopStallWatchdog = watchdog.stop;
     const output = (async () => {
@@ -527,7 +595,29 @@ async function runParallelTests(
     channel.close();
     await Promise.all(taskCompletions);
     const totals = await output;
-    await Promise.all(fileCompletions);
+    // Every group has reported by here; what is left is each worker Realm
+    // shutting down. A Realm that never exits would otherwise hold the run
+    // open forever with nothing left to report — the original shape of this
+    // failure in CI, where the log ends after the last group and the job is
+    // cancelled at its own timeout with an orphaned child behind it.
+    const shutdownDeadline = stallThresholdMs(options);
+    if (shutdownDeadline > 0) {
+      const expiry = loopTimeout(shutdownDeadline);
+      expiry.unref();
+      const finished = await Promise.race([
+        Promise.all(fileCompletions).then(() => true),
+        expiry.then(() => false),
+      ]);
+      if (!finished) {
+        for (const name of pendingFiles.keys()) {
+          lifecycleErrors.push(`${name} test Realm did not exit within ${shutdownDeadline}ms`);
+        }
+      } else {
+        expiry.cancel();
+      }
+    } else {
+      await Promise.all(fileCompletions);
+    }
     await capture.finish();
     stopStallWatchdog();
     if (totals.total !== registeredTests) {
@@ -686,9 +776,14 @@ const SHUTDOWN_GRACE_MS = 5_000;
  *
  * The watchdog timer is unreferenced, so it can only fire while something else
  * is holding the Realm open — exactly the condition worth reporting.
+ *
+ * Only applies when this command owns the process. `fino test` also runs
+ * in-process, nested inside another run's tests, and there the live handles
+ * belong to the caller — reporting them would be wrong and exiting would take
+ * the caller down with us.
  */
-async function reportLeakedHandles(): Promise<boolean> {
-  if (!loopAlive()) return false;
+async function reportLeakedHandles(ownsProcess: boolean): Promise<boolean> {
+  if (!ownsProcess || !loopAlive()) return false;
   const grace = loopTimeout(SHUTDOWN_GRACE_MS);
   grace.unref();
   await grace;
@@ -723,6 +818,11 @@ const command = new Task({
     },
     ctx,
   ) {
+    // `fino test` can be invoked from inside a test — the CLI's own suite does
+    // it — and a nested run must not judge the outer run's handles as its own
+    // leak, nor exit the process out from under it. A live loop is not the
+    // signal: a bare script already has a wake-pipe read registered.
+    const ownsProcess = !testRunActive();
     const testFiles = Array.isArray(input.files) ? input.files : [];
     const filter = typeof input.filter === 'string' ? input.filter : undefined;
     const showOutput = typeof input['show-output'] === 'string' ? input['show-output'] : 'failures';
@@ -787,7 +887,7 @@ const command = new Task({
       const { run } = await import('fino:test/test');
       output = await run(runOptions);
     }
-    if (await reportLeakedHandles()) {
+    if (await reportLeakedHandles(ownsProcess)) {
       // Throwing would not help: whatever leaked still holds the loop open, so
       // the process would report the failure and then hang anyway. Exiting is
       // the only way to turn the leak into a result CI can see.

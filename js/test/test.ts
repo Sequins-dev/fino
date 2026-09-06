@@ -1121,11 +1121,14 @@ export function _prepareRun(options: RunOptions = {}): PreparedTestRun {
  *
  * @internal
  */
+let _activeRuns = 0;
 export async function _runPreparedEntry(
   prepared: PreparedTestRun,
   index: number,
   options: RunOptions = {},
 ): Promise<PreparedTestEntryResult> {
+  _activeRuns += 1;
+  try {
   const state = _preparedRuns.get(prepared);
   if (state === undefined) throw new Error('Prepared test run has already been consumed');
   if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
@@ -1167,6 +1170,9 @@ export async function _runPreparedEntry(
     failed: result.failed,
     skipped: result.skipped,
   };
+  } finally {
+    _activeRuns -= 1;
+  }
 }
 
 /**
@@ -1189,6 +1195,8 @@ export async function _runPrepared(
   const showOutput = options.showOutput ?? 'failures';
   const durations = options.durations === true;
   const runStartMs = _nowMs();
+  _activeRuns += 1;
+  try {
   console.log('TAP version 13');
   const { passed, failed, skipped, diagnostics } = await _runEntries(
     {
@@ -1211,6 +1219,9 @@ export async function _runPrepared(
     if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
     throw new Error(failed + ' test(s) failed');
   }
+  } finally {
+    _activeRuns -= 1;
+  }
 }
 
 /**
@@ -1232,4 +1243,16 @@ export async function _runPrepared(
  */
 export async function run(options: RunOptions = {}): Promise<void> {
   await _runPrepared(_prepareRun(options), options);
+}
+/**
+ * Whether a run is currently executing in this Realm.
+ *
+ * `fino test` can be invoked from inside a test — the CLI's own suite does it —
+ * and a nested run must not treat the outer run's live handles as its own leak,
+ * nor exit the process out from under it.
+ *
+ * @internal
+ */
+export function _runActive(): boolean {
+  return _activeRuns > 0;
 }

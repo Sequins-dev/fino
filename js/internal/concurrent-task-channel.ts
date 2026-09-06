@@ -102,6 +102,35 @@ export class ConcurrentTaskChannel<T> implements AsyncIterableIterator<T> {
    * `schedule()` method when the task is ready for admission. Claims made after
    * `close()` throw.
    */
+  /**
+   * Snapshot of admission state, for diagnosing a coordinator that has stopped
+   * scheduling.
+   *
+   * A stalled run is almost always visible here: slots consumed by tasks that
+   * never settled, or waiters that can never become ready.
+   */
+  stats(): {
+    capacity: number;
+    active: number;
+    claimed: number;
+    consumed: number;
+    scheduleWaiters: number;
+    readyWaiters: number;
+    exclusiveWaiters: number;
+    closed: boolean;
+  } {
+    return {
+      capacity: this.#capacity,
+      active: this.#active,
+      claimed: this.#claimed,
+      consumed: this.#consumed,
+      scheduleWaiters: this.#scheduleWaiters.length,
+      readyWaiters: this.#scheduleWaiters.filter((waiter) => waiter.ready).length,
+      exclusiveWaiters: this.#scheduleWaiters.filter((w) => w.weight === this.#capacity).length,
+      closed: this.#closed,
+    };
+  }
+
   claim(): ConcurrentTaskResolver<T> {
     if (this.#closed) throw new Error('ConcurrentTaskChannel is closed');
     const index = this.#claimed++;
