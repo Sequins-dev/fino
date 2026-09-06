@@ -67,6 +67,9 @@ export function reactorPoolStats(): {
   queuedEvents: number;
   priorities: number;
   parkedWithNothingQueued: number;
+  mailboxChanges: number;
+  mailboxOwnersWithEvents: number;
+  mailboxEvents: number;
 } | null;
 export function takeReactorEvents(): Array<{
   kind: 'activated' | 'settled' | 'error';

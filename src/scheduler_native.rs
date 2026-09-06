@@ -1783,6 +1783,23 @@ fn reactor_pool_stats(
     let key = v8::String::new(scope, "parkedWithNothingQueued").unwrap();
     let number = v8::Number::new(scope, unclaimable as f64);
     object.set(scope, key.into(), number.into());
+    drop(inner);
+    // The mailbox is the link between a readiness event and the realm it wakes.
+    // Undrained changes mean the controller stopped servicing it; undelivered
+    // events mean a realm was signalled but never came back to collect them.
+    let mail = mailbox().inner.lock().unwrap();
+    for (name, value) in [
+        ("mailboxChanges", mail.changes.len() as f64),
+        ("mailboxOwnersWithEvents", mail.events.len() as f64),
+        (
+            "mailboxEvents",
+            mail.events.values().map(Vec::len).sum::<usize>() as f64,
+        ),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let number = v8::Number::new(scope, value);
+        object.set(scope, key.into(), number.into());
+    }
     rv.set(object.into());
 }
 
