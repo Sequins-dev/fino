@@ -122,8 +122,12 @@ export interface InlineApp {
   /**
    * Clear the footer, park the cursor on the row after the last committed
    * line, and restore terminal state. Idempotent.
+   *
+   * Resolves once the restore has reached the terminal, so a caller that exits
+   * the process immediately afterwards cannot truncate it. Letting the runtime
+   * drain normally works too; awaiting only matters before `exit()`.
    */
-  stop(): void;
+  stop(): Promise<void>;
 }
 
 /**
@@ -330,6 +334,7 @@ export function renderInline(
   const maxRows = Math.max(1, options.maxFooterRows ?? 20);
   let stopped = false;
   let restored = false;
+  let restoreDone: Promise<void> = Promise.resolve();
   let stopResize: (() => void) | null = null;
   let root: Root<Frame> | null = null;
   let lastTree: VNode | null = null;
@@ -387,8 +392,8 @@ export function renderInline(
 
   void writeStdout(disableAutoWrap());
 
-  const restoreTerminal = (): void => {
-    if (restored) return;
+  const restoreTerminal = (): Promise<void> => {
+    if (restored) return restoreDone;
     restored = true;
     stopResize?.();
     stopResize = null;
@@ -399,7 +404,8 @@ export function renderInline(
     const top = footerTop(state.height, state.footerRows, state.historyBottom);
     for (let i = 0; i < state.footerRows; i++) out += cursorTo(top + i, 1) + eraseLine();
     out += cursorTo(Math.min(top, state.height), 1) + showCursor() + enableAutoWrap();
-    void writeStdout(out);
+    restoreDone = writeStdout(out);
+    return restoreDone;
   };
 
   try {
@@ -429,7 +435,9 @@ export function renderInline(
     stopped = true;
     root?.dispose();
     root = null;
-    restoreTerminal();
+    // The construction path is synchronous, so the restore can only be started
+    // here; the runtime drains it before the process can exit.
+    void restoreTerminal();
     throw error;
   }
 
@@ -475,15 +483,15 @@ export function renderInline(
       blur: () => dispatcher.blur(),
     },
     input,
-    stop(): void {
-      if (stopped) return;
+    stop(): Promise<void> {
+      if (stopped) return restoreDone;
       stopped = true;
       try {
         root?.dispose();
       } finally {
         root = null;
-        restoreTerminal();
       }
+      return restoreTerminal();
     },
   };
 
