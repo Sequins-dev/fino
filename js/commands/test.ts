@@ -477,7 +477,7 @@ function startStallWatchdog(
   pending: () => string[],
   admission: () => unknown,
   inFlight: () => string[],
-  sweep: () => void,
+  sweep: () => boolean,
   tickMs: number,
   thresholdMs: number,
 ): { progress: () => void; stop: () => void } {
@@ -492,7 +492,14 @@ function startStallWatchdog(
     armed = timer;
     void timer.then(() => {
       if (stopped) return;
-      sweep();
+      // Abandoning a group is progress: it releases an admission slot and
+      // unblocks whatever was queued behind it. Bailing out in the same tick
+      // would report a stall the run was about to recover from on its own.
+      if (sweep()) {
+        last = performance.now();
+        arm();
+        return;
+      }
       if (performance.now() - last < thresholdMs) {
         arm();
         return;
@@ -586,8 +593,9 @@ async function runParallelTests(
     // timer is the one thing a stalled run proves still fires -- means a single
     // wedged group can no longer hold an exclusive barrier, and everything
     // queued behind it, for the life of the job.
-    const sweepOverdueGroups = (): void => {
-      if (groupDeadline <= 0) return;
+    const sweepOverdueGroups = (): boolean => {
+      if (groupDeadline <= 0) return false;
+      let abandoned = false;
       const now = performance.now();
       for (const [index, group] of inFlight) {
         const waited = now - group.startedAt;
@@ -608,6 +616,7 @@ async function runParallelTests(
           continue;
         }
         inFlight.delete(index);
+        abandoned = true;
         write(
           `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage} and ${group.nudges} retransmit(s); its own deadline did not fire`,
         );
@@ -626,6 +635,7 @@ async function runParallelTests(
           },
         });
       }
+      return abandoned;
     };
     const watchdog = startStallWatchdog(
       write,

@@ -820,7 +820,23 @@ impl PoolSharedInner {
         }
     }
 
+    /// Notify one worker, and stop offering it to the next signal.
+    ///
+    /// A woken worker only takes itself out of `waiting` once it re-acquires
+    /// the queue lock inside `claim`. Until then it is still `waiting.front()`,
+    /// so a burst of signals would every one of them target the same worker: N
+    /// realms become runnable, one worker wakes, it claims one of them, and the
+    /// rest sit in the ready heap with every other worker still asleep. Nothing
+    /// re-examines the queue until an unrelated signal happens by, which is a
+    /// wake-up delayed by however long that takes rather than one that is lost.
+    ///
+    /// Removing the worker here makes each signal reach a different one.
+    /// `claim` already removes itself defensively, so this only moves that
+    /// bookkeeping earlier.
     fn wake_worker(&mut self, worker: usize) {
+        if let Some(index) = self.waiting.iter().position(|entry| *entry == worker) {
+            self.waiting.remove(index);
+        }
         if let Some(wake) = self.wakes.get(worker) {
             wake.notify_all();
         }
