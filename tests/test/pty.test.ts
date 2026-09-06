@@ -40,8 +40,9 @@ describe('fino:test/pty', () => {
         // An async timer would let the pump consume the output immediately.
         const until = performance.now() + 1000;
         while (performance.now() < until) {}
-        await pty.waitFor((term) => screenIncludes(term, 'final output'), { timeout: 1000 });
         t.equal(await pty.waitExit(), 0);
+        await pty.close();
+        t.ok(screenIncludes(pty.term, 'final output'), 'close drains the final output');
       },
     );
   });
