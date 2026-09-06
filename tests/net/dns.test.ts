@@ -1073,6 +1073,93 @@ describe('Integration', { exclusive: true }, () => {
     t.equal(result.family, 6, 'family = 6');
     t.ok(result.address.includes(':'), 'address is IPv6');
   });
+  it('resolver — an aborted query releases its socket and timer at once', async (t) => {
+    // The same never-answering local server as the timeout test below. With a
+    // long timeout and retries, an abandoned query would otherwise hold a UDP
+    // socket and a timer for `timeout * (retries + 1)` after the caller left,
+    // which is exactly what kept a closed EventSource's Realm alive.
+    const libc = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
+    const ffi = dlopen(libc, {
+      socket: { parameters: ['i32', 'i32', 'i32'], result: 'i32' },
+      bind: { parameters: ['i32', 'buffer', 'u32'], result: 'i32' },
+      close: { parameters: ['i32'], result: 'i32' },
+      getsockname: { parameters: ['i32', 'buffer', 'buffer'], result: 'i32' },
+    });
+    const AF_INET = 2,
+      SOCK_DGRAM = 2;
+    const sinkFd = ffi.symbols.socket(AF_INET, SOCK_DGRAM, 0) as number;
+    const sockaddr = new Uint8Array(16);
+    const dv = new DataView(sockaddr.buffer);
+    dv.setUint8(0, 16);
+    dv.setUint8(1, AF_INET);
+    dv.setUint16(2, 0, false);
+    dv.setUint32(4, 2130706433, false);
+    ffi.symbols.bind(sinkFd, sockaddr, 16);
+    const addrOut = new Uint8Array(16);
+    const lenBuf = new Uint8Array(4);
+    new DataView(lenBuf.buffer).setUint32(0, 16, true);
+    ffi.symbols.getsockname(sinkFd, addrOut, lenBuf);
+    const port = new DataView(addrOut.buffer).getUint16(2, false);
+    const resolver = new Resolver({ timeout: 30_000, retries: 3 });
+    resolver.setServers([`127.0.0.1:${port}`]);
+    const before = loop._activeHandleCounts();
+    const controller = new AbortController();
+    try {
+      const pending = resolver.resolve('example.com', 'A', { signal: controller.signal });
+      // Poll for the query to reach its readable() wait before abandoning it;
+      // on a cold resolver it only starts after server discovery. The timer is
+      // the observable, not the read count: registering the query socket
+      // replaces the loop's own wake-pipe watch, so `reads` need not grow.
+      let during = loop._activeHandleCounts();
+      for (
+        let waited = 0;
+        waited < 4000 && during.referencedTimers <= before.referencedTimers;
+        waited += 25
+      ) {
+        await loop.timeout(25);
+        during = loop._activeHandleCounts();
+      }
+      t.ok(
+        during.referencedTimers > before.referencedTimers,
+        'the in-flight query holds the loop open',
+      );
+      const started = performance.now();
+      controller.abort();
+      await t.rejects(
+        () => pending,
+        (err) => (err as DnsErrorLike).code === 'ABORT_ERR',
+        'the abandoned query rejects with ABORT_ERR',
+      );
+      t.ok(
+        performance.now() - started < 5_000,
+        'it rejects immediately rather than serving out the 30s timeout',
+      );
+      const after = loop._activeHandleCounts();
+      t.equal(
+        after.referencedTimers,
+        before.referencedTimers,
+        'the query timer is cancelled rather than left to expire',
+      );
+    } finally {
+      ffi.symbols.close(sinkFd);
+    }
+  });
+  it('resolver — an already-aborted signal never opens a socket', async (t) => {
+    const resolver = new Resolver({ timeout: 30_000, retries: 3 });
+    const controller = new AbortController();
+    controller.abort();
+    const before = loop._activeHandleCounts();
+    await t.rejects(
+      () => resolver.resolve('example.com', 'A', { signal: controller.signal }),
+      (err) => (err as DnsErrorLike).code === 'ABORT_ERR',
+      'the query rejects before any I/O',
+    );
+    t.equal(
+      loop._activeHandleCounts().referencedTimers,
+      before.referencedTimers,
+      'no query timer was ever armed',
+    );
+  });
   it('resolver — timeout with unreachable server', async (t) => {
     // Bind a local UDP socket that receives queries but never responds.
     // Using 192.0.2.1:53 fails on macOS where mDNSResponder intercepts all

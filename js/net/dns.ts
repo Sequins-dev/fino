@@ -829,6 +829,18 @@ export interface LookupOptions {
   family?: 4 | 6;
   /** Enable local DNSSEC validation for this lookup. */
   dnssec?: boolean;
+  /** Abort the lookup, releasing its socket and timer immediately.
+   *
+   * Without this a caller that has given up still keeps the query's UDP socket
+   * and retry timer alive for the rest of the retry schedule.
+   *
+   * ```ts no_run
+   * const controller = new AbortController();
+   * const pending = lookup('example.com', { signal: controller.signal });
+   * controller.abort();
+   * ```
+   */
+  signal?: AbortSignal;
 }
 /**
  * Primary address returned by `lookup`.
@@ -1852,13 +1864,17 @@ export class Resolver {
    * const addresses = await resolver.resolve('example.com', 'A');
    * ```
    */
-  async resolve(hostname: string, rrtype: RecordTypeName = 'A'): Promise<DnsRecordData[]> {
+  async resolve(
+    hostname: string,
+    rrtype: RecordTypeName = 'A',
+    options: { signal?: AbortSignal } = {},
+  ): Promise<DnsRecordData[]> {
     const qtypeNum = RECORD_TYPES[rrtype];
     // For A/AAAA, follow CNAME chains up to 10 hops
     const followCname = rrtype === 'A' || rrtype === 'AAAA';
     let name = hostname;
     for (let hop = 0; hop <= 10; hop++) {
-      const response = await this.#sendQuery(name, qtypeNum);
+      const response = await this.#sendQuery(name, qtypeNum, true, options.signal);
       const direct = response.answers.filter((r) => r.type === qtypeNum);
       if (direct.length > 0) {
         return formatRecords(direct, rrtype);
@@ -2076,7 +2092,13 @@ export class Resolver {
    * }
    * ```
    */
-  async #sendQuery(name: string, qtype: number, validateDnssec = true): Promise<DnsResponse> {
+  async #sendQuery(
+    name: string,
+    qtype: number,
+    validateDnssec = true,
+    signal?: AbortSignal,
+  ): Promise<DnsResponse> {
+    _throwIfAborted(signal, name);
     await this.#ensureServers();
     const id = _randomQueryId();
     const packet = _buildQuery(id, name, qtype, { dnssec: this.#dnssec });
@@ -2084,6 +2106,7 @@ export class Resolver {
     const servers = this.#servers ?? DEFAULT_SERVERS;
     for (let attempt = 0; attempt <= this.#retries; attempt++) {
       for (const server of servers) {
+        _throwIfAborted(signal, name);
         const af = server.family === 'ipv6' ? sock.AF_INET6 : sock.AF_INET;
         let fd;
         try {
@@ -2101,9 +2124,12 @@ export class Resolver {
           sock.close(fd);
           continue;
         }
-        // Race the fd becoming readable against a timeout
+        // Race the fd becoming readable against a timeout and the caller's
+        // cancellation. Without the abort arm a caller that has given up still
+        // holds this socket and timer for the whole retry schedule -- roughly
+        // `timeout * retries * servers` of event-loop liveness after the fact.
         const dnsTimer = loop.timeout(this.#timeout);
-        const result = await Promise.race([
+        const arms: Promise<string | symbol>[] = [
           loop.readable(fd).then(function dnsReady() {
             dnsTimer.cancel();
             return 'ready';
@@ -2111,7 +2137,17 @@ export class Resolver {
           dnsTimer.then(function dnsTimedOut() {
             return TIMED_OUT;
           }),
-        ]);
+        ];
+        const abortArm = signal === undefined ? null : _abortPromise(signal);
+        if (abortArm !== null) arms.push(abortArm.promise);
+        const result = await Promise.race(arms);
+        abortArm?.dispose();
+        if (result === ABORTED) {
+          dnsTimer.cancel();
+          loop.removeRead(fd);
+          sock.close(fd);
+          throw _abortError(name);
+        }
         if (result === TIMED_OUT) {
           loop.removeRead(fd);
           sock.close(fd);
@@ -2282,6 +2318,40 @@ export class Resolver {
 // Module-level convenience
 // ---------------------------------------------------------------------------
 /** Module-level default Resolver (created on first use). */
+/** Sentinel resolved by the cancellation arm of a DNS query race. @internal */
+const ABORTED = Symbol('dns:aborted');
+
+function _abortError(hostname: string): DnsError {
+  const err: DnsError = new Error(`dns: query for '${hostname}' was aborted`);
+  err.code = 'ABORT_ERR';
+  err.hostname = hostname;
+  return err;
+}
+
+function _throwIfAborted(signal: AbortSignal | undefined, hostname: string): void {
+  if (signal?.aborted === true) throw _abortError(hostname);
+}
+
+/**
+ * A promise that settles with `ABORTED` when `signal` fires, plus the listener
+ * removal that keeps a long-lived signal from accumulating one entry per query.
+ */
+function _abortPromise(signal: AbortSignal): {
+  promise: Promise<symbol>;
+  dispose(): void;
+} {
+  let onAbort!: () => void;
+  const promise = new Promise<symbol>((resolve) => {
+    onAbort = () => resolve(ABORTED);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  });
+  return {
+    promise,
+    dispose: () => signal.removeEventListener('abort', onAbort),
+  };
+}
+
 let _defaultResolver: Resolver | null = null;
 /**
  * Look up the primary address for a hostname.
@@ -2329,7 +2399,7 @@ export async function lookup(hostname: string, opts: LookupOptions = {}): Promis
     ? new Resolver({ dnssec: true })
     : (_defaultResolver ??= new Resolver());
   const rrtype = family === 6 ? 'AAAA' : 'A';
-  const addresses = await resolver.resolve(hostname, rrtype);
+  const addresses = await resolver.resolve(hostname, rrtype, { signal: opts.signal });
   if (addresses.length === 0) {
     const err: DnsError = new Error(`dns: no ${rrtype} record for '${hostname}'`);
     err.code = 'ENOTFOUND';
