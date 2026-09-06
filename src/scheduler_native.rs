@@ -340,6 +340,17 @@ impl Mailbox {
 /// count here for any realm to read.
 static CONTROLLER_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
 static CONTROLLER_ROUTED: AtomicU64 = AtomicU64::new(0);
+/// Wakes discarded because the owner was in neither `parked` nor `residents`.
+///
+/// Every such signal is a readiness event that reached the pool and vanished.
+/// The realm it was meant for stays exactly as idle as if it had never fired.
+static SIGNALS_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// Frames handed to a scheduled realm's queue, and frames its JavaScript has
+/// actually taken off that queue. A gap that grows while a realm is supposed to
+/// be running means the message never reached its loop, which is a different
+/// fault from the realm being woken and then failing to make progress.
+static FRAMES_SENT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FRAMES_DRAINED: AtomicU64 = AtomicU64::new(0);
 
 fn set_readiness_heartbeat(
     scope: &mut v8::PinScope,
@@ -922,6 +933,7 @@ impl PoolShared {
 
     fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
         if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
+            SIGNALS_DROPPED.fetch_add(1, Ordering::Relaxed);
             return;
         }
         let priority = inner.priorities.entry(owner).or_default();
@@ -1590,6 +1602,7 @@ fn scheduled_realm_send(
         );
         return;
     };
+    FRAMES_SENT.fetch_add(1, Ordering::Relaxed);
     let _ = realm.tx.send(crate::realm::thread::ThreadMessage {
         header,
         data,
@@ -1831,6 +1844,15 @@ fn reactor_pool_stats(
         (
             "controllerRouted",
             CONTROLLER_ROUTED.load(Ordering::Relaxed) as f64,
+        ),
+        (
+            "signalsDropped",
+            SIGNALS_DROPPED.load(Ordering::Relaxed) as f64,
+        ),
+        ("framesSent", FRAMES_SENT.load(Ordering::Relaxed) as f64),
+        (
+            "framesDrained",
+            FRAMES_DRAINED.load(Ordering::Relaxed) as f64,
         ),
         ("mailboxChanges", mail.changes.len() as f64),
         ("mailboxOwnersWithEvents", mail.events.len() as f64),

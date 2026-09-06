@@ -319,6 +319,8 @@ fn native_recv(
             while let Ok(msg) = rx.try_recv() {
                 v.push(msg);
             }
+            crate::scheduler_native::FRAMES_DRAINED
+                .fetch_add(v.len() as u64, std::sync::atomic::Ordering::Relaxed);
             v
         } else {
             Vec::new()

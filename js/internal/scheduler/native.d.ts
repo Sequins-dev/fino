@@ -71,6 +71,9 @@ export function reactorPoolStats(): {
   parkedWithNothingQueued: number;
   controllerRegistrations: number;
   controllerRouted: number;
+  signalsDropped: number;
+  framesSent: number;
+  framesDrained: number;
   mailboxChanges: number;
   mailboxOwnersWithEvents: number;
   mailboxEvents: number;
