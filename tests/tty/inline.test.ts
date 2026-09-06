@@ -18,7 +18,7 @@ const wait = new Promise((resolve) => { done = resolve; });
 const app = renderInline(() => Text({ children: ['> typed:' + count.get()] }), {
   onEvent(event) {
     if (event.type !== 'key') return;
-    if (event.key === 'q') { app.stop(); done(); return; }
+    if (event.key === 'q') { app.stop().then(done); return; }
     if (event.key === 'a') { app.printAbove(['line ' + pushed]); pushed += 1; return; }
     count.set(count.get() + 1);
   },
@@ -38,7 +38,7 @@ const app = renderInline(
   {
     onEvent(event) {
       if (event.type !== 'key') return;
-      if (event.key === 'q') { app.stop(); done(); return; }
+      if (event.key === 'q') { app.stop().then(done); return; }
       if (event.key === 'g') { lines.set(lines.get() + 1); return; }
       if (event.key === 'v') { app.printAbove(Text({ children: ['from a tree'] })); return; }
     },
@@ -152,11 +152,14 @@ describe('fino:tty/inline in a real terminal', () => {
       await pty.sendKey('q');
       const code = await pty.waitExit();
       t.equal(code, 0, 'the app exits cleanly');
+      // `waitExit` resolves when the child exits, not when the emulator has
+      // applied its final bytes, so the teardown paint has to be awaited.
+      await pty.waitFor((term) => !term.text().some((l) => l.includes('typed:')));
+      t.ok(true, 'the footer is cleared on exit');
       t.ok(
         pty.term.text().some((l) => l.includes('line 0')),
-        'the transcript is still on screen after exit',
+        'the transcript survives after the footer is cleared',
       );
-      t.ok(!pty.term.text().some((l) => l.includes('typed:')), 'the footer is cleared on exit');
     } finally {
       await pty.close();
     }
@@ -228,11 +231,12 @@ describe('fino:tty/inline in a real terminal', () => {
       await pty.sendKey('q');
       const code = await pty.waitExit();
       t.equal(code, 0, 'a multi-row footer still exits cleanly');
+      await pty.waitFor((term) => !term.text().some((l) => l.includes('row0')));
+      t.ok(true, 'every footer row is cleared');
       t.ok(
         pty.term.text().some((l) => l.includes('from a tree')),
-        'the transcript survives exit',
+        'the transcript survives after the footer is cleared',
       );
-      t.ok(!pty.term.text().some((l) => l.includes('row0')), 'every footer row is cleared');
     } finally {
       await pty.close();
     }
