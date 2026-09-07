@@ -282,7 +282,10 @@ describe('Watcher', () => {
     await watcher.watch(path);
     await watcher.watch(path);
     await writeText(fs, path, 'changed');
-    const events = await collectEvents(watcher, 2, 250);
+    // Give initial delivery the normal watcher budget; the short quiet window
+    // only bounds how long we look for extra notifications after it arrives.
+    const events = await collectEvents(watcher, 1);
+    if (events.length > 0) events.push(...(await collectEvents(watcher, 1, 250)));
     watcher.close();
     await fs.unlink(path);
     t.ok(events.length >= 1, 'duplicate watch still delivers a notification');
