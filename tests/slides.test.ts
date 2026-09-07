@@ -7,6 +7,7 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { Fragment, h } from 'fino:ui';
 import { Presentation } from 'fino:ui/slides';
 import { DiskFileSystem } from 'fino:file';
+import { Watcher } from 'fino:file/watch';
 import { Process, SIGKILL, execPath } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 const fs = new DiskFileSystem();
@@ -451,6 +452,36 @@ describe('fino:ui/slides', () => {
       'reset returns to the beginning and every accepted command has one ordered revision',
     );
   });
+  it('arms file watches before serving its first response', async (t) => {
+    const fs = new DiskFileSystem();
+    const dir = '/tmp/fino-slides-watch-race-' + crypto.randomUUID();
+    const path = dir + '/deck.mdx';
+    await fs.mkdir(dir);
+    await fs.writeFile(path, new TextEncoder().encode('# Initial'));
+    const watch = Watcher.prototype.watch;
+    let armed = 0;
+    Watcher.prototype.watch = async function (...args) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const result = await watch.apply(this, args);
+      armed++;
+      return result;
+    };
+    const presentation = new Presentation(path);
+    try {
+      const app = new App();
+      app.route('/').mount(presentation.viewer());
+      await app.handle(new Request('http://local/'));
+      t.equal(armed, 2, 'directory and file watches are installed before rendering');
+    } finally {
+      try {
+        await presentation.close();
+      } finally {
+        Watcher.prototype.watch = watch;
+        await fs.unlink(path);
+        await fs.rmdir(dir);
+      }
+    }
+  });
   it('hot-patches file decks and keeps the last good audience on errors', async (t) => {
     const dir = `/tmp/fino-presentation-${crypto.randomUUID()}`;
     const path = `${dir}/deck.mdx`;
@@ -463,7 +494,6 @@ describe('fino:ui/slides', () => {
     try {
       const first = (await app.handle(new Request('http://local/talk'))) as Response;
       t.ok((await first.text()).includes('First version'), 'initial file deck renders');
-      await loop.timeout(100);
       await fs.writeFile(path, encoder.encode('# Broken\n\n<Broken>'));
       await poll(async () => {
         const response = (await app.handle(new Request('http://local/control'))) as Response;

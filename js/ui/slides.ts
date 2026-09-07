@@ -343,7 +343,7 @@ export class Presentation {
       const loaded = await this.#evaluateFile(filename);
       this.#install(loaded.vnode, loaded.meta, loaded.theme);
       this.#current = this.#renderBroadcast();
-      this.#watchTask = this.#watch(filename);
+      await this.#startWatch(filename);
       return;
     }
     const module = this.#source;
@@ -418,13 +418,22 @@ export class Presentation {
     state.slide = Math.min(state.slide, this.#manifest.slides.length - 1);
     state.step = Math.min(state.step, this.#manifest.slides[state.slide]!.maxStep);
   }
-  async #watch(filename: string): Promise<void> {
+  async #startWatch(filename: string): Promise<void> {
     const slash = filename.lastIndexOf('/');
     const directory = slash > 0 ? filename.slice(0, slash) : '.';
     const watcher = new Watcher({ recursive: true });
     this.#watcher = watcher;
-    await watcher.watch(directory);
-    await watcher.watch(filename);
+    try {
+      await watcher.watch(directory);
+      await watcher.watch(filename);
+    } catch (error) {
+      this.#watcher = null;
+      watcher.close();
+      throw error;
+    }
+    this.#watchTask = this.#watch(watcher, filename, directory);
+  }
+  async #watch(watcher: Watcher, filename: string, directory: string): Promise<void> {
     try {
       for await (const event of watcher) {
         if (this.#closed) break;
