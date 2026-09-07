@@ -218,7 +218,7 @@ describe('Reactor-pooled Realm basics', () => {
     t.equal(await realm.call(), 'survived', 'forged terminate did not stop the realm');
     t.equal(seen.length, 3, 'every forged frame arrived as an ordinary message');
   });
-  it('terminate({ force: true }) stops a realm spinning in synchronous code', async (t) => {
+  it('terminate({ force: true }) stops spinning and parked realms after port closure', async (t) => {
     // Give this test its own pool so the synchronous runaway cannot starve its
     // controller when the outer test runner saturates the process-wide pool.
     const fixture = new URL('./fixtures/force-terminate.ts', import.meta.url).pathname;

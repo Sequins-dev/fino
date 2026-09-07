@@ -149,6 +149,7 @@ enum ScheduledRealmResult {
 }
 
 struct ScheduledRealmState {
+    owner: u32,
     result: Mutex<Option<ScheduledRealmResult>>,
     parent_wake_write: RawFd,
     /// Cross-thread handle used to interrupt the realm's isolate.
@@ -171,10 +172,22 @@ impl ScheduledRealmState {
     fn force(&self) -> bool {
         self.force_requested.store(true, Ordering::Release);
         let handle = self.isolate_handle.lock().unwrap().clone();
-        match handle {
+        let interrupted = match handle {
             Some(handle) => handle.terminate_execution(),
             None => false,
+        };
+        // V8's interrupt cannot wake a parked reactor worker. The parent port
+        // may already be closed after call(), so no control frame can provide
+        // that wake either. Queue this owner after publishing the request.
+        let pool = owner_pools()
+            .lock()
+            .unwrap()
+            .get(&self.owner)
+            .and_then(Weak::upgrade);
+        if let Some(pool) = pool {
+            pool.signal(self.owner);
         }
+        interrupted
     }
 
     fn was_forced(&self) -> bool {
@@ -625,6 +638,15 @@ fn drive_slice(
     active: &mut ActiveWorkload,
     shared: &PoolShared,
 ) -> Result<Slice, String> {
+    // A previous V8 TryCatch may have consumed the interrupt. The request
+    // remains authoritative when this owner is scheduled again.
+    if workload
+        .scheduled
+        .as_ref()
+        .is_some_and(|scheduled| scheduled.was_forced())
+    {
+        return Err("scheduled Realm was force-terminated".to_string());
+    }
     let owner = workload.owner;
     let context_global = workload.context.clone();
     v8::scope!(let isolate_scope, &mut *active.locker);
@@ -1474,13 +1496,14 @@ fn create_scheduled_realm(
         }
     };
     let reload_requested = Arc::new(AtomicBool::new(false));
+    let owner = next_owner();
     let scheduled = Arc::new(ScheduledRealmState {
+        owner,
         result: Mutex::new(None),
         parent_wake_write: completion_wake_write,
         isolate_handle: Mutex::new(None),
         force_requested: AtomicBool::new(false),
     });
-    let owner = next_owner();
     let wake_fd = async_pipe.0;
     let pending = PendingWorkload {
         owner,
