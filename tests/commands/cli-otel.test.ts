@@ -109,23 +109,19 @@ describe('CLI commands: otel', () => {
     t.equal(result.code, 0, 'child realm fixture exits successfully');
     t.equal(stderr, '', 'child realm fixture does not write stderr');
     t.ok(
-      stdout.includes('export:http://collector.example:4318/custom/v1/traces'),
+      stdout.includes('child-export:inherited:http://collector.example:4318/custom/v1/traces'),
       'child realm inherits the CLI endpoint',
     );
     t.ok(
-      stdout.includes('export:http://override-collector.example:4318/override/v1/traces'),
+      stdout.includes(
+        'child-export:override:http://override-collector.example:4318/override/v1/traces',
+      ),
       'child realm can override the endpoint',
     );
     t.ok(stdout.includes('child:disabled:done'), 'disabled child still runs');
-    const disabledStart = stdout.indexOf('child:override:done');
-    const disabledOutput = disabledStart >= 0 ? stdout.slice(disabledStart) : stdout;
     t.ok(
-      !disabledOutput.includes('export:http://collector.example:4318/custom/v1/traces'),
-      'disabled child does not export to inherited endpoint',
-    );
-    t.ok(
-      !disabledOutput.includes('export:http://override-collector.example:4318/override/v1/traces'),
-      'disabled child does not export to override endpoint',
+      !stdout.includes('child-export:disabled:'),
+      'disabled child does not export any signal, regardless of other children log ordering',
     );
   });
   it('lets --otlp-endpoint override the OTEL base endpoint env var', async (t) => {
