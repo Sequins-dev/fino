@@ -186,430 +186,447 @@ describe('fino doc: modules', () => {
       'include-private does not duplicate hidden source docs in facade',
     );
   });
-  it('documents moved web globals without exposing internal import specifiers', async (t) => {
-    const repoRoot = TEST_DIR + '/web-globals-repo';
-    await ensureDir(fs, repoRoot);
-    await fs.symlink(REPO_DIR + '/js', repoRoot + '/js');
-    const docsDir = repoRoot + '/docs';
-    const run = await runCli(
-      [
-        'doc',
-        'build',
-        'js/globals/fetch.ts',
-        'js/globals/abort.ts',
-        'js/globals/blob.ts',
-        'js/globals/console.ts',
-        'js/globals/crypto.ts',
-        'js/globals/encoding.ts',
-        'js/globals/eventtarget.ts',
-        'js/globals/eventsource.ts',
-        'js/globals/formdata.ts',
-        'js/globals/messaging.ts',
-        'js/globals/url.ts',
-        'js/globals/websocket.ts',
-        'js/globals/webtransport.ts',
-        'js/net/http/websocket.ts',
-        'js/net/http/webtransport.ts',
-        'js/internal/tty/bindings.ts',
-        '--format',
-        'markdown',
-        '--title',
-        'Globals Docs',
-      ],
-      repoRoot,
-    );
-    t.equal(run.result.code, 0, 'doc build exits successfully');
-    t.equal(run.stderr, '', 'doc build writes no stderr');
-    const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
-    const fetchModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/fetch.ts');
-    const abortModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/abort.ts');
-    const blobModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/blob.ts');
-    const consoleModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/console.ts',
-    );
-    const cryptoModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/crypto.ts',
-    );
-    const encodingModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/encoding.ts',
-    );
-    const eventTargetModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/eventtarget.ts',
-    );
-    const eventSourceModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/eventsource.ts',
-    );
-    const formDataModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/formdata.ts',
-    );
-    const messagingModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/messaging.ts',
-    );
-    const urlModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/url.ts');
-    const webSocketModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/websocket.ts',
-    );
-    const webTransportModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/globals/webtransport.ts',
-    );
-    const httpWebSocketModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/net/http/websocket.ts',
-    );
-    const httpWebTransportModule = json.modules.find(
-      (moduleDoc) => moduleDoc.path === 'js/net/http/webtransport.ts',
-    );
-    t.ok(fetchModule, 'moved fetch globals module is documented by default');
-    t.ok(abortModule, 'abort globals module is documented by default');
-    t.ok(blobModule, 'blob globals module is documented by default');
-    t.ok(consoleModule, 'console globals module is documented by default');
-    t.ok(cryptoModule, 'crypto globals module is documented by default');
-    t.ok(encodingModule, 'encoding globals module is documented by default');
-    t.ok(eventTargetModule, 'eventtarget globals module is documented by default');
-    t.ok(eventSourceModule, 'eventsource globals module is documented by default');
-    t.ok(formDataModule, 'formdata globals module is documented by default');
-    t.ok(messagingModule, 'messaging globals module is documented by default');
-    t.ok(urlModule, 'url globals module is documented by default');
-    t.ok(webSocketModule, 'websocket globals module is documented by default');
-    t.ok(webTransportModule, 'webtransport globals module is documented by default');
-    t.ok(httpWebSocketModule, 'http websocket module is documented by default');
-    t.ok(httpWebTransportModule, 'http webtransport module is documented by default');
-    t.ok(
-      fetchModule!.exports.some((item) => item.name === 'FetchInit'),
-      'fetch globals include FetchInit export',
-    );
-    t.equal(
-      fetchModule!.exports.some((item) => item.name === 'fetchLater'),
-      false,
-      'fetch globals do not export fetchLater',
-    );
-    t.equal(
-      fetchModule!.exports.some((item) => item.name === 'FetchLaterResult'),
-      false,
-      'fetch globals do not export FetchLaterResult',
-    );
-    t.ok(
-      abortModule!.exports.some((item) => item.name === 'AbortSignal'),
-      'abort globals include AbortSignal export',
-    );
-    t.ok(
-      abortModule!.exports.some((item) => item.name === 'AbortController'),
-      'abort globals include AbortController export',
-    );
-    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
-      t.ok(
-        blobModule!.exports.some((item) => item.name === name),
-        `blob globals include ${name} export`,
+  // This integration build parses and renders sixteen runtime modules under CI contention.
+  it(
+    'documents moved web globals without exposing internal import specifiers',
+    { timeout: 120_000 },
+    async (t) => {
+      const repoRoot = TEST_DIR + '/web-globals-repo';
+      await ensureDir(fs, repoRoot);
+      await fs.symlink(REPO_DIR + '/js', repoRoot + '/js');
+      const docsDir = repoRoot + '/docs';
+      const run = await runCli(
+        [
+          'doc',
+          'build',
+          'js/globals/fetch.ts',
+          'js/globals/abort.ts',
+          'js/globals/blob.ts',
+          'js/globals/console.ts',
+          'js/globals/crypto.ts',
+          'js/globals/encoding.ts',
+          'js/globals/eventtarget.ts',
+          'js/globals/eventsource.ts',
+          'js/globals/formdata.ts',
+          'js/globals/messaging.ts',
+          'js/globals/url.ts',
+          'js/globals/websocket.ts',
+          'js/globals/webtransport.ts',
+          'js/net/http/websocket.ts',
+          'js/net/http/webtransport.ts',
+          'js/internal/tty/bindings.ts',
+          '--format',
+          'markdown',
+          '--title',
+          'Globals Docs',
+        ],
+        repoRoot,
       );
-    }
-    t.ok(
-      consoleModule!.exports.some((item) => item.name === 'Console'),
-      'console globals include Console export',
-    );
-    t.equal(
-      consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureRecord'),
-      false,
-      'console capture records stay internal',
-    );
-    t.equal(
-      consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureSink'),
-      false,
-      'console capture sinks stay internal',
-    );
-    for (const name of [
-      'Crypto',
-      'SubtleCrypto',
-      'CryptoKey',
-      'KeyAlgorithm',
-      'KeyFormat',
-      'KeyUsage',
-      'BufferSource',
-    ]) {
-      t.ok(
-        cryptoModule!.exports.some((item) => item.name === name),
-        `crypto globals include ${name} export`,
+      t.equal(run.result.code, 0, 'doc build exits successfully');
+      t.equal(run.stderr, '', 'doc build writes no stderr');
+      const json = JSON.parse(await fs.readFile(docsDir + '/api.json')) as DocJsonOutput;
+      const fetchModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/fetch.ts',
       );
-    }
-    t.equal(
-      encodingModule!.exports.some((item) => item.name === 'encodeUtf8'),
-      false,
-      'encoding globals do not export encodeUtf8',
-    );
-    t.equal(
-      encodingModule!.exports.some((item) => item.name === 'decodeUtf8'),
-      false,
-      'encoding globals do not export decodeUtf8',
-    );
-    for (const name of ['AddEventListenerOptions', 'EventCallback']) {
-      t.ok(
-        eventTargetModule!.exports.some((item) => item.name === name),
-        `eventtarget globals include ${name} export`,
+      const abortModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/abort.ts',
       );
-    }
-    t.ok(
-      formDataModule!.exports.some((item) => item.name === 'FormData'),
-      'formdata globals include FormData export',
-    );
-    t.ok(
-      formDataModule!.exports.some((item) => item.name === 'FormDataEntryValue'),
-      'formdata globals include FormDataEntryValue export',
-    );
-    t.equal(
-      formDataModule!.exports.some((item) => item.name === '_createMultipartBoundary'),
-      false,
-      'formdata globals do not export multipart boundary helper',
-    );
-    for (const name of ['MessageEvent', 'MessagePort', 'MessageChannel']) {
-      t.ok(
-        messagingModule!.exports.some((item) => item.name === name),
-        `messaging globals include ${name} export`,
+      const blobModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/blob.ts');
+      const consoleModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/console.ts',
       );
-    }
-    t.equal(
-      messagingModule!.exports.some((item) => item.name === 'ThreadPort'),
-      false,
-      'messaging globals do not export ThreadPort',
-    );
-    t.equal(
-      messagingModule!.exports.some((item) => item.name === 'BaseTransportPort'),
-      false,
-      'messaging globals do not export BaseTransportPort',
-    );
-    t.ok(
-      urlModule!.exports.some((item) => item.name === 'URL'),
-      'url globals include URL export',
-    );
-    t.ok(
-      urlModule!.exports.some((item) => item.name === 'URLSearchParams'),
-      'url globals include URLSearchParams export',
-    );
-    for (const name of ['WebSocket', 'CloseEvent', 'ErrorEvent', 'MessageEvent']) {
-      t.ok(
-        webSocketModule!.exports.some((item) => item.name === name),
-        `websocket globals include ${name} export`,
+      const cryptoModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/crypto.ts',
       );
-    }
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError',
-    ]) {
+      const encodingModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/encoding.ts',
+      );
+      const eventTargetModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/eventtarget.ts',
+      );
+      const eventSourceModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/eventsource.ts',
+      );
+      const formDataModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/formdata.ts',
+      );
+      const messagingModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/messaging.ts',
+      );
+      const urlModule = json.modules.find((moduleDoc) => moduleDoc.path === 'js/globals/url.ts');
+      const webSocketModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/websocket.ts',
+      );
+      const webTransportModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/globals/webtransport.ts',
+      );
+      const httpWebSocketModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/net/http/websocket.ts',
+      );
+      const httpWebTransportModule = json.modules.find(
+        (moduleDoc) => moduleDoc.path === 'js/net/http/webtransport.ts',
+      );
+      t.ok(fetchModule, 'moved fetch globals module is documented by default');
+      t.ok(abortModule, 'abort globals module is documented by default');
+      t.ok(blobModule, 'blob globals module is documented by default');
+      t.ok(consoleModule, 'console globals module is documented by default');
+      t.ok(cryptoModule, 'crypto globals module is documented by default');
+      t.ok(encodingModule, 'encoding globals module is documented by default');
+      t.ok(eventTargetModule, 'eventtarget globals module is documented by default');
+      t.ok(eventSourceModule, 'eventsource globals module is documented by default');
+      t.ok(formDataModule, 'formdata globals module is documented by default');
+      t.ok(messagingModule, 'messaging globals module is documented by default');
+      t.ok(urlModule, 'url globals module is documented by default');
+      t.ok(webSocketModule, 'websocket globals module is documented by default');
+      t.ok(webTransportModule, 'webtransport globals module is documented by default');
+      t.ok(httpWebSocketModule, 'http websocket module is documented by default');
+      t.ok(httpWebTransportModule, 'http webtransport module is documented by default');
+      t.ok(
+        fetchModule!.exports.some((item) => item.name === 'FetchInit'),
+        'fetch globals include FetchInit export',
+      );
       t.equal(
-        webSocketModule!.exports.some((item) => item.name === name),
+        fetchModule!.exports.some((item) => item.name === 'fetchLater'),
         false,
-        `websocket globals do not export ${name}`,
+        'fetch globals do not export fetchLater',
       );
-    }
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError',
-    ]) {
-      t.ok(
-        httpWebSocketModule!.exports.some((item) => item.name === name),
-        `http websocket module exports ${name}`,
-      );
-    }
-    for (const name of [
-      'WebTransport',
-      'WebTransportDatagramDuplexStream',
-      'WebTransportOptions',
-    ]) {
-      t.ok(
-        webTransportModule!.exports.some((item) => item.name === name),
-        `webtransport globals include ${name} export`,
-      );
-    }
-    for (const name of [
-      'Http3WebTransportInit',
-      '_fromHttp3WebTransport',
-      '_acceptIncomingQuicWebTransportStream',
-    ]) {
       t.equal(
-        webTransportModule!.exports.some((item) => item.name === name),
+        fetchModule!.exports.some((item) => item.name === 'FetchLaterResult'),
         false,
-        `webtransport globals do not export ${name}`,
+        'fetch globals do not export FetchLaterResult',
       );
-    }
-    t.ok(
-      httpWebTransportModule!.exports.some((item) => item.name === 'WebTransport'),
-      'http webtransport module exports WebTransport',
-    );
-    t.equal(
-      json.modules.some((moduleDoc) => moduleDoc.path === 'js/internal/tty/bindings.ts'),
-      false,
-      'internal tty bindings module is hidden by default',
-    );
-    const markdown = await fs.readFile(docsDir + '/js/globals/fetch.md');
-    const abortMarkdown = await fs.readFile(docsDir + '/js/globals/abort.md');
-    const blobMarkdown = await fs.readFile(docsDir + '/js/globals/blob.md');
-    const consoleMarkdown = await fs.readFile(docsDir + '/js/globals/console.md');
-    const cryptoMarkdown = await fs.readFile(docsDir + '/js/globals/crypto.md');
-    const encodingMarkdown = await fs.readFile(docsDir + '/js/globals/encoding.md');
-    const eventTargetMarkdown = await fs.readFile(docsDir + '/js/globals/eventtarget.md');
-    const eventSourceMarkdown = await fs.readFile(docsDir + '/js/globals/eventsource.md');
-    const formDataMarkdown = await fs.readFile(docsDir + '/js/globals/formdata.md');
-    const messagingMarkdown = await fs.readFile(docsDir + '/js/globals/messaging.md');
-    const urlMarkdown = await fs.readFile(docsDir + '/js/globals/url.md');
-    const webSocketMarkdown = await fs.readFile(docsDir + '/js/globals/websocket.md');
-    const webTransportMarkdown = await fs.readFile(docsDir + '/js/globals/webtransport.md');
-    t.equal(
-      markdown.includes('internal:globals/'),
-      false,
-      'generated module docs do not advertise internal globals specifiers',
-    );
-    t.ok(markdown.includes('## FetchInit'), 'fetch markdown includes FetchInit');
-    t.equal(markdown.includes('fetchLater'), false, 'fetch markdown omits fetchLater');
-    t.equal(markdown.includes('FetchLaterResult'), false, 'fetch markdown omits FetchLaterResult');
-    t.equal(
-      abortMarkdown.includes('No exported declarations found.'),
-      false,
-      'abort globals page includes public exports',
-    );
-    t.ok(abortMarkdown.includes('## AbortSignal'), 'abort markdown includes AbortSignal');
-    t.ok(abortMarkdown.includes('## AbortController'), 'abort markdown includes AbortController');
-    t.equal(
-      blobMarkdown.includes('No exported declarations found.'),
-      false,
-      'blob globals page includes public exports',
-    );
-    for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
-      t.ok(blobMarkdown.includes(`## ${name}`), `blob markdown includes ${name}`);
-    }
-    t.equal(
-      consoleMarkdown.includes('No exported declarations found.'),
-      false,
-      'console globals page includes public exports',
-    );
-    t.ok(consoleMarkdown.includes('## Console'), 'console markdown includes Console');
-    t.ok(consoleMarkdown.includes('### log'), 'console markdown includes log method docs');
-    t.ok(consoleMarkdown.includes('### timeEnd'), 'console markdown includes timer method docs');
-    t.equal(
-      consoleMarkdown.includes('internal:globals/'),
-      false,
-      'console markdown does not advertise internal globals specifiers',
-    );
-    t.equal(
-      consoleMarkdown.includes('## Contributing'),
-      false,
-      'console markdown omits contributor notes',
-    );
-    t.equal(
-      consoleMarkdown.includes('ConsoleCaptureRecord'),
-      false,
-      'console markdown hides internal capture records',
-    );
-    t.equal(
-      cryptoMarkdown.includes('No exported declarations found.'),
-      false,
-      'crypto globals page includes public exports',
-    );
-    t.ok(cryptoMarkdown.includes('## Crypto'), 'crypto markdown includes Crypto interface');
-    t.ok(
-      cryptoMarkdown.includes('## SubtleCrypto'),
-      'crypto markdown includes SubtleCrypto interface',
-    );
-    t.ok(cryptoMarkdown.includes('## CryptoKey'), 'crypto markdown includes CryptoKey');
-    t.ok(cryptoMarkdown.includes('### digest'), 'crypto markdown includes subtle digest docs');
-    t.ok(
-      cryptoMarkdown.includes('### getRandomValues'),
-      'crypto markdown includes getRandomValues docs',
-    );
-    t.equal(
-      encodingMarkdown.includes('## encodeUtf8'),
-      false,
-      'encoding markdown omits internal encodeUtf8 helper',
-    );
-    t.equal(
-      encodingMarkdown.includes('## decodeUtf8'),
-      false,
-      'encoding markdown omits internal decodeUtf8 helper',
-    );
-    t.ok(
-      eventTargetMarkdown.includes('## AddEventListenerOptions'),
-      'eventtarget markdown includes AddEventListenerOptions',
-    );
-    t.ok(
-      eventTargetMarkdown.includes('## EventCallback'),
-      'eventtarget markdown includes EventCallback',
-    );
-    t.equal(
-      eventSourceMarkdown.includes('EventSourceReader'),
-      false,
-      'eventsource globals markdown omits eventstream reader docs',
-    );
-    t.equal(
-      eventSourceMarkdown.includes('EventSourceWriter'),
-      false,
-      'eventsource globals markdown omits eventstream writer docs',
-    );
-    t.ok(formDataMarkdown.includes('## FormData'), 'formdata markdown includes FormData');
-    t.ok(
-      formDataMarkdown.includes('## FormDataEntryValue'),
-      'formdata markdown includes FormDataEntryValue',
-    );
-    t.equal(
-      formDataMarkdown.includes('_createMultipartBoundary'),
-      false,
-      'formdata markdown hides multipart boundary helper',
-    );
-    t.ok(messagingMarkdown.includes('## MessagePort'), 'messaging markdown includes MessagePort');
-    t.ok(
-      messagingMarkdown.includes('## MessageChannel'),
-      'messaging markdown includes MessageChannel',
-    );
-    t.equal(
-      messagingMarkdown.includes('## ThreadPort'),
-      false,
-      'messaging markdown omits ThreadPort',
-    );
-    t.equal(
-      messagingMarkdown.includes('## BaseTransportPort'),
-      false,
-      'messaging markdown omits BaseTransportPort',
-    );
-    t.ok(urlMarkdown.includes('## URL'), 'url markdown includes URL');
-    t.ok(urlMarkdown.includes('## URLSearchParams'), 'url markdown includes URLSearchParams');
-    t.ok(webSocketMarkdown.includes('## WebSocket'), 'websocket markdown includes WebSocket');
-    t.ok(webSocketMarkdown.includes('## CloseEvent'), 'websocket markdown includes CloseEvent');
-    t.ok(webSocketMarkdown.includes('## ErrorEvent'), 'websocket markdown includes ErrorEvent');
-    for (const name of [
-      'WebSocketConnection',
-      'WebSocketAcceptOptions',
-      'WebSocketConnectOptions',
-      'WebSocketError',
-    ]) {
-      t.equal(webSocketMarkdown.includes(`## ${name}`), false, `websocket markdown omits ${name}`);
-    }
-    t.ok(
-      webTransportMarkdown.includes('## WebTransport'),
-      'webtransport markdown includes WebTransport',
-    );
-    t.ok(
-      webTransportMarkdown.includes('## WebTransportDatagramDuplexStream'),
-      'webtransport markdown includes datagram constructor',
-    );
-    for (const name of [
-      'Http3WebTransportInit',
-      '_fromHttp3WebTransport',
-      '_acceptIncomingQuicWebTransportStream',
-      '_fromHttp3',
-      '_acceptIncomingQuicStream',
-      '_push',
-      '_close',
-      '_error',
-      '_stats',
-    ]) {
-      t.equal(webTransportMarkdown.includes(name), false, `webtransport markdown omits ${name}`);
-    }
-    t.equal(
-      await exists(fs, docsDir + '/js/internal/tty/bindings.md'),
-      false,
-      'internal tty bindings markdown is not emitted by default',
-    );
-    await removeTree(fs, docsDir);
-  });
+      t.ok(
+        abortModule!.exports.some((item) => item.name === 'AbortSignal'),
+        'abort globals include AbortSignal export',
+      );
+      t.ok(
+        abortModule!.exports.some((item) => item.name === 'AbortController'),
+        'abort globals include AbortController export',
+      );
+      for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
+        t.ok(
+          blobModule!.exports.some((item) => item.name === name),
+          `blob globals include ${name} export`,
+        );
+      }
+      t.ok(
+        consoleModule!.exports.some((item) => item.name === 'Console'),
+        'console globals include Console export',
+      );
+      t.equal(
+        consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureRecord'),
+        false,
+        'console capture records stay internal',
+      );
+      t.equal(
+        consoleModule!.exports.some((item) => item.name === 'ConsoleCaptureSink'),
+        false,
+        'console capture sinks stay internal',
+      );
+      for (const name of [
+        'Crypto',
+        'SubtleCrypto',
+        'CryptoKey',
+        'KeyAlgorithm',
+        'KeyFormat',
+        'KeyUsage',
+        'BufferSource',
+      ]) {
+        t.ok(
+          cryptoModule!.exports.some((item) => item.name === name),
+          `crypto globals include ${name} export`,
+        );
+      }
+      t.equal(
+        encodingModule!.exports.some((item) => item.name === 'encodeUtf8'),
+        false,
+        'encoding globals do not export encodeUtf8',
+      );
+      t.equal(
+        encodingModule!.exports.some((item) => item.name === 'decodeUtf8'),
+        false,
+        'encoding globals do not export decodeUtf8',
+      );
+      for (const name of ['AddEventListenerOptions', 'EventCallback']) {
+        t.ok(
+          eventTargetModule!.exports.some((item) => item.name === name),
+          `eventtarget globals include ${name} export`,
+        );
+      }
+      t.ok(
+        formDataModule!.exports.some((item) => item.name === 'FormData'),
+        'formdata globals include FormData export',
+      );
+      t.ok(
+        formDataModule!.exports.some((item) => item.name === 'FormDataEntryValue'),
+        'formdata globals include FormDataEntryValue export',
+      );
+      t.equal(
+        formDataModule!.exports.some((item) => item.name === '_createMultipartBoundary'),
+        false,
+        'formdata globals do not export multipart boundary helper',
+      );
+      for (const name of ['MessageEvent', 'MessagePort', 'MessageChannel']) {
+        t.ok(
+          messagingModule!.exports.some((item) => item.name === name),
+          `messaging globals include ${name} export`,
+        );
+      }
+      t.equal(
+        messagingModule!.exports.some((item) => item.name === 'ThreadPort'),
+        false,
+        'messaging globals do not export ThreadPort',
+      );
+      t.equal(
+        messagingModule!.exports.some((item) => item.name === 'BaseTransportPort'),
+        false,
+        'messaging globals do not export BaseTransportPort',
+      );
+      t.ok(
+        urlModule!.exports.some((item) => item.name === 'URL'),
+        'url globals include URL export',
+      );
+      t.ok(
+        urlModule!.exports.some((item) => item.name === 'URLSearchParams'),
+        'url globals include URLSearchParams export',
+      );
+      for (const name of ['WebSocket', 'CloseEvent', 'ErrorEvent', 'MessageEvent']) {
+        t.ok(
+          webSocketModule!.exports.some((item) => item.name === name),
+          `websocket globals include ${name} export`,
+        );
+      }
+      for (const name of [
+        'WebSocketConnection',
+        'WebSocketAcceptOptions',
+        'WebSocketConnectOptions',
+        'WebSocketError',
+      ]) {
+        t.equal(
+          webSocketModule!.exports.some((item) => item.name === name),
+          false,
+          `websocket globals do not export ${name}`,
+        );
+      }
+      for (const name of [
+        'WebSocketConnection',
+        'WebSocketAcceptOptions',
+        'WebSocketConnectOptions',
+        'WebSocketError',
+      ]) {
+        t.ok(
+          httpWebSocketModule!.exports.some((item) => item.name === name),
+          `http websocket module exports ${name}`,
+        );
+      }
+      for (const name of [
+        'WebTransport',
+        'WebTransportDatagramDuplexStream',
+        'WebTransportOptions',
+      ]) {
+        t.ok(
+          webTransportModule!.exports.some((item) => item.name === name),
+          `webtransport globals include ${name} export`,
+        );
+      }
+      for (const name of [
+        'Http3WebTransportInit',
+        '_fromHttp3WebTransport',
+        '_acceptIncomingQuicWebTransportStream',
+      ]) {
+        t.equal(
+          webTransportModule!.exports.some((item) => item.name === name),
+          false,
+          `webtransport globals do not export ${name}`,
+        );
+      }
+      t.ok(
+        httpWebTransportModule!.exports.some((item) => item.name === 'WebTransport'),
+        'http webtransport module exports WebTransport',
+      );
+      t.equal(
+        json.modules.some((moduleDoc) => moduleDoc.path === 'js/internal/tty/bindings.ts'),
+        false,
+        'internal tty bindings module is hidden by default',
+      );
+      const markdown = await fs.readFile(docsDir + '/js/globals/fetch.md');
+      const abortMarkdown = await fs.readFile(docsDir + '/js/globals/abort.md');
+      const blobMarkdown = await fs.readFile(docsDir + '/js/globals/blob.md');
+      const consoleMarkdown = await fs.readFile(docsDir + '/js/globals/console.md');
+      const cryptoMarkdown = await fs.readFile(docsDir + '/js/globals/crypto.md');
+      const encodingMarkdown = await fs.readFile(docsDir + '/js/globals/encoding.md');
+      const eventTargetMarkdown = await fs.readFile(docsDir + '/js/globals/eventtarget.md');
+      const eventSourceMarkdown = await fs.readFile(docsDir + '/js/globals/eventsource.md');
+      const formDataMarkdown = await fs.readFile(docsDir + '/js/globals/formdata.md');
+      const messagingMarkdown = await fs.readFile(docsDir + '/js/globals/messaging.md');
+      const urlMarkdown = await fs.readFile(docsDir + '/js/globals/url.md');
+      const webSocketMarkdown = await fs.readFile(docsDir + '/js/globals/websocket.md');
+      const webTransportMarkdown = await fs.readFile(docsDir + '/js/globals/webtransport.md');
+      t.equal(
+        markdown.includes('internal:globals/'),
+        false,
+        'generated module docs do not advertise internal globals specifiers',
+      );
+      t.ok(markdown.includes('## FetchInit'), 'fetch markdown includes FetchInit');
+      t.equal(markdown.includes('fetchLater'), false, 'fetch markdown omits fetchLater');
+      t.equal(
+        markdown.includes('FetchLaterResult'),
+        false,
+        'fetch markdown omits FetchLaterResult',
+      );
+      t.equal(
+        abortMarkdown.includes('No exported declarations found.'),
+        false,
+        'abort globals page includes public exports',
+      );
+      t.ok(abortMarkdown.includes('## AbortSignal'), 'abort markdown includes AbortSignal');
+      t.ok(abortMarkdown.includes('## AbortController'), 'abort markdown includes AbortController');
+      t.equal(
+        blobMarkdown.includes('No exported declarations found.'),
+        false,
+        'blob globals page includes public exports',
+      );
+      for (const name of ['BlobPart', 'BlobOptions', 'FileOptions', 'FileReaderHandler']) {
+        t.ok(blobMarkdown.includes(`## ${name}`), `blob markdown includes ${name}`);
+      }
+      t.equal(
+        consoleMarkdown.includes('No exported declarations found.'),
+        false,
+        'console globals page includes public exports',
+      );
+      t.ok(consoleMarkdown.includes('## Console'), 'console markdown includes Console');
+      t.ok(consoleMarkdown.includes('### log'), 'console markdown includes log method docs');
+      t.ok(consoleMarkdown.includes('### timeEnd'), 'console markdown includes timer method docs');
+      t.equal(
+        consoleMarkdown.includes('internal:globals/'),
+        false,
+        'console markdown does not advertise internal globals specifiers',
+      );
+      t.equal(
+        consoleMarkdown.includes('## Contributing'),
+        false,
+        'console markdown omits contributor notes',
+      );
+      t.equal(
+        consoleMarkdown.includes('ConsoleCaptureRecord'),
+        false,
+        'console markdown hides internal capture records',
+      );
+      t.equal(
+        cryptoMarkdown.includes('No exported declarations found.'),
+        false,
+        'crypto globals page includes public exports',
+      );
+      t.ok(cryptoMarkdown.includes('## Crypto'), 'crypto markdown includes Crypto interface');
+      t.ok(
+        cryptoMarkdown.includes('## SubtleCrypto'),
+        'crypto markdown includes SubtleCrypto interface',
+      );
+      t.ok(cryptoMarkdown.includes('## CryptoKey'), 'crypto markdown includes CryptoKey');
+      t.ok(cryptoMarkdown.includes('### digest'), 'crypto markdown includes subtle digest docs');
+      t.ok(
+        cryptoMarkdown.includes('### getRandomValues'),
+        'crypto markdown includes getRandomValues docs',
+      );
+      t.equal(
+        encodingMarkdown.includes('## encodeUtf8'),
+        false,
+        'encoding markdown omits internal encodeUtf8 helper',
+      );
+      t.equal(
+        encodingMarkdown.includes('## decodeUtf8'),
+        false,
+        'encoding markdown omits internal decodeUtf8 helper',
+      );
+      t.ok(
+        eventTargetMarkdown.includes('## AddEventListenerOptions'),
+        'eventtarget markdown includes AddEventListenerOptions',
+      );
+      t.ok(
+        eventTargetMarkdown.includes('## EventCallback'),
+        'eventtarget markdown includes EventCallback',
+      );
+      t.equal(
+        eventSourceMarkdown.includes('EventSourceReader'),
+        false,
+        'eventsource globals markdown omits eventstream reader docs',
+      );
+      t.equal(
+        eventSourceMarkdown.includes('EventSourceWriter'),
+        false,
+        'eventsource globals markdown omits eventstream writer docs',
+      );
+      t.ok(formDataMarkdown.includes('## FormData'), 'formdata markdown includes FormData');
+      t.ok(
+        formDataMarkdown.includes('## FormDataEntryValue'),
+        'formdata markdown includes FormDataEntryValue',
+      );
+      t.equal(
+        formDataMarkdown.includes('_createMultipartBoundary'),
+        false,
+        'formdata markdown hides multipart boundary helper',
+      );
+      t.ok(messagingMarkdown.includes('## MessagePort'), 'messaging markdown includes MessagePort');
+      t.ok(
+        messagingMarkdown.includes('## MessageChannel'),
+        'messaging markdown includes MessageChannel',
+      );
+      t.equal(
+        messagingMarkdown.includes('## ThreadPort'),
+        false,
+        'messaging markdown omits ThreadPort',
+      );
+      t.equal(
+        messagingMarkdown.includes('## BaseTransportPort'),
+        false,
+        'messaging markdown omits BaseTransportPort',
+      );
+      t.ok(urlMarkdown.includes('## URL'), 'url markdown includes URL');
+      t.ok(urlMarkdown.includes('## URLSearchParams'), 'url markdown includes URLSearchParams');
+      t.ok(webSocketMarkdown.includes('## WebSocket'), 'websocket markdown includes WebSocket');
+      t.ok(webSocketMarkdown.includes('## CloseEvent'), 'websocket markdown includes CloseEvent');
+      t.ok(webSocketMarkdown.includes('## ErrorEvent'), 'websocket markdown includes ErrorEvent');
+      for (const name of [
+        'WebSocketConnection',
+        'WebSocketAcceptOptions',
+        'WebSocketConnectOptions',
+        'WebSocketError',
+      ]) {
+        t.equal(
+          webSocketMarkdown.includes(`## ${name}`),
+          false,
+          `websocket markdown omits ${name}`,
+        );
+      }
+      t.ok(
+        webTransportMarkdown.includes('## WebTransport'),
+        'webtransport markdown includes WebTransport',
+      );
+      t.ok(
+        webTransportMarkdown.includes('## WebTransportDatagramDuplexStream'),
+        'webtransport markdown includes datagram constructor',
+      );
+      for (const name of [
+        'Http3WebTransportInit',
+        '_fromHttp3WebTransport',
+        '_acceptIncomingQuicWebTransportStream',
+        '_fromHttp3',
+        '_acceptIncomingQuicStream',
+        '_push',
+        '_close',
+        '_error',
+        '_stats',
+      ]) {
+        t.equal(webTransportMarkdown.includes(name), false, `webtransport markdown omits ${name}`);
+      }
+      t.equal(
+        await exists(fs, docsDir + '/js/internal/tty/bindings.md'),
+        false,
+        'internal tty bindings markdown is not emitted by default',
+      );
+      await removeTree(fs, docsDir);
+    },
+  );
   it('links OpenTelemetry facade re-exports from public signal modules', async (t) => {
     const docsDir = appDir + '/docs';
     await removeTree(fs, docsDir);
