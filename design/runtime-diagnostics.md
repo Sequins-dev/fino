@@ -104,6 +104,14 @@ on its released fd. Record attempts to register work after resource closure and
 correlate them with the resource generation, even if the numeric fd now belongs
 to a different Realm.
 
+Pending registration commands need their own visible state. A watch can be
+created and cancelled before its batch reaches the kernel; submitting that
+obsolete ADD after descriptor reuse can fail or attach to the wrong resource.
+Record supersession and cancellation before installation, alongside actual
+kernel receipts. Likewise, transport shutdown must distinguish stopping reads
+from draining accepted outbound frames: retaining the descriptor alone does
+not guarantee that a queued termination message can still be written.
+
 Separate a resource from an operation on it. One socket can outlive many read
 waits; one persistent signal watch can produce many notifications. An operation
 ID includes its origin Realm generation and a local monotonic sequence. Each
