@@ -1,7 +1,7 @@
 # Runtime diagnostics across Realms
 
 Proposal, 2026-09-07. This is a follow-up design, not an implemented API. The
-test-hang repair and its validation remain in `parallel-test-stalls.md`.
+test-hang repairs and their validation are described in the pull request.
 
 ## What a user should be able to learn
 
