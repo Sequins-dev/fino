@@ -60,10 +60,12 @@ it('replays the full cassette', { timeout: 300_000 }, async (t) => {
 ```
 
 Under `--parallel` the coordinator derives its own deadlines from this value.
-It gives up on a worker Realm that has not reported a group within the per-test
-deadline plus 30 seconds, and on one that has not exited within the stall
-threshold, reporting each as a named lifecycle failure instead of waiting
-indefinitely.
+Each test or lifecycle-hook transition renews the worker deadline. It uses the
+current test’s timeout (including an override or `0`) plus 30 seconds of slack;
+a group of healthy tests can therefore run longer than one test’s limit. Hooks
+use the run default. Console output and unrelated timers do not renew it. A
+worker that stops reporting progress, or fails to exit within the stall threshold,
+is reported as a named lifecycle failure.
 
 ## Parallel files
 

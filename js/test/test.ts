@@ -126,6 +126,7 @@ interface LeafRunResult {
   diagnostic: FailureDiagnostic | null;
 }
 interface RunContext {
+  onProgress?: (name: string, timeout: number) => void;
   showOutput: ShowOutputMode;
   durations: boolean;
   /** Default per-test deadline in ms; `0` waits indefinitely. */
@@ -813,6 +814,7 @@ async function _runLeaf(
   hooks: GroupNode | null,
   inheritedSkip: string | null = null,
 ): Promise<LeafRunResult> {
+  ctx.onProgress?.(entry.name, entry.timeout ?? ctx.timeout);
   const startMs = _nowMs();
   const skipReason = inheritedSkip ?? entry.skip;
   if (skipReason !== null) {
@@ -841,6 +843,7 @@ async function _runLeaf(
       let beforeError = null;
       if (hooks?.beforeEach) {
         try {
+          ctx.onProgress?.('beforeEach: ' + entry.name, ctx.timeout);
           await hooks.beforeEach();
         } catch (e) {
           beforeError = e;
@@ -852,6 +855,7 @@ async function _runLeaf(
         try {
           // Call via scheduleSync so the function executes outside the microtask
           // checkpoint — this allows spin() to drain microtasks correctly.
+          if (hooks?.beforeEach) ctx.onProgress?.(entry.name, entry.timeout ?? ctx.timeout);
           await _withTimeout(
             entry.timeout ?? ctx.timeout,
             entry.name,
@@ -864,6 +868,7 @@ async function _runLeaf(
       // Run afterEach — always, as long as beforeEach didn't throw.
       if (hooks?.afterEach && beforeError === null) {
         try {
+          ctx.onProgress?.('afterEach: ' + entry.name, ctx.timeout);
           await hooks.afterEach();
         } catch (e) {
           failures.push(e);
@@ -938,6 +943,7 @@ async function _runEntries(
   if (!groupSkip && hooks?.before) {
     const output: ConsoleCaptureRecord[] = [];
     try {
+      ctx.onProgress?.('before: ' + path.join(' > '), ctx.timeout);
       await _captureConsole(ctx, output, () => hooks.before!());
       if (output.length > 0) {
         beforeDiagnostic = {
@@ -1021,6 +1027,7 @@ async function _runEntries(
       if (!groupSkip && hooks?.after) {
         const output: ConsoleCaptureRecord[] = [];
         try {
+          ctx.onProgress?.('after: ' + path.join(' > '), ctx.timeout);
           await _captureConsole(ctx, output, () => hooks.after!());
           if (output.length > 0) {
             afterDiagnostic = {
@@ -1117,7 +1124,9 @@ export function _prepareRun(options: RunOptions = {}): PreparedTestRun {
  * Each index can be consumed exactly once. Callers execute at most one entry
  * from a prepared run at a time because entries share their Realm and module
  * state. The result omits the local `1..1` plan because a coordinating parent
- * owns the aggregate plan and numbering.
+ * owns the aggregate plan and numbering. `onProgress` synchronously reports
+ * test and hook transitions with their effective timeout for a supervising
+ * runner; it does not run on unrelated activity or periodic timers.
  *
  * @internal
  */
@@ -1126,50 +1135,52 @@ export async function _runPreparedEntry(
   prepared: PreparedTestRun,
   index: number,
   options: RunOptions = {},
+  onProgress?: (name: string, timeout: number) => void,
 ): Promise<PreparedTestEntryResult> {
   _activeRuns += 1;
   try {
-  const state = _preparedRuns.get(prepared);
-  if (state === undefined) throw new Error('Prepared test run has already been consumed');
-  if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
-    throw new RangeError(`Prepared test entry index ${index} is out of range`);
-  }
-  if (state.consumed[index])
-    throw new Error(`Prepared test entry ${index} has already been consumed`);
-  state.consumed[index] = true;
-  if (state.consumed.every(Boolean)) _preparedRuns.delete(prepared);
-  const entry = state.entries[index]!;
-  const output: ConsoleCaptureRecord[] = [];
-  const showOutput = options.showOutput ?? 'failures';
-  const release = _pushConsoleCapture((record) => output.push(record));
-  let result: RunResult;
-  try {
-    result = await _runEntries(
-      {
-        showOutput,
-        durations: options.durations === true,
-        timeout: _runTimeout(options),
-      },
-      [entry],
-      0,
-      null,
-    );
-  } finally {
-    release();
-  }
-  const plan = output.findIndex((record) => record.fd === 1 && record.text === '1..1');
-  if (plan >= 0) output.splice(plan, 1);
-  return {
-    output,
-    diagnostics: result.diagnostics.map((diagnostic) => ({
-      title: diagnostic.title,
-      errors: diagnostic.errors.map(_formatErrorLines),
-      output: diagnostic.output,
-    })),
-    passed: result.passed,
-    failed: result.failed,
-    skipped: result.skipped,
-  };
+    const state = _preparedRuns.get(prepared);
+    if (state === undefined) throw new Error('Prepared test run has already been consumed');
+    if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
+      throw new RangeError(`Prepared test entry index ${index} is out of range`);
+    }
+    if (state.consumed[index])
+      throw new Error(`Prepared test entry ${index} has already been consumed`);
+    state.consumed[index] = true;
+    if (state.consumed.every(Boolean)) _preparedRuns.delete(prepared);
+    const entry = state.entries[index]!;
+    const output: ConsoleCaptureRecord[] = [];
+    const showOutput = options.showOutput ?? 'failures';
+    const release = _pushConsoleCapture((record) => output.push(record));
+    let result: RunResult;
+    try {
+      result = await _runEntries(
+        {
+          showOutput,
+          durations: options.durations === true,
+          timeout: _runTimeout(options),
+          onProgress,
+        },
+        [entry],
+        0,
+        null,
+      );
+    } finally {
+      release();
+    }
+    const plan = output.findIndex((record) => record.fd === 1 && record.text === '1..1');
+    if (plan >= 0) output.splice(plan, 1);
+    return {
+      output,
+      diagnostics: result.diagnostics.map((diagnostic) => ({
+        title: diagnostic.title,
+        errors: diagnostic.errors.map(_formatErrorLines),
+        output: diagnostic.output,
+      })),
+      passed: result.passed,
+      failed: result.failed,
+      skipped: result.skipped,
+    };
   } finally {
     _activeRuns -= 1;
   }
@@ -1197,28 +1208,28 @@ export async function _runPrepared(
   const runStartMs = _nowMs();
   _activeRuns += 1;
   try {
-  console.log('TAP version 13');
-  const { passed, failed, skipped, diagnostics } = await _runEntries(
-    {
-      showOutput,
-      durations,
-      timeout: _runTimeout(options),
-    },
-    entries,
-    0,
-    null,
-  );
-  const total = passed + failed + skipped;
-  console.log('');
-  console.log('# tests ' + total);
-  console.log('# pass  ' + passed);
-  if (skipped > 0) console.log('# skip  ' + skipped);
-  console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
-  if (failed > 0) {
-    console.log('# fail  ' + failed);
-    if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
-    throw new Error(failed + ' test(s) failed');
-  }
+    console.log('TAP version 13');
+    const { passed, failed, skipped, diagnostics } = await _runEntries(
+      {
+        showOutput,
+        durations,
+        timeout: _runTimeout(options),
+      },
+      entries,
+      0,
+      null,
+    );
+    const total = passed + failed + skipped;
+    console.log('');
+    console.log('# tests ' + total);
+    console.log('# pass  ' + passed);
+    if (skipped > 0) console.log('# skip  ' + skipped);
+    console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
+    if (failed > 0) {
+      console.log('# fail  ' + failed);
+      if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
+      throw new Error(failed + ' test(s) failed');
+    }
   } finally {
     _activeRuns -= 1;
   }

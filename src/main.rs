@@ -21,6 +21,17 @@ mod v8_isolate_group;
 mod v8util;
 
 fn main() {
+    use std::io::Write;
+    use std::os::fd::FromRawFd;
+    // Keep a close-on-exec copy for fatal host errors. Runtime-wide output
+    // capture may have redirected fd 2, and a broken main loop cannot drain it.
+    let error_fd = unsafe { libc::fcntl(libc::STDERR_FILENO, libc::F_DUPFD_CLOEXEC, 0) };
+    let mut fatal_stderr = if error_fd >= 0 {
+        Some(unsafe { std::fs::File::from_raw_fd(error_fd) })
+    } else {
+        None
+    };
+
     // Server processes must not die on broken-pipe writes. Network connections
     // can be reset by the remote at any time; SIGPIPE would kill the process.
     #[cfg(unix)]
@@ -78,7 +89,11 @@ fn main() {
     };
 
     if let Err(e) = runtime::run(process_env) {
-        eprintln!("[error] {e}");
+        if let Some(output) = fatal_stderr.as_mut() {
+            let _ = writeln!(output, "[error] {e}");
+        } else {
+            eprintln!("[error] {e}");
+        }
         std::process::exit(1);
     }
 }

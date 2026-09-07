@@ -58,6 +58,7 @@ import type {
   TestFileCompletionAck,
   TestFileRegistration,
   TestGroupCompletion,
+  TestGroupProgress,
   TestGroupResult,
   TestGroupStart,
 } from '../internal/test-worker.ts';
@@ -130,9 +131,12 @@ interface ParallelFileCompletion extends TestFileCompletion {
 interface PreparedParallelTest {
   file: ParallelTestFile;
   registeredTests: TestFileRegistration['tests'];
-  execute(index: number, note?: (stage: string) => void): Promise<ParallelTestResult>;
+  execute(
+    index: number,
+    note?: (stage: string, deadline?: number) => void,
+  ): Promise<ParallelTestResult>;
   /** Re-send a group's start message; the worker ignores one it already ran. */
-  retryStart(index: number): void;
+  retryStart(index: number): boolean;
   completion: Promise<ParallelFileCompletion>;
   completionReported: Promise<TestFileCompletion>;
 }
@@ -188,6 +192,8 @@ async function prepareParallelFile(
     canStart = startable;
     resolveRegistration(tests);
   };
+  const startedGroups = new Set<number>();
+  const progressWaiters = new Map<number, (progress: TestGroupProgress) => void>();
   const resultWaiters = new Map<number, (result: TestGroupResult) => void>();
   const failPending = (error: string) => {
     for (const resolve of resultWaiters.values()) {
@@ -207,6 +213,7 @@ async function prepareParallelFile(
     const message = (event as MessageEvent).data as
       | TestFileRegistration
       | TestGroupCompletion
+      | TestGroupProgress
       | TestFileCompletion
       | undefined;
     if (message?.kind === 'fino:test:registered') {
@@ -217,6 +224,11 @@ async function prepareParallelFile(
       workerCompletion = message;
       resolveCompletionReported(message);
       realm.port.postMessage({ kind: 'fino:test:complete-ack' } satisfies TestFileCompletionAck);
+      return;
+    }
+    if (message?.kind === 'fino:test:progress') {
+      startedGroups.add(message.index);
+      progressWaiters.get(message.index)?.(message);
       return;
     }
     if (message?.kind !== 'fino:test:result') return;
@@ -281,15 +293,19 @@ async function prepareParallelFile(
     registeredTests,
     completion: fileCompletion,
     completionReported,
-    retryStart(index: number): void {
-      if (!canStart) return;
+    retryStart(index: number): boolean {
+      if (!canStart || startedGroups.has(index)) return false;
       // The worker dedupes by index, so a group it already started ignores
       // this. What it does do is write to the transport again, which is the
       // only lever the coordinator has over a Realm that never woke for the
       // first message.
       realm.port.postMessage({ kind: 'fino:test:start', index } satisfies TestGroupStart);
+      return true;
     },
-    async execute(index: number, note?: (stage: string) => void): Promise<ParallelTestResult> {
+    async execute(
+      index: number,
+      note?: (stage: string, deadline?: number) => void,
+    ): Promise<ParallelTestResult> {
       note?.('start');
       if (!canStart) {
         // `canStart` only goes false from a handler that has already recorded
@@ -319,23 +335,39 @@ async function prepareParallelFile(
       // running one. A Realm that wedges outside a test body — or a reply that
       // never arrives — would otherwise leave this await pending for the life
       // of the job, which is a stall with no test to blame it on.
-      const deadline = workerResultDeadlineMs(options);
-      if (deadline <= 0) {
-        note?.('awaiting-reply-forever');
-        return { file, result: await result };
-      }
-      const timersBefore = activeHandleCounts().timers;
-      const expiry = loopTimeout(deadline);
-      expiry.unref();
-      // A deadline is only as good as the timer behind it. Record whether the
-      // loop actually registered one, so a stall dump distinguishes "the reply
-      // never came" from "the deadline was never armed".
-      const armed = activeHandleCounts().timers > timersBefore;
-      note?.(`awaiting-reply-${deadline}ms${armed ? '' : ' [deadline NOT armed]'}`);
-      const settled = await Promise.race([
-        result.then((value) => ({ value })),
-        expiry.then(() => null),
-      ]);
+      let deadline = workerResultDeadlineMs(options);
+      let lastProgress = 'awaiting worker progress';
+      let expiry: ReturnType<typeof loopTimeout> | undefined;
+      let generation = 0;
+      let expire!: () => void;
+      const expired = new Promise<null>((resolve) => {
+        expire = () => resolve(null);
+      });
+      const arm = (stage: string, nextDeadline: number): void => {
+        deadline = nextDeadline;
+        lastProgress = stage;
+        const token = ++generation;
+        expiry?.cancel();
+        expiry = undefined;
+        note?.(stage, deadline);
+        if (deadline <= 0) return;
+        expiry = loopTimeout(deadline);
+        expiry.unref();
+        void expiry.then(() => {
+          if (generation === token) expire();
+        });
+      };
+      // Only actual test/hook transitions renew the lease. An unrelated timer
+      // or console output cannot keep a hung test alive. Each operation carries
+      // its own timeout, including a per-test override or explicit zero.
+      progressWaiters.set(index, (progress) => {
+        arm(progress.name, workerResultDeadlineMs({ timeout: progress.timeout }));
+      });
+      arm('awaiting worker progress', deadline);
+      const settled = await Promise.race([result.then((value) => ({ value })), expired]);
+      progressWaiters.delete(index);
+      generation++;
+      expiry?.cancel();
       if (settled === null) {
         resultWaiters.delete(index);
         // Groups within a file are chained, so a Realm that has stopped
@@ -349,7 +381,7 @@ async function prepareParallelFile(
         // nothing visible from TypeScript otherwise can.
         const pool = reactorPoolStats();
         const error =
-          `${file.display} test Realm did not report group ${index} within ${deadline}ms` +
+          `${file.display} test Realm did not report progress for group ${index} within ${deadline}ms (last: ${lastProgress})` +
           (pool === null ? '' : `; reactor pool ${JSON.stringify(pool)}`);
         startFailure ??= error;
         canStart = false;
@@ -368,7 +400,6 @@ async function prepareParallelFile(
           },
         };
       }
-      expiry.cancel();
       return { file, result: settled.value };
     },
   };
@@ -529,7 +560,7 @@ function startStallWatchdog(
   };
 }
 /**
- * How long the coordinator waits for a worker Realm to report one group.
+ * How long the coordinator tolerates no test/hook progress from a worker.
  *
  * Derived from the per-test deadline so a legitimately slow test is never cut
  * off by it, plus slack for the Realm's own setup and teardown. A run that
@@ -582,8 +613,9 @@ async function runParallelTests(
       label: string;
       stage: string;
       startedAt: number;
+      deadline: number;
       nudges: number;
-      nudge: () => void;
+      nudge: () => boolean;
       force: (result: ParallelTestResult) => void;
     }
     const inFlight = new Map<number, InFlightGroup>();
@@ -594,19 +626,21 @@ async function runParallelTests(
     // wedged group can no longer hold an exclusive barrier, and everything
     // queued behind it, for the life of the job.
     const sweepOverdueGroups = (): boolean => {
-      if (groupDeadline <= 0) return false;
       let abandoned = false;
       const now = performance.now();
       for (const [index, group] of inFlight) {
         const waited = now - group.startedAt;
+        const groupDeadline = group.deadline;
+        // The operation is still inside its explicit lease (possibly infinite).
+        // Do not let the global no-progress watchdog override that contract.
+        if (groupDeadline <= 0 || waited < groupDeadline) watchdog.progress();
+        if (groupDeadline <= 0) continue;
         if (waited < groupDeadline) {
           // Past a quarter of the deadline, re-send the start message on every
           // tick. The worker ignores a group it already started, so this is a
-          // retransmit rather than a re-run: harmless for a merely slow test,
-          // and the only lever the coordinator has over a Realm that never
-          // woke for the first message. A group that reports only after a
-          // retransmit is evidence of a lost wake-up, not of a slow test.
-          if (waited >= groupDeadline / 4) {
+          // retransmit rather than a re-run. Stop retransmitting as soon as
+          // actual progress confirms the worker received its admission.
+          if (waited >= groupDeadline / 4 && group.nudge()) {
             if (group.nudges === 0) {
               // Sampled here and again when the group is abandoned. Whether
               // `controllerRouted` advanced between the two says whether the
@@ -618,7 +652,6 @@ async function runParallelTests(
               );
             }
             group.nudges++;
-            group.nudge();
           }
           continue;
         }
@@ -742,6 +775,7 @@ async function runParallelTests(
             label: groupLabel,
             stage: 'scheduled',
             startedAt: performance.now(),
+            deadline: groupDeadline,
             nudges: 0,
             nudge: () => test.retryStart(index),
             force: forceGroup,
@@ -750,8 +784,14 @@ async function runParallelTests(
           try {
             resolver.resolve(
               await Promise.race([
-                test.execute(index, (stage) => {
+                test.execute(index, (stage, deadline) => {
                   tracked.stage = stage;
+                  if (deadline !== undefined) {
+                    tracked.startedAt = performance.now();
+                    tracked.deadline = deadline;
+                    tracked.nudges = 0;
+                    watchdog.progress();
+                  }
                 }),
                 forced,
               ]),

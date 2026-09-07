@@ -30,6 +30,83 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, message: string):
 }
 
 describe('CLI commands: test', () => {
+  it(
+    'tracks test progress instead of timing out a healthy parallel group',
+    { timeout: 60_000 },
+    async (t) => {
+      await withTempProject(
+        {
+          'progress.test.ts': [
+            "import { describe, it } from 'fino:test/test';",
+            "import { timeout } from 'internal:runtime/loop';",
+            "describe('healthy group', () => {",
+            "  for (let i = 0; i < 3; i++) it('healthy ' + i, { timeout: 15_000 }, async () => { await timeout(11_000); });",
+            '});',
+          ].join('\n'),
+          'override.test.ts': [
+            "import { test } from 'fino:test/test';",
+            "import { timeout } from 'internal:runtime/loop';",
+            "test('long override', { timeout: 45_000 }, async () => { await timeout(33_000); });",
+          ].join('\n'),
+          'unlimited.test.ts': [
+            "import { test } from 'fino:test/test';",
+            "import { timeout } from 'internal:runtime/loop';",
+            "test('unlimited override', { timeout: 0 }, async () => { await timeout(33_000); });",
+          ].join('\n'),
+        },
+        async (dir) => {
+          const { stdout, stderr, result } = await runCli(
+            [
+              'test',
+              '--parallel',
+              '--timeout',
+              '1000',
+              'progress.test.ts',
+              'override.test.ts',
+              'unlimited.test.ts',
+            ],
+            { cwd: dir },
+          );
+          t.equal(
+            result.code,
+            0,
+            'three passing tests can exceed one coordinator deadline in aggregate',
+          );
+          t.equal(stderr, '');
+          t.ok(stdout.includes('ok 3 - healthy 2'));
+          t.ok(stdout.includes('long override'));
+          t.ok(stdout.includes('unlimited override'));
+          t.ok(stdout.includes('# pass  3'));
+        },
+      );
+    },
+  );
+  it('reports a main readiness-controller exception instead of exiting successfully', async (t) => {
+    await withTempProject(
+      {
+        'controller-error.test.ts': [
+          "import { test } from 'fino:test/test';",
+          "import { registerProcessReadiness } from 'internal:scheduler-native';",
+          "import { timeout } from 'internal:runtime/loop';",
+          "test('bad registration', async () => {",
+          '  registerProcessReadiness(1, 12345, 1, 0, 0, 12345);',
+          '  await timeout(1000);',
+          '});',
+        ].join('\n'),
+      },
+      async (dir) => {
+        const { stderr, result } = await runCli(
+          ['test', '--parallel', 'controller-error.test.ts'],
+          { cwd: dir },
+        );
+        t.equal(result.code, 1, 'a thrown main loop callback fails the process');
+        t.ok(
+          stderr.includes('unsupported process readiness filter: 12345'),
+          'fatal diagnostics bypass a capture whose drain loop failed',
+        );
+      },
+    );
+  });
   it('runs the test subcommand', async (t) => {
     const { stdout, stderr, result } = await runCli(['test', './tests/util/topic.test.ts']);
     t.equal(result.code, 0, 'test command exits successfully');

@@ -201,11 +201,18 @@ pub fn run(process_env: ProcessEnv) -> Result<(), String> {
             // The orchestration realm has no scheduler to preempt it, so the
             // magnitude is ignored here and only the sign matters.
             let should_continue = {
-                let undef: v8::Local<v8::Value> = v8::undefined(scope).into();
-                v8::Local::new(scope, &loop_step_fn)
-                    .call(scope, undef, &[])
-                    .and_then(|v| v.number_value(scope))
-                    .is_some_and(|progress| progress >= 0.0)
+                v8::tc_scope!(tc, scope);
+                let undef: v8::Local<v8::Value> = v8::undefined(tc).into();
+                let value = v8::Local::new(tc, &loop_step_fn)
+                    .call(tc, undef, &[])
+                    .ok_or_else(|| {
+                        catch_message(tc)
+                            .unwrap_or_else(|| "main runtime loop step failed".to_string())
+                    })?;
+                value
+                    .number_value(tc)
+                    .ok_or_else(|| "main runtime loop step did not return a number".to_string())?
+                    >= 0.0
             };
 
             if should_continue {

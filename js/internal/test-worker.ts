@@ -47,6 +47,14 @@ export interface TestGroupResult {
   error?: string;
 }
 
+/** Actual test/hook progress, carrying that operation's timeout. @internal */
+export interface TestGroupProgress {
+  kind: 'fino:test:progress';
+  index: number;
+  name: string;
+  timeout: number;
+}
+
 /** Completion message for one admitted top-level entry. @internal */
 export interface TestGroupCompletion {
   kind: 'fino:test:result';
@@ -130,7 +138,19 @@ export default async function runTestFile(
         };
       } else {
         try {
-          const entry = await testModule._runPreparedEntry(prepared!, index, options);
+          const entry = await testModule._runPreparedEntry(
+            prepared!,
+            index,
+            options,
+            (name, timeout) => {
+              port.postMessage({
+                kind: 'fino:test:progress',
+                index,
+                name,
+                timeout,
+              } satisfies TestGroupProgress);
+            },
+          );
           result = {
             ...entry,
             tests: entry.passed + entry.failed + entry.skipped,
