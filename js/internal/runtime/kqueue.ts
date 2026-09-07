@@ -453,8 +453,16 @@ function kevent(
       // ENOENT: filter already removed (fd closed, kernel auto-removed it).
       // EBADF: fd closed before EV_DELETE was processed. Both are benign.
       if (ev.data === ENOENT || ev.data === EBADF) continue;
+      const relatedChanges: Kevent[] = [];
+      if (changeBuf !== null) {
+        const view = new DataView(changeBuf);
+        for (let index = 0; index < nChanges; index++) {
+          const change = readKevent(view, index);
+          if (change.ident === ev.ident && change.filter === ev.filter) relatedChanges.push(change);
+        }
+      }
       throw new Error(
-        `kevent change error: errno=${ev.data} ident=${ev.ident} filter=${ev.filter} flags=${ev.flags} udata=${ev.udata}`,
+        `kevent change error: errno=${ev.data} ident=${ev.ident} filter=${ev.filter} flags=${ev.flags} udata=${ev.udata} kqueue=${kqFd} changes=${JSON.stringify(relatedChanges)}`,
       );
     }
     events.push(ev);
@@ -536,6 +544,19 @@ function queueChange(
   data: number,
   udata: number,
 ): void {
+  // Only the final state of an ident/filter pair can be observed after this
+  // batch is submitted. In particular, do not install an already-cancelled
+  // watch: its descriptor may have been closed and reused before the flush.
+  for (let index = _pendingCount - 1; index >= 0; index--) {
+    const offset = index * KEVENT_SIZE;
+    if (
+      readU64(_pendingView, offset) === ident &&
+      _pendingView.getInt16(offset + 8, true) === filter
+    ) {
+      writeKevent(_pendingView, index, ident, filter, flags, fflags, data, udata);
+      return;
+    }
+  }
   if (_pendingCount >= MAX_PENDING) {
     // Flush pending changes before adding more.
     registerChanges(loop.fd, _pendingBuf, _pendingCount);

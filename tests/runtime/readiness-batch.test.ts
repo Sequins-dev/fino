@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import * as backend from 'internal:runtime/loop-backend';
 import { os } from 'internal:process';
+import { dlopen } from 'fino:ffi';
 
 describe('Readiness registration batches', () => {
   it('installs timers after cancelling an absent watch in a full batch', (t) => {
@@ -41,6 +42,59 @@ describe('Readiness registration batches', () => {
       backend.destroy(raw);
     }
   });
+  if (os === 'darwin') {
+    it('discards cancelled pending watches before descriptor reuse', (t) => {
+      const libc = dlopen('/usr/lib/libSystem.B.dylib', {
+        pipe: { parameters: ['buffer'], result: 'i32' },
+        dup2: { parameters: ['i32', 'i32'], result: 'i32' },
+        close: { parameters: ['i32'], result: 'i32' },
+      });
+      for (const flushFirst of [false, true]) {
+        const raw = backend.create();
+        const descriptors = new Int32Array(2);
+        t.equal(libc.symbols.pipe(descriptors.buffer), 0);
+        const [read, write] = descriptors;
+        try {
+          backend.addRead(raw, read, 123);
+          backend.removeRead(raw, read);
+          // Model close/reuse before the controller submits its queued changes.
+          // Watching a duplicate of this kqueue itself deterministically fails
+          // with EINVAL if the cancelled ADD still reaches the kernel.
+          t.equal(libc.symbols.dup2((raw as { fd: number }).fd, read), read);
+          if (flushFirst) backend.flush(raw);
+          t.deepEqual(backend.wait(raw, 0), []);
+        } finally {
+          libc.symbols.close(read);
+          libc.symbols.close(write);
+          backend.destroy(raw);
+        }
+      }
+    });
+    it('keeps the replacement watch when pending changes share a descriptor', (t) => {
+      const libc = dlopen('/usr/lib/libSystem.B.dylib', {
+        pipe: { parameters: ['buffer'], result: 'i32' },
+        write: { parameters: ['i32', 'buffer', 'u64'], result: 'i64' },
+        close: { parameters: ['i32'], result: 'i32' },
+      });
+      const raw = backend.create();
+      const descriptors = new Int32Array(2);
+      t.equal(libc.symbols.pipe(descriptors.buffer), 0);
+      const [read, write] = descriptors;
+      try {
+        backend.addRead(raw, read, 123);
+        backend.removeRead(raw, read);
+        backend.addRead(raw, read, 456);
+        libc.symbols.write(write, new Uint8Array([1]).buffer, 1);
+        const events = backend.wait(raw, 1000);
+        t.equal(events.length, 1);
+        t.equal(events[0]?.udata, 456);
+      } finally {
+        libc.symbols.close(read);
+        libc.symbols.close(write);
+        backend.destroy(raw);
+      }
+    });
+  }
   if (os === 'linux') {
     it('preserves io_uring completion identities across queue wrap and cancellation', async (t) => {
       const uring = await import('internal:runtime/io_uring');
