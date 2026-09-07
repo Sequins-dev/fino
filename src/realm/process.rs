@@ -338,9 +338,11 @@ pub struct ProcessRealmHandle {
 impl Drop for ProcessRealmHandle {
     fn drop(&mut self) {
         unsafe {
-            // close alone does not wake a poll already holding the socket,
-            // and bridge threads must never read a recycled descriptor.
-            libc::shutdown(self.socket.as_raw_fd(), libc::SHUT_RDWR);
+            // Wake the reader without discarding accepted outbound frames.
+            // The writer retains the socket and drains its queue after tx is
+            // dropped below; a queued termination frame must still reach the
+            // child even when its owning Realm is already being disposed.
+            libc::shutdown(self.socket.as_raw_fd(), libc::SHUT_RD);
             libc::close(self.parent_wake_read);
             libc::close(self.completion_wake_read);
         }
@@ -564,6 +566,8 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
                     break;
                 }
             }
+            // Publish EOF only after all accepted frames have been sent.
+            unsafe { libc::shutdown(socket.as_raw_fd(), libc::SHUT_WR) };
         });
     }
 
@@ -779,6 +783,33 @@ mod tests {
             "bridge retains a valid descriptor until it exits"
         );
         assert_eq!(read, 0, "the retained socket reports shutdown");
+    }
+
+    #[test]
+    fn queued_bridge_write_survives_handle_shutdown() {
+        let (parent, child) = socketpair_fds();
+        let peer = unsafe { OwnedFd::from_raw_fd(child) };
+        let (_, rx) = mpsc::channel();
+        let (tx, _) = mpsc::channel();
+        let handle = ProcessRealmHandle {
+            child_pid: -1,
+            socket: Arc::new(unsafe { OwnedFd::from_raw_fd(parent) }),
+            done: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            reload_requested: Arc::new(AtomicBool::new(false)),
+            rx,
+            tx,
+            parent_wake_read: -1,
+            completion_wake_read: -1,
+        };
+        // Model a writer not scheduled until after the owner has retired.
+        let writer = Arc::clone(&handle.socket);
+        drop(handle);
+        let queued = make_msg(b"last queued frame");
+        write_message(writer.as_raw_fd(), &queued)
+            .expect("owner disposal must let the bridge drain accepted frames");
+        let received = read_message(peer.as_raw_fd()).unwrap();
+        assert_eq!(received.data, queued.data);
     }
 
     /// The envelope header must survive the process-realm wire format intact,
