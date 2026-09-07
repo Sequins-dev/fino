@@ -30,13 +30,14 @@ async function runChild(realm: Realm): Promise<void> {
   ]);
 }
 
-await runChild(new Realm({ entry }));
+await runChild(new Realm({ entry, data: { label: 'inherited' } }));
 console.log('child:inherited:done');
 
 await runChild(
   new Realm({
     entry,
     otlpEndpoint: 'http://override-collector.example:4318/override',
+    data: { label: 'override' },
   }),
 );
 console.log('child:override:done');
@@ -45,6 +46,7 @@ await runChild(
   new Realm({
     entry,
     otlpEndpoint: false,
+    data: { label: 'disabled' },
   }),
 );
 console.log('child:disabled:done');
