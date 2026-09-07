@@ -104,6 +104,15 @@ on its released fd. Record attempts to register work after resource closure and
 correlate them with the resource generation, even if the numeric fd now belongs
 to a different Realm.
 
+A readiness request now retains a separate descriptor while it crosses the
+mailbox and remains installed. Track that controller borrower independently
+from the caller's descriptor: they refer to the same open resource but have
+different close points. The current internal pool snapshot reports
+`readinessBorrowedFds`; a public analyzer should reconcile those borrowers with
+pending and installed registrations. Kernel references count too: retiring a
+JavaScript io_uring poll record does not cancel the kernel poll or release its
+open-file reference.
+
 Pending registration commands need their own visible state. A watch can be
 created and cancelled before its batch reaches the kernel; submitting that
 obsolete ADD after descriptor reuse can fail or attach to the wrong resource.
@@ -111,6 +120,12 @@ Record supersession and cancellation before installation, alongside actual
 kernel receipts. Likewise, transport shutdown must distinguish stopping reads
 from draining accepted outbound frames: retaining the descriptor alone does
 not guarantee that a queued termination message can still be written.
+
+Scheduler evidence must distinguish a recorded wake from a runnable queue entry
+that can actually win admission. A stale high-priority heap entry can hide a
+current lower-priority entry from preemption even while the signalled Realm is
+correctly queued. Record queue generations and the reason a scheduling decision
+keeps or switches the current Realm, with bounded sampling on hot paths.
 
 Separate a resource from an operation on it. One socket can outlive many read
 waits; one persistent signal watch can produce many notifications. An operation
