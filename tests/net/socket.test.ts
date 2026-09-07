@@ -236,10 +236,14 @@ describe('TCP / UDP loopback', () => {
       t.equal(sent.errno, null, 'sendmmsgBatch reports no errno');
       const received = [];
       const deadline = Date.now() + 200;
-      while (received.length < 2 && Date.now() < deadline) {
+      // Retry the actual receive after a wake before checking elapsed time.
+      // A loaded or instrumented Realm may resume after the deadline with
+      // its datagrams already queued.
+      while (received.length < 2) {
         const batch = sock.recvmmsgBatch(server, 2 - received.length, 64);
         if (typeof batch === 'number') {
           t.ok(batch < 0, 'recvmmsgBatch reports a negative errno when no datagram is ready');
+          if (Date.now() >= deadline) break;
           await Promise.race([loop.readable(server), loop.timeout(20)]);
           continue;
         }
@@ -247,6 +251,7 @@ describe('TCP / UDP loopback', () => {
         if (!Array.isArray(batch)) throw new Error('expected recvmmsgBatch results');
         received.push(...batch);
         if (batch.length > 0) continue;
+        if (Date.now() >= deadline) break;
         await Promise.race([loop.readable(server), loop.timeout(20)]);
       }
       t.equal(received.length, 2, 'recvmmsgBatch received both datagrams');
@@ -300,11 +305,12 @@ describe('TCP / UDP loopback', () => {
         if (typeof recvRaw !== 'function') return;
         const rawPayloads: string[] = [];
         const rawDeadline = Date.now() + 200;
-        while (rawPayloads.length < 2 && Date.now() < rawDeadline) {
+        while (rawPayloads.length < 2) {
           const rawPackets = recvRaw.call(rawBatch, server);
           if (typeof rawPackets === 'number') {
             if (rawPackets >= 0)
               throw new Error(`unexpected raw-address batch count ${rawPackets}`);
+            if (Date.now() >= rawDeadline) break;
             await Promise.race([loop.readable(server), loop.timeout(20)]);
             continue;
           }
@@ -317,6 +323,7 @@ describe('TCP / UDP loopback', () => {
           );
           rawPayloads.push(...rawPackets.map((packet: any) => decodeUtf8(packet.data)));
           if (rawPackets.length > 0) continue;
+          if (Date.now() >= rawDeadline) break;
           await Promise.race([loop.readable(server), loop.timeout(20)]);
         }
         t.deepEqual(rawPayloads.sort(), ['raw-one', 'raw-two'], 'raw-address batch payloads match');
@@ -341,7 +348,7 @@ describe('TCP / UDP loopback', () => {
         const eachAddrLens: number[] = [];
         let eachCount = 0;
         const eachDeadline = Date.now() + 200;
-        while (eachCount < 2 && Date.now() < eachDeadline) {
+        while (eachCount < 2) {
           const count = recvRawEach.call(
             rawBatch,
             server,
@@ -358,6 +365,7 @@ describe('TCP / UDP loopback', () => {
             eachCount += count;
             continue;
           }
+          if (Date.now() >= eachDeadline) break;
           await Promise.race([loop.readable(server), loop.timeout(20)]);
         }
         t.equal(eachCount, 2, 'callback raw-address batch receive reports datagram count');

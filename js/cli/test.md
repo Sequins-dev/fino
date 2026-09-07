@@ -123,3 +123,48 @@ covered each line, function, and branch.
 
 Use [`fino coverage`](./coverage.md) to inspect that artifact, apply thresholds,
 or export LCOV.
+
+### Inspect readiness delivery
+
+Run `FINO_TRACE_READINESS=1 fino test --parallel tests` to retain the most recent
+65,536 readiness transitions across scheduled Realms. A failed parallel suite or
+coordinator deadline prints a `# readiness trace:` JSON recording and a reduced
+`# readiness analysis:` report. The first failed group snapshots immediately
+when its result is received for output, so later groups cannot overwrite that
+recording. Save the output to a file; from a source checkout,
+`fino run scripts/analyze-readiness.ts test.log` analyzes the last recording again.
+
+Each registration has a process-local operation ID and destination Realm owner.
+The recording distinguishes controller receipt, controller installation, routing,
+owner signalling, mailbox draining, resolver invocation, cancellation, replacement,
+and late completion discards. `controller-installed` means the controller created
+its local watch; it is not a kernel installation receipt. `resolved` records the
+resolver invocation, before the subsequent Promise continuation runs. A generation
+mismatch records an old completion meeting a newer registration with the same token.
+
+The ledger retains metadata only and does not hold resources alive. Collection is
+disabled unless the environment variable is set before startup. Enabled tracing
+adds synchronization and allocation and can affect timing. Its `dropped` count and
+analysis `incompleteHistory` flag identify overwritten history; absence from a
+truncated recording does not prove that an operation never existed. Pending entries
+are observed waits, including healthy persistent watches, and do not by themselves
+prove a hang.
+
+This tool currently covers delegated readiness in the local process. It does not
+trace all FFI jobs, RPC messages, Promise continuations, or other processes. The
+broader application diagnostics API is still a design proposal.
+
+To inspect a process that hangs without reporting a test failure, also set
+`FINO_TRACE_DIRECTORY=/absolute/path/to/recordings`. An independent native reader
+atomically replaces `readiness-PID.json` every two seconds. It does not enter or
+signal any Realm, so it can record a stalled main thread or reactor. The same
+analysis command accepts these JSON files. Child processes inherit the setting
+and write separate files. Files remain after exit; the last periodic snapshot
+can predate final cleanup.
+
+These snapshots include parent owners, entry paths, scheduler phases, the pool's
+resident and parked owners, and the last loop handle counts reported by each
+Realm. Test workers also report their file and lifecycle stage. Observations are
+last-known state, not a simultaneous inspection of live isolates. A busy pool
+mutex is reported as unavailable rather than blocking the recorder. Recordings
+contain local paths and consume disk space; remove the directory after analysis.

@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      readiness_trace:
+        description: Record readiness and live Realm state for hang diagnosis
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -213,7 +218,22 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
+        timeout-minutes: 10
+        env:
+          FINO_TRACE_READINESS: ${{ inputs.readiness_trace && '1' || '0' }}
+          FINO_TRACE_DIRECTORY: ${{ runner.temp }}/fino-readiness
+        run: |
+          FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
+          echo "fino test process exited successfully"
+
+      - name: Upload runtime recordings
+        if: ${{ always() && inputs.readiness_trace }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-${{ runner.os }}
+          path: ${{ runner.temp }}/fino-readiness
+          if-no-files-found: warn
+          retention-days: 3
 
   release-readiness:
     name: Release Readiness
@@ -263,4 +283,19 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
+        timeout-minutes: 10
+        env:
+          FINO_TRACE_READINESS: ${{ inputs.readiness_trace && '1' || '0' }}
+          FINO_TRACE_DIRECTORY: ${{ runner.temp }}/fino-readiness
+        run: |
+          FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
+          echo "fino test process exited successfully"
+
+      - name: Upload runtime recordings
+        if: ${{ always() && inputs.readiness_trace }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: readiness-${{ runner.os }}
+          path: ${{ runner.temp }}/fino-readiness
+          if-no-files-found: warn
+          retention-days: 3

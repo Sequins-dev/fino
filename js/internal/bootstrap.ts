@@ -63,9 +63,14 @@ import {
   _trackAtomicsWaiter,
   _untrackAtomicsWaiter,
   _schedulerPollingRequired,
+  _activeHandleCounts,
 } from './runtime/loop.ts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
-import { setSchedulerPollingRequired, usesProcessReadiness } from 'internal:scheduler-native';
+import {
+  setSchedulerPollingRequired,
+  usesProcessReadiness,
+  recordRealmState,
+} from 'internal:scheduler-native';
 import { EnvelopeKind } from 'internal:realm/envelope';
 import { wakeFd } from 'internal:async-runtime';
 import { registerRealmProfiling } from 'internal:process-profiler';
@@ -407,8 +412,18 @@ export function driveLoop(
 ): void {
   const processScheduled = usesProcessReadiness();
   let emptyTicks = 0;
+  const tracing = env['FINO_TRACE_READINESS'] === '1';
+  let lastDiagnostic = '';
+  function report(done: boolean): void {
+    if (!tracing) return;
+    const state = JSON.stringify({ entry: getEntryPath(), done, handles: _activeHandleCounts() });
+    if (state === lastDiagnostic) return;
+    lastDiagnostic = state;
+    recordRealmState('loop', state);
+  }
   function step(): number {
     const initiallyDone = isDone();
+    report(initiallyDone);
     if (initiallyDone && (finishWhenDone() || !alive())) return -1;
     // A reactor-scheduled realm never blocks here: its readiness completions
     // are delivered by the main thread, which owns the only backend.
@@ -437,6 +452,7 @@ export function driveLoop(
       drainMicrotasks();
       done = isDone();
     }
+    report(done);
     if (done && (finishWhenDone() || !alive())) return -1;
     return count + delivered + advanced;
   }

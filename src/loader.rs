@@ -128,6 +128,10 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:scheduler-native",
         BuiltinKind::Synthetic(crate::scheduler_native::create_module),
     ),
+    source_builtin!(
+        "internal:scheduler/readiness-analysis",
+        "internal/scheduler/readiness-analysis"
+    ),
     source_builtin!("internal:loader", "internal/loader"),
     source_builtin!("internal:bootstrap", "internal/bootstrap"),
     source_builtin!("fino:realm", "realm/index"),

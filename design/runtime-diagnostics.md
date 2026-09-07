@@ -1,7 +1,10 @@
 # Runtime diagnostics across Realms
 
-Proposal, 2026-09-07. This is a follow-up design, not an implemented API. The
-test-hang repairs and their validation are described in the pull request.
+Proposal, 2026-09-07. The public API below remains a follow-up design. The
+branch now includes an opt-in, bounded readiness ledger, generation checks,
+parallel-test failure snapshots, and an offline analyzer. See the test CLI
+guide for `FINO_TRACE_READINESS=1`. These implement the first diagnostic slice;
+they do not yet provide holistic tracing of every Realm operation.
 
 ## What a user should be able to learn
 

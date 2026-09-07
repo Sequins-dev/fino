@@ -13,6 +13,7 @@ import * as loop from 'internal:runtime/loop';
 import * as backend from 'internal:runtime/loop-backend';
 import {
   routeProcessReadiness,
+  recordReadinessTrace,
   signalReactorOwner,
   takeSharedReadinessChanges,
   releaseSharedReadinessFd,
@@ -31,6 +32,7 @@ interface ReadinessChange {
   schedulerWake?: boolean;
   schedulerPoll?: boolean;
   borrowedFd?: number;
+  traceId: number;
 }
 
 const EVFILT_READ = -1;
@@ -60,6 +62,7 @@ function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
     schedulerWake,
     schedulerPoll,
     borrowedFd,
+    traceId,
   ] = tuple;
   return {
     ident,
@@ -68,6 +71,7 @@ function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
     fflags,
     data,
     udata,
+    traceId,
     ...(cancelOwner === null ? {} : { cancelOwner }),
     ...(schedulerWake ? { schedulerWake } : {}),
     ...(schedulerPoll ? { schedulerPoll } : {}),
@@ -92,6 +96,7 @@ function route(
     data: number;
     udata: number;
     installed?: boolean;
+    traceId: number;
   },
 ): void {
   routeProcessReadiness(
@@ -104,6 +109,19 @@ function route(
     event.udata,
     event.installed === true ? 1 : 0,
     true,
+    event.traceId,
+  );
+}
+
+function trace(change: ReadinessChange, stage: string): void {
+  if (!change.traceId) return;
+  recordReadinessTrace(
+    change.traceId,
+    Math.floor(change.udata / TOKEN_BASE),
+    stage,
+    change.ident,
+    change.filter,
+    change.udata,
   );
 }
 
@@ -124,6 +142,7 @@ function routeInstalled(owner: number, change: ReadinessChange): void {
     fflags: 0,
     data: 0,
     udata: change.udata,
+    traceId: change.traceId,
     installed: true,
   });
 }
@@ -162,7 +181,9 @@ export class ProcessReadinessController {
   #apply(change: ReadinessChange): void {
     try {
       this.#install(change);
+      if ((change.flags & EV_DELETE) === 0) trace(change, 'controller-installed');
     } catch (error) {
+      trace(change, 'installation-failed');
       this.#releaseFd(change);
       throw error;
     }
@@ -172,6 +193,7 @@ export class ProcessReadinessController {
       for (const [registration, active] of this.#registrations) {
         if (active.owner !== change.cancelOwner) continue;
         this.#registrations.delete(registration);
+        trace(active.change, 'cancelled-owner-retired');
         active.cancel();
       }
       return;
@@ -184,7 +206,10 @@ export class ProcessReadinessController {
       const owner = change.udata;
       const registration = `poll:${owner}`;
       const previous = this.#registrations.get(registration);
-      previous?.cancel();
+      if (previous) {
+        trace(previous.change, (change.flags & EV_DELETE) !== 0 ? 'cancelled' : 'replaced');
+        previous.cancel();
+      }
       const timer = loop.timeout(change.data);
       const active: Registration = {
         owner,
@@ -193,7 +218,10 @@ export class ProcessReadinessController {
       };
       this.#registrations.set(registration, active);
       void timer.then(() => {
-        if (this.#registrations.get(registration) !== active) return;
+        if (this.#registrations.get(registration) !== active) {
+          trace(change, 'discarded-controller-stale');
+          return;
+        }
         this.#registrations.delete(registration);
         signalReactorOwner(owner);
       });
@@ -207,7 +235,10 @@ export class ProcessReadinessController {
       // callback from re-arming over the new owner's filter.
       const registration = `scheduler-fd:${change.ident}`;
       const previous = this.#registrations.get(registration);
-      previous?.cancel();
+      if (previous) {
+        trace(previous.change, (change.flags & EV_DELETE) !== 0 ? 'cancelled' : 'replaced');
+        previous.cancel();
+      }
       // The retained descriptor is unique to this registration and uses the
       // controller's local token. Preserve owner-tagged tokens for commands
       // without a descriptor borrow.
@@ -226,7 +257,10 @@ export class ProcessReadinessController {
         };
         this.#registrations.set(registration, active);
         void ready.then(() => {
-          if (this.#registrations.get(registration) !== active) return;
+          if (this.#registrations.get(registration) !== active) {
+            trace(change, 'discarded-controller-stale');
+            return;
+          }
           if (!signalReactorOwner(owner)) {
             this.#registrations.delete(registration);
             this.#releaseFd(change);
@@ -241,7 +275,10 @@ export class ProcessReadinessController {
     const registration = this.#key(change);
     const previous = this.#registrations.get(registration);
     const owner = Math.floor(change.udata / TOKEN_BASE);
-    previous?.cancel();
+    if (previous) {
+      trace(previous.change, (change.flags & EV_DELETE) !== 0 ? 'cancelled' : 'replaced');
+      previous.cancel();
+    }
     this.#registrations.delete(registration);
     if ((change.flags & EV_DELETE) !== 0) return;
     const fd = change.borrowedFd ?? change.ident;
@@ -261,7 +298,10 @@ export class ProcessReadinessController {
         fd,
         change.fflags,
         (event) => {
-          if (this.#registrations.get(registration) !== active) return;
+          if (this.#registrations.get(registration) !== active) {
+            trace(change, 'discarded-controller-stale');
+            return;
+          }
           route(owner, {
             ident: change.ident,
             filter: change.filter,
@@ -269,6 +309,7 @@ export class ProcessReadinessController {
             fflags: event.fflags,
             data: 0,
             udata: change.udata,
+            traceId: change.traceId,
           });
         },
         token,
@@ -287,7 +328,10 @@ export class ProcessReadinessController {
       loop.signal(
         change.ident,
         () => {
-          if (this.#registrations.get(registration) !== active) return;
+          if (this.#registrations.get(registration) !== active) {
+            trace(change, 'discarded-controller-stale');
+            return;
+          }
           route(owner, {
             ident: change.ident,
             filter: change.filter,
@@ -295,6 +339,7 @@ export class ProcessReadinessController {
             fflags: 0,
             data: 0,
             udata: change.udata,
+            traceId: change.traceId,
           });
         },
         change.udata,
@@ -333,7 +378,10 @@ export class ProcessReadinessController {
     };
     this.#registrations.set(registration, active);
     void ready.then((available) => {
-      if (this.#registrations.get(registration) !== active) return;
+      if (this.#registrations.get(registration) !== active) {
+        trace(change, 'discarded-controller-stale');
+        return;
+      }
       this.#registrations.delete(registration);
       this.#releaseFd(change);
       route(owner, {
@@ -343,6 +391,7 @@ export class ProcessReadinessController {
         fflags: 0,
         data: typeof available === 'number' ? available : 0,
         udata: change.udata,
+        traceId: change.traceId,
       });
     });
   }
@@ -390,7 +439,10 @@ export class ProcessReadinessController {
     this.#running = false;
     this.#drainCommands();
     loop.unregisterWakeSource(this.controlFd);
-    for (const active of this.#registrations.values()) active.cancel();
+    for (const active of this.#registrations.values()) {
+      trace(active.change, 'cancelled-controller-stopped');
+      active.cancel();
+    }
     this.#registrations.clear();
     this.#flushReleases();
   }

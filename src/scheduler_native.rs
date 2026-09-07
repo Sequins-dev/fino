@@ -254,6 +254,241 @@ fn next_owner() -> u32 {
     }
 }
 
+// The shared ledger is native only because movable isolates cannot share JS
+// objects. It retains scalar metadata, never handles or Realm references.
+#[derive(Clone, serde::Serialize)]
+struct ReadinessTraceEvent {
+    sequence: u64,
+    elapsed_us: u64,
+    operation: u64,
+    owner: u32,
+    stage: String,
+    ident: f64,
+    filter: i32,
+    token: f64,
+}
+
+#[derive(Default)]
+struct ReadinessTrace {
+    sequence: u64,
+    dropped: u64,
+    events: VecDeque<ReadinessTraceEvent>,
+}
+
+impl ReadinessTrace {
+    fn push(&mut self, mut event: ReadinessTraceEvent, capacity: usize) {
+        self.sequence += 1;
+        event.sequence = self.sequence;
+        if self.events.len() == capacity {
+            self.events.pop_front();
+            self.dropped += 1;
+        }
+        self.events.push_back(event);
+    }
+}
+
+fn readiness_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("FINO_TRACE_READINESS").as_deref() == Ok("1"))
+}
+
+fn readiness_trace() -> &'static Mutex<ReadinessTrace> {
+    static TRACE: std::sync::OnceLock<Mutex<ReadinessTrace>> = std::sync::OnceLock::new();
+    TRACE.get_or_init(|| Mutex::new(ReadinessTrace::default()))
+}
+
+fn readiness_trace_elapsed_us() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_micros() as u64
+}
+
+fn trace_readiness(operation: u64, owner: u32, stage: &str, ident: f64, filter: i32, token: f64) {
+    if !readiness_trace_enabled() || operation == 0 {
+        return;
+    }
+    readiness_trace().lock().unwrap().push(
+        ReadinessTraceEvent {
+            sequence: 0,
+            elapsed_us: readiness_trace_elapsed_us(),
+            operation,
+            owner,
+            stage: stage.to_owned(),
+            ident,
+            filter,
+            token,
+        },
+        65_536,
+    );
+}
+
+fn record_readiness_trace(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let operation = handle_arg(scope, args.get(0));
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let stage = args.get(2).to_rust_string_lossy(scope);
+    let ident = args.get(3).number_value(scope).unwrap_or(0.0);
+    let filter = args.get(4).int32_value(scope).unwrap_or(0);
+    let token = args.get(5).number_value(scope).unwrap_or(0.0);
+    trace_readiness(operation, owner, &stage, ident, filter, token);
+}
+
+fn readiness_trace_snapshot(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = (!args.get(0).is_undefined()).then(|| args.get(0).uint32_value(scope).unwrap_or(0));
+    let json = readiness_snapshot(owner).to_string();
+    rv.set(v8::String::new(scope, &json).unwrap().into());
+}
+
+fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
+    let trace = readiness_trace().lock().unwrap();
+    let events: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| owner.is_none_or(|owner| event.owner == owner))
+        .cloned()
+        .collect();
+    let sequence = trace.sequence;
+    let dropped = trace.dropped;
+    drop(trace);
+    let realms = realm_diagnostics().lock().unwrap().clone();
+    let pool_state = match process_pool().try_lock() {
+        Ok(pool) => match pool.as_ref() {
+            Some(pool) => match pool.inner.try_lock() {
+                Ok(inner) => serde_json::json!({
+                    "parked": inner.parked.keys().copied().collect::<Vec<_>>(),
+                    "residents": inner.residents,
+                    "priorities": inner.priorities,
+                    "waiting": inner.waiting,
+                    "queuedEvents": inner.events.len(),
+                    "readyEntries": inner.ready.len(),
+                    "shutdown": inner.shutdown,
+                }),
+                Err(_) => serde_json::json!({ "unavailable": "pool mutex busy" }),
+            },
+            None => serde_json::Value::Null,
+        },
+        Err(_) => serde_json::json!({ "unavailable": "registry mutex busy" }),
+    };
+    serde_json::json!({ "version": 1, "enabled": readiness_trace_enabled(),
+        "pid": std::process::id(), "elapsed_us": readiness_trace_elapsed_us(),
+        "capacity": 65_536, "sequence": sequence, "dropped": dropped, "events": events,
+        "realms": realms, "pool": pool_state })
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+struct RealmDiagnostic {
+    phase: String,
+    updated_us: u64,
+    parent: Option<u32>,
+    entry: Option<String>,
+    observations: HashMap<String, String>,
+}
+
+fn realm_diagnostics() -> &'static Mutex<HashMap<u32, RealmDiagnostic>> {
+    static STATES: std::sync::OnceLock<Mutex<HashMap<u32, RealmDiagnostic>>> =
+        std::sync::OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn realm_created(owner: u32, parent: u32, entry: &str) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    states.insert(
+        owner,
+        RealmDiagnostic {
+            parent: Some(parent),
+            entry: Some(entry.to_owned()),
+            phase: "queued".to_owned(),
+            updated_us: readiness_trace_elapsed_us(),
+            ..Default::default()
+        },
+    );
+}
+
+fn realm_phase(owner: u32, phase: &str) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    if phase == "disposed" {
+        states.remove(&owner);
+        return;
+    }
+    let state = states.entry(owner).or_default();
+    state.phase = phase.to_owned();
+    state.updated_us = readiness_trace_elapsed_us();
+}
+
+fn record_realm_state(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let owner = get_state(scope).borrow().scheduler_workload_owner;
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let value = args.get(1).to_rust_string_lossy(scope);
+    // Diagnostic observations cannot grow without bound within one Realm.
+    if name.len() > 64 || value.len() > 16_384 {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    let state = states.entry(owner).or_default();
+    if state.observations.len() < 16 || state.observations.contains_key(&name) {
+        state.observations.insert(name, value);
+    }
+}
+
+// A diagnostic reader must survive a blocked main thread, lost reactor wake,
+// or isolate disposal deadlock. This thread only copies scalar observations;
+// it never enters an isolate, owns its handles, or signals runtime work.
+fn start_readiness_recorder() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let Some(directory) = std::env::var_os("FINO_TRACE_DIRECTORY") else {
+        return;
+    };
+    STARTED.call_once(|| {
+        std::thread::spawn(move || {
+            let directory = std::path::PathBuf::from(directory);
+            if let Err(error) = std::fs::create_dir_all(&directory) {
+                eprintln!("readiness recorder: {error}");
+                return;
+            }
+            let path = directory.join(format!("readiness-{}.json", std::process::id()));
+            let temporary = path.with_extension("tmp");
+            loop {
+                let snapshot = readiness_snapshot(None).to_string();
+                if let Err(error) = std::fs::write(&temporary, snapshot)
+                    .and_then(|()| std::fs::rename(&temporary, &path))
+                {
+                    eprintln!("readiness recorder: {error}");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+    });
+}
+
 struct ReadinessChange {
     ident: f64,
     filter: i32,
@@ -272,6 +507,7 @@ struct ReadinessChange {
     /// already sleeping in kqueue/io_uring.
     scheduler_poll: bool,
     borrowed_fd: Option<RawFd>,
+    trace_id: u64,
 }
 
 impl ReadinessChange {
@@ -288,6 +524,7 @@ impl ReadinessChange {
             scheduler_wake: false,
             scheduler_poll: false,
             borrowed_fd: None,
+            trace_id: 0,
         }
     }
 }
@@ -306,16 +543,17 @@ fn request_scheduler_poll(owner: u32, delay_ms: f64) {
 
 /// Number of `f64` slots per routed readiness completion.
 ///
-/// A completion is seven scalars the kernel already produced. It used to cross
+/// A completion carries seven readiness scalars and one diagnostic operation ID.
+/// It used to cross
 /// to its owning realm as a structured clone — a ValueSerializer round trip, a
 /// heap allocation, a backing store and a `Uint8Array` per event — to move
-/// fifty-six bytes of numbers. The fixed layout below removes all of that: the
+/// a few scalars. The fixed layout below removes all of that: the
 /// whole batch arrives as one `Float64Array`.
-const COMPLETION_SLOTS: usize = 7;
+const COMPLETION_SLOTS: usize = 8;
 
 /// One routed readiness completion in fixed layout.
 ///
-/// Slots: ident, filter, flags, fflags, data, udata, installed.
+/// Slots: ident, filter, flags, fflags, data, udata, installed, trace_id.
 type ReadinessCompletion = [f64; COMPLETION_SLOTS];
 
 #[derive(Default)]
@@ -666,6 +904,7 @@ fn drive_slice(
         return Err("scheduled Realm was force-terminated".to_string());
     }
     let owner = workload.owner;
+    realm_phase(owner, "running");
     let context_global = workload.context.clone();
     v8::scope!(let isolate_scope, &mut *active.locker);
     let context = v8::Local::new(isolate_scope, &context_global);
@@ -744,7 +983,18 @@ fn retire_owner(owner: u32) {
     // replacing the successor owner's filter.
     owner_pools().lock().unwrap().remove(&owner);
     let mut inner = mailbox().inner.lock().unwrap();
-    inner.events.remove(&owner);
+    if let Some(events) = inner.events.remove(&owner) {
+        for event in events {
+            trace_readiness(
+                event[7] as u64,
+                owner,
+                "discarded-owner-retired",
+                event[0],
+                event[1] as i32,
+                event[5],
+            );
+        }
+    }
     let mut change = ReadinessChange::control(0.0, 0.0);
     change.cancel_owner = Some(owner);
     inner.changes.push(change);
@@ -753,6 +1003,8 @@ fn retire_owner(owner: u32) {
 }
 
 fn drop_workload(mut workload: Workload) {
+    let owner = workload.owner;
+    realm_phase(owner, "disposing");
     // Clear any pending interrupt before entering the isolate for teardown, so
     // a forced termination cannot unwind the disposal path itself.
     workload
@@ -777,6 +1029,7 @@ fn drop_workload(mut workload: Workload) {
         }
     }
     drop(workload);
+    realm_phase(owner, "disposed");
 }
 
 #[derive(Clone, Copy)]
@@ -1217,6 +1470,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                     shared.park(resident);
                 }
                 let owner = item.owner;
+                realm_phase(owner, "initializing");
                 // Removing the item from `parked` and recording it as resident
                 // happens under the queue lock, so only this worker can perform
                 // the Pending -> Live transition.
@@ -1236,6 +1490,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                                     ScheduledRealmResult::Error(error.clone())
                                 });
                             }
+                            realm_phase(owner, "disposed");
                             shared.finish(owner);
                             shared.notify(PoolEvent {
                                 kind: if forced {
@@ -1268,6 +1523,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
         let outcome = drive_slice(resident.item.live_mut(), &mut resident.active, &shared);
         let (result, event) = match outcome {
             Ok(Slice::Preempted) => {
+                realm_phase(owner, "preempted");
                 // The realm still has work it could complete immediately, so it
                 // has to stay queued. Its readiness completions were already
                 // consumed, and nothing else will signal a realm whose
@@ -1280,6 +1536,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 continue;
             }
             Ok(Slice::Quiescent { polling }) => {
+                realm_phase(owner, if polling { "polling" } else { "waiting" });
                 // A realm whose only remaining work is invisible to the kernel
                 // has nothing that can signal it. Borrow a timer from the main
                 // realm so it is re-signalled like any other readiness event,
@@ -1292,6 +1549,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 continue;
             }
             Ok(Slice::Settled) => {
+                realm_phase(owner, "settled");
                 let result = if resident.item.live_mut().state.borrow().reload_requested {
                     ScheduledRealmResult::Reload
                 } else {
@@ -1378,6 +1636,11 @@ fn create_workload(
         }
     };
     let wake_fd = async_pipe.0;
+    realm_created(
+        owner,
+        get_state(scope).borrow().scheduler_workload_owner,
+        &entry,
+    );
     let pending = PendingWorkload {
         owner,
         inner: Some(Box::new(PendingWorkloadInner {
@@ -1519,6 +1782,11 @@ fn create_scheduled_realm(
         force_requested: AtomicBool::new(false),
     });
     let wake_fd = async_pipe.0;
+    realm_created(
+        owner,
+        get_state(scope).borrow().scheduler_workload_owner,
+        &entry,
+    );
     let pending = PendingWorkload {
         owner,
         inner: Some(Box::new(PendingWorkloadInner {
@@ -1757,6 +2025,7 @@ fn start_reactor_pool(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    start_readiness_recorder();
     let mut registered = process_pool().lock().unwrap();
     if registered.is_some() {
         v8util::throw_error(
@@ -2045,20 +2314,44 @@ fn readiness_change_from_args(
         scheduler_wake: false,
         scheduler_poll: false,
         borrowed_fd: None,
+        trace_id: 0,
     }
 }
 
 fn register_process_readiness(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
     let mut change = readiness_change_from_args(scope, &args);
+    if readiness_trace_enabled() {
+        change.trace_id = next_handle();
+        trace_readiness(
+            change.trace_id,
+            (change.udata / 4294967296.0) as u32,
+            if change.flags & 2 != 0 {
+                "cancel-requested"
+            } else {
+                "registered"
+            },
+            change.ident,
+            change.filter,
+            change.udata,
+        );
+    }
     let mut inner = mailbox().inner.lock().unwrap();
     if change.flags & 1 != 0 && matches!(change.filter, -1 | -2 | -4) {
         match inner.borrow_fd(change.ident as RawFd) {
             Ok(fd) => change.borrowed_fd = Some(fd),
             Err(error) => {
+                trace_readiness(
+                    change.trace_id,
+                    (change.udata / 4294967296.0) as u32,
+                    "registration-failed",
+                    change.ident,
+                    change.filter,
+                    change.udata,
+                );
                 drop(inner);
                 v8util::throw_error(
                     scope,
@@ -2068,6 +2361,7 @@ fn register_process_readiness(
             }
         }
     }
+    rv.set(v8::Number::new(scope, change.trace_id as f64).into());
     inner.changes.push(change);
     drop(inner);
     mailbox().notify();
@@ -2114,7 +2408,15 @@ fn take_readiness_changes(
     let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
     let values = v8::Array::new(scope, changes.len() as i32);
     for (index, change) in changes.into_iter().enumerate() {
-        let tuple = v8::Array::new(scope, 10);
+        trace_readiness(
+            change.trace_id,
+            (change.udata / 4294967296.0) as u32,
+            "controller-received",
+            change.ident,
+            change.filter,
+            change.udata,
+        );
+        let tuple = v8::Array::new(scope, 11);
         for (field, value) in [
             v8::Number::new(scope, change.ident).into(),
             v8::Integer::new(scope, change.filter).into(),
@@ -2132,6 +2434,7 @@ fn take_readiness_changes(
                 .borrowed_fd
                 .map(|fd| v8::Integer::new(scope, fd).into())
                 .unwrap_or_else(|| v8::null(scope).into()),
+            v8::Number::new(scope, change.trace_id as f64).into(),
         ]
         .into_iter()
         .enumerate()
@@ -2159,9 +2462,18 @@ fn route_process_readiness(
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
     let mut completion: ReadinessCompletion = [0.0; COMPLETION_SLOTS];
-    for (slot, value) in completion.iter_mut().enumerate() {
+    for (slot, value) in completion[..7].iter_mut().enumerate() {
         *value = args.get(slot as i32 + 1).number_value(scope).unwrap_or(0.0);
     }
+    completion[7] = args.get(9).number_value(scope).unwrap_or(0.0);
+    trace_readiness(
+        completion[7] as u64,
+        owner,
+        "routed",
+        completion[0],
+        completion[1] as i32,
+        completion[5],
+    );
     CONTROLLER_ROUTED.fetch_add(1, Ordering::Relaxed);
     mailbox()
         .inner
@@ -2171,14 +2483,28 @@ fn route_process_readiness(
         .entry(owner)
         .or_default()
         .push(completion);
-    if args.get(COMPLETION_SLOTS as i32 + 1).boolean_value(scope)
-        && let Some(pool) = owner_pools()
-            .lock()
-            .unwrap()
-            .get(&owner)
-            .and_then(Weak::upgrade)
-    {
-        pool.signal(owner);
+    if args.get(8).boolean_value(scope) {
+        let owners = owner_pools().lock().unwrap();
+        if let Some(pool) = owners.get(&owner).and_then(Weak::upgrade) {
+            pool.signal(owner);
+            trace_readiness(
+                completion[7] as u64,
+                owner,
+                "owner-signalled",
+                completion[0],
+                completion[1] as i32,
+                completion[5],
+            );
+        } else {
+            trace_readiness(
+                completion[7] as u64,
+                owner,
+                "owner-absent-at-route",
+                completion[0],
+                completion[1] as i32,
+                completion[5],
+            );
+        }
     }
 }
 
@@ -2200,6 +2526,16 @@ fn take_shared_loop_events(
         .events
         .remove(&owner)
         .unwrap_or_default();
+    for event in &events {
+        trace_readiness(
+            event[7] as u64,
+            owner,
+            "mailbox-drained",
+            event[0],
+            event[1] as i32,
+            event[5],
+        );
+    }
     let slots = events.len() * COMPLETION_SLOTS;
     let bytes = slots * std::mem::size_of::<f64>();
     let store = v8::ArrayBuffer::new_backing_store(scope, bytes);
@@ -2259,6 +2595,9 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "releaseSharedReadinessFd",
         "routeProcessReadiness",
         "takeSharedLoopEvents",
+        "recordReadinessTrace",
+        "readinessTraceSnapshot",
+        "recordRealmState",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -2273,6 +2612,7 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
+    crate::set_fn!(scope, module, "recordRealmState", record_realm_state);
     crate::set_fn!(
         scope,
         module,
@@ -2358,6 +2698,18 @@ fn eval_steps<'a>(
         "takeSharedLoopEvents",
         take_shared_loop_events
     );
+    crate::set_fn!(
+        scope,
+        module,
+        "recordReadinessTrace",
+        record_readiness_trace
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "readinessTraceSnapshot",
+        readiness_trace_snapshot
+    );
     Some(v8::undefined(scope).into())
 }
 
@@ -2366,6 +2718,37 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn readiness_trace_is_bounded_and_reports_eviction() {
+        let mut trace = ReadinessTrace::default();
+        for operation in 1..=5 {
+            trace.push(
+                ReadinessTraceEvent {
+                    sequence: 0,
+                    elapsed_us: 0,
+                    operation,
+                    owner: 7,
+                    stage: "registered".to_owned(),
+                    ident: 9.0,
+                    filter: -1,
+                    token: 9.0,
+                },
+                3,
+            );
+        }
+        assert_eq!(trace.sequence, 5);
+        assert_eq!(trace.dropped, 2);
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.operation)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert_eq!(trace.events.front().unwrap().sequence, 3);
+    }
 
     #[test]
     fn readiness_borrow_survives_original_descriptor_reuse() {

@@ -12,6 +12,8 @@
  *
  * @internal
  */
+import { recordRealmState } from 'internal:scheduler-native';
+import { env } from '../process.ts';
 import { allowInternalForTests } from 'internal:loader-hooks';
 import { port } from 'fino:realm/self';
 import { runShutdownHooks } from 'internal:shutdown';
@@ -87,6 +89,11 @@ export default async function runTestFile(
   installProcessExitHandler((code) => {
     throw new Error(`test file requested process exit with code ${code}`);
   });
+  const tracing = env['FINO_TRACE_READINESS'] === '1';
+  const report = (stage: string, details: Record<string, unknown> = {}) => {
+    if (tracing) recordRealmState('test', JSON.stringify({ specifier, stage, ...details }));
+  };
+  report('loading');
   allowInternalForTests();
   const testModule = await import('fino:test/test');
   let prepared: ReturnType<typeof testModule._prepareRun> | undefined;
@@ -99,6 +106,7 @@ export default async function runTestFile(
     loadError = errorText(error);
   }
 
+  report('registered');
   const count = loadError === undefined ? prepared!.count : 1;
   let remaining = count;
   let finish!: () => void;
@@ -143,6 +151,7 @@ export default async function runTestFile(
             index,
             options,
             (name, timeout) => {
+              report('running', { index, name, timeout });
               port.postMessage({
                 kind: 'fino:test:progress',
                 index,
@@ -186,6 +195,7 @@ export default async function runTestFile(
         : [{ exclusive: false }],
   } satisfies TestFileRegistration);
   if (remaining > 0) await finished;
+  report('shutdown');
   let completion: TestFileCompletion;
   try {
     await runShutdownHooks();
@@ -200,6 +210,7 @@ export default async function runTestFile(
       activeHandles: JSON.stringify(_activeHandleCounts()),
     };
   }
+  report('completion-ack');
   port.postMessage(completion);
   let ackTimeout: ReturnType<typeof setTimeout> | undefined;
   // Keep this deadline referenced: after posting completion it is the sole
@@ -212,5 +223,6 @@ export default async function runTestFile(
   ]);
   if (ackTimeout !== undefined) clearTimeout(ackTimeout);
   port.removeEventListener('message', onMessage);
+  report('complete');
   return completion;
 }

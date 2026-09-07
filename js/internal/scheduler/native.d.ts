@@ -95,7 +95,7 @@ export function registerProcessReadiness(
   fflags: number,
   data: number,
   udata: number,
-): void;
+): number;
 export function registerReactorWake(owner: number, fd: number): void;
 export type ReadinessChangeTuple = [
   ident: number,
@@ -108,6 +108,7 @@ export type ReadinessChangeTuple = [
   schedulerWake: boolean,
   schedulerPoll: boolean,
   borrowedFd: number | null,
+  traceId: number,
 ];
 export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
 /** Release a controller-owned descriptor after removing its kernel watch. */
@@ -122,5 +123,21 @@ export function routeProcessReadiness(
   udata: number,
   installed: number,
   notifyPool?: boolean,
+  traceId?: number,
 ): void;
 export function takeSharedLoopEvents(owner: number): Float64Array;
+
+/** Append one scalar readiness transition to the opt-in process ledger. */
+export function recordReadinessTrace(
+  operation: number,
+  owner: number,
+  stage: string,
+  ident: number,
+  filter: number,
+  token: number,
+): void;
+/** Non-destructive bounded snapshot; FINO_TRACE_READINESS=1 enables collection. */
+export function readinessTraceSnapshot(owner?: number): string;
+
+/** Publish the current Realm loop state to the opt-in native diagnostic reader. */
+export function recordRealmState(name: string, state: string): void;

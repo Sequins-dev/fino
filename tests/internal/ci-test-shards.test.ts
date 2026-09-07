@@ -38,8 +38,13 @@ describe('CI workflow', () => {
     const workflow = await readWorkflow();
     const jobs = Object.values(workflow.jobs ?? {});
     const steps = jobs.flatMap((job) => job.steps ?? []);
-    const fullRuns = steps.filter(
-      (step) => step.run === 'FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests',
+    const fullRuns = steps.filter((step) =>
+      step.run
+        ?.split('\n')
+        .some(
+          (line) =>
+            line.trim() === 'FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests',
+        ),
     );
     t.equal(fullRuns.length, 2, 'Linux and macOS each run the complete parallel suite');
 

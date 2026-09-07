@@ -52,7 +52,8 @@ import {
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
 import { _runActive as testRunActive } from '../test/test.ts';
-import { reactorPoolStats } from 'internal:scheduler-native';
+import { reactorPoolStats, readinessTraceSnapshot } from 'internal:scheduler-native';
+import { analyzeReadiness } from 'internal:scheduler/readiness-analysis';
 import type {
   TestFileCompletion,
   TestFileCompletionAck,
@@ -599,6 +600,17 @@ async function runParallelTests(
   const started = performance.now();
   const capture = captureProcessOutput();
   const write = capture.writeStdoutLine;
+  let traceReported = false;
+  const reportReadinessTrace = (context: string): void => {
+    if (traceReported) return;
+    const trace = readinessTraceSnapshot();
+    const snapshot = JSON.parse(trace);
+    if (!snapshot.enabled) return;
+    traceReported = true;
+    write(`# readiness trace context: ${tapName(context)}`);
+    write(`# readiness analysis: ${JSON.stringify(analyzeReadiness(snapshot))}`);
+    write(`# readiness trace: ${trace}`);
+  };
   try {
     const concurrency = parallelTestConcurrency(configuredReactorThreadCount());
     const channel = new ConcurrentTaskChannel<ParallelTestResult>(concurrency, {
@@ -662,6 +674,7 @@ async function runParallelTests(
         );
         const pool = reactorPoolStats();
         if (pool !== null) write(`# reactor pool: ${JSON.stringify(pool)}`);
+        reportReadinessTrace(group.label);
         group.force({
           file: { display: group.label, specifier: group.label },
           result: {
@@ -701,6 +714,9 @@ async function runParallelTests(
             `Bail out! ${tapName(entry.file.display)} emitted ${points} points for one admitted test group`,
           );
           throw new Error(`${entry.file.display} emitted an invalid top-level test result`);
+        }
+        if (entry.result.failed > 0 || entry.result.error !== undefined) {
+          reportReadinessTrace(entry.file.display);
         }
         const synthetic = printParallelResult(entry, total, diagnostics, write);
         total += entry.result.tests + synthetic;
@@ -860,6 +876,9 @@ async function runParallelTests(
     write(`# pass  ${totals.passed}`);
     if (totals.skipped > 0) write(`# skip  ${totals.skipped}`);
     write(`# time  ${formatDurationMs(performance.now() - started)}`);
+    if (totals.failed > 0 || lifecycleErrors.length > 0) {
+      reportReadinessTrace('parallel test completion');
+    }
     if (totals.failed > 0) {
       write(`# fail  ${totals.failed}`);
       printParallelFailureDetails(totals.diagnostics, options.showOutput ?? 'failures', write);
