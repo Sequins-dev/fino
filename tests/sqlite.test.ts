@@ -470,7 +470,8 @@ describe('fino:database/sqlite — transactions', () => {
           contenderCalls++;
           await right.exec('INSERT INTO t VALUES (2)');
         },
-        { busyTimeoutMs: 1000 },
+        // Allow scheduling delay after the lock is released on busy CI workers.
+        { busyTimeoutMs: 10_000 },
       );
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
       t.equal(contenderCalls, 0, 'contender waits without invoking its callback');

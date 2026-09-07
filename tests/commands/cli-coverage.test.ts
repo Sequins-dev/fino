@@ -3,128 +3,150 @@ import { describe, it } from 'fino:test/test';
 import { runCli, withTempProject } from './cli-test-helpers.ts';
 
 describe('CLI commands: coverage', () => {
-  it('collects original-source coverage and exposes focused reports', async (t) => {
-    await withTempProject(
-      {
-        'src/classify.ts': [
-          'export function classify(value: number): string {',
-          "  if (value > 0) return 'positive';",
-          "  return 'other';",
-          '}',
-          'export class Marker {',
-          '  value = 1;',
-          '}',
-          '',
-        ].join('\n'),
-        'src/classify.test.ts': [
-          "import { describe, it } from 'fino:test/test';",
-          "import { classify, Marker } from './classify.ts';",
-          "describe('classification', () => {",
-          "  it('classifies positive input', (t) => {",
-          "    t.equal(classify(1), 'positive');",
-          '    t.equal(new Marker().value, 1);',
-          '  });',
-          '});',
-          '',
-        ].join('\n'),
-      },
-      async (dir, fs) => {
-        const collected = await runCli(
-          ['test', '--parallel', '--coverage', 'src/classify.test.ts'],
-          { cwd: dir },
-        );
-        t.equal(collected.result.code, 0, 'bare coverage flag exits successfully');
-        t.equal(collected.stderr, '', 'coverage collection does not write stderr');
-        t.equal(
-          collected.stdout.match(/^# coverage$/gm)?.length,
-          1,
-          'TAP output has one grouped coverage header',
-        );
-        t.ok(
-          !collected.stdout.includes('# coverage lines'),
-          'coverage metric comments do not repeat the header',
-        );
-        const artifact = JSON.parse(
-          (await fs.readFile(dir + '/coverage/coverage.json')) as unknown as string,
-        ) as {
-          schemaVersion: number;
-          run: { complete: boolean };
-          realms: Array<{ id: string; status: string }>;
-          files: Array<{
-            path: string;
-            lines: Array<{ line: number; hits: number; coveredIn: string[] }>;
-          }>;
-        };
-        t.equal(artifact.schemaVersion, 1, 'coverage artifact is versioned');
-        t.ok(artifact.run.complete, 'coverage artifact records a complete run');
-        t.ok(
-          artifact.realms.length >= 2,
-          'coverage artifact records the command and parallel file Realms',
-        );
-        const source = artifact.files.find((file) => file.path === 'src/classify.ts');
-        t.ok(source !== undefined, 'TypeScript source map resolves coverage to the original file');
-        t.ok(
-          source?.lines.some((line) => line.hits === 0 && line.line === 3),
-          'uncovered branch is reported at its original TypeScript line',
-        );
-        t.ok(
-          source?.lines.some((line) => line.coveredIn.length > 0),
-          'covered source records retain Realm attribution',
-        );
+  // This workflow boots multiple CLI processes sequentially on two-CPU CI.
+  it(
+    'collects original-source coverage and exposes focused reports',
+    { timeout: 120_000 },
+    async (t) => {
+      await withTempProject(
+        {
+          'src/classify.ts': [
+            'export function classify(value: number): string {',
+            "  if (value > 0) return 'positive';",
+            "  return 'other';",
+            '}',
+            'export class Marker {',
+            '  value = 1;',
+            '}',
+            '',
+          ].join('\n'),
+          'src/classify.test.ts': [
+            "import { describe, it } from 'fino:test/test';",
+            "import { classify, Marker } from './classify.ts';",
+            "describe('classification', () => {",
+            "  it('classifies positive input', (t) => {",
+            "    t.equal(classify(1), 'positive');",
+            '    t.equal(new Marker().value, 1);',
+            '  });',
+            '});',
+            '',
+          ].join('\n'),
+        },
+        async (dir, fs) => {
+          const collected = await runCli(
+            ['test', '--parallel', '--coverage', 'src/classify.test.ts'],
+            { cwd: dir },
+          );
+          t.equal(collected.result.code, 0, 'bare coverage flag exits successfully');
+          t.equal(collected.stderr, '', 'coverage collection does not write stderr');
+          t.equal(
+            collected.stdout.match(/^# coverage$/gm)?.length,
+            1,
+            'TAP output has one grouped coverage header',
+          );
+          t.ok(
+            !collected.stdout.includes('# coverage lines'),
+            'coverage metric comments do not repeat the header',
+          );
+          const artifact = JSON.parse(
+            (await fs.readFile(dir + '/coverage/coverage.json')) as unknown as string,
+          ) as {
+            schemaVersion: number;
+            run: { complete: boolean };
+            realms: Array<{ id: string; status: string }>;
+            files: Array<{
+              path: string;
+              lines: Array<{ line: number; hits: number; coveredIn: string[] }>;
+            }>;
+          };
+          t.equal(artifact.schemaVersion, 1, 'coverage artifact is versioned');
+          t.ok(artifact.run.complete, 'coverage artifact records a complete run');
+          t.ok(
+            artifact.realms.length >= 2,
+            'coverage artifact records the command and parallel file Realms',
+          );
+          const source = artifact.files.find((file) => file.path === 'src/classify.ts');
+          t.ok(
+            source !== undefined,
+            'TypeScript source map resolves coverage to the original file',
+          );
+          t.ok(
+            source?.lines.some((line) => line.hits === 0 && line.line === 3),
+            'uncovered branch is reported at its original TypeScript line',
+          );
+          t.ok(
+            source?.lines.some((line) => line.coveredIn.length > 0),
+            'covered source records retain Realm attribution',
+          );
 
-        const summary = await runCli(['coverage', 'summary'], { cwd: dir });
-        t.equal(summary.result.code, 0, 'coverage summary exits successfully');
-        t.ok(summary.stdout.startsWith('coverage complete\n'), 'summary reports run completeness');
-        const files = await runCli(['coverage', 'files'], { cwd: dir });
-        t.equal(files.result.code, 0, 'coverage files exits successfully');
-        t.ok(files.stdout.includes('file src/classify.ts'), 'files report names original source');
-        const lines = await runCli(['coverage', 'lines', 'src/classify.ts'], { cwd: dir });
-        t.equal(lines.result.code, 0, 'coverage lines exits successfully');
-        t.ok(lines.stdout.includes('uncovered-lines 3'), 'lines report uses compact line ranges');
-        t.ok(lines.stdout.includes("source 3 |   return 'other';"), 'lines report includes source');
-        const functions = await runCli(['coverage', 'functions', 'src/classify.ts'], {
-          cwd: dir,
-        });
-        t.equal(functions.result.code, 0, 'coverage functions exits successfully');
-        t.ok(
-          functions.stdout.includes('function src/classify.ts '),
-          'functions report original-source records',
-        );
-        const branches = await runCli(['coverage', 'branches', 'src/classify.ts'], {
-          cwd: dir,
-        });
-        t.equal(branches.result.code, 0, 'coverage branches exits successfully');
-        t.ok(branches.stdout.includes('branch src/classify.ts '), 'branches use original ranges');
-        const failedCheck = await runCli(['coverage', 'check', '--lines', '100'], { cwd: dir });
-        t.equal(failedCheck.result.code, 1, 'coverage check fails below its threshold');
-        t.ok(failedCheck.stderr.includes('Coverage check failed'), 'failed check explains why');
-        const exported = await runCli(['coverage', 'export', 'lcov'], { cwd: dir });
-        t.equal(exported.result.code, 0, 'LCOV export exits successfully');
-        const lcov = (await fs.readFile(dir + '/coverage/lcov.info')) as unknown as string;
-        const canonicalDir = await fs.realpath(dir);
-        t.ok(
-          lcov.includes('SF:' + canonicalDir + '/src/classify.ts'),
-          'LCOV names the canonical original source',
-        );
-        t.ok(lcov.includes('DA:3,0'), 'LCOV contains the uncovered line');
+          const summary = await runCli(['coverage', 'summary'], { cwd: dir });
+          t.equal(summary.result.code, 0, 'coverage summary exits successfully');
+          t.ok(
+            summary.stdout.startsWith('coverage complete\n'),
+            'summary reports run completeness',
+          );
+          const files = await runCli(['coverage', 'files'], { cwd: dir });
+          t.equal(files.result.code, 0, 'coverage files exits successfully');
+          t.ok(files.stdout.includes('file src/classify.ts'), 'files report names original source');
+          const lines = await runCli(['coverage', 'lines', 'src/classify.ts'], { cwd: dir });
+          t.equal(lines.result.code, 0, 'coverage lines exits successfully');
+          t.ok(lines.stdout.includes('uncovered-lines 3'), 'lines report uses compact line ranges');
+          t.ok(
+            lines.stdout.includes("source 3 |   return 'other';"),
+            'lines report includes source',
+          );
+          const functions = await runCli(['coverage', 'functions', 'src/classify.ts'], {
+            cwd: dir,
+          });
+          t.equal(functions.result.code, 0, 'coverage functions exits successfully');
+          t.ok(
+            functions.stdout.includes('function src/classify.ts '),
+            'functions report original-source records',
+          );
+          const branches = await runCli(['coverage', 'branches', 'src/classify.ts'], {
+            cwd: dir,
+          });
+          t.equal(branches.result.code, 0, 'coverage branches exits successfully');
+          t.ok(branches.stdout.includes('branch src/classify.ts '), 'branches use original ranges');
+          const failedCheck = await runCli(['coverage', 'check', '--lines', '100'], { cwd: dir });
+          t.equal(failedCheck.result.code, 1, 'coverage check fails below its threshold');
+          t.ok(failedCheck.stderr.includes('Coverage check failed'), 'failed check explains why');
+          const exported = await runCli(['coverage', 'export', 'lcov'], { cwd: dir });
+          t.equal(exported.result.code, 0, 'LCOV export exits successfully');
+          const lcov = (await fs.readFile(dir + '/coverage/lcov.info')) as unknown as string;
+          const canonicalDir = await fs.realpath(dir);
+          t.ok(
+            lcov.includes('SF:' + canonicalDir + '/src/classify.ts'),
+            'LCOV names the canonical original source',
+          );
+          t.ok(lcov.includes('DA:3,0'), 'LCOV contains the uncovered line');
 
-        const custom = await runCli(
-          ['test', '--coverage=reports/custom.json', 'src/classify.test.ts'],
-          { cwd: dir },
-        );
-        t.equal(custom.result.code, 0, 'custom coverage path exits successfully');
-        const customArtifact = JSON.parse(
-          (await fs.readFile(dir + '/reports/custom.json')) as unknown as string,
-        ) as { schemaVersion: number };
-        t.equal(customArtifact.schemaVersion, 1, 'custom coverage path receives the JSON artifact');
-        const customSummary = await runCli(
-          ['coverage', 'summary', '--input', 'reports/custom.json'],
-          { cwd: dir },
-        );
-        t.equal(customSummary.result.code, 0, 'coverage command accepts a custom JSON input path');
-      },
-    );
-  });
+          const custom = await runCli(
+            ['test', '--coverage=reports/custom.json', 'src/classify.test.ts'],
+            { cwd: dir },
+          );
+          t.equal(custom.result.code, 0, 'custom coverage path exits successfully');
+          const customArtifact = JSON.parse(
+            (await fs.readFile(dir + '/reports/custom.json')) as unknown as string,
+          ) as { schemaVersion: number };
+          t.equal(
+            customArtifact.schemaVersion,
+            1,
+            'custom coverage path receives the JSON artifact',
+          );
+          const customSummary = await runCli(
+            ['coverage', 'summary', '--input', 'reports/custom.json'],
+            { cwd: dir },
+          );
+          t.equal(
+            customSummary.result.code,
+            0,
+            'coverage command accepts a custom JSON input path',
+          );
+        },
+      );
+    },
+  );
   it('aggregates scheduled and process Realm coverage into one artifact', async (t) => {
     await withTempProject(
       {
