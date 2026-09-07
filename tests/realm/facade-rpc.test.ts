@@ -325,6 +325,22 @@ describe('Facade RPC — reactor-pooled realm', () => {
       'module shape and metadata are preserved',
     );
   });
+  it('serializes module-backed facades without embedding source', (t) => {
+    const directive = new Facade('app:files', []).moduleFrom('internal:sim/file').toDirective();
+
+    t.deepEqual(
+      directive,
+      {
+        type: 'facade',
+        specifier: 'app:files',
+        exports: [],
+        streams: [],
+        sinks: [],
+        module: 'internal:sim/file',
+      },
+      'the loader receives only the registered module specifier',
+    );
+  });
 });
 // ---------------------------------------------------------------------------
 // C2 — embedded realm (same V8 isolate, MessagePort transport)

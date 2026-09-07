@@ -29,6 +29,7 @@
  * ```
  */
 import { Facade, ImportMap, Realm, type ImportRule } from 'fino:realm';
+import { MemoryFileSystem } from 'fino:file/memory';
 import { resolve } from 'fino:file/path';
 import { cwd } from 'fino:process';
 import { createSeededRandom } from 'internal:runtime/random';
@@ -160,6 +161,110 @@ export class FakeNet implements SimMock {
       },
     };
   }
+}
+
+/**
+ * Parent-owned in-memory filesystem for a simulated Realm.
+ *
+ * The adapter replaces `fino:file` through the simulation import map, so guest
+ * code constructs `DiskFileSystem` normally while every operation crosses the
+ * existing Facade transport. The parent can seed state before a run and inspect
+ * a copied text snapshot afterwards.
+ *
+ * ```ts no_run
+ * import { FakeFs, simulate } from 'fino:sim';
+ *
+ * const fs = new FakeFs({ '/etc/app.conf': 'debug=true' });
+ * const report = await simulate({ entry: './worker.ts', world: fs.world() });
+ * console.log(fs.snapshot(), report.journal.calls(FakeFs.specifier).length);
+ * ```
+ */
+export class FakeFs implements SimMock {
+  /** Facade specifier replaced by this adapter. */
+  static readonly specifier = 'fino:file';
+  #tick = 0;
+  #filesystem: MemoryFileSystem;
+
+  /** Create an independent filesystem seeded with `files`. */
+  constructor(files: Record<string, string | Uint8Array> = {}) {
+    this.#filesystem = new MemoryFileSystem(files, { now: () => ++this.#tick });
+  }
+
+  /** Parent-owned filesystem used for setup and direct assertions. */
+  get filesystem(): MemoryFileSystem {
+    return this.#filesystem;
+  }
+
+  /** Return a copied text snapshot of every file currently in the tree. */
+  snapshot(): Record<string, string> {
+    return this.#filesystem.snapshot();
+  }
+
+  /** Return the `fino:file` Facade entry expected by `simulate()`. */
+  world(): Record<string, SimProvider> {
+    return { [FakeFs.specifier]: this.provider() };
+  }
+
+  /** Return the filesystem Facade independently for custom world composition. */
+  provider(): Facade {
+    const fs = this.#filesystem;
+    return new Facade(FakeFs.specifier, [])
+      .handle('readFile', (path) => fs.readFile(String(path)))
+      .handle('writeFile', (path, data) => fs.writeFile(String(path), data as Uint8Array))
+      .handle('exists', async (path) => {
+        try {
+          await fs.stat(String(path));
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .handle('stat', (path) => readFileStat(() => fs.stat(String(path))))
+      .handle('lstat', (path) => readFileStat(() => fs.lstat(String(path))))
+      .handle('readdir', async (path) =>
+        (await fs.readdir(String(path))).map((entry) => ({
+          name: entry.name,
+          kind: entry.isDirectory() ? 'dir' : entry.isSymlink() ? 'link' : 'file',
+        })),
+      )
+      .handle('symlink', (target, path) => fs.symlink(String(target), String(path)))
+      .handle('readlink', (path) => fs.readlink(String(path)))
+      .handle('mkdir', (path, mode) =>
+        mode === undefined ? fs.mkdir(String(path)) : fs.mkdir(String(path), Number(mode)),
+      )
+      .handle('rmdir', (path) => fs.rmdir(String(path)))
+      .handle('unlink', (path) => fs.unlink(String(path)))
+      .handle('rename', (from, to) => fs.rename(String(from), String(to)))
+      .handle('realpath', (path) => fs.realpath(String(path)))
+      .moduleFrom('internal:sim/file');
+  }
+}
+
+type FileStatDescription = {
+  kind: 'file' | 'dir' | 'link';
+  size: number;
+  mtimeMs: number;
+};
+
+async function readFileStat(
+  read: () => Promise<{
+    isDirectory(): boolean;
+    isSymlink(): boolean;
+    size: number;
+    mtimeMs: number;
+  }>,
+): Promise<FileStatDescription | null> {
+  let info;
+  try {
+    info = await read();
+  } catch {
+    return null;
+  }
+  return {
+    kind: info.isDirectory() ? 'dir' : info.isSymlink() ? 'link' : 'file',
+    size: info.size,
+    mtimeMs: info.mtimeMs,
+  };
 }
 
 /** Options for one deterministic simulation run. */

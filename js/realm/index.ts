@@ -135,6 +135,7 @@ export type ImportDirectiveSer =
       streams?: string[];
       sinks?: string[];
       source?: string;
+      module?: string;
     };
 /**
  * Import rule applied to module resolution inside a child realm.
@@ -1070,6 +1071,8 @@ export class Facade {
   readonly #sinks: string[];
   /** Custom child-side module source, when the facade needs more than functions. @internal */
   #source: string | undefined;
+  /** Registered child-side module used instead of generated Facade stubs. @internal */
+  #module: string | undefined;
   /**
    * Private readonly property `#handlers` used by `Facade`.
    *
@@ -1188,6 +1191,35 @@ export class Facade {
    */
   module(source: string): this {
     this.#source = source;
+    this.#module = undefined;
+    return this;
+  }
+  /**
+   * Use a registered builtin module as this facade's child-side implementation.
+   *
+   * The runtime loads the builtin's compiled source under the facade specifier,
+   * so `import.meta.url` still identifies the facade for calls through
+   * `internal:parent-rpc`. This keeps nontrivial module implementations in
+   * ordinary TypeScript files while the Facade continues to own parent-side
+   * handlers.
+   *
+   * ```ts no_run
+   * import { Facade } from 'fino:realm';
+   *
+   * const files = new Facade('app:files', [])
+   *   .moduleFrom('internal:app/files-facade')
+   *   .handle('read', async (path) => loadFile(String(path)));
+   * ```
+   *
+   * Calling `module()` afterwards replaces this setting, and calling
+   * `moduleFrom()` replaces custom inline source.
+   *
+   * @param specifier Registered source builtin containing the module implementation.
+   * @returns This facade for chaining.
+   */
+  moduleFrom(specifier: string): this {
+    this.#module = specifier;
+    this.#source = undefined;
     return this;
   }
   /**
@@ -1380,6 +1412,7 @@ export class Facade {
       streams: this.#streams,
       sinks: this.#sinks,
       ...(this.#source === undefined ? {} : { source: this.#source }),
+      ...(this.#module === undefined ? {} : { module: this.#module }),
     };
   }
   /**

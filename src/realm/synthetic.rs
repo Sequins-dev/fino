@@ -221,6 +221,7 @@ fn js_install(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _rv
         streams: vec![],
         sinks: vec![],
         source: None,
+        module: None,
         mode: SyntheticMode::Direct,
     };
 
@@ -267,6 +268,7 @@ mod tests {
             streams: streams.iter().map(|s| s.to_string()).collect(),
             sinks: sinks.iter().map(|s| s.to_string()).collect(),
             source: None,
+            module: None,
             mode: SyntheticMode::Rpc,
         }
     }
@@ -278,6 +280,7 @@ mod tests {
             streams: vec![],
             sinks: vec![],
             source: None,
+            module: None,
             mode: SyntheticMode::Direct,
         }
     }

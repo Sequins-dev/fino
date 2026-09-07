@@ -148,6 +148,11 @@ pub struct SyntheticSpec {
     /// source verbatim, letting a facade expose shapes beyond function stubs.
     #[serde(default)]
     pub source: Option<String>,
+    /// Optional registered source builtin used as the facade's module body.
+    /// The loader compiles it under `specifier` so `import.meta.url` continues
+    /// to identify the facade to parent RPC calls.
+    #[serde(default)]
+    pub module: Option<String>,
     /// Stub generation mode. Defaults to `Rpc` for backward-compat deserialization.
     #[serde(default)]
     pub mode: SyntheticMode,
