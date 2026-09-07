@@ -4,6 +4,7 @@ import type { PtyHandle } from 'fino:test/pty';
 import { execPath } from 'fino:process';
 import { DiskFileSystem } from 'fino:file';
 import { decodeTuiInput } from 'fino:tty/tui';
+import { trySignalChild } from 'internal:process/spawn';
 
 const fs = new DiskFileSystem();
 const encoder = new TextEncoder();
@@ -26,23 +27,27 @@ interface EchoPty {
   close(): Promise<void>;
 }
 
-async function echoPty(name: string): Promise<EchoPty> {
+async function echoPty(name: string, source = ECHO_APP, startupTimeout = 30_000): Promise<EchoPty> {
   const dir = `/tmp/fino-input-split-${name}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const script = `${dir}/echo.ts`;
   await fs.mkdir(dir);
-  await fs.writeFile(script, encoder.encode(ECHO_APP));
+  await fs.writeFile(script, encoder.encode(source));
+  let pty: PtyHandle | undefined;
   try {
-    const pty = await openPty(execPath, [script], { cols: 40, rows: 12 });
-    await pty.waitFor((term) => term.text().join('').includes('READY'));
+    pty = await openPty(execPath, [script], { cols: 40, rows: 12 });
+    await pty.waitFor((term) => term.text().join('').includes('READY'), {
+      timeout: startupTimeout,
+    });
     return {
       pty,
       async close(): Promise<void> {
-        await pty.close();
+        await pty!.close();
         await fs.unlink(script);
         await fs.rmdir(dir);
       },
     };
   } catch (error) {
+    await pty?.close();
     await fs.unlink(script);
     await fs.rmdir(dir);
     throw error;
@@ -97,6 +102,23 @@ describe('fino:tty/tui terminal input reassembly', () => {
     } finally {
       await session.close();
     }
+  });
+
+  it('closes the child when fixture startup fails', async (t) => {
+    let error: unknown;
+    try {
+      await echoPty('missing-ready', 'await new Promise(() => {});', 1);
+    } catch (caught) {
+      error = caught;
+    }
+    t.ok(error instanceof Error, 'startup reports its timeout');
+    const child = /child (\d+):/.exec(String(error));
+    t.ok(child !== null, 'timeout identifies the child');
+    const pid = Number(child![1]);
+    const alive = trySignalChild(pid, 0);
+    // Keep the regression safe against the old helper that leaked the child.
+    if (alive) trySignalChild(pid, 9);
+    t.equal(alive, false, 'failed startup has already reaped its child');
   });
 
   it('keeps complete-buffer decoding synchronous', (t) => {

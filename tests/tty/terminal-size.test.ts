@@ -24,7 +24,9 @@ describe('terminal size', () => {
       ] as const) {
         const pty = await openPty(execPath, [script], { cols, rows });
         try {
-          await pty.waitFor((term) => term.text().some((line) => line.includes('SIZE')));
+          await pty.waitFor((term) => term.text().some((line) => line.includes('SIZE')), {
+            timeout: 30_000,
+          });
           const line = pty.term
             .text()
             .find((text) => text.includes('SIZE'))!
@@ -68,7 +70,7 @@ app = render(tree('WAIT'), {
     );
     const pty = await openPty(execPath, [script], { cols: 20, rows: 4 });
     try {
-      await pty.waitFor((term) => term.text()[0]?.startsWith('WAIT'));
+      await pty.waitFor((term) => term.text()[0]?.startsWith('WAIT'), { timeout: 30_000 });
       await pty.send('r');
       await pty.waitFor((term) => term.text()[0]?.startsWith('READY'));
       t.equal(pty.term.text()[0]?.lastIndexOf('R'), 19, 'initial frame uses the startup width');
