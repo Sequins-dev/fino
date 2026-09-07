@@ -132,7 +132,7 @@ pub fn namespace<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Obje
 /// as `deleter_data`; reclaimed exactly once when the deleter runs.
 struct ViewCtx {
     releases: crate::async_rt::ViewReleaseQueue,
-    wake_write: std::os::unix::io::RawFd,
+    wake_write: std::sync::Arc<crate::fdutil::WakePipe>,
     callback_id: Option<usize>,
     byte_length: usize,
 }
@@ -158,9 +158,9 @@ unsafe extern "C" fn view_deleter(
             byte_length: ctx.byte_length,
         });
     }
-    // SAFETY: wake_write is the isolate's self-pipe; a failed write (e.g.
-    // during shutdown) is harmless because the drain also runs unconditionally.
-    unsafe { libc::write(ctx.wake_write, b"\x01".as_ptr() as *const c_void, 1) };
+    // Retaining the pipe prevents a late GC release from waking a different
+    // Realm after descriptor reuse. The queue remains owned by the origin.
+    ctx.wake_write.notify();
 }
 
 /// `Pointer.view(ptr, len, opts?)` — create an `ArrayBuffer` that aliases the

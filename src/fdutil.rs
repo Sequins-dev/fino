@@ -6,7 +6,7 @@
 //! single owner of that plumbing; `scheduler_native`, the realm transports,
 //! and the FFI completion path all consume it.
 
-use std::os::unix::io::RawFd;
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 /// Create a non-blocking pipe, returning `(read, write)`.
 ///
@@ -56,34 +56,34 @@ pub fn drain(read: RawFd) {
 /// and [`drain`] when a caller owns only one end of a pipe (e.g. the write
 /// end handed to a partner realm).
 pub struct WakePipe {
-    read: RawFd,
-    write: RawFd,
+    read: OwnedFd,
+    write: OwnedFd,
 }
 
 impl WakePipe {
     pub fn new() -> Result<Self, String> {
         let (read, write) = create_pipe()?;
-        Ok(Self { read, write })
+        // SAFETY: create_pipe returned two fresh descriptors owned here.
+        Ok(Self::from_owned_fds(
+            unsafe { OwnedFd::from_raw_fd(read) },
+            unsafe { OwnedFd::from_raw_fd(write) },
+        ))
+    }
+
+    /// Adopt both ends of an existing non-blocking wake pipe.
+    pub fn from_owned_fds(read: OwnedFd, write: OwnedFd) -> Self {
+        Self { read, write }
     }
 
     pub fn read_fd(&self) -> RawFd {
-        self.read
+        self.read.as_raw_fd()
     }
 
     pub fn notify(&self) {
-        wake(self.write);
+        wake(self.write.as_raw_fd());
     }
 
     pub fn drain(&self) {
-        drain(self.read);
-    }
-}
-
-impl Drop for WakePipe {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.read);
-            libc::close(self.write);
-        }
+        drain(self.read.as_raw_fd());
     }
 }

@@ -7,7 +7,6 @@
 //! must return a non-Promise scalar result.
 
 use std::ffi::c_void;
-use std::os::unix::io::RawFd;
 use std::sync::{Arc, Condvar, Mutex};
 
 use libffi::low::Callback;
@@ -33,7 +32,7 @@ struct CallbackData {
     context: v8::Global<v8::Context>,
     func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
-    wake_write: RawFd,
+    wake_write: Arc<crate::fdutil::WakePipe>,
 }
 
 // SAFETY: only primitive types and Arc (Send).
@@ -106,9 +105,7 @@ unsafe extern "C" fn trampoline(
 
     // Submit to the V8 thread queue and wake the event loop.
     data.js_call_requests.lock().unwrap().push(request);
-    unsafe {
-        libc::write(data.wake_write, b"\x01".as_ptr() as *const c_void, 1);
-    }
+    data.wake_write.notify();
 
     // Block until the V8 thread fills the slot.
     let (lock, cvar) = slot.as_ref();

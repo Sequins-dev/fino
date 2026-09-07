@@ -408,7 +408,7 @@ pub fn ffi_call_async<'s>(
                 result,
             });
         // Wake the main thread's event loop (kqueue/io_uring readable on pipe).
-        unsafe { libc::write(wake_write, b"\x01".as_ptr() as *const c_void, 1) };
+        wake_write.notify();
     });
 
     Some(promise)
