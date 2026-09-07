@@ -30,7 +30,7 @@
 //! frames exchanged via the bridge.
 
 use std::{
-    os::unix::io::RawFd,
+    os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -311,8 +311,9 @@ pub struct SpawnConfig {
 pub struct ProcessRealmHandle {
     /// PID of the isolated child, used for fail-closed forced termination.
     pub child_pid: libc::pid_t,
-    /// Parent's end of the socketpair (non-blocking).
-    pub socket_fd: RawFd,
+    /// Shared with the bridge threads so their descriptor cannot be recycled
+    /// before they stop using it. Dropping the handle shuts down the socket.
+    socket: Arc<OwnedFd>,
     /// Set `true` once the child exits (set by reader thread).
     pub done: Arc<AtomicBool>,
     /// Populated if the child exited with an error.
@@ -337,7 +338,9 @@ pub struct ProcessRealmHandle {
 impl Drop for ProcessRealmHandle {
     fn drop(&mut self) {
         unsafe {
-            libc::close(self.socket_fd);
+            // close alone does not wake a poll already holding the socket,
+            // and bridge threads must never read a recycled descriptor.
+            libc::shutdown(self.socket.as_raw_fd(), libc::SHUT_RDWR);
             libc::close(self.parent_wake_read);
             libc::close(self.completion_wake_read);
         }
@@ -472,6 +475,9 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
         return Err(format!("process realm socket nonblocking: {error}"));
     }
     std::mem::forget(child); // reaping is handled by the reader thread
+    // All bridge access retains this descriptor. Shutdown belongs to the Realm
+    // handle, while the final close waits for both bridge threads to finish.
+    let socket = Arc::new(unsafe { OwnedFd::from_raw_fd(parent_fd) });
 
     // Bridge threads.
     let (reader_tx, parent_rx) = mpsc::channel::<ThreadMessage>();
@@ -482,12 +488,13 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
 
     // Reader: socket → mpsc + wake pipe; also reaps the child process.
     {
+        let socket = Arc::clone(&socket);
         let done = done.clone();
         let error = error.clone();
         let reload_requested = reload_requested.clone();
         std::thread::spawn(move || {
             loop {
-                match read_message(parent_fd) {
+                match read_message(socket.as_raw_fd()) {
                     Ok(msg) => {
                         // Check for a child-side entry-error sentinel.
                         if msg.data.starts_with(ENTRY_ERROR_PREFIX) {
@@ -548,10 +555,11 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
 
     // Writer: mpsc → socket.
     {
+        let socket = Arc::clone(&socket);
         let error = error.clone();
         std::thread::spawn(move || {
             while let Ok(msg) = writer_rx.recv() {
-                if let Err(e) = write_message(parent_fd, &msg) {
+                if let Err(e) = write_message(socket.as_raw_fd(), &msg) {
                     *error.lock().unwrap() = Some(format!("process realm write: {e}"));
                     break;
                 }
@@ -561,7 +569,7 @@ pub fn spawn_process_realm(args: SpawnArgs) -> Result<ProcessRealmHandle, String
 
     Ok(ProcessRealmHandle {
         child_pid,
-        socket_fd: parent_fd,
+        socket,
         done,
         error,
         reload_requested,
@@ -702,6 +710,75 @@ mod tests {
             transfer_stores: stores,
             transfer_ports: Vec::new(),
         }
+    }
+
+    #[test]
+    fn dropping_handle_shuts_down_a_retained_bridge_endpoint() {
+        let (parent, child) = socketpair_fds();
+        // A blocked poll retains the open socket even after another thread
+        // closes its descriptor. Dup models that retained reference without
+        // depending on a thread reaching poll at a particular instant.
+        let retained = unsafe { libc::dup(parent) };
+        assert!(retained >= 0);
+        set_nonblocking(retained).unwrap();
+        let (_, rx) = mpsc::channel();
+        let (tx, _) = mpsc::channel();
+        let handle = ProcessRealmHandle {
+            child_pid: -1,
+            socket: Arc::new(unsafe { OwnedFd::from_raw_fd(parent) }),
+            done: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            reload_requested: Arc::new(AtomicBool::new(false)),
+            rx,
+            tx,
+            parent_wake_read: -1,
+            completion_wake_read: -1,
+        };
+        drop(handle);
+        let mut byte = 0u8;
+        let result = unsafe { libc::read(retained, (&mut byte as *mut u8).cast(), 1) };
+        let error = std::io::Error::last_os_error();
+        close_fds(&[retained, child]);
+        assert_eq!(
+            result, 0,
+            "bridge must see shutdown, not wait forever: {error}"
+        );
+    }
+
+    #[test]
+    fn bridge_retains_its_descriptor_after_handle_shutdown() {
+        let (parent, child) = socketpair_fds();
+        let (_, rx) = mpsc::channel();
+        let (tx, _) = mpsc::channel();
+        let handle = ProcessRealmHandle {
+            child_pid: -1,
+            socket: Arc::new(unsafe { OwnedFd::from_raw_fd(parent) }),
+            done: Arc::new(AtomicBool::new(false)),
+            error: Arc::new(Mutex::new(None)),
+            reload_requested: Arc::new(AtomicBool::new(false)),
+            rx,
+            tx,
+            parent_wake_read: -1,
+            completion_wake_read: -1,
+        };
+        let bridge = Arc::clone(&handle.socket);
+        drop(handle);
+        let valid = unsafe { libc::fcntl(bridge.as_raw_fd(), libc::F_GETFD) };
+        let mut byte = 0u8;
+        let read = unsafe { libc::read(bridge.as_raw_fd(), (&mut byte as *mut u8).cast(), 1) };
+        let (other_read, other_write) = socketpair_fds();
+        assert_ne!(
+            other_read,
+            bridge.as_raw_fd(),
+            "another Realm cannot reuse the bridge fd"
+        );
+        assert_ne!(other_write, bridge.as_raw_fd());
+        close_fds(&[child, other_read, other_write]);
+        assert!(
+            valid >= 0,
+            "bridge retains a valid descriptor until it exits"
+        );
+        assert_eq!(read, 0, "the retained socket reports shutdown");
     }
 
     /// The envelope header must survive the process-realm wire format intact,
