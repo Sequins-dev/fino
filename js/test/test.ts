@@ -268,6 +268,8 @@ const _preparedRuns = new WeakMap<PreparedTestRun, PreparedTestRunState>();
  */
 export class TestContext extends Assert {
   #onMeta: MetadataCallback;
+  /** Full test name, including enclosing `describe()` groups. */
+  readonly name: string;
   /**
    * Create a test context.
    *
@@ -279,11 +281,13 @@ export class TestContext extends Assert {
    */
   constructor(
     callbacks: AssertCallbacks & {
+      name?: string;
       onMeta?: MetadataCallback;
     } = {},
   ) {
-    const { onMeta, ...assertCallbacks } = callbacks;
+    const { name, onMeta, ...assertCallbacks } = callbacks;
     super(assertCallbacks);
+    this.name = name ?? '';
     this.#onMeta = onMeta ?? (() => {});
   }
   /**
@@ -739,6 +743,7 @@ async function _runLeaf(
   const failures: unknown[] = [];
   const metadata: TestMetadata = {};
   const t = new TestContext({
+    name: [...path, entry.name].join(' > '),
     onFail(err) {
       failures.push(err);
     },

@@ -5,6 +5,7 @@ import 'fino:format/toml';
 import 'fino:format/xml';
 import 'fino:format/yaml';
 import 'fino:format/typescript';
+import 'fino:test/sim';
 import 'fino:parsing/scanner';
 import 'fino:compress';
 import 'fino:database/sql';

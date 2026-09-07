@@ -933,6 +933,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:test/pty", "test/pty"),
     source_builtin!("fino:bench", "test/bench"),
     source_builtin!("fino:test/mock", "test/mock"),
+    source_builtin!("fino:test/sim", "test/sim"),
     // util
     source_builtin!("fino:compress", "compress"),
     source_builtin!("fino:process/argv", "process/argv"),
