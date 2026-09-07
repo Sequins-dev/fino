@@ -1012,29 +1012,25 @@ impl PoolShared {
     /// Report whether a different realm is ready at a strictly higher priority
     /// than the realm a worker currently has entered.
     ///
-    /// Deliberately conservative: it inspects only the heap root and never
-    /// mutates the queue, so a superseded root, or a root belonging to the
-    /// running realm, simply reports "no reason to switch". Both are transient,
-    /// and `claim` re-evaluates the whole queue at the next quiescence. Being
-    /// wrong here costs a slightly late preemption, never a lost workload.
+    /// Discard superseded heap roots just as `claim` does. A busy Realm need
+    /// not become quiescent, so deferring stale-entry cleanup until `claim`
+    /// could hide another Realm's wake indefinitely.
     fn should_yield(&self, current: u32) -> bool {
-        let inner = self.inner.lock().unwrap();
+        let mut inner = self.inner.lock().unwrap();
         if inner.shutdown {
             return true;
         }
-        let Some(entry) = inner.ready.peek() else {
-            return false;
-        };
-        if entry.owner == current {
-            return false;
+        while let Some(entry) = inner.ready.peek() {
+            if inner.generations.get(&entry.owner).copied().unwrap_or(0) != entry.generation
+                || inner.priorities.get(&entry.owner).copied().unwrap_or(0) != entry.priority
+            {
+                inner.ready.pop();
+                continue;
+            }
+            return entry.owner != current
+                && entry.priority > inner.priorities.get(&current).copied().unwrap_or(0);
         }
-        if inner.generations.get(&entry.owner).copied().unwrap_or(0) != entry.generation {
-            return false;
-        }
-        if inner.priorities.get(&entry.owner).copied().unwrap_or(0) != entry.priority {
-            return false;
-        }
-        entry.priority > inner.priorities.get(&current).copied().unwrap_or(0)
+        false
     }
 
     fn claim(
@@ -2297,6 +2293,35 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn stale_ready_entries_do_not_hide_waiting_work() {
+        for (stale_owner, generation) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
+            let pool = PoolShared::new();
+            {
+                let mut inner = pool.inner.lock().unwrap();
+                // Claiming a previously signalled Realm resets its priority,
+                // leaving older heap entries behind while it keeps running.
+                inner.generations.insert(stale_owner, generation);
+                inner.ready.push(ReadyEntry {
+                    priority: 10,
+                    generation: 1,
+                    owner: stale_owner,
+                });
+                inner.priorities.insert(3, 1);
+                inner.generations.insert(3, 1);
+                inner.ready.push(ReadyEntry {
+                    priority: 1,
+                    generation: 1,
+                    owner: 3,
+                });
+            }
+            assert!(
+                pool.should_yield(1),
+                "stale entry for owner {stale_owner} must not hide runnable owner 3"
+            );
+        }
+    }
 
     #[test]
     fn empty_pool_waits_for_work() {
