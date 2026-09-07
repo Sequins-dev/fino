@@ -893,6 +893,8 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:format/csv", "format/csv"),
     source_builtin!("fino:format/flatbuffers", "format/flatbuffers"),
     source_builtin!("fino:format/protobuf", "format/protobuf"),
+    source_builtin!("internal:metal/native", "internal/metal/native"),
+    source_builtin!("internal:metal", "internal/metal/memory"),
     source_builtin!("internal:objc", "internal/objc/index"),
     source_builtin!("internal:kernel/msl", "internal/kernel/ir/lower/msl"),
     source_builtin!("internal:kernel/spirv", "internal/kernel/ir/lower/spirv"),
