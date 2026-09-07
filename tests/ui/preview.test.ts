@@ -139,6 +139,8 @@ describe('fino:ui/preview runners', () => {
       await pty.waitFor((terminal) => terminal.text().some((line) => line.includes('Panel')));
       await pty.sendKey('q');
       t.equal(await pty.waitExit(), 0);
+      // Process exit and the final PTY output are delivered independently.
+      await pty.waitFor((terminal) => !terminal.altScreen);
       t.equal(pty.term.altScreen, false, 'terminal state is restored');
     } finally {
       await pty.close();
