@@ -428,7 +428,15 @@ export function driveLoop(
     // run that shutdown to completion. Without this second check a realm could
     // finish during a turn that dispatched no events and be parked forever,
     // because nothing would ever step it again to notice.
-    const done = isDone();
+    let done = isDone();
+    if (!done && count + delivered + advanced === 0) {
+      // This completion check can start asynchronous shutdown after the
+      // checkpoint above. Drain that cleanup and observe its result before
+      // reporting quiescence: the host cannot count microtasks alone as
+      // progress, and a finished Realm has no future I/O to wake it again.
+      drainMicrotasks();
+      done = isDone();
+    }
     if (done && (finishWhenDone() || !alive())) return -1;
     return count + delivered + advanced;
   }
