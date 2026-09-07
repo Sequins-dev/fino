@@ -15,6 +15,7 @@ import {
   routeProcessReadiness,
   signalReactorOwner,
   takeSharedReadinessChanges,
+  releaseSharedReadinessFd,
   type ReadinessChangeTuple,
   setReadinessHeartbeat,
 } from 'internal:scheduler-native';
@@ -29,6 +30,7 @@ interface ReadinessChange {
   cancelOwner?: number;
   schedulerWake?: boolean;
   schedulerPoll?: boolean;
+  borrowedFd?: number;
 }
 
 const EVFILT_READ = -1;
@@ -47,8 +49,18 @@ interface Registration {
 }
 
 function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
-  const [ident, filter, flags, fflags, data, udata, cancelOwner, schedulerWake, schedulerPoll] =
-    tuple;
+  const [
+    ident,
+    filter,
+    flags,
+    fflags,
+    data,
+    udata,
+    cancelOwner,
+    schedulerWake,
+    schedulerPoll,
+    borrowedFd,
+  ] = tuple;
   return {
     ident,
     filter,
@@ -59,6 +71,7 @@ function decodeReadinessChange(tuple: ReadinessChangeTuple): ReadinessChange {
     ...(cancelOwner === null ? {} : { cancelOwner }),
     ...(schedulerWake ? { schedulerWake } : {}),
     ...(schedulerPoll ? { schedulerPoll } : {}),
+    ...(borrowedFd === null ? {} : { borrowedFd }),
   };
 }
 
@@ -128,11 +141,33 @@ function routeInstalled(owner: number, change: ReadinessChange): void {
 export class ProcessReadinessController {
   #registrations = new Map<string, Registration>();
   #running = false;
+  #releases = new Set<number>();
+  #releaseFd(change: ReadinessChange): void {
+    const fd = change.borrowedFd;
+    if (fd === undefined) return;
+    change.borrowedFd = undefined;
+    this.#releases.add(fd);
+    if (this.#releases.size === 1) queueMicrotask(() => this.#flushReleases());
+  }
+  #flushReleases(): void {
+    if (this.#releases.size === 0) return;
+    loop.flush();
+    for (const fd of this.#releases) releaseSharedReadinessFd(fd);
+    this.#releases.clear();
+  }
   constructor(readonly controlFd: number) {}
   #key(change: ReadinessChange): string {
     return `${Math.floor(change.udata / TOKEN_BASE)}:${change.filter}:${change.ident}`;
   }
   #apply(change: ReadinessChange): void {
+    try {
+      this.#install(change);
+    } catch (error) {
+      this.#releaseFd(change);
+      throw error;
+    }
+  }
+  #install(change: ReadinessChange): void {
     if (change.cancelOwner !== undefined) {
       for (const [registration, active] of this.#registrations) {
         if (active.owner !== change.cancelOwner) continue;
@@ -173,22 +208,28 @@ export class ProcessReadinessController {
       const registration = `scheduler-fd:${change.ident}`;
       const previous = this.#registrations.get(registration);
       previous?.cancel();
-      // Tag the wake fd with the owning realm's token for that descriptor, so
-      // it cannot collide with a readiness watch this realm installs for some
-      // other owner that happens to have the same descriptor number.
-      const token = owner * TOKEN_BASE + (change.ident >>> 0);
+      // The retained descriptor is unique to this registration and uses the
+      // controller's local token. Preserve owner-tagged tokens for commands
+      // without a descriptor borrow.
+      const fd = change.borrowedFd ?? change.ident;
+      const token =
+        change.borrowedFd === undefined ? owner * TOKEN_BASE + (change.ident >>> 0) : undefined;
       const arm = (): void => {
-        const ready = loop.readable(change.ident, token);
+        const ready = loop.readable(fd, token);
         const active: Registration = {
           owner,
           change,
-          cancel: () => loop.removeRead(change.ident, token),
+          cancel: () => {
+            loop.removeRead(fd, token);
+            this.#releaseFd(change);
+          },
         };
         this.#registrations.set(registration, active);
         void ready.then(() => {
           if (this.#registrations.get(registration) !== active) return;
           if (!signalReactorOwner(owner)) {
             this.#registrations.delete(registration);
+            this.#releaseFd(change);
             return;
           }
           arm();
@@ -203,8 +244,13 @@ export class ProcessReadinessController {
     previous?.cancel();
     this.#registrations.delete(registration);
     if ((change.flags & EV_DELETE) !== 0) return;
+    const fd = change.borrowedFd ?? change.ident;
+    const token = change.borrowedFd === undefined ? change.udata : undefined;
     if (change.filter === EVFILT_VNODE) {
-      const cancel = () => loop.removeVnode(change.ident, change.udata);
+      const cancel = () => {
+        loop.removeVnode(fd, token);
+        this.#releaseFd(change);
+      };
       const active: Registration = {
         owner,
         change,
@@ -212,7 +258,7 @@ export class ProcessReadinessController {
       };
       this.#registrations.set(registration, active);
       loop.vnode(
-        change.ident,
+        fd,
         change.fflags,
         (event) => {
           if (this.#registrations.get(registration) !== active) return;
@@ -225,7 +271,7 @@ export class ProcessReadinessController {
             udata: change.udata,
           });
         },
-        change.udata,
+        token,
       );
       routeInstalled(owner, change);
       return;
@@ -259,11 +305,17 @@ export class ProcessReadinessController {
     let cancel: () => void;
     let ready: Promise<number | void>;
     if (change.filter === EVFILT_READ) {
-      ready = loop.readable(change.ident, change.udata);
-      cancel = () => loop.removeRead(change.ident, change.udata);
+      ready = loop.readable(fd, token);
+      cancel = () => {
+        loop.removeRead(fd, token);
+        this.#releaseFd(change);
+      };
     } else if (change.filter === EVFILT_WRITE) {
-      ready = loop.writable(change.ident, change.udata);
-      cancel = () => loop.removeWrite(change.ident, change.udata);
+      ready = loop.writable(fd, token);
+      cancel = () => {
+        loop.removeWrite(fd, token);
+        this.#releaseFd(change);
+      };
     } else if (change.filter === EVFILT_TIMER) {
       const timer = loop.timeout(change.data);
       ready = timer;
@@ -283,6 +335,7 @@ export class ProcessReadinessController {
     void ready.then((available) => {
       if (this.#registrations.get(registration) !== active) return;
       this.#registrations.delete(registration);
+      this.#releaseFd(change);
       route(owner, {
         ident: change.ident,
         filter: change.filter,
@@ -335,9 +388,11 @@ export class ProcessReadinessController {
   stop(): void {
     if (!this.#running) return;
     this.#running = false;
+    this.#drainCommands();
     loop.unregisterWakeSource(this.controlFd);
     for (const active of this.#registrations.values()) active.cancel();
     this.#registrations.clear();
+    this.#flushReleases();
   }
 }
 

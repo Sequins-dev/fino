@@ -202,6 +202,7 @@ const USER_DATA_FILE = 4n;
 const USER_DATA_SIGNAL = 5n;
 const USER_DATA_TIMER_CANCEL = 6n;
 const USER_DATA_WAIT_TIMER = 7n;
+const USER_DATA_POLL_CANCEL = 8n;
 const FIRST_POLL_ID = 4294967296;
 const MAX_POLL_ID = Number(USER_DATA_MASK);
 const lib = dlopen('libc.so.6', {
@@ -257,6 +258,7 @@ const IORING_OFF_SQES = 268435456n;
 // io_uring SQE opcodes
 const IORING_OP_NOP = 0;
 const IORING_OP_POLL_ADD = 6;
+const IORING_OP_POLL_REMOVE = 7;
 const IORING_OP_TIMEOUT = 11;
 const IORING_OP_TIMEOUT_REMOVE = 12;
 const IORING_OP_OPENAT = 18;
@@ -354,6 +356,7 @@ const SIGNALFD_SIGINFO_SIZE = 128;
 // Helpers
 // ---------------------------------------------------------------------------
 const EINTR = 4;
+const ECANCELED = 125;
 function syscall(
   nr: bigint,
   a1: bigint | number = 0n,
@@ -586,6 +589,21 @@ function submitPending(loop: IoUringLoop): void {
     toSubmit -= ret;
   }
 }
+// POLL_REMOVE identifies the existing request by its user_data, not its fd.
+// Retiring only the JS map leaves a quiet kernel poll holding the open file.
+// https://github.com/axboe/liburing/blob/master/src/include/liburing.h
+function cancelPoll(loop: IoUringLoop, kind: bigint, id: number): void {
+  submitSqe(
+    loop,
+    IORING_OP_POLL_REMOVE,
+    -1,
+    packUserData(kind, id),
+    0,
+    0,
+    packUserData(USER_DATA_POLL_CANCEL, id),
+    0,
+  );
+}
 function nextPollId(loop: IoUringLoop): number {
   const id = loop.nextPollId++;
   if (loop.nextPollId > MAX_POLL_ID) loop.nextPollId = FIRST_POLL_ID;
@@ -617,6 +635,11 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
       filter = EVFILT_TIMER;
     } else if (userData.kind === USER_DATA_TIMER_CANCEL) {
       if (!loop.timerBufs.has(ident)) loop.canceledTimers.delete(ident);
+      head++;
+      continue;
+    } else if (userData.kind === USER_DATA_POLL_CANCEL) {
+      // Cancellation can race normal completion (ENOENT/EALREADY). The poll
+      // identity was retired before submission, so neither CQE is deliverable.
       head++;
       continue;
     } else if (userData.kind === USER_DATA_WAIT_TIMER) {
@@ -661,6 +684,10 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
         loop.currentReadPolls.delete(poll.fd);
         ident = poll.userData;
       } else if (loop.persistentReads.has(ident)) {
+        if (res === -ECANCELED) {
+          head++;
+          continue;
+        }
         rearmPersistentReads.push(ident);
       } else {
         head++;
@@ -719,6 +746,7 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
  * @internal
  */
 export function addRead(loop: IoUringLoop, fd: number, userData: number): void {
+  if (loop.currentReadPolls.has(fd)) removeRead(loop, fd);
   const pollId = nextPollId(loop);
   loop.readPolls.set(pollId, {
     fd,
@@ -757,6 +785,7 @@ export function addPersistentRead(loop: IoUringLoop, fd: number, userData: numbe
  * @internal
  */
 export function addWrite(loop: IoUringLoop, fd: number, userData: number): void {
+  if (loop.currentWritePolls.has(fd)) removeWrite(loop, fd);
   const pollId = nextPollId(loop);
   loop.writePolls.set(pollId, {
     fd,
@@ -766,7 +795,7 @@ export function addWrite(loop: IoUringLoop, fd: number, userData: number): void 
   submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_WRITE, pollId), POLLOUT);
 }
 /**
- * Logically cancel a read readiness watch.
+ * Cancel a read readiness watch and release the kernel poll reference.
  *
  * The kernel may still deliver the one-shot completion after cancellation.
  * Each transient poll carries a unique id, so that late completion is ignored
@@ -785,12 +814,11 @@ export function removeRead(loop: IoUringLoop, fd: number): void {
     loop.currentReadPolls.delete(fd);
     loop.readPolls.delete(pollId);
   }
-  // POLL_ADD is one-shot by default in io_uring. The eventual completion is
-  // ignored through its unique poll id after the logical watch is removed.
-  loop.persistentReads.delete(fd);
+  if (pollId !== undefined) cancelPoll(loop, USER_DATA_READ, pollId);
+  if (loop.persistentReads.delete(fd)) cancelPoll(loop, USER_DATA_READ, fd);
 }
 /**
- * Logically cancel a write readiness watch.
+ * Cancel a write readiness watch and release the kernel poll reference.
  *
  * As with reads, the underlying one-shot poll may complete later; removing its
  * unique id prevents it from waking a newer watch that reused the descriptor.
@@ -807,6 +835,7 @@ export function removeWrite(loop: IoUringLoop, fd: number): void {
   if (pollId !== undefined) {
     loop.currentWritePolls.delete(fd);
     loop.writePolls.delete(pollId);
+    cancelPoll(loop, USER_DATA_WRITE, pollId);
   }
 }
 /**

@@ -344,6 +344,16 @@ function _dispatch(ev: LoopEvent): void {
 // Runtime hooks — exported for internal/main.ts to drive the event loop
 // ---------------------------------------------------------------------------
 /**
+ * Submit queued backend changes without consuming readiness events.
+ * The process controller uses this before releasing borrowed descriptors, so
+ * a queued deletion cannot target a later reuse of the same descriptor number.
+ *
+ * @internal
+ */
+export function flush(): void {
+  if (!_processReadiness) backend.flush?.(rawBackend());
+}
+/**
  * Poll the backend for ready events, dispatch each to its registered resolver,
  * and return the number of events processed.
  *

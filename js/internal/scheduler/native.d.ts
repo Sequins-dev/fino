@@ -75,6 +75,7 @@ export function reactorPoolStats(): {
   framesSent: number;
   framesDrained: number;
   mailboxChanges: number;
+  readinessBorrowedFds: number;
   mailboxOwnersWithEvents: number;
   mailboxEvents: number;
 } | null;
@@ -106,8 +107,11 @@ export type ReadinessChangeTuple = [
   cancelOwner: number | null,
   schedulerWake: boolean,
   schedulerPoll: boolean,
+  borrowedFd: number | null,
 ];
 export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
+/** Release a controller-owned descriptor after removing its kernel watch. */
+export function releaseSharedReadinessFd(fd: number): void;
 export function routeProcessReadiness(
   owner: number,
   ident: number,

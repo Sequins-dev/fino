@@ -492,7 +492,9 @@ function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number)
   for (let index = 0; index < n; index++) {
     const receipt = readKevent(_eventView, index);
     if (receipt.data !== 0 && receipt.data !== ENOENT && receipt.data !== EBADF) {
-      throw new Error(`kevent register failed: errno=${receipt.data}`);
+      throw new Error(
+        `kevent register failed: errno=${receipt.data} ident=${receipt.ident} filter=${receipt.filter} flags=${receipt.flags} udata=${receipt.udata} kqueue=${kqFd}`,
+      );
     }
   }
 }

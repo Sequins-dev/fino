@@ -8,7 +8,7 @@
 use std::{
     cell::RefCell,
     collections::{BinaryHeap, HashMap, VecDeque},
-    os::unix::io::RawFd,
+    os::fd::{FromRawFd, OwnedFd, RawFd},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex, Weak,
@@ -271,6 +271,7 @@ struct ReadinessChange {
     /// reactor parks the realm and borrows a timer from the thread that is
     /// already sleeping in kqueue/io_uring.
     scheduler_poll: bool,
+    borrowed_fd: Option<RawFd>,
 }
 
 impl ReadinessChange {
@@ -286,6 +287,7 @@ impl ReadinessChange {
             cancel_owner: None,
             scheduler_wake: false,
             scheduler_poll: false,
+            borrowed_fd: None,
         }
     }
 }
@@ -319,7 +321,23 @@ type ReadinessCompletion = [f64; COMPLETION_SLOTS];
 #[derive(Default)]
 struct MailboxInner {
     changes: Vec<ReadinessChange>,
+    borrowed_fds: HashMap<RawFd, OwnedFd>,
     events: HashMap<u32, Vec<ReadinessCompletion>>,
+}
+
+impl MailboxInner {
+    /// A queued registration must name the same open file even if its Realm
+    /// closes and reuses the original number before the controller runs.
+    fn borrow_fd(&mut self, fd: RawFd) -> std::io::Result<RawFd> {
+        let borrowed = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if borrowed < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fcntl returned a fresh descriptor owned by this mailbox.
+        self.borrowed_fds
+            .insert(borrowed, unsafe { OwnedFd::from_raw_fd(borrowed) });
+        Ok(borrowed)
+    }
 }
 
 struct Mailbox {
@@ -1874,6 +1892,7 @@ fn reactor_pool_stats(
             FRAMES_DRAINED.load(Ordering::Relaxed) as f64,
         ),
         ("mailboxChanges", mail.changes.len() as f64),
+        ("readinessBorrowedFds", mail.borrowed_fds.len() as f64),
         ("mailboxOwnersWithEvents", mail.events.len() as f64),
         (
             "mailboxEvents",
@@ -2025,6 +2044,7 @@ fn readiness_change_from_args(
         cancel_owner: None,
         scheduler_wake: false,
         scheduler_poll: false,
+        borrowed_fd: None,
     }
 }
 
@@ -2033,8 +2053,23 @@ fn register_process_readiness(
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let change = readiness_change_from_args(scope, &args);
-    mailbox().inner.lock().unwrap().changes.push(change);
+    let mut change = readiness_change_from_args(scope, &args);
+    let mut inner = mailbox().inner.lock().unwrap();
+    if change.flags & 1 != 0 && matches!(change.filter, -1 | -2 | -4) {
+        match inner.borrow_fd(change.ident as RawFd) {
+            Ok(fd) => change.borrowed_fd = Some(fd),
+            Err(error) => {
+                drop(inner);
+                v8util::throw_error(
+                    scope,
+                    &format!("readiness descriptor {}: {error}", change.ident),
+                );
+                return;
+            }
+        }
+    }
+    inner.changes.push(change);
+    drop(inner);
     mailbox().notify();
 }
 
@@ -2045,10 +2080,28 @@ fn register_reactor_wake(
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
     let fd = args.get(1).int32_value(scope).unwrap_or(-1);
+    // Retirement removes the owner before closing its wake pipe. Hold the
+    // same lock while borrowing it so fast-finishing Realms cannot race us.
+    let owners = owner_pools().lock().unwrap();
+    if !owners.contains_key(&owner) {
+        return;
+    }
     let mut change = ReadinessChange::control(owner as f64, 0.0);
     change.ident = fd as f64;
     change.scheduler_wake = true;
-    mailbox().inner.lock().unwrap().changes.push(change);
+    let mut inner = mailbox().inner.lock().unwrap();
+    match inner.borrow_fd(fd) {
+        Ok(fd) => change.borrowed_fd = Some(fd),
+        Err(error) => {
+            drop(inner);
+            drop(owners);
+            v8util::throw_error(scope, &format!("reactor wake descriptor {fd}: {error}"));
+            return;
+        }
+    }
+    inner.changes.push(change);
+    drop(inner);
+    drop(owners);
     mailbox().notify();
 }
 
@@ -2061,7 +2114,7 @@ fn take_readiness_changes(
     let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
     let values = v8::Array::new(scope, changes.len() as i32);
     for (index, change) in changes.into_iter().enumerate() {
-        let tuple = v8::Array::new(scope, 9);
+        let tuple = v8::Array::new(scope, 10);
         for (field, value) in [
             v8::Number::new(scope, change.ident).into(),
             v8::Integer::new(scope, change.filter).into(),
@@ -2075,6 +2128,10 @@ fn take_readiness_changes(
                 .unwrap_or_else(|| v8::null(scope).into()),
             v8::Boolean::new(scope, change.scheduler_wake).into(),
             v8::Boolean::new(scope, change.scheduler_poll).into(),
+            change
+                .borrowed_fd
+                .map(|fd| v8::Integer::new(scope, fd).into())
+                .unwrap_or_else(|| v8::null(scope).into()),
         ]
         .into_iter()
         .enumerate()
@@ -2084,6 +2141,15 @@ fn take_readiness_changes(
         values.set_index(scope, index as u32, tuple.into());
     }
     rv.set(values.into());
+}
+
+fn release_readiness_fd(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let fd = args.get(0).int32_value(scope).unwrap_or(-1);
+    mailbox().inner.lock().unwrap().borrowed_fds.remove(&fd);
 }
 
 fn route_process_readiness(
@@ -2190,6 +2256,7 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "registerProcessReadiness",
         "registerReactorWake",
         "takeSharedReadinessChanges",
+        "releaseSharedReadinessFd",
         "routeProcessReadiness",
         "takeSharedLoopEvents",
     ];
@@ -2276,6 +2343,12 @@ fn eval_steps<'a>(
     crate::set_fn!(
         scope,
         module,
+        "releaseSharedReadinessFd",
+        release_readiness_fd
+    );
+    crate::set_fn!(
+        scope,
+        module,
         "routeProcessReadiness",
         route_process_readiness
     );
@@ -2293,6 +2366,28 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn readiness_borrow_survives_original_descriptor_reuse() {
+        let (read, write) = create_pipe().unwrap();
+        let mut mailbox = MailboxInner::default();
+        assert!(mailbox.borrow_fd(-1).is_err());
+        assert!(mailbox.borrowed_fds.is_empty());
+        let borrowed = mailbox.borrow_fd(read).unwrap();
+        assert_ne!(borrowed, read);
+        unsafe {
+            // Replace the original number with the pipe's write endpoint.
+            assert_eq!(libc::dup2(write, read), read);
+            assert_eq!(libc::write(write, b"x".as_ptr().cast(), 1), 1);
+            let mut byte = 0_u8;
+            assert_eq!(libc::read(borrowed, (&mut byte as *mut u8).cast(), 1), 1);
+            assert_eq!(byte, b'x');
+            libc::close(read);
+            libc::close(write);
+        }
+        mailbox.borrowed_fds.remove(&borrowed);
+        assert!(mailbox.borrowed_fds.is_empty());
+    }
 
     #[test]
     fn stale_ready_entries_do_not_hide_waiting_work() {

@@ -43,6 +43,43 @@ describe('Readiness registration batches', () => {
     }
   });
   if (os === 'darwin') {
+    it('keeps a delegated vnode watch attached to its original resource', async (t) => {
+      const loop = await import('internal:runtime/loop');
+      const { DiskFileSystem } = await import('fino:file');
+      const fs = new DiskFileSystem();
+      const path = '/tmp/fino-vnode-borrow-' + crypto.randomUUID();
+      await fs.writeFile(path, new Uint8Array([1]));
+      const libc = dlopen('/usr/lib/libSystem.B.dylib', {
+        open: { parameters: ['buffer', 'i32', 'i32'], result: 'i32', variadic: 2 },
+        pipe: { parameters: ['buffer'], result: 'i32' },
+        dup2: { parameters: ['i32', 'i32'], result: 'i32' },
+        close: { parameters: ['i32'], result: 'i32' },
+      });
+      const fd = Number(libc.symbols.open(new TextEncoder().encode(path + '\0').buffer, 0, 0));
+      t.ok(fd >= 0);
+      const pipe = new Int32Array(2);
+      t.equal(libc.symbols.pipe(pipe.buffer), 0);
+      let notify!: () => void;
+      const event = new Promise<void>((resolve) => (notify = resolve));
+      const timer = loop.timeout(10_000);
+      try {
+        const installed = loop.vnode(fd, 2, () => notify());
+        // Reuse the caller's number before awaiting the controller receipt.
+        // If installation won the race, dup2 removes the old unretained
+        // filter; if it lost, installing EVFILT_VNODE on a pipe fails.
+        t.equal(libc.symbols.dup2(pipe[0], fd), fd);
+        await installed;
+        await fs.writeFile(path, new Uint8Array([2]));
+        t.equal(await Promise.race([event.then(() => true), timer.then(() => false)]), true);
+      } finally {
+        timer.cancel();
+        loop.removeVnode(fd);
+        libc.symbols.close(fd);
+        libc.symbols.close(pipe[0]);
+        libc.symbols.close(pipe[1]);
+        await fs.unlink(path);
+      }
+    });
     it('discards cancelled pending watches before descriptor reuse', (t) => {
       const libc = dlopen('/usr/lib/libSystem.B.dylib', {
         pipe: { parameters: ['buffer'], result: 'i32' },
@@ -96,6 +133,42 @@ describe('Readiness registration batches', () => {
     });
   }
   if (os === 'linux') {
+    it('releases a cancelled kernel poll before the descriptor is closed', async (t) => {
+      const uring = await import('internal:runtime/io_uring');
+      const libc = dlopen('libc.so.6', {
+        socketpair: { parameters: ['i32', 'i32', 'i32', 'buffer'], result: 'i32' },
+        read: { parameters: ['i32', 'buffer', 'u64'], result: 'i64' },
+        close: { parameters: ['i32'], result: 'i32' },
+      });
+      const descriptors = new Int32Array(2);
+      // SOCK_NONBLOCK lets the peer distinguish EOF from an outstanding poll
+      // that still holds the other endpoint's open-file reference.
+      t.equal(libc.symbols.socketpair(1, 1 | 2048, 0, descriptors.buffer), 0);
+      const [watched, peer] = descriptors;
+      const raw = uring.create(8);
+      let open = true;
+      try {
+        uring.addRead(raw, watched, 123);
+        uring.flush(raw);
+        uring.removeRead(raw, watched);
+        uring.flush(raw);
+        libc.symbols.close(watched);
+        open = false;
+        const buffer = new ArrayBuffer(1);
+        let result = -1;
+        const deadline = performance.now() + 1000;
+        while (performance.now() < deadline) {
+          uring.poll(raw);
+          result = Number(libc.symbols.read(peer, buffer, 1));
+          if (result === 0) break;
+        }
+        t.equal(result, 0, 'peer observes EOF after cancelling the quiet poll');
+      } finally {
+        uring.destroy(raw);
+        if (open) libc.symbols.close(watched);
+        libc.symbols.close(peer);
+      }
+    });
     it('preserves io_uring completion identities across queue wrap and cancellation', async (t) => {
       const uring = await import('internal:runtime/io_uring');
       const ring = uring.create(8);
