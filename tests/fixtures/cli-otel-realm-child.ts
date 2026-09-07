@@ -21,6 +21,8 @@ if (!['inherited', 'override', 'disabled'].includes(label))
   throw new Error('missing OTEL fixture label');
 
 globalThis.fetch = async function otelRealmChildFetch(url) {
+  // Exercise shutdown exports that complete after the old 20ms parent grace.
+  await new Promise<void>((resolve) => setTimeout(resolve, 50));
   console.log(`child-export:${label}:${String(url)}`);
   return new Response('{}', { status: 200 });
 };
