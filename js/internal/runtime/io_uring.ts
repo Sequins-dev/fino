@@ -148,8 +148,10 @@ interface IoUringLoop {
   ringFd: number;
   sqRing: object;
   sqRingSize: number;
+  sqWords: Uint32Array;
   cqRing: object;
   cqRingSize: number;
+  cqWords: Uint32Array;
   sqes: object;
   sqesSize: number;
   sqOff: SqRingOffsets;
@@ -496,8 +498,10 @@ export function create(entries: number = 256): IoUringLoop {
     ringFd,
     sqRing,
     sqRingSize,
+    sqWords: new Uint32Array(Pointer.view(sqRing, sqRingSize)),
     cqRing,
     cqRingSize,
+    cqWords: new Uint32Array(Pointer.view(cqRing, cqRingSize)),
     sqes,
     sqesSize,
     sqOff,
@@ -524,6 +528,11 @@ export function create(entries: number = 256): IoUringLoop {
 // ---------------------------------------------------------------------------
 // SQE submission
 // ---------------------------------------------------------------------------
+// The kernel and JavaScript are concurrent queue owners. V8 Atomics provides
+// sequentially consistent accesses on these aliased integer views, satisfying
+// io_uring's acquire/release publication protocol. Ordinary Pointer loads and
+// stores do not order queue payload access on weakly ordered CPUs.
+// https://man7.org/linux/man-pages/man7/io_uring.7.html
 function submitSqe(
   loop: IoUringLoop,
   opcode: number,
@@ -534,16 +543,16 @@ function submitSqe(
   userData: bigint,
   pollEvents: number,
 ): void {
-  let tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
-  let head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+  let tail = Atomics.load(loop.sqWords, loop.sqOff.tail / 4);
+  let head = Atomics.load(loop.sqWords, loop.sqOff.head / 4);
   if ((tail - head) >>> 0 >= loop.sqEntries) {
     submitPending(loop);
-    tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
-    head = Pointer.readU32(loop.sqRing, loop.sqOff.head);
+    tail = Atomics.load(loop.sqWords, loop.sqOff.tail / 4);
+    head = Atomics.load(loop.sqWords, loop.sqOff.head / 4);
     if ((tail - head) >>> 0 >= loop.sqEntries) {
       const ret = enter(loop.ringFd, 0, 1, IORING_ENTER_GETEVENTS);
       if (ret < 0) throw new Error(`io_uring_enter (capacity wait) failed: ${ret}`);
-      tail = Pointer.readU32(loop.sqRing, loop.sqOff.tail);
+      tail = Atomics.load(loop.sqWords, loop.sqOff.tail / 4);
     }
   }
   const mask = Pointer.readU32(loop.sqRing, loop.sqOff.ring_mask);
@@ -563,8 +572,8 @@ function submitSqe(
   // Write the index into the SQ array
   const arrayOff = loop.sqOff.array + index * 4;
   Pointer.writeU32(loop.sqRing, arrayOff, index);
-  // Publish the new tail
-  Pointer.writeU32(loop.sqRing, loop.sqOff.tail, (tail + 1) >>> 0);
+  // Release the initialized SQE and array slot before publishing the tail.
+  Atomics.store(loop.sqWords, loop.sqOff.tail / 4, (tail + 1) >>> 0);
   loop.pendingSubmissions++;
 }
 function submitPending(loop: IoUringLoop): void {
@@ -588,8 +597,8 @@ function nextPollId(loop: IoUringLoop): number {
 function drainCqes(loop: IoUringLoop): CqeEvent[] {
   const events = [];
   const rearmPersistentReads: number[] = [];
-  let head = Pointer.readU32(loop.cqRing, loop.cqOff.head);
-  const tail = Pointer.readU32(loop.cqRing, loop.cqOff.tail);
+  let head = Atomics.load(loop.cqWords, loop.cqOff.head / 4);
+  const tail = Atomics.load(loop.cqWords, loop.cqOff.tail / 4);
   const mask = Pointer.readU32(loop.cqRing, loop.cqOff.ring_mask);
   while (head !== tail) {
     const cqeBase = loop.cqOff.cqes + (head & mask) * 16;
@@ -685,8 +694,8 @@ function drainCqes(loop: IoUringLoop): CqeEvent[] {
     });
     head++;
   }
-  // Advance the CQ head
-  Pointer.writeU32(loop.cqRing, loop.cqOff.head, head);
+  // Release consumed CQEs before the kernel can reuse their slots.
+  Atomics.store(loop.cqWords, loop.cqOff.head / 4, head);
   for (const fd of rearmPersistentReads) {
     submitSqe(loop, IORING_OP_POLL_ADD, fd, 0, 0, 0, packUserData(USER_DATA_READ, fd), POLLIN);
   }
@@ -1133,6 +1142,9 @@ export function destroy(loop: IoUringLoop): void {
   for (const fd of loop.signalFds.values()) {
     lib.symbols.close(fd);
   }
+  // Detach the aliases before unmapping their native storage.
+  (loop.sqWords.buffer as ArrayBuffer).transfer(0);
+  (loop.cqWords.buffer as ArrayBuffer).transfer(0);
   lib.symbols.munmap(loop.sqRing, loop.sqRingSize);
   lib.symbols.munmap(loop.cqRing, loop.cqRingSize);
   lib.symbols.munmap(loop.sqes, loop.sqesSize);

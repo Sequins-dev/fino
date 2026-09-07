@@ -148,6 +148,23 @@ describe('read/write via malloc', () => {
   });
 });
 describe('Pointer.view', () => {
+  it('supports atomic access and detaches aliases before native storage is released', (t) => {
+    const allocation = new ArrayBuffer(16);
+    const pointer = Pointer.of(allocation);
+    const alias = Pointer.view(pointer, 16);
+    const words = new Uint32Array(alias);
+    Atomics.store(words, 1, 0xabcdef01);
+    t.equal(Pointer.readU32(pointer, 4), 0xabcdef01, 'atomic store updates the native allocation');
+    Pointer.writeU32(pointer, 4, 0x12345678);
+    t.equal(Atomics.load(words, 1), 0x12345678, 'atomic load observes the native allocation');
+    alias.transfer(0);
+    t.equal(words.byteLength, 0, 'detaching invalidates every typed alias');
+    t.throws(
+      () => Atomics.load(words, 1),
+      TypeError,
+      'detached aliases cannot access freed storage',
+    );
+  });
   it('aliases native memory without copying', (t) => {
     const ptr = libc.symbols.malloc(16);
     const view = Pointer.view(ptr, 16);

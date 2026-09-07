@@ -11,6 +11,9 @@
  * expects. It is only loaded on macOS; Linux uses `internal:runtime/io_uring`
  * instead.
  *
+ * Reference: [kevent(2)](https://man.freebsd.org/cgi/man.cgi?query=kevent&sektion=2),
+ * including EV_RECEIPT for registration without consuming ready events.
+ *
  *
  * ## struct kevent layout
  *
@@ -36,9 +39,11 @@
  *   - Pass a non-null eventlist to *wait* for events (blocks up to `timeout`).
  *   - Both can be combined in one call, but we split them for clarity.
  *
- * When registering changes, we pass `nchanges > 0` and `nevents = 0` with a
- * zero timeout. When waiting, we pass `nchanges = 0` and `nevents = MAX_EVENTS`
- * with the desired timeout (or null for infinite block).
+ * Registration-only flushes request `EV_RECEIPT` with one output slot per
+ * change and a zero timeout. This applies the whole batch even if a watch was
+ * already removed, without consuming ready events. Waiting can submit pending
+ * changes together with polling, using `nevents = MAX_EVENTS` and the desired
+ * timeout (or null for infinite block).
  *
  *
  * ## EV_ONESHOT for timers
@@ -193,6 +198,7 @@ const EV_ENABLE = 4;
 // const EV_DISABLE = 0x0008;
 const EV_ONESHOT = 16;
 const EV_CLEAR = 32;
+const EV_RECEIPT = 64;
 /** Kqueue returned-event EOF flag.
  * ```typescript no_run
  * import { EV_EOF } from 'internal:runtime/kqueue';
@@ -460,13 +466,25 @@ function kevent(
  */
 function registerChanges(kqFd: number, changeBuf: ArrayBuffer, nChanges: number): void {
   const changePtr = changeBuf === _pendingBuf ? _pendingPtr : _changePtr;
-  const n = lib.symbols.kevent(kqFd, changePtr, nChanges, 0n, 0, _zeroTsPtr);
+  const view = changeBuf === _pendingBuf ? _pendingView : _changeView;
+  // Without receipt space, a benign failed cancellation stops the syscall
+  // before later changes are installed. Give every change its own receipt;
+  // EV_RECEIPT also prevents this flush from consuming ready one-shot events.
+  for (let index = 0; index < nChanges; index++) {
+    const offset = index * KEVENT_SIZE + 10;
+    view.setUint16(offset, view.getUint16(offset, true) | EV_RECEIPT, true);
+  }
+  let n: number;
+  do {
+    n = lib.symbols.kevent(kqFd, changePtr, nChanges, _eventPtr, nChanges, _zeroTsPtr);
+  } while (n < 0 && errno() === EINTR);
   if (n < 0) {
-    const err = errno();
-    // ENOENT: filter was already removed (e.g. fd closed, kernel auto-removed it).
-    // EBADF: fd already closed before EV_DELETE was issued. Both are benign.
-    if (err !== ENOENT && err !== EBADF) {
-      throw new Error(`kevent register failed: errno=${err}`);
+    throw new Error(`kevent register failed: errno=${errno()}`);
+  }
+  for (let index = 0; index < n; index++) {
+    const receipt = readKevent(_eventView, index);
+    if (receipt.data !== 0 && receipt.data !== ENOENT && receipt.data !== EBADF) {
+      throw new Error(`kevent register failed: errno=${receipt.data}`);
     }
   }
 }
