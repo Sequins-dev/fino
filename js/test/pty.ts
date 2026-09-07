@@ -208,8 +208,8 @@ export interface PtyHandle {
   resize(cols: number, rows: number): void;
   /**
    * Resolve when `predicate(term)` becomes true. Polls the screen (~15ms) and
-   * rejects after `timeout` ms (default 5000) with the current screen text in
-   * the error message.
+   * rejects after `timeout` ms (default 5000). The error includes child status,
+   * received-byte count, read-pump state and the current screen text.
    */
   waitFor(predicate: (term: Terminal) => boolean, options?: { timeout?: number }): Promise<void>;
   /**
@@ -238,6 +238,11 @@ class Pty implements PtyHandle {
   #pumpDone: Promise<void>;
   #closePromise: Promise<void> | null = null;
   #masterClosed = false;
+  /** Last confirmed output progress, retained without polling the child. @internal */
+  #outputBytes = 0;
+  #readState: 'pending' | 'eof' | 'failed' = 'pending';
+  #readError: string | null = null;
+  #exitError: string | null = null;
 
   constructor(
     pid: number,
@@ -263,7 +268,9 @@ class Pty implements PtyHandle {
       .then((status) => {
         this.#exitStatus = status;
       })
-      .catch(() => {});
+      .catch((error) => {
+        this.#exitError = String(error);
+      });
     this.#pumpDone = this.#pump();
   }
 
@@ -271,10 +278,17 @@ class Pty implements PtyHandle {
     try {
       while (true) {
         const result = await this.#reader.read();
-        if (result.done) break;
+        if (result.done) {
+          this.#readState = 'eof';
+          break;
+        }
+        this.#outputBytes += result.value.byteLength;
         this.#term.write(result.value);
       }
-    } catch (_) {}
+    } catch (error) {
+      this.#readState = 'failed';
+      this.#readError = String(error);
+    }
   }
 
   get term(): Terminal {
@@ -340,8 +354,20 @@ class Pty implements PtyHandle {
     while (true) {
       if (predicate(this.#term)) return;
       if (Date.now() >= deadline) {
+        const status = this.#exitStatus;
+        const child =
+          status === null
+            ? 'running'
+            : status.code === null
+              ? `exited with signal ${status.signal}`
+              : `exited with code ${status.code}`;
         throw new Error(
-          `waitFor timed out after ${timeoutMs}ms; screen:\n` + this.#term.text().join('\n'),
+          `waitFor timed out after ${timeoutMs}ms; child ${this.#pid}: ${child}; ` +
+            `output bytes: ${this.#outputBytes}; read state: ${this.#readState}` +
+            (this.#readError === null ? '' : `; read error: ${this.#readError}`) +
+            (this.#exitError === null ? '' : `; exit watch error: ${this.#exitError}`) +
+            '; screen:\n' +
+            this.#term.text().join('\n'),
         );
       }
       await new Promise((resolve) => setTimeout(resolve, 15));

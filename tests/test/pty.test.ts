@@ -57,6 +57,21 @@ describe('fino:test/pty', () => {
     });
   });
 
+  it('reports child exit and output progress when a screen wait times out', async (t) => {
+    await withScript(
+      `console.log('ready');\nimport { exit } from 'fino:process';\nexit(13);\n`,
+      async (pty) => {
+        await pty.waitFor((term) => screenIncludes(term, 'ready'), { timeout: 30_000 });
+        t.equal(await pty.waitExit(), 13);
+        await t.rejects(
+          () => pty.waitFor(() => false, { timeout: 1 }),
+          new RegExp(`child ${pty.pid}: exited with code 13; output bytes: [1-9]`),
+          'timeout distinguishes an exited child from a running child with no output',
+        );
+      },
+    );
+  });
+
   it('closes an active session idempotently while I/O is pending', async (t) => {
     const dir = '/tmp/fino-pty-close-' + Math.floor(Math.random() * 1e9);
     await fs.mkdir(dir);
@@ -64,6 +79,11 @@ describe('fino:test/pty', () => {
     await fs.writeFile(script, encoder.encode(`await new Promise(() => {});\n`));
     const pty = await openPty(execPath, [script]);
     try {
+      await t.rejects(
+        () => pty.waitFor(() => false, { timeout: 1 }),
+        new RegExp(`child ${pty.pid}: running; output bytes: 0; read state: pending`),
+        'timeout reports a running child whose output read is still pending',
+      );
       const first = pty.close();
       const second = pty.close();
       t.equal(first, second, 'concurrent close calls share one teardown promise');

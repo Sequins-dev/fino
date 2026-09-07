@@ -78,7 +78,9 @@ describe('fino:tty/tui app lifecycle', () => {
       t.ok(restored.includes('STOP RESTORED'), 'stop returned to the primary screen exactly once');
     } finally {
       await pty.close();
-      await fs.unlink(ready);
+      await fs.unlink(ready).catch((error: { code?: string }) => {
+        if (error.code !== 'ENOENT') throw error;
+      });
       await fs.unlink(script);
       await fs.rmdir(dir);
     }
