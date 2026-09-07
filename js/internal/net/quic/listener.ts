@@ -689,6 +689,8 @@ export class QuicListener {
             }
           }
         }
+        // A packet callback may have closed the listener and its transports.
+        if (this.#closed) break;
         await transport.waitReadable();
       } catch (error) {
         if (!this.#closed) {

@@ -1792,6 +1792,7 @@ export class RealQuicDatagramTransport implements QuicDatagramTransport {
         };
   }
   recvBatch(maxPackets: number, maxBytes: number): QuicDatagramPacket[] {
+    if (this.#closed) return [];
     if (
       this.#recvBatch === null ||
       this.#recvBatchPackets !== maxPackets ||
@@ -1843,6 +1844,7 @@ export class RealQuicDatagramTransport implements QuicDatagramTransport {
     maxBytes: number,
     callback: QuicDatagramPacketCallback,
   ): number {
+    if (this.#closed) return 0;
     if (
       this.#recvBatch === null ||
       this.#recvBatchPackets !== maxPackets ||
@@ -1874,6 +1876,7 @@ export class RealQuicDatagramTransport implements QuicDatagramTransport {
     return packets;
   }
   waitReadable(): Promise<void> {
+    if (this.#closed) return Promise.reject(new Error('QUIC datagram transport is closed'));
     return loop.readable(this.#fd);
   }
   sendNow(data: Uint8Array, dest: QuicAddress, ecn?: number): number {
@@ -1891,6 +1894,7 @@ export class RealQuicDatagramTransport implements QuicDatagramTransport {
     sent: number;
     errno: number | null;
   } {
+    if (this.#closed) return { sent: 0, errno: EAGAIN };
     const batchResult = sendmmsgBatch(this.#fd, packets);
     if (batchResult !== null) return batchResult;
     let sent = 0;
@@ -1909,12 +1913,14 @@ export class RealQuicDatagramTransport implements QuicDatagramTransport {
     };
   }
   waitWritable(): Promise<void> {
+    if (this.#closed) return Promise.reject(new Error('QUIC datagram transport is closed'));
     return loop.writable(this.#fd);
   }
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
     loop.removeRead(this.#fd);
+    loop.removeWrite(this.#fd);
     socketClose(this.#fd);
   }
 }
