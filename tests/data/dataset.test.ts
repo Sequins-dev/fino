@@ -27,8 +27,9 @@ async function waitForAtomicValue(
   values: Int32Array,
   index: number,
   expected: number,
+  timeoutMs = 2_000,
 ): Promise<number> {
-  const deadline = performance.now() + 2_000;
+  const deadline = performance.now() + timeoutMs;
   let value = Atomics.load(values, index);
   while (value !== expected && performance.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 10));
@@ -230,14 +231,15 @@ describe('DataLoader', () => {
 
   it('runs bounded realm collators concurrently while yielding in source order', async (t) => {
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3);
-    // The first two batches outlast both cold Realm constructions, guaranteeing
-    // overlap without a rendezvous that assumes which queued Realm starts first.
-    // Later batches complete immediately so the test pays the delay only once.
+    const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+    // Hold both initial batches until the observer sees them active, regardless
+    // of which Realm starts first or how long cold construction takes.
     const source = Dataset.from(
-      [5_000, 5_000, 0, 0].map((delayMs, value) => ({
+      [0, 1, 2, 3].map((value) => ({
         value,
-        delayMs,
+        delayMs: 0,
         stats,
+        ...(value < 2 ? { gate } : {}),
       })),
     );
     const loader = new DataLoader<typeof source extends Dataset<infer T> ? T : never, number[]>(
@@ -252,8 +254,15 @@ describe('DataLoader', () => {
       },
     );
 
-    t.deepEqual(await collect(loader), [[0], [10], [20], [30]]);
     const counters = new Int32Array(stats);
+    const pending = collect(loader);
+    try {
+      t.equal(await waitForAtomicValue(counters, 0, 2, 30_000), 2, 'both workers become active');
+    } finally {
+      Atomics.store(new Int32Array(gate), 0, 1);
+      Atomics.notify(new Int32Array(gate), 0);
+    }
+    t.deepEqual(await pending, [[0], [10], [20], [30]]);
     t.equal(counters[0], 0, 'all worker calls have finished');
     t.equal(counters[1], 2, 'realm work is bounded by the configured pool size');
     t.equal(
@@ -265,13 +274,13 @@ describe('DataLoader', () => {
 
   it('cancels active realm work and closes the loader source', async (t) => {
     const stats = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+    const gate = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
     let closed = false;
     const source = new IterableDataset(async function* () {
       try {
         for (let value = 0; value < 4; value++) {
-          // Long enough that the abort below lands while the first batch is
-          // still in flight, rather than after it has already been yielded.
-          yield { value, delayMs: 500, stats };
+          // Stay in flight until cancellation, even if the observer is delayed.
+          yield { value, delayMs: 0, stats, gate };
         }
       } finally {
         closed = true;
@@ -289,11 +298,22 @@ describe('DataLoader', () => {
     const run = loader.iterate({ signal: controller.signal });
     const pending = run.next();
     const counters = new Int32Array(stats);
-    while (Atomics.load(counters, 0) === 0) await new Promise((resolve) => setTimeout(resolve, 1));
-    controller.abort(new Error('stop parallel loader'));
+    try {
+      // A slow observer could miss the former 500ms active-work window entirely.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      while (Atomics.load(counters, 0) === 0)
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      t.ok(Atomics.load(counters, 0) > 0, 'work stays active until cancellation');
+      controller.abort(new Error('stop parallel loader'));
 
-    await t.rejects(() => pending, /stop parallel loader/);
-    t.equal(closed, true, 'cancellation closes the source iterator');
+      await t.rejects(() => pending, /stop parallel loader/);
+      t.equal(closed, true, 'cancellation closes the source iterator');
+    } finally {
+      controller.abort(new Error('stop parallel loader'));
+      Atomics.store(new Int32Array(gate), 0, 1);
+      Atomics.notify(new Int32Array(gate), 0);
+      await run.return();
+    }
 
     const retry = new DataLoader(Dataset.from([{ value: 9, delayMs: 1, stats }]), {
       worker: {

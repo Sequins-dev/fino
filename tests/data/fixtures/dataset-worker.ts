@@ -4,6 +4,7 @@ type ParallelValue = {
   value: number;
   delayMs: number;
   stats: SharedArrayBuffer;
+  gate?: SharedArrayBuffer;
   fail?: boolean;
 };
 
@@ -63,7 +64,11 @@ export default async function collate(
   const active = Atomics.add(stats, 0, 1) + 1;
   recordMaximum(stats, active);
   try {
-    await new Promise((resolve) => setTimeout(resolve, parallel[0]!.delayMs));
+    if (parallel[0]!.gate) {
+      await Atomics.waitAsync(new Int32Array(parallel[0]!.gate), 0, 0).value;
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, parallel[0]!.delayMs));
+    }
     if (parallel[0]!.fail) throw new Error(`worker-${parallel[0]!.value} failed`);
     return parallel.map((value) => value.value * 10);
   } finally {
