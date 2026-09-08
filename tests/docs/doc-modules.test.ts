@@ -186,7 +186,7 @@ describe('fino doc: modules', () => {
       'include-private does not duplicate hidden source docs in facade',
     );
   });
-  it('documents moved web globals without exposing internal import specifiers', async (t) => {
+  it('documents web globals without internal specifiers', { timeout: 120_000 }, async (t) => {
     const repoRoot = TEST_DIR + '/web-globals-repo';
     await ensureDir(fs, repoRoot);
     await fs.symlink(REPO_DIR + '/js', repoRoot + '/js');

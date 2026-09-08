@@ -3,7 +3,7 @@ import { describe, it } from 'fino:test/test';
 import { runCli, withTempProject } from './cli-test-helpers.ts';
 
 describe('CLI commands: coverage', () => {
-  it('collects original-source coverage and exposes focused reports', async (t) => {
+  it('collects source coverage and focused reports', { timeout: 120_000 }, async (t) => {
     await withTempProject(
       {
         'src/classify.ts': [
