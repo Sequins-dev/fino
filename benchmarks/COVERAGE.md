@@ -52,6 +52,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:ui/web/state` | not yet benchmarked |
 | `fino:tty` | `benchmarks/tty.bench.ts` |
 | `fino:tty/tui` | `benchmarks/tty/tui.bench.ts` |
+| `fino:tty/inline` | `benchmarks/tty/inline.bench.ts` |
 | `fino:tty/style` | not yet benchmarked |
 | `fino:tty/frame` | not yet benchmarked |
 | `fino:net/socket` | `benchmarks/net/socket.bench.ts` |
