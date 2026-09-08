@@ -181,6 +181,13 @@ analysis command accepts these JSON files. Child processes inherit the setting
 and write separate files. Files remain after exit; the last periodic snapshot
 can predate final cleanup.
 
+From a source checkout, `python3 scripts/capture-runtime-stall.py /absolute/path/to/recordings`
+preserves snapshots and process counters for tests that remain active. Add
+`--native-stacks` on Linux to attach GDB. Stack capture pauses the target and can
+cause a test deadline to expire; artifacts include `debuggerWallSeconds` so that
+cost is visible. CI workflow dispatch exposes this separately as `native_stacks`;
+`readiness_trace` alone records without attaching a debugger.
+
 These snapshots include parent owners, entry paths, scheduler phases, the pool's
 resident and parked owners, and the last loop handle counts reported by each
 Realm. Test workers also report their file and lifecycle stage. Observations are

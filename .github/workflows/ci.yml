@@ -11,6 +11,10 @@ on:
         description: Record readiness and live Realm state for hang diagnosis
         type: boolean
         default: false
+      native_stacks:
+        description: Attach GDB during a stall (pauses the target and affects timing)
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -205,7 +209,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libsqlite3-0
 
       - name: Prepare native stack capture
-        if: ${{ inputs.readiness_trace }}
+        if: ${{ inputs.readiness_trace && inputs.native_stacks }}
         run: |
           sudo apt-get install -y --no-install-recommends gdb
           if [ -e /proc/sys/kernel/yama/ptrace_scope ]; then
@@ -232,7 +236,7 @@ jobs:
           FINO_TRACE_DIRECTORY: ${{ runner.temp }}/fino-readiness
         run: |
           if [ "$FINO_TRACE_READINESS" = 1 ]; then
-            python3 scripts/capture-runtime-stall.py "$FINO_TRACE_DIRECTORY" --test-pattern 'docs/doc-(search|types)' --limit 2 &
+            python3 scripts/capture-runtime-stall.py "$FINO_TRACE_DIRECTORY" --test-pattern 'docs/doc-(search|types)' --limit 2 ${{ inputs.native_stacks && '--native-stacks' || '' }} &
             observer=$!
             trap 'kill "$observer" 2>/dev/null || true' EXIT
           fi

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Preserve live runtime snapshots and native stacks for a long-running test.
 
-Run beside FINO_TRACE_DIRECTORY recording, with ptrace permission on Linux.
+Run beside FINO_TRACE_DIRECTORY recording. Pass --native-stacks and provide
+ptrace permission on Linux to attach GDB.
 This observer never adds timers or wake notifications to the target runtime.
 GDB does pause the target while attached; its wall time is recorded below.
 """
@@ -17,6 +18,7 @@ parser.add_argument('directory', type=Path)
 parser.add_argument('--test-pattern', default='.')
 parser.add_argument('--after', type=float, default=15)
 parser.add_argument('--limit', type=int, default=8)
+parser.add_argument('--native-stacks', action='store_true', help='Attach GDB; this pauses the target and can affect test deadlines')
 args = parser.parse_args()
 pattern = re.compile(args.test_pattern)
 seen = {}
@@ -65,17 +67,18 @@ while count < args.limit:
                                '/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory.events']:
                     output.write(f'\n{source}\n{read_proc(source)}\n')
                 output.flush()
-                debugger_started = time.monotonic()
-                try:
-                    subprocess.run(['gdb', '--batch', '-nx', '-p', str(pid),
-                                    '-ex', 'set pagination off',
-                                    '-ex', 'thread apply all bt 25',
-                                    '-ex', 'detach'], stdout=output, stderr=subprocess.STDOUT,
-                                   timeout=15, check=False)
-                except (OSError, subprocess.TimeoutExpired) as error:
-                    output.write(str(error) + '\n')
-                finally:
-                    output.write(json.dumps({'debuggerWallSeconds': time.monotonic() - debugger_started}) + '\n')
+                if args.native_stacks:
+                    debugger_started = time.monotonic()
+                    try:
+                        subprocess.run(['gdb', '--batch', '-nx', '-p', str(pid),
+                                        '-ex', 'set pagination off',
+                                        '-ex', 'thread apply all bt 25',
+                                        '-ex', 'detach'], stdout=output, stderr=subprocess.STDOUT,
+                                       timeout=15, check=False)
+                    except (OSError, subprocess.TimeoutExpired) as error:
+                        output.write(str(error) + '\n')
+                    finally:
+                        output.write(json.dumps({'debuggerWallSeconds': time.monotonic() - debugger_started}) + '\n')
             if count >= args.limit:
                 break
     time.sleep(2)
