@@ -208,7 +208,9 @@ jobs:
         if: ${{ inputs.readiness_trace }}
         run: |
           sudo apt-get install -y --no-install-recommends gdb
-          sudo sysctl -w kernel.yama.ptrace_scope=0
+          if [ -e /proc/sys/kernel/yama/ptrace_scope ]; then
+            sudo sysctl -w kernel.yama.ptrace_scope=0
+          fi
 
       - name: Restore Linux build
         uses: actions/cache/restore@v4
