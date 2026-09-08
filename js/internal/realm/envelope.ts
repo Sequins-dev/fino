@@ -57,6 +57,8 @@ export const EnvelopeKind = {
   SinkError: 13,
   /** Begin a parent-to-child read stream. Payload holds specifier/method/args. */
   RpcStreamRequest: 14,
+  /** Normalized V8 coverage submitted by a child to its owning Realm. */
+  Coverage: 15,
 } as const;
 
 export type EnvelopeKindValue = (typeof EnvelopeKind)[keyof typeof EnvelopeKind];
