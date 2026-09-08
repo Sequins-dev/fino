@@ -11,15 +11,8 @@ const writeText = (fs: DiskFileSystem, path: string, text: string): Promise<void
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-// Busy Realm turns can delay event dispatch beyond two seconds on the shared
-// reactor pool. Budget first delivery separately from a quiet collection window.
-const EVENT_TIMEOUT_MS = 10_000;
 /** Collect the next `n` events from the watcher within `timeoutMs`. */
-async function collectEvents(
-  watcher: Watcher,
-  n: number,
-  timeoutMs = EVENT_TIMEOUT_MS,
-): Promise<any[]> {
+async function collectEvents(watcher: Watcher, n: number, timeoutMs = 2e3): Promise<any[]> {
   const events: any[] = [];
   const iter = watcher[Symbol.asyncIterator]();
   for (let i = 0; i < n; i++) {
@@ -36,7 +29,7 @@ async function collectEvents(
             done: false,
             timedOut: true,
           }),
-        events.length === 0 ? timeoutMs : Math.min(timeoutMs, 2e3),
+        timeoutMs,
       );
     });
     const result = await Promise.race([
@@ -56,7 +49,7 @@ async function collectEvents(
 async function waitForEvent(
   watcher: Watcher,
   check: (event: WatchEvent) => boolean,
-  timeoutMs = EVENT_TIMEOUT_MS,
+  timeoutMs = 2e3,
 ): Promise<WatchEvent | undefined> {
   const deadline = Date.now() + timeoutMs;
   const iter = watcher[Symbol.asyncIterator]();
@@ -116,8 +109,8 @@ describe('Watcher', () => {
     watcher.close();
     await fs.unlink(path);
     t.ok(events.length >= 1, 'got at least one event');
-    t.ok(events[0]?.type === 'modify' || events[0]?.type === 'delete', 'event is modify or delete');
-    t.equal(events[0]?.path, path, 'event path matches watched file');
+    t.ok(events[0].type === 'modify' || events[0].type === 'delete', 'event is modify or delete');
+    t.ok(events[0].path === path, 'event path matches watched file');
   });
   it('detects file deletion', async (t) => {
     const path = TEST_DIR + '/delete-test.txt';
@@ -289,10 +282,7 @@ describe('Watcher', () => {
     await watcher.watch(path);
     await watcher.watch(path);
     await writeText(fs, path, 'changed');
-    // Give initial delivery the normal watcher budget; the short quiet window
-    // only bounds how long we look for extra notifications after it arrives.
-    const events = await collectEvents(watcher, 1);
-    if (events.length > 0) events.push(...(await collectEvents(watcher, 1, 250)));
+    const events = await collectEvents(watcher, 2, 250);
     watcher.close();
     await fs.unlink(path);
     t.ok(events.length >= 1, 'duplicate watch still delivers a notification');

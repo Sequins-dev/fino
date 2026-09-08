@@ -136,8 +136,6 @@ interface PreparedParallelTest {
     index: number,
     note?: (stage: string, deadline?: number) => void,
   ): Promise<ParallelTestResult>;
-  /** Re-send a group's start message; the worker ignores one it already ran. */
-  retryStart(index: number): boolean;
   completion: Promise<ParallelFileCompletion>;
   completionReported: Promise<TestFileCompletion>;
 }
@@ -193,7 +191,6 @@ async function prepareParallelFile(
     canStart = startable;
     resolveRegistration(tests);
   };
-  const startedGroups = new Set<number>();
   const progressWaiters = new Map<number, (progress: TestGroupProgress) => void>();
   const resultWaiters = new Map<number, (result: TestGroupResult) => void>();
   const failPending = (error: string) => {
@@ -228,7 +225,6 @@ async function prepareParallelFile(
       return;
     }
     if (message?.kind === 'fino:test:progress') {
-      startedGroups.add(message.index);
       progressWaiters.get(message.index)?.(message);
       return;
     }
@@ -294,15 +290,6 @@ async function prepareParallelFile(
     registeredTests,
     completion: fileCompletion,
     completionReported,
-    retryStart(index: number): boolean {
-      if (!canStart || startedGroups.has(index)) return false;
-      // The worker dedupes by index, so a group it already started ignores
-      // this. What it does do is write to the transport again, which is the
-      // only lever the coordinator has over a Realm that never woke for the
-      // first message.
-      realm.port.postMessage({ kind: 'fino:test:start', index } satisfies TestGroupStart);
-      return true;
-    },
     async execute(
       index: number,
       note?: (stage: string, deadline?: number) => void,
@@ -579,9 +566,6 @@ function watchdogTickMs(options: Parameters<typeof runTestFile>[1]): number {
   const threshold = stallThresholdMs(options);
   const deadline = workerResultDeadlineMs(options);
   const bound = deadline > 0 ? Math.min(threshold, deadline) : threshold;
-  // Eighths rather than quarters: the sweep also drives start retransmits, and
-  // a Realm that missed its wake-up should not wait a quarter of the deadline
-  // for the first one.
   return Math.max(1_000, Math.floor(bound / 8));
 }
 function workerResultDeadlineMs(options: Parameters<typeof runTestFile>[1]): number {
@@ -626,8 +610,6 @@ async function runParallelTests(
       stage: string;
       startedAt: number;
       deadline: number;
-      nudges: number;
-      nudge: () => boolean;
       force: (result: ParallelTestResult) => void;
     }
     const inFlight = new Map<number, InFlightGroup>();
@@ -647,30 +629,11 @@ async function runParallelTests(
         // Do not let the global no-progress watchdog override that contract.
         if (groupDeadline <= 0 || waited < groupDeadline) watchdog.progress();
         if (groupDeadline <= 0) continue;
-        if (waited < groupDeadline) {
-          // Past a quarter of the deadline, re-send the start message on every
-          // tick. The worker ignores a group it already started, so this is a
-          // retransmit rather than a re-run. Stop retransmitting as soon as
-          // actual progress confirms the worker received its admission.
-          if (waited >= groupDeadline / 4 && group.nudge()) {
-            if (group.nudges === 0) {
-              // Sampled here and again when the group is abandoned. Whether
-              // `controllerRouted` advanced between the two says whether the
-              // readiness controller kept running through the strand.
-              const pool = reactorPoolStats();
-              write(
-                `# re-sending start for ${group.label} after ${Math.round(waited)}ms` +
-                  (pool === null ? '' : `; reactor pool ${JSON.stringify(pool)}`),
-              );
-            }
-            group.nudges++;
-          }
-          continue;
-        }
+        if (waited < groupDeadline) continue;
         inFlight.delete(index);
         abandoned = true;
         write(
-          `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage} and ${group.nudges} retransmit(s); its own deadline did not fire`,
+          `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage}; its own deadline did not fire`,
         );
         const pool = reactorPoolStats();
         if (pool !== null) write(`# reactor pool: ${JSON.stringify(pool)}`);
@@ -792,8 +755,6 @@ async function runParallelTests(
             stage: 'scheduled',
             startedAt: performance.now(),
             deadline: groupDeadline,
-            nudges: 0,
-            nudge: () => test.retryStart(index),
             force: forceGroup,
           };
           inFlight.set(resolver.index, tracked);
@@ -805,7 +766,6 @@ async function runParallelTests(
                   if (deadline !== undefined) {
                     tracked.startedAt = performance.now();
                     tracked.deadline = deadline;
-                    tracked.nudges = 0;
                     watchdog.progress();
                   }
                 }),

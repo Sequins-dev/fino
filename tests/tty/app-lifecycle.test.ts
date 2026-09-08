@@ -52,7 +52,7 @@ describe('fino:tty/tui app lifecycle', () => {
     await fs.writeFile(script, new TextEncoder().encode(APP.replace('__READY_MARKER__', ready)));
     const pty = await openPty(execPath, [script], { cols: 30, rows: 6 });
     try {
-      await pty.waitFor((term) => term.text().join('').includes('press q'), { timeout: 30_000 });
+      await pty.waitFor((term) => term.text().join('').includes('press q'));
       // The PTY retains input until the reader consumes it. Send one probe and
       // wait for its acknowledgement so it cannot coalesce with the later q.
       await pty.send('r');

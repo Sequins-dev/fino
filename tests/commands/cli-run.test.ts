@@ -38,102 +38,97 @@ describe('CLI commands: run', () => {
     t.equal(stderr, '', 'script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
   });
-  // This workflow boots multiple CLI processes sequentially on two-CPU CI.
-  it(
-    'writes one thread-labeled pprof for every in-process Realm',
-    { timeout: 120_000 },
-    async (t) => {
-      await withTempProject(
-        {
-          'entry.ts': [
-            "import { Realm } from 'fino:realm';",
-            "import { startProfiling, stopProfiling } from 'fino:profiler';",
-            "import { cwd } from 'fino:process';",
-            'function spin(ms: number) {',
-            '  const end = Date.now() + ms;',
-            '  let value = 0;',
-            '  while (Date.now() < end) value += Math.sqrt(value + 1);',
-            '  return value;',
-            '}',
-            "startProfiling('manual');",
-            'spin(30);',
-            "console.log('manual-profile:' + stopProfiling('manual').byteLength);",
-            'await Promise.all([',
-            '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
-            '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
-            ']);',
-            'spin(20);',
-            '',
-          ].join('\n'),
-          'child.ts': [
-            'const end = Date.now() + 40;',
-            'let value = 0;',
-            'while (Date.now() < end) value += Math.sqrt(value + 1);',
-            'console.log(`child-profile-work:${value > 0}`);',
-            '',
-          ].join('\n'),
-          'error.ts': [
-            'const end = Date.now() + 20;',
-            'while (Date.now() < end) Math.sqrt(Date.now());',
-            "throw new Error('profiled failure');",
-            '',
-          ].join('\n'),
-        },
-        async (dir, fs) => {
-          const explicit = await runCli(['run', '--profile', 'entry.ts'], { cwd: dir });
-          t.equal(explicit.result.code, 0, 'profiled run exits successfully');
-          t.equal(explicit.stderr, '', 'profiled run does not write stderr');
-          t.ok(explicit.stdout.includes('manual-profile:'), 'public profiler remains usable');
+  it('writes one thread-labeled pprof for every in-process Realm', async (t) => {
+    await withTempProject(
+      {
+        'entry.ts': [
+          "import { Realm } from 'fino:realm';",
+          "import { startProfiling, stopProfiling } from 'fino:profiler';",
+          "import { cwd } from 'fino:process';",
+          'function spin(ms: number) {',
+          '  const end = Date.now() + ms;',
+          '  let value = 0;',
+          '  while (Date.now() < end) value += Math.sqrt(value + 1);',
+          '  return value;',
+          '}',
+          "startProfiling('manual');",
+          'spin(30);',
+          "console.log('manual-profile:' + stopProfiling('manual').byteLength);",
+          'await Promise.all([',
+          '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
+          '  new Realm({ entry: `file://${cwd()}/child.ts` }).run(),',
+          ']);',
+          'spin(20);',
+          '',
+        ].join('\n'),
+        'child.ts': [
+          'const end = Date.now() + 40;',
+          'let value = 0;',
+          'while (Date.now() < end) value += Math.sqrt(value + 1);',
+          'console.log(`child-profile-work:${value > 0}`);',
+          '',
+        ].join('\n'),
+        'error.ts': [
+          'const end = Date.now() + 20;',
+          'while (Date.now() < end) Math.sqrt(Date.now());',
+          "throw new Error('profiled failure');",
+          '',
+        ].join('\n'),
+      },
+      async (dir, fs) => {
+        const explicit = await runCli(['run', '--profile', 'entry.ts'], { cwd: dir });
+        t.equal(explicit.result.code, 0, 'profiled run exits successfully');
+        t.equal(explicit.stderr, '', 'profiled run does not write stderr');
+        t.ok(explicit.stdout.includes('manual-profile:'), 'public profiler remains usable');
 
-          const profilePath = `${dir}/profile.pb`;
-          const profile = await new DiskFileSystem().readFile(profilePath);
-          const labels = pprofThreadLabels(profile);
-          const uniqueLabels = new Set(labels);
-          t.ok(labels.length > 0, 'pprof samples carry thread labels');
-          t.ok(uniqueLabels.size >= 3, 'concurrent Realms keep distinct thread values');
-          t.ok(
-            [...uniqueLabels].every((label) => label.startsWith('realm-')),
-            'thread values use unique Realm identities',
-          );
-          t.ok(
-            [...uniqueLabels].some((label) => label.includes('entry.ts')),
-            'application Realm appears in the profile',
-          );
-          t.ok(
-            [...uniqueLabels].some((label) => label.includes('child.ts')),
-            'nested Realm appears in the profile',
-          );
+        const profilePath = `${dir}/profile.pb`;
+        const profile = await new DiskFileSystem().readFile(profilePath);
+        const labels = pprofThreadLabels(profile);
+        const uniqueLabels = new Set(labels);
+        t.ok(labels.length > 0, 'pprof samples carry thread labels');
+        t.ok(uniqueLabels.size >= 3, 'concurrent Realms keep distinct thread values');
+        t.ok(
+          [...uniqueLabels].every((label) => label.startsWith('realm-')),
+          'thread values use unique Realm identities',
+        );
+        t.ok(
+          [...uniqueLabels].some((label) => label.includes('entry.ts')),
+          'application Realm appears in the profile',
+        );
+        t.ok(
+          [...uniqueLabels].some((label) => label.includes('child.ts')),
+          'nested Realm appears in the profile',
+        );
 
-          await fs.unlink(profilePath);
-          const shorthand = await runCli(['--profile', 'entry.ts'], { cwd: dir });
-          t.equal(shorthand.result.code, 0, 'root shorthand profile exits successfully');
-          t.ok((await new DiskFileSystem().readFile(profilePath)).byteLength > 0);
+        await fs.unlink(profilePath);
+        const shorthand = await runCli(['--profile', 'entry.ts'], { cwd: dir });
+        t.equal(shorthand.result.code, 0, 'root shorthand profile exits successfully');
+        t.ok((await new DiskFileSystem().readFile(profilePath)).byteLength > 0);
 
-          await fs.unlink(profilePath);
-          const failed = await runCli(['run', '--profile', 'error.ts'], { cwd: dir });
-          t.equal(failed.result.code, 1, 'entry failure remains a failed run');
-          t.ok(failed.stderr.includes('profiled failure'), 'entry failure is still reported');
-          t.ok(
-            pprofThreadLabels(await new DiskFileSystem().readFile(profilePath)).some((label) =>
-              label.includes('error.ts'),
-            ),
-            'a failed Realm finalizes into the process profile',
-          );
+        await fs.unlink(profilePath);
+        const failed = await runCli(['run', '--profile', 'error.ts'], { cwd: dir });
+        t.equal(failed.result.code, 1, 'entry failure remains a failed run');
+        t.ok(failed.stderr.includes('profiled failure'), 'entry failure is still reported');
+        t.ok(
+          pprofThreadLabels(await new DiskFileSystem().readFile(profilePath)).some((label) =>
+            label.includes('error.ts'),
+          ),
+          'a failed Realm finalizes into the process profile',
+        );
 
-          await fs.unlink(profilePath);
-          const trailing = await runCli(['run', 'entry.ts', '--profile'], { cwd: dir });
-          t.equal(trailing.result.code, 0, 'trailing script flag exits successfully');
-          let trailingProfileExists = true;
-          try {
-            await new DiskFileSystem().lstat(profilePath);
-          } catch {
-            trailingProfileExists = false;
-          }
-          t.equal(trailingProfileExists, false, 'a flag after the script belongs to the script');
-        },
-      );
-    },
-  );
+        await fs.unlink(profilePath);
+        const trailing = await runCli(['run', 'entry.ts', '--profile'], { cwd: dir });
+        t.equal(trailing.result.code, 0, 'trailing script flag exits successfully');
+        let trailingProfileExists = true;
+        try {
+          await new DiskFileSystem().lstat(profilePath);
+        } catch {
+          trailingProfileExists = false;
+        }
+        t.equal(trailingProfileExists, false, 'a flag after the script belongs to the script');
+      },
+    );
+  });
   it('keeps the root runtime alive until Atomics.waitAsync settles', async (t) => {
     const { stdout, stderr, result } = await runCli([
       './tests/fixtures/atomics-waitasync-keepalive.ts',

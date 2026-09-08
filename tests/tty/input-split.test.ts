@@ -27,7 +27,7 @@ interface EchoPty {
   close(): Promise<void>;
 }
 
-async function echoPty(name: string, source = ECHO_APP, startupTimeout = 30_000): Promise<EchoPty> {
+async function echoPty(name: string, source = ECHO_APP, startupTimeout = 5_000): Promise<EchoPty> {
   const dir = `/tmp/fino-input-split-${name}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
   const script = `${dir}/echo.ts`;
   await fs.mkdir(dir);
