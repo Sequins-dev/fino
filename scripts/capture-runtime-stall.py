@@ -3,6 +3,7 @@
 
 Run beside FINO_TRACE_DIRECTORY recording, with ptrace permission on Linux.
 This observer never adds timers or wake notifications to the target runtime.
+GDB does pause the target while attached; its wall time is recorded below.
 """
 import argparse
 import json
@@ -64,6 +65,7 @@ while count < args.limit:
                                '/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory.events']:
                     output.write(f'\n{source}\n{read_proc(source)}\n')
                 output.flush()
+                debugger_started = time.monotonic()
                 try:
                     subprocess.run(['gdb', '--batch', '-nx', '-p', str(pid),
                                     '-ex', 'set pagination off',
@@ -72,6 +74,8 @@ while count < args.limit:
                                    timeout=15, check=False)
                 except (OSError, subprocess.TimeoutExpired) as error:
                     output.write(str(error) + '\n')
+                finally:
+                    output.write(json.dumps({'debuggerWallSeconds': time.monotonic() - debugger_started}) + '\n')
             if count >= args.limit:
                 break
     time.sleep(2)
