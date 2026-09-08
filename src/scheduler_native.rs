@@ -432,6 +432,7 @@ fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
                     "queuedEvents": inner.events.len(),
                     "readyEntries": inner.ready.len(),
                     "shutdown": inner.shutdown,
+                    "attachedWorkers": inner.attached_workers,
                 }),
                 Err(_) => serde_json::json!({ "unavailable": "pool mutex busy" }),
             },
@@ -1152,6 +1153,7 @@ struct ReadyEntry {
 }
 
 struct PoolSharedInner {
+    attached_workers: usize,
     parked: HashMap<u32, PoolItem>,
     events: VecDeque<PoolEvent>,
     ready: BinaryHeap<ReadyEntry>,
@@ -1245,6 +1247,7 @@ struct PoolShared {
 impl PoolShared {
     fn new() -> Self {
         let inner = PoolSharedInner {
+            attached_workers: 0,
             parked: HashMap::new(),
             events: VecDeque::new(),
             ready: BinaryHeap::new(),
@@ -1267,9 +1270,15 @@ impl PoolShared {
         let mut inner = self.inner.lock().unwrap();
         let worker = inner.next_worker;
         inner.next_worker += 1;
+        inner.attached_workers += 1;
         let wake = Arc::new(Condvar::new());
         inner.wakes.push(Arc::clone(&wake));
         (worker, wake)
+    }
+
+    fn unregister_worker(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.attached_workers -= 1;
     }
 
     fn submit(self: &Arc<Self>, item: PoolItem) -> u32 {
@@ -1290,7 +1299,9 @@ impl PoolShared {
     }
 
     fn signal_inner(inner: &mut PoolSharedInner, owner: u32) -> bool {
-        if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
+        if inner.shutdown
+            || (!inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner))
+        {
             SIGNALS_DROPPED.fetch_add(1, Ordering::Relaxed);
             return false;
         }
@@ -1498,6 +1509,7 @@ impl ReactorThread {
         self.wake.notify_all();
         if let Some(join) = self.join.take() {
             let _ = join.join();
+            self.shared.unregister_worker();
         }
     }
 }
@@ -2309,6 +2321,27 @@ fn take_reactor_events(
     rv.set(result.into());
 }
 
+fn take_stopped_pool(
+    registry: &Mutex<Option<Arc<PoolShared>>>,
+) -> Result<Arc<PoolShared>, &'static str> {
+    let mut registered = registry.lock().unwrap();
+    let pool = registered
+        .as_ref()
+        .ok_or("stopReactorPool: process reactor is not running")?;
+    {
+        let mut inner = pool.inner.lock().unwrap();
+        if inner.attached_workers != 0 {
+            return Err("stopReactorPool: reactor threads are still attached");
+        }
+        // Notification producers may already have upgraded their weak route.
+        // Retire dispatch before unregistering; their Arc keeps the wake pipe
+        // alive until they observe shutdown and release their borrow.
+        inner.shutdown = true;
+        inner.wake_all();
+    }
+    Ok(registered.take().unwrap())
+}
+
 /// Tear down the process reactor pool.
 ///
 /// Every reactor thread must already have been stopped. Validation happens
@@ -2318,33 +2351,12 @@ fn stop_reactor_pool(
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let attached = process_pool()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(Arc::strong_count);
-    let Some(attached) = attached else {
-        v8util::throw_error(scope, "stopReactorPool: process reactor is not running");
-        return;
-    };
-    // Only the registration itself may hold a reference by this point.
-    if attached > 1 {
-        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
-        return;
-    }
-    let pool = process_pool()
-        .lock()
-        .unwrap()
-        .take()
-        .expect("reactor pool disappeared between validation and close");
-    {
-        let inner = &mut *pool.inner.lock().unwrap();
-        inner.shutdown = true;
-        inner.wake_all();
-    }
-    let Ok(pool) = Arc::try_unwrap(pool) else {
-        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
-        return;
+    let pool = match take_stopped_pool(process_pool()) {
+        Ok(pool) => pool,
+        Err(error) => {
+            v8util::throw_error(scope, error);
+            return;
+        }
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
     // This callback runs while the root isolate is entered. A parked workload
@@ -2793,6 +2805,41 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn pool_shutdown_refuses_attached_workers_without_mutation() {
+        let pool = Arc::new(PoolShared::new());
+        pool.register_worker();
+        let registry = Mutex::new(Some(Arc::clone(&pool)));
+        assert!(take_stopped_pool(&registry).is_err());
+        assert!(registry.lock().unwrap().is_some());
+        assert!(!pool.inner.lock().unwrap().shutdown);
+        pool.unregister_worker();
+        let stopped = take_stopped_pool(&registry).unwrap();
+        assert!(stopped.inner.lock().unwrap().shutdown);
+    }
+
+    #[test]
+    fn pool_shutdown_allows_an_in_flight_native_notification() {
+        let pool = Arc::new(PoolShared::new());
+        let weak = Arc::downgrade(&pool);
+        let registry = Mutex::new(Some(pool));
+        // A producer already upgraded its owner route, but has not signalled
+        // yet. This is not an attached reactor thread.
+        let notification = weak.upgrade().unwrap();
+        notification.inner.lock().unwrap().residents.insert(123, 0);
+        let stopped =
+            take_stopped_pool(&registry).expect("native notification must not prevent shutdown");
+        assert!(registry.lock().unwrap().is_none());
+        assert!(!notification.signal(123));
+        drop(stopped);
+        assert!(
+            weak.upgrade().is_some(),
+            "the producer retains the pool's wake pipe"
+        );
+        drop(notification);
+        assert!(weak.upgrade().is_none());
+    }
 
     #[test]
     fn native_notifications_target_the_owner_and_stop_at_retirement() {
