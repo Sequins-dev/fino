@@ -1,15 +1,22 @@
 /**
  * internal:sim/guest — install simulation-only ambient adapters before entry.
  *
- * This builtin is the entry module used by `simulate()`. It replaces ambient
- * Fetch with a Facade-backed adapter before importing the caller's module, so
- * HTTP access remains governed by the simulation's import map and appears in
- * the ordinary Realm RPC journal.
+ * This builtin is the entry module used by `simulate()`. Before importing the
+ * caller's module, it replaces ambient Fetch with a Facade-backed adapter and
+ * disables globals that could bypass the simulation's import map and ordinary
+ * Realm RPC journal.
  *
  * @internal
  */
 
 const FETCH_SPECIFIER = 'fino:net/fetch';
+const BLOCKED_GLOBALS = [
+  'WebSocket',
+  'WebTransport',
+  'EventSource',
+  'BroadcastChannel',
+  'SharedArrayBuffer',
+] as const;
 
 type FetchProvider = {
   handleRequest(request: {
@@ -60,8 +67,22 @@ function installFetchAdapter(): void {
   });
 }
 
+function installHermeticGlobals(): void {
+  for (const name of BLOCKED_GLOBALS) {
+    Object.defineProperty(globalThis, name, {
+      value: function unavailableInSimulation(): never {
+        throw new Error(`fino:sim — ${name} is unavailable in a simulation`);
+      },
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+  }
+}
+
 /** Install simulation adapters, import `entry`, and invoke its default export. @internal */
 export default async function runSimulationEntry(entry: string, args: unknown[]): Promise<unknown> {
+  installHermeticGlobals();
   installFetchAdapter();
   const module = await import(entry);
   if (typeof module.default !== 'function') {
