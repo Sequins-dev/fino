@@ -134,11 +134,8 @@ const _ERRNO_CODES: Record<number, string> = {
 // Both platforms need fino:loop for async reads.
 // Linux additionally uses fino:io_uring for IORING_OP_READ / IORING_OP_OPENAT.
 //
-// macOS: kqueue EVFILT_READ on a regular file (vnode) fires when
-//   current_file_offset < file_size, with ev.data = file_size - current_offset
-//   (bytes remaining). It does NOT fire when offset == file_size (at EOF).
-//   We therefore check the current offset via lseek(SEEK_CUR) before each
-//   loop.readable() call to avoid hanging at EOF.
+// Regular-file EOF must be obtained from read(2), not a readiness event or a
+// cached size: a concurrent truncate can make those disagree indefinitely.
 /**
  * Loaded event-loop module used by async file reads and close operations.
  *

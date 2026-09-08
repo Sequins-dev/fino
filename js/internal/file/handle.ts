@@ -34,7 +34,6 @@ import {
   _toPath,
   modeIsReadable,
   modeIsWritable,
-  SEEK_CUR,
   O_CREAT,
   decodeUtf8,
   Pointer,
@@ -53,8 +52,8 @@ import type { Path } from '../../file/path.ts';
  * stream — to release it. Closing flushes any writer created by `writer()`.
  *
  * A locally owned Linux loop can use io_uring completions. Reactor-pooled
- * realms keep the read and its buffer in this isolate, while macOS yields
- * through the runtime loop before its syscall. Every method throws if the
+ * realms keep the read and its buffer in this isolate. macOS waits for readiness
+ * only on stream-like descriptors. Every method throws if the
  * handle is already closed.
  *
  * ```ts no_run
@@ -203,11 +202,13 @@ export class File {
    * Throws immediately if the handle was opened in a non-readable mode (`w`,
    * `a`).
    *
-   * On Linux this issues `IORING_OP_READ` for genuine async I/O. On macOS it
-   * yields through the runtime loop via kqueue `EVFILT_READ` between synchronous
-   * `read(2)` calls, checking `lseek(SEEK_CUR)` against the file size before each
-   * wait so it exits cleanly at EOF (where `EVFILT_READ` never fires) while still
-   * noticing a file that has grown.
+   * A locally owned Linux loop uses `IORING_OP_READ`. Regular-file EOF comes
+   * from `read(2)`, including when another writer truncates the file during a
+   * read. A cached size cannot predict EOF safely, and kqueue does not promise
+   * a regular-file read event at EOF. macOS readiness waits are reserved for
+   * stream-like descriptors.
+   *
+   * See [POSIX read](https://pubs.opengroup.org/onlinepubs/9699919799.2018edition/functions/read.html).
    *
    * ```ts no_run
    * let total = 0;
@@ -224,13 +225,13 @@ export class File {
     const fd = this.#fd;
     const isClosed = (): boolean => this.#closed;
     const bufSize = 65536;
-    // macOS: capture file size once at reader() creation time for EOF detection.
-    // lseek(SEEK_CUR) is called per-iteration to get the current offset.
-    let fileSize: number | null = null;
-    if (!asyncOps) {
+    const path = this.#path.toString();
+    let readinessRequired = true;
+    if (!this.#closed && !asyncOps) {
       const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
+      if (lib.symbols.fstat(fd, statBuf) !== 0) throwErrno('fstat', path);
+      const stat = Stat.parse(statBuf);
+      readinessRequired = !stat.isFile() && !stat.isDirectory();
     }
     const iterable: AsyncIterable<Uint8Array> = {
       [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -253,27 +254,13 @@ export class File {
                 ops.asyncRead(raw, fd, buf, bufSize, id);
               });
               n = result.res;
-              if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
+              if (n < 0) throwErrnoCode('read', path, n);
             } else {
-              // macOS: check EOF via lseek before calling readable() to avoid
-              // hanging (EVFILT_READ does not fire when offset == file_size).
-              const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-              if (fileSize !== null && offset >= fileSize) {
-                // Re-stat: the file may have grown since we last checked.
-                const refreshBuf = new ArrayBuffer(256);
-                lib.symbols.fstat(fd, refreshBuf);
-                fileSize = Stat.parse(refreshBuf).size;
-                if (offset >= fileSize)
-                  return {
-                    done: true,
-                    value: undefined,
-                  };
-              }
-              // kqueue can signal remaining vnode data. Linux regular files
-              // are read directly in this isolate because the process reactor
-              // deliberately owns readiness only, not completion buffers.
-              if (isDarwin) await loopModule!.readable(fd);
+              // EOF is a completed read, not future readability. Waiting on a
+              // vnode after a concurrent truncate can strand this read forever.
+              if (isDarwin && readinessRequired) await loopModule!.readable(fd);
               n = Number(lib.symbols.read(fd, buf, bufSize));
+              if (n < 0) throwErrno('read', path);
             }
             if (n <= 0)
               return {
@@ -322,7 +309,7 @@ export class File {
    * so it advances the shared file offset and returns an empty array when
    * already at EOF. Throws if the handle is closed. For large files prefer
    * `reader()` to avoid holding the whole contents in memory. Uses the same
-   * Linux io_uring / macOS kqueue EOF strategy documented on `reader()`.
+   * read and EOF semantics documented on `reader()`.
    *
    * ```ts no_run
    * const bytes = await file.bytes();
@@ -333,38 +320,9 @@ export class File {
     if (this.#closed) throw new Error('File is closed');
     const chunks: Uint8Array[] = [];
     let total = 0;
-    const bufSize = 65536;
-    const fd = this.#fd;
-    // macOS: capture file size once for EOF detection (same strategy as reader()).
-    let fileSize: number | null = null;
-    if (!asyncOps) {
-      const statBuf = new ArrayBuffer(256);
-      lib.symbols.fstat(fd, statBuf);
-      fileSize = Stat.parse(statBuf).size;
-    }
-    while (true) {
-      const buf = new ArrayBuffer(bufSize);
-      let n: number;
-      if (asyncOps) {
-        const loop = loopModule;
-        const ops = asyncOps;
-        if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-        const result = await loop.submit(function submitAsyncRead(raw: object, id: number) {
-          ops.asyncRead(raw, fd, buf, bufSize, id);
-        });
-        n = result.res;
-        if (n < 0) throwErrnoCode('read', this.#path.toString(), n);
-      } else {
-        // macOS: check EOF via lseek before calling readable() to avoid
-        // hanging (EVFILT_READ does not fire when offset == file_size).
-        const offset = Number(lib.symbols.lseek(fd, 0n, SEEK_CUR));
-        if (fileSize !== null && offset >= fileSize) break;
-        if (isDarwin) await loopModule!.readable(fd);
-        n = Number(lib.symbols.read(fd, buf, bufSize));
-      }
-      if (n <= 0) break;
-      chunks.push(new Uint8Array(buf, 0, n));
-      total += n;
+    for await (const chunk of this.reader()) {
+      chunks.push(chunk);
+      total += chunk.byteLength;
     }
     if (chunks.length === 0) return new Uint8Array(0);
     if (chunks.length === 1) return new Uint8Array(chunks[0]!);
