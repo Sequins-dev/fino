@@ -19,6 +19,16 @@ parser.add_argument('--limit', type=int, default=8)
 args = parser.parse_args()
 pattern = re.compile(args.test_pattern)
 seen = {}
+first_stats = {}
+
+
+def read_proc(path):
+    try:
+        return Path(path).read_text()
+    except OSError as error:
+        return str(error)
+
+
 captured = set()
 count = 0
 while count < args.limit:
@@ -37,6 +47,8 @@ while count < args.limit:
                 continue
             key = (pid, owner, test.get('specifier'), test.get('name'))
             started = seen.setdefault(key, time.monotonic())
+            if key not in first_stats:
+                first_stats[key] = read_proc(f'/proc/{pid}/stat')
             if key in captured or time.monotonic() - started < args.after:
                 continue
             captured.add(key)
@@ -44,7 +56,13 @@ while count < args.limit:
             prefix = args.directory / f'stall-{count}-{pid}-{owner}'
             prefix.with_suffix('.json').write_text(json.dumps(snapshot))
             with prefix.with_suffix('.txt').open('w') as output:
-                output.write(json.dumps({'pid': pid, 'owner': owner, 'test': test}) + '\n')
+                output.write(json.dumps({'pid': pid, 'owner': owner, 'test': test,
+                                         'firstProcessStat': first_stats[key]}) + '\n')
+                for source in [f'/proc/{pid}/stat', f'/proc/{pid}/status', f'/proc/{pid}/io',
+                               '/proc/meminfo', '/proc/pressure/cpu', '/proc/pressure/memory',
+                               '/proc/pressure/io', '/sys/fs/cgroup/memory.max',
+                               '/sys/fs/cgroup/memory.current', '/sys/fs/cgroup/memory.events']:
+                    output.write(f'\n{source}\n{read_proc(source)}\n')
                 output.flush()
                 try:
                     subprocess.run(['gdb', '--batch', '-nx', '-p', str(pid),
