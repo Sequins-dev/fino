@@ -2,7 +2,6 @@
 //! retained, and snapshots never enter an isolate or signal its event loop.
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
-use std::time::Instant;
 
 #[derive(Clone, serde::Serialize)]
 struct Operation {
@@ -29,8 +28,7 @@ fn ledger() -> &'static Mutex<Ledger> {
 }
 
 fn now() -> u64 {
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_micros() as u64
+    crate::scheduler_native::readiness_trace_elapsed_us()
 }
 
 pub fn begin(owner: u32, kind: &str, label: &str) -> u64 {

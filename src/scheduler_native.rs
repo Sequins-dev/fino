@@ -1,13 +1,13 @@
 //! Minimal native substrate for the TypeScript process scheduler.
 //!
-//! TypeScript owns readiness registration, runnable priority, worker placement,
+//! TypeScript owns readiness registration, pool sizing, worker placement,
 //! lifecycle, and metrics. Native code is limited to the operations TypeScript
 //! cannot perform: moving V8 isolates between OS threads, entering and pumping
 //! an isolate, and carrying scalar readiness metadata across isolate boundaries.
 
 use std::{
     cell::RefCell,
-    collections::{BinaryHeap, HashMap, VecDeque},
+    collections::{HashMap, VecDeque},
     os::fd::{FromRawFd, OwnedFd, RawFd},
     rc::Rc,
     sync::{
@@ -312,7 +312,7 @@ fn readiness_trace() -> &'static Mutex<ReadinessTrace> {
     TRACE.get_or_init(|| Mutex::new(ReadinessTrace::default()))
 }
 
-fn readiness_trace_elapsed_us() -> u64 {
+pub(crate) fn readiness_trace_elapsed_us() -> u64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START
         .get_or_init(std::time::Instant::now)
@@ -427,7 +427,7 @@ fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
                 Ok(inner) => serde_json::json!({
                     "parked": inner.parked.keys().copied().collect::<Vec<_>>(),
                     "residents": inner.residents,
-                    "priorities": inner.priorities,
+                    "pendingSignals": inner.pending_signals,
                     "waiting": inner.waiting,
                     "queuedEvents": inner.events.len(),
                     "readyEntries": inner.ready.len(),
@@ -455,6 +455,56 @@ struct RealmDiagnostic {
     parent: Option<u32>,
     entry: Option<String>,
     observations: HashMap<String, String>,
+    scheduling: SchedulingDiagnostic,
+}
+
+// Scalar accounting stays outside V8 so the recorder can explain a stalled
+// worker without entering the isolate. All timestamps share the trace clock.
+#[derive(Clone, Default, serde::Serialize)]
+struct SchedulingDiagnostic {
+    signals: u64,
+    dispatches: u64,
+    ready_since_us: Option<u64>,
+    queue_total_us: u64,
+    queue_max_us: u64,
+    slice_started_us: Option<u64>,
+    slice_total_us: u64,
+    slice_max_us: u64,
+}
+
+impl SchedulingDiagnostic {
+    fn signal(&mut self, now: u64) {
+        self.signals += 1;
+        self.ready_since_us.get_or_insert(now);
+    }
+
+    fn dispatch(&mut self, now: u64) {
+        self.dispatches += 1;
+        if let Some(ready) = self.ready_since_us.take() {
+            let elapsed = now.saturating_sub(ready);
+            self.queue_total_us += elapsed;
+            self.queue_max_us = self.queue_max_us.max(elapsed);
+        }
+        self.slice_started_us = Some(now);
+    }
+
+    fn finish_slice(&mut self, now: u64) {
+        if let Some(started) = self.slice_started_us.take() {
+            let elapsed = now.saturating_sub(started);
+            self.slice_total_us += elapsed;
+            self.slice_max_us = self.slice_max_us.max(elapsed);
+        }
+    }
+}
+
+fn realm_scheduling(owner: u32, update: impl FnOnce(&mut SchedulingDiagnostic, u64)) {
+    if readiness_trace_enabled() {
+        let mut states = realm_diagnostics().lock().unwrap();
+        update(
+            &mut states.entry(owner).or_default().scheduling,
+            readiness_trace_elapsed_us(),
+        );
+    }
 }
 
 fn realm_diagnostics() -> &'static Mutex<HashMap<u32, RealmDiagnostic>> {
@@ -942,8 +992,7 @@ enum Slice {
     /// (V8 background tasks, `Atomics.waitAsync`) and must be revisited on a
     /// timer rather than purely on signal.
     Quiescent { polling: bool },
-    /// The realm still has work, but another realm is ready at a strictly
-    /// higher priority and should get the thread.
+    /// The realm still has work, but another ready Realm can use the thread.
     Preempted,
     /// The realm finished.
     Settled,
@@ -954,7 +1003,7 @@ enum Slice {
 /// The realm is stepped for as long as it reports progress. Leaving early is
 /// deliberately rare: exiting an isolate and entering another costs a Locker
 /// round trip, so a realm that still has completable work keeps the thread
-/// unless `shared` reports a strictly higher-priority realm waiting.
+/// unless another claimable Realm is waiting.
 fn drive_slice(
     workload: &mut Workload,
     active: &mut ActiveWorkload,
@@ -1145,20 +1194,14 @@ struct Resident {
     active: ActiveWorkload,
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct ReadyEntry {
-    priority: usize,
-    generation: u64,
-    owner: u32,
-}
-
 struct PoolSharedInner {
     attached_workers: usize,
     parked: HashMap<u32, PoolItem>,
     events: VecDeque<PoolEvent>,
-    ready: BinaryHeap<ReadyEntry>,
-    priorities: HashMap<u32, usize>,
-    generations: HashMap<u32, u64>,
+    // Owners are never reused. Each pending owner appears once, in first-wake
+    // order; counts are diagnostic and never change admission order.
+    ready: VecDeque<u32>,
+    pending_signals: HashMap<u32, usize>,
     /// Which worker currently has each entered realm. Supersedes a bare set of
     /// active owners: knowing *where* a realm is entered is what lets a signal
     /// wake the one worker that can actually run it.
@@ -1216,7 +1259,7 @@ impl PoolSharedInner {
     /// the queue lock inside `claim`. Until then it is still `waiting.front()`,
     /// so a burst of signals would every one of them target the same worker: N
     /// realms become runnable, one worker wakes, it claims one of them, and the
-    /// rest sit in the ready heap with every other worker still asleep. Nothing
+    /// rest sit in the ready queue with every other worker still asleep. Nothing
     /// re-examines the queue until an unrelated signal happens by, which is a
     /// wake-up delayed by however long that takes rather than one that is lost.
     ///
@@ -1250,9 +1293,8 @@ impl PoolShared {
             attached_workers: 0,
             parked: HashMap::new(),
             events: VecDeque::new(),
-            ready: BinaryHeap::new(),
-            priorities: HashMap::new(),
-            generations: HashMap::new(),
+            ready: VecDeque::new(),
+            pending_signals: HashMap::new(),
             residents: HashMap::new(),
             waiting: VecDeque::new(),
             wakes: Vec::new(),
@@ -1305,15 +1347,12 @@ impl PoolShared {
             SIGNALS_DROPPED.fetch_add(1, Ordering::Relaxed);
             return false;
         }
-        let priority = inner.priorities.entry(owner).or_default();
-        *priority += 1;
-        let generation = inner.generations.entry(owner).or_default();
-        *generation += 1;
-        inner.ready.push(ReadyEntry {
-            priority: *priority,
-            generation: *generation,
-            owner,
-        });
+        realm_scheduling(owner, SchedulingDiagnostic::signal);
+        let signals = inner.pending_signals.entry(owner).or_default();
+        if *signals == 0 {
+            inner.ready.push_back(owner);
+        }
+        *signals = signals.saturating_add(1);
         inner.wake_for(owner);
         true
     }
@@ -1322,63 +1361,32 @@ impl PoolShared {
         Self::signal_inner(&mut self.inner.lock().unwrap(), owner)
     }
 
-    /// Re-queue a realm that still has work, without treating that as a new
-    /// readiness signal.
-    ///
-    /// A preempted realm has to stay claimable, but it must not outrank the
-    /// realm it is yielding to. Routing this through `signal` would bump its
-    /// priority by one every time it yielded, so the realm that just lost the
-    /// comparison would immediately win the next one and preemption would never
-    /// actually hand the thread over.
+    /// A runnable Realm rejoins the FIFO once. Additional notifications coalesce
+    /// without changing admission order: wake volume is not scheduling priority.
     fn mark_runnable(&self, owner: u32) {
-        {
-            let inner = &mut *self.inner.lock().unwrap();
-            if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
-                return;
-            }
-            // A queued entry must carry a priority of at least one. `claim`
-            // compares a candidate against the entered realm with `<=` and keeps
-            // the incumbent on a tie, re-queueing the candidate — so a
-            // priority-zero entry leaves `claim` permanently able to find a
-            // candidate it will never take, and it spins instead of ever
-            // waiting. Claiming resets the priority to zero, which makes that
-            // state reachable for any realm the moment it is preempted.
-            let priority = inner.priorities.entry(owner).or_default();
-            *priority = (*priority).max(1);
-            let priority = *priority;
-            let generation = inner.generations.entry(owner).or_default();
-            *generation += 1;
-            inner.ready.push(ReadyEntry {
-                priority,
-                generation: *generation,
-                owner,
-            });
-            inner.wake_for(owner);
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
+            return;
         }
+        if let std::collections::hash_map::Entry::Vacant(entry) = inner.pending_signals.entry(owner)
+        {
+            entry.insert(1);
+            inner.ready.push_back(owner);
+        }
+        inner.wake_for(owner);
     }
 
-    /// Report whether a different realm is ready at a strictly higher priority
-    /// than the realm a worker currently has entered.
-    ///
-    /// Discard superseded heap roots just as `claim` does. A busy Realm need
-    /// not become quiescent, so deferring stale-entry cleanup until `claim`
-    /// could hide another Realm's wake indefinitely.
+    /// Yield at a cooperative boundary when another Realm can use this worker.
+    /// An entered Realm on a different worker is not claimable here; that worker
+    /// receives its own targeted wake. Our own pending wake cannot hide others.
     fn should_yield(&self, current: u32) -> bool {
-        let mut inner = self.inner.lock().unwrap();
-        if inner.shutdown {
-            return true;
-        }
-        while let Some(entry) = inner.ready.peek() {
-            if inner.generations.get(&entry.owner).copied().unwrap_or(0) != entry.generation
-                || inner.priorities.get(&entry.owner).copied().unwrap_or(0) != entry.priority
-            {
-                inner.ready.pop();
-                continue;
-            }
-            return entry.owner != current
-                && entry.priority > inner.priorities.get(&current).copied().unwrap_or(0);
-        }
-        false
+        let inner = self.inner.lock().unwrap();
+        inner.shutdown
+            || inner.ready.iter().any(|owner| {
+                *owner != current
+                    && inner.pending_signals.contains_key(owner)
+                    && !inner.residents.contains_key(owner)
+            })
     }
 
     fn claim(
@@ -1396,45 +1404,27 @@ impl PoolShared {
             }
             let mut skipped = Vec::new();
             let candidate = loop {
-                let Some(entry) = inner.ready.pop() else {
+                let Some(owner) = inner.ready.pop_front() else {
                     break None;
                 };
-                let current_generation = inner.generations.get(&entry.owner).copied().unwrap_or(0);
-                let current_priority = inner.priorities.get(&entry.owner).copied().unwrap_or(0);
-                if entry.generation != current_generation || entry.priority != current_priority {
+                if !inner.pending_signals.contains_key(&owner) {
                     continue;
                 }
-                if inner.residents.contains_key(&entry.owner) && Some(entry.owner) != current {
-                    skipped.push(entry);
+                if inner.residents.contains_key(&owner) && Some(owner) != current {
+                    skipped.push(owner);
                     continue;
                 }
-                break Some(entry);
+                break Some(owner);
             };
-            for entry in skipped {
-                inner.ready.push(entry);
+            // Preserve the order of owners held by other workers. Moving these
+            // to the tail would let unrelated admission reorder their wakes.
+            for owner in skipped.into_iter().rev() {
+                inner.ready.push_front(owner);
             }
 
-            if let Some(candidate) = candidate {
-                let current_priority = current
-                    .and_then(|owner| inner.priorities.get(&owner).copied())
-                    .unwrap_or(0);
-                let owner = if let Some(current) = current {
-                    if candidate.owner != current && candidate.priority <= current_priority {
-                        current
-                    } else {
-                        candidate.owner
-                    }
-                } else {
-                    candidate.owner
-                };
-                inner.priorities.remove(&owner);
-                if owner != candidate.owner {
-                    // Keeping our own realm leaves the candidate runnable with
-                    // nobody assigned to it. Whoever woke us handed over a
-                    // single wake-up, so pass it on rather than swallowing it.
-                    inner.ready.push(candidate);
-                    inner.wake_any();
-                }
+            if let Some(owner) = candidate {
+                realm_scheduling(owner, SchedulingDiagnostic::dispatch);
+                inner.pending_signals.remove(&owner);
                 if Some(owner) == current {
                     return Claim::Current;
                 }
@@ -1447,7 +1437,10 @@ impl PoolShared {
             // Nothing is ready. A realm that still has work keeps the thread
             // without blocking; anything else waits to be signalled. Reactor
             // threads never wait on a timeout — every wake-up is a signal.
-            if matches!(current_state, CurrentState::Runnable) && current.is_some() {
+            if matches!(current_state, CurrentState::Runnable)
+                && let Some(owner) = current
+            {
+                realm_scheduling(owner, SchedulingDiagnostic::dispatch);
                 return Claim::Current;
             }
             inner.waiting.push_back(worker);
@@ -1472,8 +1465,7 @@ impl PoolShared {
     fn finish(&self, owner: u32) {
         let mut inner = self.inner.lock().unwrap();
         inner.residents.remove(&owner);
-        inner.priorities.remove(&owner);
-        inner.generations.remove(&owner);
+        inner.pending_signals.remove(&owner);
     }
 
     fn notify(&self, event: PoolEvent) {
@@ -1531,7 +1523,7 @@ enum Claim {
 enum CurrentState {
     /// Nothing left to do: wait for a readiness signal before running again.
     Idle,
-    /// Still has work; only a strictly higher-priority realm should take over.
+    /// Still has work; rejoin the ready queue behind previously accepted wakes.
     Runnable,
 }
 
@@ -1599,6 +1591,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
         let mut resident = current.take().expect("reactor worker claimed no workload");
         let owner = resident.item.owner;
         let outcome = drive_slice(resident.item.live_mut(), &mut resident.active, &shared);
+        realm_scheduling(owner, SchedulingDiagnostic::finish_slice);
         let (result, event) = match outcome {
             Ok(Slice::Preempted) => {
                 realm_phase(owner, "preempted");
@@ -1607,7 +1600,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 // consumed, and nothing else will signal a realm whose
                 // remaining work is a resolved promise chain — parking it
                 // without a ready entry would strand it forever. Re-queue at
-                // the same priority so it does not outrank whoever preempted it.
+                // the tail so it does not overtake whoever it yielded to.
                 shared.mark_runnable(owner);
                 current_state = CurrentState::Runnable;
                 current = Some(resident);
@@ -2174,7 +2167,7 @@ fn close_reactor_thread(
 ///
 /// A realm that stops making progress is either parked with nothing queued to
 /// wake it, or queued behind work that never drains. Those look identical from
-/// TypeScript, which can see neither the parked set nor the ready heap, so this
+/// TypeScript, which can see neither the parked set nor the ready queue, so this
 /// reports both along with the entered realms and the idle worker count.
 /// Diagnostic only: it takes the queue lock, copies counters, and mutates
 /// nothing.
@@ -2197,16 +2190,15 @@ fn reactor_pool_stats(
         ("waitingWorkers", inner.waiting.len() as f64),
         ("workers", inner.wakes.len() as f64),
         ("queuedEvents", inner.events.len() as f64),
-        ("priorities", inner.priorities.len() as f64),
+        ("pendingSignals", inner.pending_signals.len() as f64),
     ] {
         let key = v8::String::new(scope, name).unwrap();
         let number = v8::Number::new(scope, value);
         object.set(scope, key.into(), number.into());
     }
-    // Which parked realms have nothing in the ready heap: the set that cannot
+    // Which parked realms have nothing in the ready queue: the set that cannot
     // be claimed by any worker no matter how long it waits.
-    let queued: std::collections::HashSet<u32> =
-        inner.ready.iter().map(|entry| entry.owner).collect();
+    let queued: std::collections::HashSet<u32> = inner.ready.iter().copied().collect();
     let unclaimable = inner
         .parked
         .keys()
@@ -2807,6 +2799,110 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn scheduling_diagnostics_preserve_first_wake_and_account_separate_slices() {
+        let mut diagnostic = SchedulingDiagnostic::default();
+        diagnostic.signal(10);
+        diagnostic.signal(20);
+        diagnostic.dispatch(40);
+        diagnostic.finish_slice(50);
+        diagnostic.signal(60);
+        diagnostic.dispatch(65);
+        diagnostic.finish_slice(85);
+        assert_eq!(diagnostic.signals, 3);
+        assert_eq!(diagnostic.dispatches, 2);
+        assert_eq!(diagnostic.queue_total_us, 35);
+        assert_eq!(diagnostic.queue_max_us, 30);
+        assert_eq!(diagnostic.slice_total_us, 30);
+        assert_eq!(diagnostic.slice_max_us, 20);
+        assert_eq!(diagnostic.ready_since_us, None);
+        assert_eq!(diagnostic.slice_started_us, None);
+    }
+
+    #[test]
+    fn an_older_ready_realm_is_not_starved_by_new_arrivals() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, wake) = pool.register_worker();
+        let stop = AtomicBool::new(false);
+        let submit = |owner| {
+            // Admission and claiming do not enter V8. An empty Pending value
+            // lets this exercise the actual queue without initializing isolates.
+            pool.submit(PoolItem {
+                owner,
+                workload: PoolWorkload::Pending(PendingWorkload { owner, inner: None }),
+            });
+        };
+        let oldest = next_owner();
+        submit(oldest);
+        let mut admitted = false;
+        for _ in 0..64 {
+            submit(next_owner());
+            let Claim::Work(item) = pool.claim(worker, &wake, None, &stop, CurrentState::Idle)
+            else {
+                panic!("ready queue returned no work");
+            };
+            admitted |= item.owner == oldest;
+            pool.finish(item.owner);
+            owner_pools().lock().unwrap().remove(&item.owner);
+            if admitted {
+                break;
+            }
+        }
+        // Every arrival has the same priority and there is always a free
+        // worker. New work must not postpone an already accepted wake forever.
+        assert!(
+            admitted,
+            "64 newer Realms overtook the oldest accepted wake"
+        );
+    }
+
+    #[test]
+    fn a_native_wake_burst_does_not_hide_another_ready_realm() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, _) = pool.register_worker();
+        let current = next_owner();
+        let waiting = next_owner();
+        pool.inner.lock().unwrap().residents.insert(current, worker);
+        pool.submit(PoolItem {
+            owner: waiting,
+            workload: PoolWorkload::Pending(PendingWorkload {
+                owner: waiting,
+                inner: None,
+            }),
+        });
+        for _ in 0..1_000 {
+            assert!(pool.signal(current));
+        }
+        assert!(
+            pool.should_yield(current),
+            "own wake burst hides waiting Realm"
+        );
+        assert_eq!(
+            pool.inner.lock().unwrap().ready.len(),
+            2,
+            "one queue entry per owner"
+        );
+    }
+
+    #[test]
+    fn a_ready_realm_entered_elsewhere_does_not_preempt_this_worker() {
+        let pool = PoolShared::new();
+        let (worker_a, _) = pool.register_worker();
+        let (worker_b, _) = pool.register_worker();
+        let current = next_owner();
+        let other = next_owner();
+        {
+            let mut inner = pool.inner.lock().unwrap();
+            inner.residents.insert(current, worker_a);
+            inner.residents.insert(other, worker_b);
+        }
+        pool.signal(other);
+        assert!(!pool.should_yield(current));
+        // Once the isolate is released by its worker, it can use ours.
+        pool.inner.lock().unwrap().residents.remove(&other);
+        assert!(pool.should_yield(current));
+    }
+
+    #[test]
     fn pool_shutdown_refuses_attached_workers_without_mutation() {
         let pool = Arc::new(PoolShared::new());
         pool.register_worker();
@@ -2863,7 +2959,10 @@ mod tests {
         // No controller exists in this test. All three queue producers share
         // this handle, which outlives the entered isolate state.
         wake.notify();
-        assert_eq!(pool.inner.lock().unwrap().priorities.get(&owner), Some(&1));
+        assert_eq!(
+            pool.inner.lock().unwrap().pending_signals.get(&owner),
+            Some(&1)
+        );
         let mut byte = 0_u8;
         assert_eq!(
             unsafe { libc::read(read, (&mut byte as *mut u8).cast(), 1) },
@@ -2877,7 +2976,7 @@ mod tests {
         owner_pools().lock().unwrap().remove(&owner);
         pool.inner.lock().unwrap().residents.insert(other, worker);
         wake.notify();
-        assert!(pool.inner.lock().unwrap().priorities.is_empty());
+        assert!(pool.inner.lock().unwrap().pending_signals.is_empty());
     }
 
     #[test]
@@ -2934,32 +3033,15 @@ mod tests {
     }
 
     #[test]
-    fn stale_ready_entries_do_not_hide_waiting_work() {
-        for (stale_owner, generation) in [(1, 1), (1, 2), (2, 1), (2, 2)] {
-            let pool = PoolShared::new();
-            {
-                let mut inner = pool.inner.lock().unwrap();
-                // Claiming a previously signalled Realm resets its priority,
-                // leaving older heap entries behind while it keeps running.
-                inner.generations.insert(stale_owner, generation);
-                inner.ready.push(ReadyEntry {
-                    priority: 10,
-                    generation: 1,
-                    owner: stale_owner,
-                });
-                inner.priorities.insert(3, 1);
-                inner.generations.insert(3, 1);
-                inner.ready.push(ReadyEntry {
-                    priority: 1,
-                    generation: 1,
-                    owner: 3,
-                });
-            }
-            assert!(
-                pool.should_yield(1),
-                "stale entry for owner {stale_owner} must not hide runnable owner 3"
-            );
+    fn retired_ready_entries_do_not_hide_waiting_work() {
+        let pool = PoolShared::new();
+        {
+            let mut inner = pool.inner.lock().unwrap();
+            inner.ready.push_back(1);
+            inner.pending_signals.insert(3, 1);
+            inner.ready.push_back(3);
         }
+        assert!(pool.should_yield(1));
     }
 
     #[test]

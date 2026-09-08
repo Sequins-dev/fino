@@ -3,9 +3,9 @@
  *
  * TypeScript owns pool sizing and lifecycle and creates each reactor thread
  * separately, so the pool can grow or shrink without changing native policy. A
- * reactor thread mechanically claims the highest-priority runnable realm. It
- * retains its current isolate on ties and exits it only when a strictly
- * higher-priority realm is available.
+ * reactor thread claims runnable Realms in wake order. Repeated wakes coalesce
+ * without moving a Realm ahead of older work. At cooperative boundaries it
+ * yields when another Realm can use its worker.
  *
  * @internal
  */

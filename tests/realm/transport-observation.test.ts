@@ -1,6 +1,7 @@
 import { describe, it } from 'fino:test/test';
 import { decodeEnvelope, EnvelopeKind } from 'internal:realm/envelope';
 import { deserialize, serialize } from 'internal:serializer';
+import { readinessTraceSnapshot, currentWorkloadOwner } from 'internal:scheduler-native';
 import {
   RealmPort,
   type RealmFrame,
@@ -21,6 +22,25 @@ function channel(): RealmPort {
 }
 
 describe('RealmPort observation', () => {
+  it('records bounded transport metadata without retaining payloads', (t) => {
+    using port = channel();
+    const owner = currentWorkloadOwner();
+    if (!JSON.parse(readinessTraceSnapshot(owner)).enabled) return;
+    for (let i = 0; i < 100; i++) {
+      port._postControl(EnvelopeKind.RpcRequest, i, { secret: 'must-not-enter-trace' });
+    }
+    port.close();
+    port._postControl(EnvelopeKind.RpcRequest, 100, null);
+    const snapshot = JSON.parse(readinessTraceSnapshot(owner));
+    const recorded = snapshot.realms[owner].observations.transport;
+    const history = JSON.parse(recorded);
+    t.equal(history.length, 64);
+    t.equal(recorded.includes('must-not-enter-trace'), false);
+    t.equal(history.at(-1)[2], 'send-closed');
+    t.equal(history.at(-1)[4], 100);
+    t.equal(history.at(-2)[2], 'closed');
+  });
+
   it('filters metadata before copying a payload', (t) => {
     const port = channel();
     let filtered = 0;

@@ -163,6 +163,22 @@ scheduler. Independently pumped isolates use pipe notifications. Compare the
 `nativeWork` stages with the owner's scheduler state to distinguish queued native
 work from a resolver that has already consumed its result.
 
+Each Realm's `scheduling` record includes accepted signals, dispatches, cumulative
+and maximum queue delays, and cumulative and maximum execution-slice durations.
+`ready_since_us` identifies a wake not yet consumed by a scheduler dispatch;
+`slice_started_us` identifies an unfinished dispatch, including initialization.
+A signal received during execution can be serviced before the next dispatch, so
+queue delay is an upper bound on response latency, not proof of starvation.
+Native work, Realm phases, and readiness events use the same process-local clock.
+Snapshots copy these sections separately; they are observations, not an atomic
+transaction across the runtime.
+
+The Realm's `observations.transport` contains the last 64 port transitions as
+`[unixMilliseconds, localPortId, stage, envelopeKind, correlationId]` tuples.
+These identify sends, receives, control-handler dispatch, response matching, and
+closure. Payloads are never recorded. Port IDs are local to each Realm; correlate
+requests using the Realm parent relationship and envelope correlation ID.
+
 Pipe wake registrations also record readiness and owner signalling.
 The `wakeSources` section counts repeated notifications and retains their last
 timestamps separately, so a pipe that remains readable cannot erase the bounded

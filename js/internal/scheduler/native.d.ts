@@ -67,7 +67,7 @@ export function reactorPoolStats(): {
   waitingWorkers: number;
   workers: number;
   queuedEvents: number;
-  priorities: number;
+  pendingSignals: number;
   parkedWithNothingQueued: number;
   controllerRegistrations: number;
   controllerRouted: number;
