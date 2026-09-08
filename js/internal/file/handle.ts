@@ -17,13 +17,9 @@
  * ```ts no_run
  * import { File } from 'internal:file/handle';
  *
- * const file = new File(fd, fileSystem, '/tmp/data.txt', 'r');
- * try {
- *   const text = await file.text();
- *   console.log(text);
- * } finally {
- *   await file.close();
- * }
+ * await using file = new File(fd, fileSystem, '/tmp/data.txt', 'r');
+ * const text = await file.text();
+ * console.log(text);
  * ```
  *
  * @internal
@@ -64,13 +60,9 @@ import type { Path } from '../../file/path.ts';
  * ```ts no_run
  * import { File } from 'internal:file/handle';
  *
- * const file = new File(fd, fs, '/tmp/log.txt', 'r+');
- * try {
- *   for await (const chunk of file.reader()) {
- *     process.stdout.write(chunk);
- *   }
- * } finally {
- *   await file.close();
+ * await using file = new File(fd, fs, '/tmp/log.txt', 'r+');
+ * for await (const chunk of file.reader()) {
+ *   process.stdout.write(chunk);
  * }
  * ```
  *
@@ -114,6 +106,8 @@ export class File {
    * @internal
    */
   #activeWriter: FdWriter | null = null;
+  /** Shared cleanup result so every async closer waits for descriptor release. @internal */
+  #closePromise: Promise<void> | null = null;
   /**
    * Splits the handle into a reader and writer over the same descriptor.
    *
@@ -556,9 +550,10 @@ export class File {
   /**
    * Flush any active writer, then close the handle and release the descriptor.
    *
-   * Idempotent: a second call is a no-op. Any pending writer created by
-   * `writer()` is flushed before the fd is released, so buffered bytes are not
-   * lost. A locally owned Linux loop can issue `IORING_OP_CLOSE`; pooled realms
+   * Concurrent and repeated calls share the same cleanup promise. Any pending
+   * writer created by `writer()` is flushed before the fd is released. If
+   * flushing fails, the descriptor is still released and the flush error is
+   * reported to the caller. A locally owned Linux loop can issue `IORING_OP_CLOSE`; pooled realms
    * and macOS call `close(2)` from this isolate. This method also backs
    * `Symbol.asyncDispose`.
    *
@@ -568,32 +563,41 @@ export class File {
    * // handle is flushed and closed automatically at end of scope
    * ```
    */
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#closed) return Promise.resolve();
     this.#closed = true;
-    // Flush any buffered writes before closing the fd.
-    if (this.#activeWriter !== null && !this.#activeWriter.closed) {
-      await this.#activeWriter.flush();
-    }
-    if (asyncOps) {
-      const loop = loopModule;
-      const ops = asyncOps;
-      if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
-      const fd = this.#fd;
-      await loop.submit(function submitAsyncClose(raw: object, id: number) {
-        ops.asyncClose(raw, fd, id);
-      });
-    } else {
-      lib.symbols.close(this.#fd);
+    this.#closePromise = this.#finishClose();
+    return this.#closePromise;
+  }
+  /** Flush admitted output, releasing the descriptor even after failure. @internal */
+  async #finishClose(): Promise<void> {
+    try {
+      if (this.#activeWriter !== null && !this.#activeWriter.closed) {
+        await this.#activeWriter.flush();
+      }
+    } finally {
+      if (asyncOps) {
+        const loop = loopModule;
+        const ops = asyncOps;
+        if (loop === null || ops === null) throw new Error('Async file bindings are unavailable');
+        const fd = this.#fd;
+        await loop.submit(function submitAsyncClose(raw: object, id: number) {
+          ops.asyncClose(raw, fd, id);
+        });
+      } else {
+        lib.symbols.close(this.#fd);
+      }
     }
   }
   /**
    * Dispose hook that closes the handle when an `await using` binding goes out
    * of scope.
    *
-   * Delegates to `close()`, so it flushes an active writer and is idempotent.
-   * Prefer `await using` over manual `close()` in `finally` blocks when the
-   * handle does not escape the current scope.
+   * Delegates to `close()`, so it waits for an active or already-started close.
+   * A failing flush still releases the descriptor. Prefer `await using` over
+   * manual `close()` in `finally` blocks when the handle does not escape the
+   * current scope.
    *
    * ```ts no_run
    * {
@@ -610,6 +614,7 @@ export class File {
    *
    * This low-level path is for native callbacks that must release descriptors
    * without scheduling io_uring work from inside another async FFI operation.
+   * The descriptor is released even if flushing the writer throws.
    * Flushes any active writer synchronously first and is idempotent. Normal
    * application code should use `close()` instead.
    *
@@ -618,9 +623,12 @@ export class File {
   closeSync(): void {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#activeWriter !== null && !this.#activeWriter.closed) {
-      this.#activeWriter.flushSync();
+    try {
+      if (this.#activeWriter !== null && !this.#activeWriter.closed) {
+        this.#activeWriter.flushSync();
+      }
+    } finally {
+      lib.symbols.close(this.#fd);
     }
-    lib.symbols.close(this.#fd);
   }
 }

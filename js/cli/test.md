@@ -158,7 +158,12 @@ and timestamps. At most 65,536 active entries and 512 completed entries are reta
 its separate `dropped` count reports new operations omitted at capacity. Resolver
 consumption does not establish that the following Promise continuation ran.
 
-Persistent native wake registrations also record readiness and owner signalling.
+Native producers signal scheduled Realm owners directly through the reactor
+scheduler. Independently pumped isolates use pipe notifications. Compare the
+`nativeWork` stages with the owner's scheduler state to distinguish queued native
+work from a resolver that has already consumed its result.
+
+Pipe wake registrations also record readiness and owner signalling.
 The `wakeSources` section counts repeated notifications and retains their last
 timestamps separately, so a pipe that remains readable cannot erase the bounded
 operation history. `wakeSourcesDropped` reports observations omitted after the

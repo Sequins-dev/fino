@@ -97,7 +97,20 @@ A resource record must also track native borrowers. Owner-tagged routing cannot
 protect a wake pipe if a stale native reader consumes its byte through a recycled
 fd before the readiness controller sees it. Closing a logical owner must shut
 down outstanding I/O, while actual descriptor release waits for its borrowers.
-Record that distinction explicitly. The same rule applies to background FFI
+Record that distinction explicitly. Cleanup needs its own operation state:
+requested, flushing, releasing, completed, or failed. A wrapper's `closed` flag
+may prevent new operations before its descriptor is released; it is not proof
+that disposal completed. Concurrent close callers should observe the same cleanup
+operation. Record both the work exception and a disposal exception when explicit
+resource management reports a `SuppressedError`. A failed flush must not leave
+release unattempted, and analysis should identify that missing transition.
+
+`using` and `await using` express scope ownership. Diagnostics should connect a
+scope exit to resource cleanup without taking over that cleanup or adding a
+second lifetime policy. Native borrowers can outlive logical scope exit, so their
+release remains a separate observation.
+
+The same rule applies to background FFI
 completions and external-buffer finalizers: record the retained wake endpoint
 and its originating generation, even after the logical Realm has retired.
 
@@ -149,6 +162,14 @@ completion after cancellation is recorded as such, not automatically diagnosed
 as a lost event. Installation must mean acceptance by the backend; merely
 enqueuing a command cannot claim it. One-shot operations have one terminal
 outcome; persistent resources have separate per-notification outcomes.
+
+Native callbacks and completions have a different dispatch route from kernel
+readiness. Scheduled owners can be signalled directly through the reactor pool;
+independently pumped isolates use a wake pipe. Record that route so an analyzer
+does not infer a missing kernel event for work that requires no kernel round trip.
+The active native-work ledger was necessary to distinguish continuing SQLite
+callback traffic from a lost child response in the documentation-test failures.
+A readiness-only history had no events for that continuing work.
 
 Resolver invocation is observable at the runtime boundary. It does not prove
 that every downstream user Promise reaction ran. Arbitrary Promise graph

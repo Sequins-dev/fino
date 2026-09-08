@@ -11,16 +11,12 @@ if (Number(await libc.symbols.read(fd, new ArrayBuffer(1), 1)) !== 1)
 const sort = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
   qsort: { parameters: ['pointer', 'usize', 'usize', 'pointer'], result: 'void', async: true },
 });
-const compare = new FfiCallback(
+using compare = new FfiCallback(
   { parameters: ['pointer', 'pointer'], result: 'i32' },
   (a, b) => Pointer.readI32(a) - Pointer.readI32(b),
 );
-try {
-  for (let round = 0; round < 32; round++) {
-    const values = new Int32Array([4, 2, 3, 1]);
-    await sort.symbols.qsort(Pointer.of(values.buffer), 4n, 4n, compare.pointer);
-    if (values.join(',') !== '1,2,3,4') throw new Error('callback resumed in the wrong Realm');
-  }
-} finally {
-  compare.close();
+for (let round = 0; round < 32; round++) {
+  const values = new Int32Array([4, 2, 3, 1]);
+  await sort.symbols.qsort(Pointer.of(values.buffer), 4n, 4n, compare.pointer);
+  if (values.join(',') !== '1,2,3,4') throw new Error('callback resumed in the wrong Realm');
 }
