@@ -74,7 +74,32 @@ pub struct ViewRelease {
 pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
 
 /// A native producer retains both its origin queue and its notification pipe.
-pub type NativeQueueHandle<T> = (Arc<Mutex<Vec<T>>>, Arc<WakePipe>);
+pub type NativeQueueHandle<T> = (Arc<Mutex<Vec<T>>>, Arc<NativeWake>);
+
+/// Notify the executor that owns a native queue. Scheduled isolates already
+/// have a thread-safe scheduler, so native producers signal it directly. Only
+/// independently pumped isolates need a pipe notification through their loop.
+/// The pipe stays owned until the last producer drops its handle.
+pub struct NativeWake {
+    pipe: WakePipe,
+    owner: Option<u32>,
+}
+
+impl NativeWake {
+    pub fn read_fd(&self) -> RawFd {
+        self.pipe.read_fd()
+    }
+
+    pub fn notify(&self) {
+        if let Some(owner) = self.owner {
+            // A retired owner deliberately rejects late notifications. Never
+            // redirect one to the producer thread's currently entered Realm.
+            crate::scheduler_native::signal_owner(owner);
+        } else {
+            self.pipe.notify();
+        }
+    }
+}
 
 /// Store a resolver and return its slot index.
 ///
@@ -124,7 +149,7 @@ pub struct IsolateAsyncState {
     pub view_releases: Arc<Mutex<Vec<ViewRelease>>>,
     /// Shared with native completion producers and external-buffer finalizers.
     /// Both endpoints survive until the final borrower stops using the pipe.
-    wake: Arc<WakePipe>,
+    wake: Arc<NativeWake>,
     /// Promise resolvers for FFI completions submitted by this isolate.
     resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
     /// JS callbacks registered by this isolate for native invocation.
@@ -150,7 +175,7 @@ pub fn new_state() -> IsolateAsyncState {
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    new_state_with_pipe(fds[0], fds[1])
+    new_state_with_pipe(fds[0], fds[1], None)
 }
 
 /// Build a detached async state around an existing wake pipe.
@@ -158,17 +183,23 @@ pub fn new_state() -> IsolateAsyncState {
 /// Deferred workload initialization creates the pipe before the isolate so the
 /// process loop can watch it immediately. Ownership of both descriptors moves
 /// to the returned state.
-pub fn new_state_with_pipe(wake_read: RawFd, wake_write: RawFd) -> IsolateAsyncState {
+pub fn new_state_with_pipe(
+    wake_read: RawFd,
+    wake_write: RawFd,
+    owner: Option<u32>,
+) -> IsolateAsyncState {
     IsolateAsyncState {
         executor: async_executor::LocalExecutor::new(),
         completions: Arc::new(Mutex::new(Vec::new())),
         js_call_requests: Arc::new(Mutex::new(Vec::new())),
         view_releases: Arc::new(Mutex::new(Vec::new())),
         // SAFETY: ownership of both fresh descriptors moves into this state.
-        wake: Arc::new(WakePipe::from_owned_fds(
-            unsafe { OwnedFd::from_raw_fd(wake_read) },
-            unsafe { OwnedFd::from_raw_fd(wake_write) },
-        )),
+        wake: Arc::new(NativeWake {
+            pipe: WakePipe::from_owned_fds(unsafe { OwnedFd::from_raw_fd(wake_read) }, unsafe {
+                OwnedFd::from_raw_fd(wake_write)
+            }),
+            owner,
+        }),
         resolver_table: Vec::new(),
         callback_table: Vec::new(),
     }

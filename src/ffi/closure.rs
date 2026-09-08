@@ -33,7 +33,7 @@ struct CallbackData {
     context: v8::Global<v8::Context>,
     func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
-    wake_write: Arc<crate::fdutil::WakePipe>,
+    wake_write: Arc<crate::async_rt::NativeWake>,
 }
 
 // SAFETY: only primitive types and Arc (Send).

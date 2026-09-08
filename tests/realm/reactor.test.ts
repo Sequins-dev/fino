@@ -76,6 +76,24 @@ describe('Reactor scheduler native surface', () => {
 });
 
 describe('Reactor-pooled Realm basics', () => {
+  it('delivers native completions without a main-controller wake watch', async (t) => {
+    const child = new Process(
+      execPath,
+      ['run', new URL('./fixtures/native-wake-direct.ts', import.meta.url).pathname],
+      {
+        env: { ...childEnv(2), FINO_TRACE_READINESS: '1' },
+      },
+    );
+    child.stdin.close();
+    const [status, stdout, stderr] = await Promise.all([
+      child.wait(),
+      readAll(child.stdout),
+      readAll(child.stderr),
+    ]);
+    t.equal(status.code, 0, stderr);
+    t.ok(stdout.includes('native completion delivered directly'), stdout);
+  });
+
   it('runs a pooled realm to completion', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,

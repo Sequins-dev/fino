@@ -132,7 +132,7 @@ pub fn namespace<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Obje
 /// as `deleter_data`; reclaimed exactly once when the deleter runs.
 struct ViewCtx {
     releases: crate::async_rt::ViewReleaseQueue,
-    wake_write: std::sync::Arc<crate::fdutil::WakePipe>,
+    wake_write: std::sync::Arc<crate::async_rt::NativeWake>,
     callback_id: Option<usize>,
     byte_length: usize,
 }

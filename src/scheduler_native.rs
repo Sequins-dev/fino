@@ -767,7 +767,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     }
 
     let saved_async_state = crate::async_rt::swap_state(Some(
-        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1),
+        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1, Some(owner)),
     ));
     let initialized = (|| {
         if scheduled
@@ -2247,16 +2247,18 @@ fn signal_reactor_owner(
     mut rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    rv.set(v8::Boolean::new(scope, signal_owner(owner)).into());
+}
+
+/// Publish native work to its originating scheduled isolate without routing
+/// through the process I/O controller. The queue is populated before this call.
+pub(crate) fn signal_owner(owner: u32) -> bool {
     let pool = owner_pools()
         .lock()
         .unwrap()
         .get(&owner)
         .and_then(Weak::upgrade);
-    if let Some(pool) = pool {
-        rv.set(v8::Boolean::new(scope, pool.signal(owner)).into());
-    } else {
-        rv.set(v8::Boolean::new(scope, false).into());
-    }
+    pool.is_some_and(|pool| pool.signal(owner))
 }
 
 fn take_reactor_events(
@@ -2791,6 +2793,45 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn native_notifications_target_the_owner_and_stop_at_retirement() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, _) = pool.register_worker();
+        let owner = next_owner();
+        let other = next_owner();
+        pool.inner.lock().unwrap().residents.insert(owner, worker);
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(&pool));
+        let (read, write) = create_pipe().unwrap();
+        let previous = crate::async_rt::swap_state(Some(crate::async_rt::new_state_with_pipe(
+            read,
+            write,
+            Some(owner),
+        )));
+        let (_, wake) = crate::async_rt::completion_handle().unwrap();
+        drop(crate::async_rt::swap_state(previous));
+        // No controller exists in this test. All three queue producers share
+        // this handle, which outlives the entered isolate state.
+        wake.notify();
+        assert_eq!(pool.inner.lock().unwrap().priorities.get(&owner), Some(&1));
+        let mut byte = 0_u8;
+        assert_eq!(
+            unsafe { libc::read(read, (&mut byte as *mut u8).cast(), 1) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+        pool.finish(owner);
+        owner_pools().lock().unwrap().remove(&owner);
+        pool.inner.lock().unwrap().residents.insert(other, worker);
+        wake.notify();
+        assert!(pool.inner.lock().unwrap().priorities.is_empty());
+    }
 
     #[test]
     fn readiness_trace_is_bounded_and_reports_eviction() {
