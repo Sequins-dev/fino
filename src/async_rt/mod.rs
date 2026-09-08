@@ -14,6 +14,7 @@
 
 pub mod blocking;
 pub mod bridge;
+pub mod diagnostics;
 pub mod js_calls;
 
 use std::{
@@ -36,6 +37,7 @@ pub use bridge::PendingResolution;
 /// A completed async FFI call waiting to be converted to a JS Promise resolution.
 /// Uses a `resolver_id` instead of `v8::Global` so this type is `Send`.
 pub struct FfiCompletion {
+    pub trace_id: u64,
     /// Index into the thread-local `RESOLVER_TABLE` on the isolate's thread.
     pub resolver_id: usize,
     pub result: Result<RawFfiResult, String>,
@@ -416,8 +418,12 @@ fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
     for completion in completions {
         let global = match take_resolver(completion.resolver_id) {
             Some(g) => g,
-            None => continue,
+            None => {
+                diagnostics::finish(completion.trace_id, "resolver-missing");
+                continue;
+            }
         };
+        diagnostics::finish(completion.trace_id, "resolver-consumed");
         let resolver = v8::Local::new(scope, &global);
         match completion.result {
             Ok(raw) => {

@@ -84,6 +84,9 @@ import { Assert, AssertionError, type AssertCallbacks } from './assert.ts';
 import { formatDurationMs } from 'internal:duration';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
 import { timeout as _loopTimeout } from 'internal:runtime/loop';
+import { env as _traceEnv } from '../process.ts';
+import { readinessTraceSnapshot as _traceSnapshot } from 'internal:scheduler-native';
+const _traceTimeouts = _traceEnv['FINO_TRACE_READINESS'] === '1';
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
@@ -798,6 +801,7 @@ async function _withTimeout<T>(timeoutMs: number, name: string, work: Promise<T>
     return await Promise.race([
       work,
       deadline.then((): never => {
+        if (_traceTimeouts) console.error('readiness timeout trace: ' + _traceSnapshot());
         throw new TestTimeoutError(name, timeoutMs);
       }),
     ]);

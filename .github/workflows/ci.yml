@@ -204,6 +204,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libsqlite3-0
 
+      - name: Prepare native stack capture
+        if: ${{ inputs.readiness_trace }}
+        run: |
+          sudo apt-get install -y --no-install-recommends gdb
+          sudo sysctl -w kernel.yama.ptrace_scope=0
+
       - name: Restore Linux build
         uses: actions/cache/restore@v4
         with:
@@ -223,6 +229,11 @@ jobs:
           FINO_TRACE_READINESS: ${{ inputs.readiness_trace && '1' || '0' }}
           FINO_TRACE_DIRECTORY: ${{ runner.temp }}/fino-readiness
         run: |
+          if [ "$FINO_TRACE_READINESS" = 1 ]; then
+            python3 scripts/capture-runtime-stall.py "$FINO_TRACE_DIRECTORY" --test-pattern 'docs/doc-(search|types)' --limit 2 &
+            observer=$!
+            trap 'kill "$observer" 2>/dev/null || true' EXIT
+          fi
           FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
           echo "fino test process exited successfully"
 

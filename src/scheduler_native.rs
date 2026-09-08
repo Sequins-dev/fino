@@ -94,6 +94,7 @@ impl Drop for PendingWorkload {
         let Some(inner) = self.inner.take() else {
             return;
         };
+        retire_owner(self.owner);
         if let Some((wake_read, partner_write)) = inner.port_fds {
             unsafe {
                 libc::close(wake_read);
@@ -268,8 +269,22 @@ struct ReadinessTraceEvent {
     token: f64,
 }
 
+#[derive(Clone, Default, serde::Serialize)]
+struct WakeDiagnostic {
+    operation: u64,
+    owner: u32,
+    ident: f64,
+    ready: u64,
+    signalled: u64,
+    absent: u64,
+    last_ready_us: u64,
+    last_signalled_us: u64,
+}
+
 #[derive(Default)]
 struct ReadinessTrace {
+    wake_sources: HashMap<u64, WakeDiagnostic>,
+    wake_sources_dropped: u64,
     sequence: u64,
     dropped: u64,
     events: VecDeque<ReadinessTraceEvent>,
@@ -287,7 +302,7 @@ impl ReadinessTrace {
     }
 }
 
-fn readiness_trace_enabled() -> bool {
+pub(crate) fn readiness_trace_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ENABLED.get_or_init(|| std::env::var("FINO_TRACE_READINESS").as_deref() == Ok("1"))
 }
@@ -309,7 +324,43 @@ fn trace_readiness(operation: u64, owner: u32, stage: &str, ident: f64, filter: 
     if !readiness_trace_enabled() || operation == 0 {
         return;
     }
-    readiness_trace().lock().unwrap().push(
+    let mut trace = readiness_trace().lock().unwrap();
+    // A level-triggered pipe can remain readable while its owner is busy.
+    // Count each notification without letting that traffic erase operation
+    // lifecycles from the bounded history before the owner runs again.
+    if matches!(
+        stage,
+        "wake-ready" | "wake-owner-signalled" | "wake-owner-absent"
+    ) {
+        if trace.wake_sources.len() == 65_536 && !trace.wake_sources.contains_key(&operation) {
+            trace.wake_sources_dropped += 1;
+            return;
+        }
+        let wake = trace
+            .wake_sources
+            .entry(operation)
+            .or_insert_with(|| WakeDiagnostic {
+                operation,
+                owner,
+                ident,
+                ..Default::default()
+            });
+        match stage {
+            "wake-ready" => {
+                wake.ready += 1;
+                wake.last_ready_us = readiness_trace_elapsed_us();
+            }
+            "wake-owner-signalled" => {
+                wake.signalled += 1;
+                wake.last_signalled_us = readiness_trace_elapsed_us();
+            }
+            _ => {
+                wake.absent += 1;
+            }
+        }
+        return;
+    }
+    trace.push(
         ReadinessTraceEvent {
             sequence: 0,
             elapsed_us: readiness_trace_elapsed_us(),
@@ -361,6 +412,13 @@ fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
         .collect();
     let sequence = trace.sequence;
     let dropped = trace.dropped;
+    let wake_sources: Vec<_> = trace
+        .wake_sources
+        .values()
+        .filter(|source| owner.is_none_or(|owner| source.owner == owner))
+        .cloned()
+        .collect();
+    let wake_sources_dropped = trace.wake_sources_dropped;
     drop(trace);
     let realms = realm_diagnostics().lock().unwrap().clone();
     let pool_state = match process_pool().try_lock() {
@@ -384,7 +442,9 @@ fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
     serde_json::json!({ "version": 1, "enabled": readiness_trace_enabled(),
         "pid": std::process::id(), "elapsed_us": readiness_trace_elapsed_us(),
         "capacity": 65_536, "sequence": sequence, "dropped": dropped, "events": events,
-        "realms": realms, "pool": pool_state })
+        "realms": realms, "pool": pool_state,
+        "wakeSources": wake_sources, "wakeSourcesDropped": wake_sources_dropped,
+        "nativeWork": crate::async_rt::diagnostics::snapshot(owner) })
 }
 
 #[derive(Clone, Default, serde::Serialize)]
@@ -798,6 +858,10 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     let (context, state, module) = match initialized {
         Ok(values) => values,
         Err(error) => {
+            // Initialization failure has the same ownership boundary as normal
+            // disposal: retire before closing a pipe that the controller may
+            // still be watching. Otherwise EOF repeatedly signals a dead owner.
+            retire_owner(owner);
             // The detached async state's Drop closes the eagerly-created wake
             // pipe. These port descriptors otherwise become owned by Workload.
             drop(async_state);
@@ -815,6 +879,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     let isolate = match unsafe { isolate.try_into_shared() } {
         Ok(isolate) => isolate,
         Err(error) => {
+            retire_owner(owner);
             drop(async_state);
             if let Some((wake_read, partner_write)) = port_fds {
                 unsafe {
@@ -1224,10 +1289,10 @@ impl PoolShared {
         owner
     }
 
-    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
+    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) -> bool {
         if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
             SIGNALS_DROPPED.fetch_add(1, Ordering::Relaxed);
-            return;
+            return false;
         }
         let priority = inner.priorities.entry(owner).or_default();
         *priority += 1;
@@ -1239,10 +1304,11 @@ impl PoolShared {
             owner,
         });
         inner.wake_for(owner);
+        true
     }
 
-    fn signal(&self, owner: u32) {
-        Self::signal_inner(&mut self.inner.lock().unwrap(), owner);
+    fn signal(&self, owner: u32) -> bool {
+        Self::signal_inner(&mut self.inner.lock().unwrap(), owner)
     }
 
     /// Re-queue a realm that still has work, without treating that as a new
@@ -2187,8 +2253,7 @@ fn signal_reactor_owner(
         .get(&owner)
         .and_then(Weak::upgrade);
     if let Some(pool) = pool {
-        pool.signal(owner);
-        rv.set(v8::Boolean::new(scope, true).into());
+        rv.set(v8::Boolean::new(scope, pool.signal(owner)).into());
     } else {
         rv.set(v8::Boolean::new(scope, false).into());
     }
@@ -2287,10 +2352,7 @@ fn stop_reactor_pool(
         for item in parked.into_values() {
             match item.workload {
                 PoolWorkload::Live(workload) => drop_workload(workload.0),
-                PoolWorkload::Pending(pending) => {
-                    retire_owner(item.owner);
-                    drop(pending);
-                }
+                PoolWorkload::Pending(pending) => drop(pending),
             }
         }
     });
@@ -2383,6 +2445,17 @@ fn register_reactor_wake(
     let mut change = ReadinessChange::control(owner as f64, 0.0);
     change.ident = fd as f64;
     change.scheduler_wake = true;
+    if readiness_trace_enabled() {
+        change.trace_id = next_handle();
+        trace_readiness(
+            change.trace_id,
+            owner,
+            "wake-registered",
+            fd as f64,
+            -1,
+            owner as f64,
+        );
+    }
     let mut inner = mailbox().inner.lock().unwrap();
     match inner.borrow_fd(fd) {
         Ok(fd) => change.borrowed_fd = Some(fd),

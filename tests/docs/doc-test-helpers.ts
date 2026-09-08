@@ -2,6 +2,9 @@
 import { DiskFileSystem } from 'fino:file';
 import { chdir, cwd, execPath, Process } from 'fino:process';
 import rootCommand from 'internal:commands/root';
+import { env } from 'fino:process';
+import { recordRealmState } from 'internal:scheduler-native';
+const traceCli = env['FINO_TRACE_READINESS'] === '1';
 export const TEST_DIR = '/tmp/fino-doc-test-' + Math.floor(Math.random() * 1e6);
 export const REPO_DIR = cwd();
 export interface DocJsonMember {
@@ -106,6 +109,7 @@ export async function runCli(
   };
 }> {
   const previousCwd = cwd();
+  if (traceCli) recordRealmState('cli', JSON.stringify({ args, stage: 'running' }));
   try {
     chdir(nextCwd);
     const result = await rootCommand.parse(args);
@@ -128,6 +132,7 @@ export async function runCli(
       },
     };
   } finally {
+    if (traceCli) recordRealmState('cli', JSON.stringify({ args, stage: 'complete' }));
     chdir(previousCwd);
   }
 }

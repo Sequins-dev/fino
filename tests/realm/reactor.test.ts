@@ -154,6 +154,18 @@ describe('Reactor-pooled Realm basics', () => {
       'every concurrent sibling resolved its own timer and port traffic',
     );
   });
+  it('retires owners that fail before initialization finishes', async (t) => {
+    const fixture = new URL('./fixtures/initialization-retirement.ts', import.meta.url).pathname;
+    const child = new Process(execPath, ['run', fixture], { env: childEnv(1) });
+    child.stdin.close();
+    const [stdout, stderr, result] = await Promise.all([
+      readAll(child.stdout),
+      readAll(child.stderr),
+      child.wait(),
+    ]);
+    t.equal(result.code, 0, `initialization cleanup completes: ${stderr}`);
+    t.ok(stdout.includes('retired-initializations=8'));
+  });
   it('exits an isolate before switching realms on one reactor thread', async (t) => {
     // SharedIsolate::lock rejects entering while another isolate is current.
     // Pinning the pool to one worker and making several realms park on timers

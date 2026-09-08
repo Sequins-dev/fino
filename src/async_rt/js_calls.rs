@@ -74,6 +74,7 @@ pub enum SendArg {
 
 /// A pending JS callback invocation.
 pub struct JsCallRequest {
+    pub trace_id: u64,
     pub callback_id: usize,
     pub args: Vec<SendArg>,
     pub param_types: Vec<NativeType>,
@@ -124,6 +125,7 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
     }
 
     for req in requests {
+        super::diagnostics::stage(req.trace_id, "invoking");
         let func_local = crate::async_rt::with_callback_table(|table| {
             table
                 .get(req.callback_id)
@@ -162,12 +164,15 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
 
         if let Ok(promise) = v8::Local::<v8::Promise>::try_from(val) {
             let slot = Arc::clone(&req.result_slot);
+            let trace_id = req.trace_id;
+            super::diagnostics::stage(trace_id, "awaiting-promise");
             let fut = promise_to_future(tc, promise);
             crate::async_rt::spawn(async move {
                 let result = match fut.await {
                     Ok(repr) => repr_to_call_result(repr),
                     Err(repr) => Err(repr_to_error_string(repr)),
                 };
+                super::diagnostics::stage(trace_id, "result-ready");
                 fill_slot(&slot, result);
             });
         } else {

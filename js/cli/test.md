@@ -150,8 +150,22 @@ truncated recording does not prove that an operation never existed. Pending entr
 are observed waits, including healthy persistent watches, and do not by themselves
 prove a hang.
 
-This tool currently covers delegated readiness in the local process. It does not
-trace all FFI jobs, RPC messages, Promise continuations, or other processes. The
+The `nativeWork` section retains active asynchronous FFI calls and cross-thread
+callbacks separately from the rolling readiness history. It distinguishes queued
+native work, executing native calls, queued completions, callback invocation, and
+callbacks awaiting JavaScript promises. Each entry includes its originating owner
+and timestamps. At most 65,536 active entries and 512 completed entries are retained;
+its separate `dropped` count reports new operations omitted at capacity. Resolver
+consumption does not establish that the following Promise continuation ran.
+
+Persistent native wake registrations also record readiness and owner signalling.
+The `wakeSources` section counts repeated notifications and retains their last
+timestamps separately, so a pipe that remains readable cannot erase the bounded
+operation history. `wakeSourcesDropped` reports observations omitted after the
+65,536-source limit; source counters can remain after their Realm exits.
+At a test deadline, a `readiness timeout trace:` snapshot is captured before the
+runner advances to another leaf; it appears with the failing test's captured
+output. These tools do not trace every Promise continuation or RPC message. The
 broader application diagnostics API is still a design proposal.
 
 To inspect a process that hangs without reporting a test failure, also set

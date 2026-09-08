@@ -26,6 +26,7 @@ unsafe extern "C" {
 // ---------------------------------------------------------------------------
 
 struct CallbackData {
+    owner: u32,
     callback_id: usize,
     param_types: Vec<NativeType>,
     result_type: NativeType,
@@ -96,7 +97,10 @@ unsafe extern "C" fn trampoline(
     let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
         Arc::new((Mutex::new(None), Condvar::new()));
 
+    let trace_id =
+        crate::async_rt::diagnostics::begin(data.owner, "callback", &data.callback_id.to_string());
     let request = JsCallRequest {
+        trace_id,
         callback_id: data.callback_id,
         args: send_args,
         param_types: data.param_types.clone(),
@@ -114,6 +118,7 @@ unsafe extern "C" fn trampoline(
         guard = cvar.wait(guard).unwrap();
     }
     let outcome = guard.take().unwrap();
+    crate::async_rt::diagnostics::finish(trace_id, "native-resumed");
 
     // Write the result into C's return-value buffer.
     unsafe { js_calls::write_c_result(result_ptr, &data.result_type, outcome) };
@@ -190,6 +195,9 @@ pub fn new_callback(
     let context = v8::Global::new(scope, context);
 
     let userdata = Box::new(CallbackData {
+        owner: crate::state::get_state(scope)
+            .borrow()
+            .scheduler_workload_owner,
         callback_id,
         param_types: param_types.clone(),
         result_type,

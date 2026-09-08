@@ -289,7 +289,7 @@ fn build_symbol_function<'s>(
             .map(|n| n as usize)
     };
 
-    let sym = match FfiSymbol::new(
+    let mut sym = match FfiSymbol::new(
         code_ptr,
         param_types,
         result_type,
@@ -304,6 +304,7 @@ fn build_symbol_function<'s>(
         }
     };
 
+    sym.diagnostic_label = describe.to_owned();
     let sym_data = Box::new(SymbolData {
         symbol: sym,
         scratch: RefCell::new(CallScratch::new()),

@@ -117,7 +117,9 @@ function trace(change: ReadinessChange, stage: string): void {
   if (!change.traceId) return;
   recordReadinessTrace(
     change.traceId,
-    Math.floor(change.udata / TOKEN_BASE),
+    change.schedulerWake || change.schedulerPoll
+      ? change.udata
+      : Math.floor(change.udata / TOKEN_BASE),
     stage,
     change.ident,
     change.filter,
@@ -261,11 +263,14 @@ export class ProcessReadinessController {
             trace(change, 'discarded-controller-stale');
             return;
           }
+          trace(change, 'wake-ready');
           if (!signalReactorOwner(owner)) {
+            trace(change, 'wake-owner-absent');
             this.#registrations.delete(registration);
             this.#releaseFd(change);
             return;
           }
+          trace(change, 'wake-owner-signalled');
           arm();
         });
       };

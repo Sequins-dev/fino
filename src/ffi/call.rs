@@ -398,12 +398,22 @@ pub fn ffi_call_async<'s>(
     // Submit to the shared blocking pool (see src/async_rt/blocking.rs).
     // The closure captures `work: AsyncFfiWork` (not its individual fields) so
     // the closure type is Send despite Cif/CodePtr not being Send.
+    let trace_id = crate::async_rt::diagnostics::begin(
+        crate::state::get_state(scope)
+            .borrow()
+            .scheduler_workload_owner,
+        "ffi",
+        &symbol.diagnostic_label,
+    );
     crate::async_rt::blocking::spawn(move || {
+        crate::async_rt::diagnostics::stage(trace_id, "running");
         let result = work.execute();
+        crate::async_rt::diagnostics::stage(trace_id, "completion-queued");
         completions
             .lock()
             .unwrap()
             .push(crate::async_rt::FfiCompletion {
+                trace_id,
                 resolver_id,
                 result,
             });
