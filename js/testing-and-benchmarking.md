@@ -49,10 +49,10 @@ Do not mix the two grouping styles in the same group. Use `suite` with `test`,
 or use `describe` with `it` and lifecycle hooks.
 
 The runner provides TAP-13 output, `--filter` name matching, skip reasons,
-`before`/`after`/`beforeEach`/`afterEach` hooks, and captured stdout/stderr for
-failures. It is not a Node `node:test` compatibility layer, so `only`, `todo`,
-per-test timeouts, assertion-object subtests, and pluggable reporters are not
-included. Serial runs execute groups sequentially; `--parallel` may overlap
+`before`/`after`/`beforeEach`/`afterEach` hooks, per-test deadlines, and
+captured stdout/stderr for failures. It is not a Node `node:test` compatibility
+layer, so `only`, `todo`, assertion-object subtests, and pluggable reporters are
+not included. Serial runs execute groups sequentially; `--parallel` may overlap
 top-level groups from different file Realms while preserving their TAP output
 blocks and serial semantics within each file.
 
@@ -71,6 +71,12 @@ deterministic registration order instead. The aggregate plan is emitted at the
 end, after every rolling registration is known. Failure details follow the
 final summary, and process-level stdout/stderr is suppressed so raw Realm or
 child process writes cannot interleave with TAP.
+
+Every test body runs under a deadline, 60 seconds by default, so a hang is
+reported as one failing test rather than a run that never ends. `--timeout`
+changes the run-wide value and `--timeout 0` disables it; a single test that is
+legitimately slower can raise its own with `{ timeout: 300_000 }` rather than
+loosening the default for everything else.
 
 Groups that exercise process-global state or strict scheduling deadlines can
 use `{ exclusive: true }`. The parallel runner drains active work before the

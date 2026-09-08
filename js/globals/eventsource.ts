@@ -294,6 +294,15 @@ export class EventSource extends EventTarget {
   /** Pending reconnect timer, retained so `close()` can cancel the wait. */
   #retryTimer: loop.CancelablePromise | null;
   /**
+   * Cancellation for work that precedes a readable socket -- currently the DNS
+   * lookup. Closing a reader unwinds the loop only once there is a reader; a
+   * name resolution in flight would otherwise keep its UDP socket and retry
+   * timer alive for the rest of the resolver's schedule after `close()`.
+   *
+   * @internal
+   */
+  readonly #connectAbort: AbortController;
+  /**
    * Backing store for the `onopen` handler property, registered with the
    * EventTarget machinery by the setter.
    *
@@ -341,6 +350,7 @@ export class EventSource extends EventTarget {
     this.#withCredentials = init?.withCredentials === true;
     this.#currentReader = null;
     this.#retryTimer = null;
+    this.#connectAbort = new AbortController();
     this.#onopen = null;
     this.#onmessage = null;
     this.#onerror = null;
@@ -465,6 +475,7 @@ export class EventSource extends EventTarget {
       this.#retryTimer.cancel();
       this.#retryTimer = null;
     }
+    this.#connectAbort.abort();
     // Closing the reader (if active) causes the next read() to return null,
     // which terminates the body iterator and unwinds the connection loop.
     if (this.#currentReader) {
@@ -524,7 +535,9 @@ export class EventSource extends EventTarget {
           const path = parsed.pathname + parsed.search || '/';
           origin = parsed.origin;
           // ---- DNS lookup -----------------------------------------------------
-          const { address, family } = await lookup(hostname);
+          const { address, family } = await lookup(hostname, {
+            signal: this.#connectAbort.signal,
+          });
           if (this.#readyState === CLOSED) return;
           const addr: IPv4Address | IPv6Address =
             family === 6

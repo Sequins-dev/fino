@@ -14,18 +14,19 @@
 
 pub mod blocking;
 pub mod bridge;
+pub mod diagnostics;
 pub mod js_calls;
 
 use std::{
     cell::RefCell,
-    os::unix::io::RawFd,
+    os::fd::{FromRawFd, OwnedFd, RawFd},
     rc::Rc,
     sync::{Arc, Mutex},
 };
 
 use ::v8;
 
-use crate::state::FinoState;
+use crate::{fdutil::WakePipe, state::FinoState};
 
 pub use bridge::PendingResolution;
 
@@ -36,6 +37,7 @@ pub use bridge::PendingResolution;
 /// A completed async FFI call waiting to be converted to a JS Promise resolution.
 /// Uses a `resolver_id` instead of `v8::Global` so this type is `Send`.
 pub struct FfiCompletion {
+    pub trace_id: u64,
     /// Index into the thread-local `RESOLVER_TABLE` on the isolate's thread.
     pub resolver_id: usize,
     pub result: Result<RawFfiResult, String>,
@@ -70,6 +72,34 @@ pub struct ViewRelease {
 
 /// Shared queue of pending view releases, cloned into backing-store deleters.
 pub type ViewReleaseQueue = Arc<Mutex<Vec<ViewRelease>>>;
+
+/// A native producer retains both its origin queue and its notification pipe.
+pub type NativeQueueHandle<T> = (Arc<Mutex<Vec<T>>>, Arc<NativeWake>);
+
+/// Notify the executor that owns a native queue. Scheduled isolates already
+/// have a thread-safe scheduler, so native producers signal it directly. Only
+/// independently pumped isolates need a pipe notification through their loop.
+/// The pipe stays owned until the last producer drops its handle.
+pub struct NativeWake {
+    pipe: WakePipe,
+    owner: Option<u32>,
+}
+
+impl NativeWake {
+    pub fn read_fd(&self) -> RawFd {
+        self.pipe.read_fd()
+    }
+
+    pub fn notify(&self) {
+        if let Some(owner) = self.owner {
+            // A retired owner deliberately rejects late notifications. Never
+            // redirect one to the producer thread's currently entered Realm.
+            crate::scheduler_native::signal_owner(owner);
+        } else {
+            self.pipe.notify();
+        }
+    }
+}
 
 /// Store a resolver and return its slot index.
 ///
@@ -117,24 +147,13 @@ pub struct IsolateAsyncState {
     /// Released `Pointer.view` external buffers awaiting their `onRelease`
     /// callback (fire-and-forget; deleters never block or touch V8).
     pub view_releases: Arc<Mutex<Vec<ViewRelease>>>,
-    /// Read end of the self-pipe. JS registers this with `loop.readable(fd)`
-    /// so kqueue/io_uring wakes when an async FFI call completes.
-    pub wake_read: RawFd,
-    /// Write end of the self-pipe. Background threads write here on FFI completion.
-    pub wake_write: RawFd,
+    /// Shared with native completion producers and external-buffer finalizers.
+    /// Both endpoints survive until the final borrower stops using the pipe.
+    wake: Arc<NativeWake>,
     /// Promise resolvers for FFI completions submitted by this isolate.
     resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
     /// JS callbacks registered by this isolate for native invocation.
     callback_table: Vec<Option<v8::Global<v8::Function>>>,
-}
-
-impl Drop for IsolateAsyncState {
-    fn drop(&mut self) {
-        unsafe {
-            libc::close(self.wake_read);
-            libc::close(self.wake_write);
-        }
-    }
 }
 
 thread_local! {
@@ -156,7 +175,7 @@ pub fn new_state() -> IsolateAsyncState {
         libc::fcntl(fds[1], libc::F_SETFL, libc::O_NONBLOCK);
     }
 
-    new_state_with_pipe(fds[0], fds[1])
+    new_state_with_pipe(fds[0], fds[1], None)
 }
 
 /// Build a detached async state around an existing wake pipe.
@@ -164,14 +183,23 @@ pub fn new_state() -> IsolateAsyncState {
 /// Deferred workload initialization creates the pipe before the isolate so the
 /// process loop can watch it immediately. Ownership of both descriptors moves
 /// to the returned state.
-pub fn new_state_with_pipe(wake_read: RawFd, wake_write: RawFd) -> IsolateAsyncState {
+pub fn new_state_with_pipe(
+    wake_read: RawFd,
+    wake_write: RawFd,
+    owner: Option<u32>,
+) -> IsolateAsyncState {
     IsolateAsyncState {
         executor: async_executor::LocalExecutor::new(),
         completions: Arc::new(Mutex::new(Vec::new())),
         js_call_requests: Arc::new(Mutex::new(Vec::new())),
         view_releases: Arc::new(Mutex::new(Vec::new())),
-        wake_read,
-        wake_write,
+        // SAFETY: ownership of both fresh descriptors moves into this state.
+        wake: Arc::new(NativeWake {
+            pipe: WakePipe::from_owned_fds(unsafe { OwnedFd::from_raw_fd(wake_read) }, unsafe {
+                OwnedFd::from_raw_fd(wake_write)
+            }),
+            owner,
+        }),
         resolver_table: Vec::new(),
         callback_table: Vec::new(),
     }
@@ -200,7 +228,7 @@ pub fn swap_state(new: Option<IsolateAsyncState>) -> Option<IsolateAsyncState> {
 /// event loop starts. Returns the wake-pipe read fd to expose to JS.
 pub fn init() -> RawFd {
     let state = new_state();
-    let wake_read = state.wake_read;
+    let wake_read = state.wake.read_fd();
     STATE.with(|slot| *slot.borrow_mut() = Some(state));
     wake_read
 }
@@ -221,36 +249,82 @@ pub fn is_v8_thread() -> bool {
 
 /// Get the wake-pipe read fd (for `internal:async-runtime` to export as `wakeFd`).
 pub fn get_wake_read_fd() -> i32 {
-    STATE.with(|s| s.borrow().as_ref().map(|st| st.wake_read).unwrap_or(-1))
-}
-
-/// Get the completions queue + write fd (for submitting async FFI work).
-/// Returns None if `init()` hasn't been called on this thread.
-pub fn completion_handle() -> Option<(Arc<Mutex<Vec<FfiCompletion>>>, RawFd)> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.completions), st.wake_write))
+            .map(|st| st.wake.read_fd())
+            .unwrap_or(-1)
     })
 }
 
-/// Get the JS-call-request queue + write fd (for `FfiCallback` trampolines).
+#[cfg(test)]
+mod wake_lifetime_tests {
+    #[test]
+    fn completion_borrower_retains_wake_descriptor_after_realm_shutdown() {
+        let previous = super::swap_state(Some(super::new_state()));
+        let (_, wake) = super::completion_handle().unwrap();
+        let (_, callback_wake) = super::js_call_handle().unwrap();
+        let (_, release_wake) = super::release_handle().unwrap();
+        drop(super::swap_state(previous));
+        assert!(
+            unsafe { libc::fcntl(wake.read_fd(), libc::F_GETFD) } >= 0,
+            "a late native completion must not write through a recycled descriptor"
+        );
+        let successor = crate::fdutil::WakePipe::new().unwrap();
+        wake.notify();
+        callback_wake.notify();
+        release_wake.notify();
+        let mut bytes = [0u8; 3];
+        assert_eq!(
+            unsafe { libc::read(wake.read_fd(), bytes.as_mut_ptr().cast(), bytes.len()) },
+            3,
+            "all native producers still notify the original pipe"
+        );
+        assert_eq!(
+            unsafe { libc::read(successor.read_fd(), bytes.as_mut_ptr().cast(), bytes.len()) },
+            -1,
+            "late notifications must not reach a successor"
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+        let lifetime = std::sync::Arc::downgrade(&wake);
+        drop((wake, callback_wake, release_wake));
+        assert!(
+            lifetime.upgrade().is_none(),
+            "the final borrower releases the pipe"
+        );
+    }
+}
+
+/// Get the completions queue + retained wake pipe (for submitting async FFI work).
 /// Returns None if `init()` hasn't been called on this thread.
-pub fn js_call_handle() -> Option<(Arc<Mutex<Vec<js_calls::JsCallRequest>>>, RawFd)> {
+pub fn completion_handle() -> Option<NativeQueueHandle<FfiCompletion>> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.js_call_requests), st.wake_write))
+            .map(|st| (Arc::clone(&st.completions), Arc::clone(&st.wake)))
     })
 }
 
-/// Get the view-release queue + write fd (for `Pointer.view` backing-store
+/// Get the JS-call-request queue + retained wake pipe (for `FfiCallback` trampolines).
+/// Returns None if `init()` hasn't been called on this thread.
+pub fn js_call_handle() -> Option<NativeQueueHandle<js_calls::JsCallRequest>> {
+    STATE.with(|s| {
+        s.borrow()
+            .as_ref()
+            .map(|st| (Arc::clone(&st.js_call_requests), Arc::clone(&st.wake)))
+    })
+}
+
+/// Get the view-release queue + retained wake pipe (for `Pointer.view` backing-store
 /// deleters). Returns None if `init()` hasn't been called on this thread.
-pub fn release_handle() -> Option<(ViewReleaseQueue, RawFd)> {
+pub fn release_handle() -> Option<NativeQueueHandle<ViewRelease>> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
-            .map(|st| (Arc::clone(&st.view_releases), st.wake_write))
+            .map(|st| (Arc::clone(&st.view_releases), Arc::clone(&st.wake)))
     })
 }
 
@@ -354,7 +428,7 @@ fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
     STATE.with(|s| {
         if let Some(st) = s.borrow().as_ref() {
             let mut buf = [0u8; 64];
-            unsafe { libc::read(st.wake_read, buf.as_mut_ptr() as *mut _, 64) };
+            unsafe { libc::read(st.wake.read_fd(), buf.as_mut_ptr() as *mut _, 64) };
         }
     });
 
@@ -375,8 +449,12 @@ fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
     for completion in completions {
         let global = match take_resolver(completion.resolver_id) {
             Some(g) => g,
-            None => continue,
+            None => {
+                diagnostics::finish(completion.trace_id, "resolver-missing");
+                continue;
+            }
         };
+        diagnostics::finish(completion.trace_id, "resolver-consumed");
         let resolver = v8::Local::new(scope, &global);
         match completion.result {
             Ok(raw) => {

@@ -76,6 +76,24 @@ describe('Reactor scheduler native surface', () => {
 });
 
 describe('Reactor-pooled Realm basics', () => {
+  it('delivers native completions without a main-controller wake watch', async (t) => {
+    const child = new Process(
+      execPath,
+      ['run', new URL('./fixtures/native-wake-direct.ts', import.meta.url).pathname],
+      {
+        env: { ...childEnv(2), FINO_TRACE_READINESS: '1' },
+      },
+    );
+    child.stdin.close();
+    const [status, stdout, stderr] = await Promise.all([
+      child.wait(),
+      readAll(child.stdout),
+      readAll(child.stderr),
+    ]);
+    t.equal(status.code, 0, stderr);
+    t.ok(stdout.includes('native completion delivered directly'), stdout);
+  });
+
   it('runs a pooled realm to completion', async (t) => {
     const realm = new Realm({
       entry: new URL('./fixtures/hello.ts', import.meta.url).pathname,
@@ -154,6 +172,18 @@ describe('Reactor-pooled Realm basics', () => {
       'every concurrent sibling resolved its own timer and port traffic',
     );
   });
+  it('retires owners that fail before initialization finishes', async (t) => {
+    const fixture = new URL('./fixtures/initialization-retirement.ts', import.meta.url).pathname;
+    const child = new Process(execPath, ['run', fixture], { env: childEnv(1) });
+    child.stdin.close();
+    const [stdout, stderr, result] = await Promise.all([
+      readAll(child.stdout),
+      readAll(child.stderr),
+      child.wait(),
+    ]);
+    t.equal(result.code, 0, `initialization cleanup completes: ${stderr}`);
+    t.ok(stdout.includes('retired-initializations=8'));
+  });
   it('exits an isolate before switching realms on one reactor thread', async (t) => {
     // SharedIsolate::lock rejects entering while another isolate is current.
     // Pinning the pool to one worker and making several realms park on timers
@@ -218,7 +248,7 @@ describe('Reactor-pooled Realm basics', () => {
     t.equal(await realm.call(), 'survived', 'forged terminate did not stop the realm');
     t.equal(seen.length, 3, 'every forged frame arrived as an ordinary message');
   });
-  it('terminate({ force: true }) stops a realm spinning in synchronous code', async (t) => {
+  it('terminate({ force: true }) stops spinning and parked realms after port closure', async (t) => {
     // Give this test its own pool so the synchronous runaway cannot starve its
     // controller when the outer test runner saturates the process-wide pool.
     const fixture = new URL('./fixtures/force-terminate.ts', import.meta.url).pathname;

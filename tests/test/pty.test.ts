@@ -31,6 +31,8 @@ function screenIncludes(term: { text(): string[] }, needle: string): boolean {
   return term.text().some((line) => line.includes(needle));
 }
 
+// Child bootstrap competes with other full-suite processes on two-CPU CI.
+// Give first output/exit 30 seconds; subsequent interactions keep short deadlines.
 describe('fino:test/pty', () => {
   it('retains output when the child exits before the reader runs', async (t) => {
     await withScript(
@@ -40,7 +42,7 @@ describe('fino:test/pty', () => {
         // An async timer would let the pump consume the output immediately.
         const until = performance.now() + 1000;
         while (performance.now() < until) {}
-        t.equal(await pty.waitExit(), 0);
+        t.equal(await pty.waitExit({ timeout: 30_000 }), 0);
         await pty.close();
         t.ok(screenIncludes(pty.term, 'final output'), 'close drains the final output');
       },
@@ -50,11 +52,26 @@ describe('fino:test/pty', () => {
   it('captures plain output and reports a clean exit', async (t) => {
     await withScript(`console.log('hello pty');\n`, async (pty) => {
       t.ok(pty.pid > 0, 'child pid is reported');
-      await pty.waitFor((term) => screenIncludes(term, 'hello pty'));
+      await pty.waitFor((term) => screenIncludes(term, 'hello pty'), { timeout: 30_000 });
       const code = await pty.waitExit();
       t.equal(code, 0, 'child exits with code 0');
       t.ok(screenIncludes(pty.term, 'hello pty'), 'screen retains the output');
     });
+  });
+
+  it('reports child exit and output progress when a screen wait times out', async (t) => {
+    await withScript(
+      `console.log('ready');\nimport { exit } from 'fino:process';\nexit(13);\n`,
+      async (pty) => {
+        await pty.waitFor((term) => screenIncludes(term, 'ready'), { timeout: 30_000 });
+        t.equal(await pty.waitExit(), 13);
+        await t.rejects(
+          () => pty.waitFor(() => false, { timeout: 1 }),
+          new RegExp(`child ${pty.pid}: exited with code 13; output bytes: [1-9]`),
+          'timeout distinguishes an exited child from a running child with no output',
+        );
+      },
+    );
   });
 
   it('closes an active session idempotently while I/O is pending', async (t) => {
@@ -64,6 +81,11 @@ describe('fino:test/pty', () => {
     await fs.writeFile(script, encoder.encode(`await new Promise(() => {});\n`));
     const pty = await openPty(execPath, [script]);
     try {
+      await t.rejects(
+        () => pty.waitFor(() => false, { timeout: 1 }),
+        new RegExp(`child ${pty.pid}: running; output bytes: 0; read state: pending`),
+        'timeout reports a running child whose output read is still pending',
+      );
       const first = pty.close();
       const second = pty.close();
       t.equal(first, second, 'concurrent close calls share one teardown promise');
@@ -83,7 +105,7 @@ describe('fino:test/pty', () => {
       'invalid command rejects at the spawn boundary',
     );
     await withScript(`console.log('recovered');\n`, async (pty) => {
-      await pty.waitFor((term) => screenIncludes(term, 'recovered'));
+      await pty.waitFor((term) => screenIncludes(term, 'recovered'), { timeout: 30_000 });
       t.equal(await pty.waitExit(), 0, 'a later PTY session still works');
     });
   });
@@ -111,7 +133,9 @@ render(() => Text({ children: 'count: ' + count.get() }), {
 });
 `;
     await withScript(source, async (pty) => {
-      await pty.waitFor((term) => term.altScreen && screenIncludes(term, 'count: 0'));
+      await pty.waitFor((term) => term.altScreen && screenIncludes(term, 'count: 0'), {
+        timeout: 30_000,
+      });
       t.ok(pty.term.modes.has(1049), 'alt-screen mode 1049 is tracked');
       t.ok(!pty.term.modes.has(25), 'cursor is hidden while the app runs');
       await pty.sendKey('a');
@@ -138,7 +162,9 @@ render(() => Text({ children: 'resize harness running' }), {
     await withScript(source, async (pty) => {
       t.equal(pty.term.cols, 80, 'emulator starts at the requested width');
       t.equal(pty.term.rows, 24, 'emulator starts at the requested height');
-      await pty.waitFor((term) => screenIncludes(term, 'resize harness running'));
+      await pty.waitFor((term) => screenIncludes(term, 'resize harness running'), {
+        timeout: 30_000,
+      });
       pty.resize(100, 30);
       t.equal(pty.term.cols, 100, 'emulator grid tracks the new width');
       t.equal(pty.term.rows, 30, 'emulator grid tracks the new height');
@@ -176,7 +202,9 @@ render(
 );
 `;
     await withScript(source, async (pty) => {
-      await pty.waitFor((term) => term.altScreen && screenIncludes(term, 'clicks: 0'));
+      await pty.waitFor((term) => term.altScreen && screenIncludes(term, 'clicks: 0'), {
+        timeout: 30_000,
+      });
       t.ok(
         [1000, 1002, 1006].some((mode) => pty.term.modes.has(mode)),
         'mouse capture mode is enabled while the app runs',

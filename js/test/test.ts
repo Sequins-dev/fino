@@ -60,15 +60,17 @@
  * The release contract is intentionally smaller than Node's `node:test` API:
  * TAP output, name filters, skip reasons, per-test metadata, duration
  * annotations, lifecycle hooks, captured output, and exclusive parallel groups
- * are supported. `only`, `todo`, per-test timeouts, general intra-file
- * concurrency, subtest creation from an assertion object, and pluggable
- * reporters are not part of this module.
+ * are supported, as are per-test timeouts: every test runs under a deadline
+ * (60s by default, `--timeout` or `RunOptions.timeout` to change it, `0` to
+ * disable) so a hang fails the test that hung instead of stalling the run.
+ * `only`, `todo`, general intra-file concurrency, subtest creation from an
+ * assertion object, and pluggable reporters are not part of this module.
  *
  * ## Internal representation
  *
  * Both APIs share a tree of nodes:
  *
- *   Leaf:  { name, fn, children: null, skip: string|null, exclusive: boolean }
+ *   Leaf:  { name, fn, children: null, skip, exclusive, timeout }
  *   Group: { name, kind: 'suite'|'describe', children: [],
  *            before, beforeEach, after, afterEach,
  *            skip: string|null, exclusive: boolean }
@@ -81,6 +83,10 @@ import console, { _pushConsoleCapture, type ConsoleCaptureRecord } from '../glob
 import { Assert, AssertionError, type AssertCallbacks } from './assert.ts';
 import { formatDurationMs } from 'internal:duration';
 import { scheduleSync as _scheduleSync } from 'internal:async-context';
+import { timeout as _loopTimeout } from 'internal:runtime/loop';
+import { env as _traceEnv } from '../process.ts';
+import { readinessTraceSnapshot as _traceSnapshot } from 'internal:scheduler-native';
+const _traceTimeouts = _traceEnv['FINO_TRACE_READINESS'] === '1';
 // ---------------------------------------------------------------------------
 // Internal state
 // ---------------------------------------------------------------------------
@@ -90,6 +96,8 @@ interface LeafNode {
   children: null;
   skip: string | null;
   exclusive: boolean;
+  /** Per-test deadline in ms; null uses the run default. */
+  timeout: number | null;
 }
 interface GroupNode {
   name: string;
@@ -121,8 +129,11 @@ interface LeafRunResult {
   diagnostic: FailureDiagnostic | null;
 }
 interface RunContext {
+  onProgress?: (name: string, timeout: number) => void;
   showOutput: ShowOutputMode;
   durations: boolean;
+  /** Default per-test deadline in ms; `0` waits indefinitely. */
+  timeout: number;
 }
 /**
  * Primitive value accepted by `TestContext#meta()`.
@@ -154,6 +165,13 @@ export interface RunOptions {
   filter?: string;
   showOutput?: ShowOutputMode;
   durations?: boolean;
+  /**
+   * Default per-test deadline in milliseconds; `0` waits indefinitely.
+   *
+   * A hung test otherwise costs the whole CI job timeout and reports nothing
+   * about itself, so the run fails the test that hung and carries on.
+   */
+  timeout?: number;
 }
 /**
  * Opaque snapshot of registered tests created by `_prepareRun()`.
@@ -215,6 +233,14 @@ export type RegisterOptions = {
    * top-level group exclusive because root groups are the admission unit.
    */
   exclusive?: boolean;
+  /**
+   * Fail this test if it has not settled within this many milliseconds.
+   *
+   * Overrides the run default. Use `0` to wait indefinitely, which should be
+   * rare: a test that can hang is a test that can stall CI for the job's whole
+   * timeout instead of naming itself.
+   */
+  timeout?: number;
 };
 /**
  * Callback used by `test()` and `it()`.
@@ -351,6 +377,26 @@ function _skipReason(opts: RegisterOptions | null): string | null {
   if (!opts || !opts.skip) return null;
   return typeof opts.skip === 'string' ? opts.skip : '';
 }
+/**
+ * Default per-test deadline.
+ *
+ * Long enough that no honest test trips it — the slowest suites here spawn
+ * child processes and drive real terminals — and short enough that a hang
+ * names itself long before a CI job is cancelled for running over.
+ */
+const DEFAULT_TEST_TIMEOUT_MS = 60_000;
+function _runTimeout(options: RunOptions): number {
+  const value = options.timeout;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return DEFAULT_TEST_TIMEOUT_MS;
+  }
+  return value;
+}
+function _timeoutOption(opts: RegisterOptions | null): number | null {
+  const value = opts?.timeout;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null;
+  return value;
+}
 function _requireOutside(kind: 'suite' | 'describe', callerName: string): void {
   if (_current !== null && _current.kind !== kind) {
     const other = kind === 'suite' ? 'describe' : 'suite';
@@ -400,6 +446,7 @@ export function test(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?:
     children: null,
     skip: _skipReason(opts),
     exclusive: opts?.exclusive === true,
+    timeout: _timeoutOption(opts),
   });
 }
 /**
@@ -507,6 +554,7 @@ export function it(name: string, optsOrFn: TestFn | RegisterOptions, maybeFn?: T
     children: null,
     skip: _skipReason(opts),
     exclusive: opts?.exclusive === true,
+    timeout: _timeoutOption(opts),
   });
 }
 /**
@@ -721,6 +769,46 @@ async function _captureConsole<T>(
  * @param {string|null} inheritedSkip  Skip reason inherited from a parent group, or null.
  * @returns {'pass'|'fail'|'skip'}
  */
+/**
+ * Error thrown when a test body outlives its deadline.
+ *
+ * Named so a reader of a TAP failure can tell "this hung" from "this threw",
+ * because the two want completely different investigations.
+ */
+export class TestTimeoutError extends Error {
+  /** Deadline the test exceeded, in milliseconds. */
+  readonly timeoutMs: number;
+  constructor(name: string, timeoutMs: number) {
+    super(`test "${name}" exceeded its ${timeoutMs}ms timeout`);
+    this.name = 'TestTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+/**
+ * Settle `work`, or reject once `timeoutMs` has passed.
+ *
+ * The deadline timer is unreferenced so it cannot by itself keep the Realm
+ * alive, and cancelled as soon as the work settles so a passing test leaves
+ * nothing armed behind it. Losing the race does not stop the work: a hung test
+ * is reported and the run continues, but whatever it leaked is still leaked —
+ * which is what the end-of-run handle report is for.
+ */
+async function _withTimeout<T>(timeoutMs: number, name: string, work: Promise<T>): Promise<T> {
+  if (timeoutMs <= 0) return work;
+  const deadline = _loopTimeout(timeoutMs);
+  deadline.unref();
+  try {
+    return await Promise.race([
+      work,
+      deadline.then((): never => {
+        if (_traceTimeouts) console.error('readiness timeout trace: ' + _traceSnapshot());
+        throw new TestTimeoutError(name, timeoutMs);
+      }),
+    ]);
+  } finally {
+    deadline.cancel();
+  }
+}
 async function _runLeaf(
   ctx: RunContext,
   path: string[],
@@ -730,6 +818,7 @@ async function _runLeaf(
   hooks: GroupNode | null,
   inheritedSkip: string | null = null,
 ): Promise<LeafRunResult> {
+  ctx.onProgress?.(entry.name, entry.timeout ?? ctx.timeout);
   const startMs = _nowMs();
   const skipReason = inheritedSkip ?? entry.skip;
   if (skipReason !== null) {
@@ -758,6 +847,7 @@ async function _runLeaf(
       let beforeError = null;
       if (hooks?.beforeEach) {
         try {
+          ctx.onProgress?.('beforeEach: ' + entry.name, ctx.timeout);
           await hooks.beforeEach();
         } catch (e) {
           beforeError = e;
@@ -769,7 +859,12 @@ async function _runLeaf(
         try {
           // Call via scheduleSync so the function executes outside the microtask
           // checkpoint — this allows spin() to drain microtasks correctly.
-          await _scheduleSync(() => entry.fn(t));
+          if (hooks?.beforeEach) ctx.onProgress?.(entry.name, entry.timeout ?? ctx.timeout);
+          await _withTimeout(
+            entry.timeout ?? ctx.timeout,
+            entry.name,
+            _scheduleSync(() => entry.fn(t)),
+          );
         } catch (e) {
           bodyError = e;
         }
@@ -777,6 +872,7 @@ async function _runLeaf(
       // Run afterEach — always, as long as beforeEach didn't throw.
       if (hooks?.afterEach && beforeError === null) {
         try {
+          ctx.onProgress?.('afterEach: ' + entry.name, ctx.timeout);
           await hooks.afterEach();
         } catch (e) {
           failures.push(e);
@@ -851,6 +947,7 @@ async function _runEntries(
   if (!groupSkip && hooks?.before) {
     const output: ConsoleCaptureRecord[] = [];
     try {
+      ctx.onProgress?.('before: ' + path.join(' > '), ctx.timeout);
       await _captureConsole(ctx, output, () => hooks.before!());
       if (output.length > 0) {
         beforeDiagnostic = {
@@ -934,6 +1031,7 @@ async function _runEntries(
       if (!groupSkip && hooks?.after) {
         const output: ConsoleCaptureRecord[] = [];
         try {
+          ctx.onProgress?.('after: ' + path.join(' > '), ctx.timeout);
           await _captureConsole(ctx, output, () => hooks.after!());
           if (output.length > 0) {
             afterDiagnostic = {
@@ -1030,55 +1128,66 @@ export function _prepareRun(options: RunOptions = {}): PreparedTestRun {
  * Each index can be consumed exactly once. Callers execute at most one entry
  * from a prepared run at a time because entries share their Realm and module
  * state. The result omits the local `1..1` plan because a coordinating parent
- * owns the aggregate plan and numbering.
+ * owns the aggregate plan and numbering. `onProgress` synchronously reports
+ * test and hook transitions with their effective timeout for a supervising
+ * runner; it does not run on unrelated activity or periodic timers.
  *
  * @internal
  */
+let _activeRuns = 0;
 export async function _runPreparedEntry(
   prepared: PreparedTestRun,
   index: number,
   options: RunOptions = {},
+  onProgress?: (name: string, timeout: number) => void,
 ): Promise<PreparedTestEntryResult> {
-  const state = _preparedRuns.get(prepared);
-  if (state === undefined) throw new Error('Prepared test run has already been consumed');
-  if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
-    throw new RangeError(`Prepared test entry index ${index} is out of range`);
-  }
-  if (state.consumed[index])
-    throw new Error(`Prepared test entry ${index} has already been consumed`);
-  state.consumed[index] = true;
-  if (state.consumed.every(Boolean)) _preparedRuns.delete(prepared);
-  const entry = state.entries[index]!;
-  const output: ConsoleCaptureRecord[] = [];
-  const showOutput = options.showOutput ?? 'failures';
-  const release = _pushConsoleCapture((record) => output.push(record));
-  let result: RunResult;
+  _activeRuns += 1;
   try {
-    result = await _runEntries(
-      {
-        showOutput,
-        durations: options.durations === true,
-      },
-      [entry],
-      0,
-      null,
-    );
+    const state = _preparedRuns.get(prepared);
+    if (state === undefined) throw new Error('Prepared test run has already been consumed');
+    if (!Number.isSafeInteger(index) || index < 0 || index >= state.entries.length) {
+      throw new RangeError(`Prepared test entry index ${index} is out of range`);
+    }
+    if (state.consumed[index])
+      throw new Error(`Prepared test entry ${index} has already been consumed`);
+    state.consumed[index] = true;
+    if (state.consumed.every(Boolean)) _preparedRuns.delete(prepared);
+    const entry = state.entries[index]!;
+    const output: ConsoleCaptureRecord[] = [];
+    const showOutput = options.showOutput ?? 'failures';
+    const release = _pushConsoleCapture((record) => output.push(record));
+    let result: RunResult;
+    try {
+      result = await _runEntries(
+        {
+          showOutput,
+          durations: options.durations === true,
+          timeout: _runTimeout(options),
+          onProgress,
+        },
+        [entry],
+        0,
+        null,
+      );
+    } finally {
+      release();
+    }
+    const plan = output.findIndex((record) => record.fd === 1 && record.text === '1..1');
+    if (plan >= 0) output.splice(plan, 1);
+    return {
+      output,
+      diagnostics: result.diagnostics.map((diagnostic) => ({
+        title: diagnostic.title,
+        errors: diagnostic.errors.map(_formatErrorLines),
+        output: diagnostic.output,
+      })),
+      passed: result.passed,
+      failed: result.failed,
+      skipped: result.skipped,
+    };
   } finally {
-    release();
+    _activeRuns -= 1;
   }
-  const plan = output.findIndex((record) => record.fd === 1 && record.text === '1..1');
-  if (plan >= 0) output.splice(plan, 1);
-  return {
-    output,
-    diagnostics: result.diagnostics.map((diagnostic) => ({
-      title: diagnostic.title,
-      errors: diagnostic.errors.map(_formatErrorLines),
-      output: diagnostic.output,
-    })),
-    passed: result.passed,
-    failed: result.failed,
-    skipped: result.skipped,
-  };
 }
 
 /**
@@ -1101,26 +1210,32 @@ export async function _runPrepared(
   const showOutput = options.showOutput ?? 'failures';
   const durations = options.durations === true;
   const runStartMs = _nowMs();
-  console.log('TAP version 13');
-  const { passed, failed, skipped, diagnostics } = await _runEntries(
-    {
-      showOutput,
-      durations,
-    },
-    entries,
-    0,
-    null,
-  );
-  const total = passed + failed + skipped;
-  console.log('');
-  console.log('# tests ' + total);
-  console.log('# pass  ' + passed);
-  if (skipped > 0) console.log('# skip  ' + skipped);
-  console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
-  if (failed > 0) {
-    console.log('# fail  ' + failed);
-    if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
-    throw new Error(failed + ' test(s) failed');
+  _activeRuns += 1;
+  try {
+    console.log('TAP version 13');
+    const { passed, failed, skipped, diagnostics } = await _runEntries(
+      {
+        showOutput,
+        durations,
+        timeout: _runTimeout(options),
+      },
+      entries,
+      0,
+      null,
+    );
+    const total = passed + failed + skipped;
+    console.log('');
+    console.log('# tests ' + total);
+    console.log('# pass  ' + passed);
+    if (skipped > 0) console.log('# skip  ' + skipped);
+    console.log('# time  ' + formatDurationMs(_nowMs() - runStartMs));
+    if (failed > 0) {
+      console.log('# fail  ' + failed);
+      if (diagnostics.length > 0) _printFailureDetails(diagnostics, showOutput);
+      throw new Error(failed + ' test(s) failed');
+    }
+  } finally {
+    _activeRuns -= 1;
   }
 }
 
@@ -1143,4 +1258,16 @@ export async function _runPrepared(
  */
 export async function run(options: RunOptions = {}): Promise<void> {
   await _runPrepared(_prepareRun(options), options);
+}
+/**
+ * Whether a run is currently executing in this Realm.
+ *
+ * `fino test` can be invoked from inside a test — the CLI's own suite does it —
+ * and a nested run must not treat the outer run's live handles as its own leak,
+ * nor exit the process out from under it.
+ *
+ * @internal
+ */
+export function _runActive(): boolean {
+  return _activeRuns > 0;
 }

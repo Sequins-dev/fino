@@ -72,7 +72,8 @@ import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
   currentWorkloadOwner,
-  registerProcessReadiness,
+  recordReadinessTrace,
+  registerProcessReadiness as registerNativeReadiness,
   takeSharedLoopEvents,
   usesProcessReadiness,
 } from 'internal:scheduler-native';
@@ -90,6 +91,7 @@ interface LoopEvent {
   udata?: number;
   routed?: boolean;
   installed?: boolean;
+  traceId?: number;
 }
 /** Options accepted by spin() and run(). */
 interface SpinOptions {
@@ -211,13 +213,40 @@ let _virtualTimeBlocked: (() => boolean) | null = null;
 const TASK_TOKEN_BASE = 4294967296;
 /**
  * Scalars per routed readiness completion, matching the native layout:
- * ident, filter, flags, fflags, data, udata, installed.
+ * ident, filter, flags, fflags, data, udata, installed, traceId.
  */
-const COMPLETION_SLOTS = 7;
+const COMPLETION_SLOTS = 8;
 const _workloadOwner = currentWorkloadOwner();
 const EV_ADD_ENABLE_ONESHOT = 1 | 4 | 16;
 const EV_ADD_ENABLE_CLEAR = 1 | 4 | 32;
 const EV_DELETE = 2;
+// Diagnostic generations do not participate in delivery. They expose stale
+// completions that would otherwise look like successful fd/token delivery.
+const _readinessOperations = new Map<string, number>();
+function registerProcessReadiness(
+  ident: number,
+  filter: number,
+  flags: number,
+  fflags: number,
+  data: number,
+  token: number,
+): void {
+  const operation = registerNativeReadiness(ident, filter, flags, fflags, data, token);
+  if (!operation) return;
+  const key = `${filter}:${token}`;
+  const previous = _readinessOperations.get(key);
+  if (previous)
+    recordReadinessTrace(
+      previous,
+      _workloadOwner,
+      (flags & EV_DELETE) !== 0 ? 'cancelled' : 'replaced',
+      ident,
+      filter,
+      token,
+    );
+  if ((flags & EV_DELETE) !== 0) _readinessOperations.delete(key);
+  else _readinessOperations.set(key, operation);
+}
 /**
  * Register interest in a persistent watch's installation acknowledgement.
  *
@@ -264,6 +293,17 @@ function hasTaskForLocalId(tasks: Iterable<number>, localId: number): boolean {
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
+function traceEvent(ev: LoopEvent, stage: string): void {
+  if (ev.traceId)
+    recordReadinessTrace(
+      ev.traceId,
+      _workloadOwner,
+      stage,
+      ev.ident,
+      ev.filter,
+      ev.udata ?? ev.ident,
+    );
+}
 function _dispatch(ev: LoopEvent): void {
   // Resolvers are keyed by the token the watch was registered with, never by
   // the bare descriptor. The main realm installs watches on behalf of every
@@ -272,12 +312,34 @@ function _dispatch(ev: LoopEvent): void {
   // strand the loser forever.
   const token = ev.udata ?? ev.ident;
   const localId = taskOwner(token) === 0 ? ev.ident : taskLocalId(token);
+  const operationKey = ev.traceId ? `${ev.filter}:${token}` : '';
+  const expectedOperation = ev.traceId ? _readinessOperations.get(operationKey) : undefined;
+
+  if (ev.traceId && expectedOperation !== ev.traceId) {
+    traceEvent(
+      ev,
+      expectedOperation === undefined
+        ? 'operation-no-longer-pending'
+        : 'resolver-generation-mismatch',
+    );
+  }
+  if (
+    ev.traceId &&
+    ev.installed !== true &&
+    ev.filter !== EVFILT_VNODE &&
+    ev.filter !== EVFILT_SIGNAL
+  ) {
+    _readinessOperations.delete(operationKey);
+  }
   if (ev.installed === true) {
     const key = `${ev.filter}:${token}`;
     const installed = _installs.get(key);
     if (installed) {
       _installs.delete(key);
       installed();
+      traceEvent(ev, 'installation-resolved');
+    } else {
+      traceEvent(ev, 'discarded-install-resolver-missing');
     }
     return;
   }
@@ -286,6 +348,7 @@ function _dispatch(ev: LoopEvent): void {
     // wake source even if the fd numbers happen to collide (e.g. due to OS
     // fd recycling between tests).
     const resolve = _reads.get(token);
+    traceEvent(ev, resolve ? 'resolved' : 'discarded-resolver-missing');
     if (resolve) {
       _reads.delete(token);
       // EV_ONESHOT: kernel already removed the filter after delivery.
@@ -302,6 +365,7 @@ function _dispatch(ev: LoopEvent): void {
     }
   } else if (ev.filter === EVFILT_WRITE) {
     const resolve = _writes.get(token);
+    traceEvent(ev, resolve ? 'resolved' : 'discarded-resolver-missing');
     if (resolve) {
       _writes.delete(token);
       // EV_ONESHOT: kernel already removed the filter after delivery.
@@ -309,6 +373,7 @@ function _dispatch(ev: LoopEvent): void {
     }
   } else if (ev.filter === EVFILT_TIMER) {
     const resolve = _timers.get(token);
+    traceEvent(ev, resolve ? 'resolved' : 'discarded-resolver-missing');
     if (resolve) {
       _timers.delete(token);
       _unreferencedTimers.delete(token);
@@ -316,24 +381,28 @@ function _dispatch(ev: LoopEvent): void {
     }
   } else if (EVFILT_PROC !== null && ev.filter === EVFILT_PROC) {
     const resolve = _procs.get(token);
+    traceEvent(ev, resolve ? 'resolved' : 'discarded-resolver-missing');
     if (resolve) {
       _procs.delete(token);
       resolve();
     }
   } else if (EVFILT_COMPLETION !== null && ev.filter === EVFILT_COMPLETION) {
     const resolve = _completions.get(token);
+    traceEvent(ev, resolve ? 'resolved' : 'discarded-resolver-missing');
     if (resolve) {
       _completions.delete(token);
       resolve({ res: ev.res ?? 0 });
     }
   } else if (EVFILT_VNODE !== null && ev.filter === EVFILT_VNODE) {
     const cb = _vnodes.get(token);
+    traceEvent(ev, cb ? 'callback-invoked' : 'discarded-resolver-missing');
     if (cb) {
       // Do NOT delete — vnode watches are persistent (EV_CLEAR re-arms them).
       cb({ fflags: ev.fflags ?? 0 });
     }
   } else if (EVFILT_SIGNAL !== null && ev.filter === EVFILT_SIGNAL) {
     const cb = _signals.get(token);
+    traceEvent(ev, cb ? 'callback-invoked' : 'discarded-resolver-missing');
     if (cb) {
       // Do NOT delete — signal watches are persistent until removeSignal() is called.
       cb();
@@ -343,6 +412,16 @@ function _dispatch(ev: LoopEvent): void {
 // ---------------------------------------------------------------------------
 // Runtime hooks — exported for internal/main.ts to drive the event loop
 // ---------------------------------------------------------------------------
+/**
+ * Submit queued backend changes without consuming readiness events.
+ * The process controller uses this before releasing borrowed descriptors, so
+ * a queued deletion cannot target a later reuse of the same descriptor number.
+ *
+ * @internal
+ */
+export function flush(): void {
+  if (!_processReadiness) backend.flush?.(rawBackend());
+}
 /**
  * Poll the backend for ready events, dispatch each to its registered resolver,
  * and return the number of events processed.
@@ -377,6 +456,7 @@ export function tick(timeoutMs: number | null): number {
       udata: batch[base + 5]!,
       routed: true,
       installed: batch[base + 6] === 1,
+      traceId: batch[base + 7]!,
     });
   }
   const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);

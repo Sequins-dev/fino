@@ -29,6 +29,7 @@ const F_GETFL = 3;
 const F_SETFL = 4;
 const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
 const lib = dlopen(LIBC, {
+  open: { parameters: ['buffer', 'i32'], result: 'i32' },
   pipe: {
     parameters: ['buffer'],
     result: 'i32',
@@ -1032,6 +1033,35 @@ describe('BufferedBytesWriter', () => {
   });
 });
 describe('FdReader / FdWriter', { exclusive: true }, () => {
+  for (const length of [0, 3]) {
+    it(`FdReader observes regular-file EOF after ${length} bytes`, async (t) => {
+      const fs = new DiskFileSystem();
+      const path = `/tmp/fino-fd-eof-${Math.random()}`;
+      await fs.writeFile(path, new Uint8Array(length).fill(7));
+      try {
+        const fd = lib.symbols.open(new TextEncoder().encode(path + '\0').buffer, 0);
+        if (fd < 0) throw new Error('open failed');
+        await using reader = new FdReader(fd, () => {
+          lib.symbols.close(fd);
+        });
+        if (length) t.equal((await readValue(reader.readAtMost(length)))?.length, length);
+        const pending = reader.read();
+        const deadline = loop.timeout(100);
+        let result;
+        try {
+          result = await Promise.race([pending, deadline.then(() => null)]);
+        } finally {
+          deadline.cancel();
+          await reader.close();
+          await pending;
+        }
+        t.notEqual(result, null, 'EOF must not await future bytes');
+        if (result !== null) t.equal(result.done, true);
+      } finally {
+        await fs.unlink(path);
+      }
+    });
+  }
   it('exposes borrowed descriptor metadata', (t) => {
     const reader = new FdReader(0, () => {});
     const writer = new FdWriter(1, () => {});

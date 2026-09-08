@@ -1229,7 +1229,9 @@ export function getsockname(fd: number): Address | UnknownAddress {
  * Bind a socket to an address.
  *
  * Throws on native bind errors. When the address is already in use, the error
- * message includes the port when available.
+ * message includes the port when available. The error carries the positive
+ * native error number in `errno`, allowing callers to classify failures without
+ * parsing the message.
  *
  * ```ts no_run
  * bind(fd, { family: 'ipv4', ip: '127.0.0.1', port: 3000 });
@@ -1245,7 +1247,7 @@ export function bind(fd: number, addr: Address): void {
       errno === addrInUse
         ? `bind() failed: address already in use${(addr as any).port !== undefined ? ` (port ${(addr as any).port})` : ''}`
         : `bind() failed: errno=${errno}`;
-    throw new Error(msg);
+    throw Object.assign(new Error(msg), { errno });
   }
 }
 /**

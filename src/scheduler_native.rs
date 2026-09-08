@@ -1,14 +1,14 @@
 //! Minimal native substrate for the TypeScript process scheduler.
 //!
-//! TypeScript owns readiness registration, runnable priority, worker placement,
+//! TypeScript owns readiness registration, pool sizing, worker placement,
 //! lifecycle, and metrics. Native code is limited to the operations TypeScript
 //! cannot perform: moving V8 isolates between OS threads, entering and pumping
 //! an isolate, and carrying scalar readiness metadata across isolate boundaries.
 
 use std::{
     cell::RefCell,
-    collections::{BinaryHeap, HashMap, VecDeque},
-    os::unix::io::RawFd,
+    collections::{HashMap, VecDeque},
+    os::fd::{FromRawFd, OwnedFd, RawFd},
     rc::Rc,
     sync::{
         Arc, Condvar, Mutex, Weak,
@@ -94,6 +94,7 @@ impl Drop for PendingWorkload {
         let Some(inner) = self.inner.take() else {
             return;
         };
+        retire_owner(self.owner);
         if let Some((wake_read, partner_write)) = inner.port_fds {
             unsafe {
                 libc::close(wake_read);
@@ -149,6 +150,7 @@ enum ScheduledRealmResult {
 }
 
 struct ScheduledRealmState {
+    owner: u32,
     result: Mutex<Option<ScheduledRealmResult>>,
     parent_wake_write: RawFd,
     /// Cross-thread handle used to interrupt the realm's isolate.
@@ -171,10 +173,22 @@ impl ScheduledRealmState {
     fn force(&self) -> bool {
         self.force_requested.store(true, Ordering::Release);
         let handle = self.isolate_handle.lock().unwrap().clone();
-        match handle {
+        let interrupted = match handle {
             Some(handle) => handle.terminate_execution(),
             None => false,
+        };
+        // V8's interrupt cannot wake a parked reactor worker. The parent port
+        // may already be closed after call(), so no control frame can provide
+        // that wake either. Queue this owner after publishing the request.
+        let pool = owner_pools()
+            .lock()
+            .unwrap()
+            .get(&self.owner)
+            .and_then(Weak::upgrade);
+        if let Some(pool) = pool {
+            pool.signal(self.owner);
         }
+        interrupted
     }
 
     fn was_forced(&self) -> bool {
@@ -241,6 +255,351 @@ fn next_owner() -> u32 {
     }
 }
 
+// The shared ledger is native only because movable isolates cannot share JS
+// objects. It retains scalar metadata, never handles or Realm references.
+#[derive(Clone, serde::Serialize)]
+struct ReadinessTraceEvent {
+    sequence: u64,
+    elapsed_us: u64,
+    operation: u64,
+    owner: u32,
+    stage: String,
+    ident: f64,
+    filter: i32,
+    token: f64,
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+struct WakeDiagnostic {
+    operation: u64,
+    owner: u32,
+    ident: f64,
+    ready: u64,
+    signalled: u64,
+    absent: u64,
+    last_ready_us: u64,
+    last_signalled_us: u64,
+}
+
+#[derive(Default)]
+struct ReadinessTrace {
+    wake_sources: HashMap<u64, WakeDiagnostic>,
+    wake_sources_dropped: u64,
+    sequence: u64,
+    dropped: u64,
+    events: VecDeque<ReadinessTraceEvent>,
+}
+
+impl ReadinessTrace {
+    fn push(&mut self, mut event: ReadinessTraceEvent, capacity: usize) {
+        self.sequence += 1;
+        event.sequence = self.sequence;
+        if self.events.len() == capacity {
+            self.events.pop_front();
+            self.dropped += 1;
+        }
+        self.events.push_back(event);
+    }
+}
+
+pub(crate) fn readiness_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("FINO_TRACE_READINESS").as_deref() == Ok("1"))
+}
+
+fn readiness_trace() -> &'static Mutex<ReadinessTrace> {
+    static TRACE: std::sync::OnceLock<Mutex<ReadinessTrace>> = std::sync::OnceLock::new();
+    TRACE.get_or_init(|| Mutex::new(ReadinessTrace::default()))
+}
+
+pub(crate) fn readiness_trace_elapsed_us() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_micros() as u64
+}
+
+fn trace_readiness(operation: u64, owner: u32, stage: &str, ident: f64, filter: i32, token: f64) {
+    if !readiness_trace_enabled() || operation == 0 {
+        return;
+    }
+    let mut trace = readiness_trace().lock().unwrap();
+    // A level-triggered pipe can remain readable while its owner is busy.
+    // Count each notification without letting that traffic erase operation
+    // lifecycles from the bounded history before the owner runs again.
+    if matches!(
+        stage,
+        "wake-ready" | "wake-owner-signalled" | "wake-owner-absent"
+    ) {
+        if trace.wake_sources.len() == 65_536 && !trace.wake_sources.contains_key(&operation) {
+            trace.wake_sources_dropped += 1;
+            return;
+        }
+        let wake = trace
+            .wake_sources
+            .entry(operation)
+            .or_insert_with(|| WakeDiagnostic {
+                operation,
+                owner,
+                ident,
+                ..Default::default()
+            });
+        match stage {
+            "wake-ready" => {
+                wake.ready += 1;
+                wake.last_ready_us = readiness_trace_elapsed_us();
+            }
+            "wake-owner-signalled" => {
+                wake.signalled += 1;
+                wake.last_signalled_us = readiness_trace_elapsed_us();
+            }
+            _ => {
+                wake.absent += 1;
+            }
+        }
+        return;
+    }
+    trace.push(
+        ReadinessTraceEvent {
+            sequence: 0,
+            elapsed_us: readiness_trace_elapsed_us(),
+            operation,
+            owner,
+            stage: stage.to_owned(),
+            ident,
+            filter,
+            token,
+        },
+        65_536,
+    );
+}
+
+fn record_readiness_trace(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let operation = handle_arg(scope, args.get(0));
+    let owner = args.get(1).uint32_value(scope).unwrap_or(0);
+    let stage = args.get(2).to_rust_string_lossy(scope);
+    let ident = args.get(3).number_value(scope).unwrap_or(0.0);
+    let filter = args.get(4).int32_value(scope).unwrap_or(0);
+    let token = args.get(5).number_value(scope).unwrap_or(0.0);
+    trace_readiness(operation, owner, &stage, ident, filter, token);
+}
+
+fn readiness_trace_snapshot(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let owner = (!args.get(0).is_undefined()).then(|| args.get(0).uint32_value(scope).unwrap_or(0));
+    let json = readiness_snapshot(owner).to_string();
+    rv.set(v8::String::new(scope, &json).unwrap().into());
+}
+
+fn readiness_snapshot(owner: Option<u32>) -> serde_json::Value {
+    let trace = readiness_trace().lock().unwrap();
+    let events: Vec<_> = trace
+        .events
+        .iter()
+        .filter(|event| owner.is_none_or(|owner| event.owner == owner))
+        .cloned()
+        .collect();
+    let sequence = trace.sequence;
+    let dropped = trace.dropped;
+    let wake_sources: Vec<_> = trace
+        .wake_sources
+        .values()
+        .filter(|source| owner.is_none_or(|owner| source.owner == owner))
+        .cloned()
+        .collect();
+    let wake_sources_dropped = trace.wake_sources_dropped;
+    drop(trace);
+    let realms = realm_diagnostics().lock().unwrap().clone();
+    let pool_state = match process_pool().try_lock() {
+        Ok(pool) => match pool.as_ref() {
+            Some(pool) => match pool.inner.try_lock() {
+                Ok(inner) => serde_json::json!({
+                    "parked": inner.parked.keys().copied().collect::<Vec<_>>(),
+                    "residents": inner.residents,
+                    "pendingSignals": inner.pending_signals,
+                    "waiting": inner.waiting,
+                    "queuedEvents": inner.events.len(),
+                    "readyEntries": inner.ready.len(),
+                    "shutdown": inner.shutdown,
+                    "attachedWorkers": inner.attached_workers,
+                }),
+                Err(_) => serde_json::json!({ "unavailable": "pool mutex busy" }),
+            },
+            None => serde_json::Value::Null,
+        },
+        Err(_) => serde_json::json!({ "unavailable": "registry mutex busy" }),
+    };
+    serde_json::json!({ "version": 1, "enabled": readiness_trace_enabled(),
+        "pid": std::process::id(), "elapsed_us": readiness_trace_elapsed_us(),
+        "capacity": 65_536, "sequence": sequence, "dropped": dropped, "events": events,
+        "realms": realms, "pool": pool_state,
+        "wakeSources": wake_sources, "wakeSourcesDropped": wake_sources_dropped,
+        "nativeWork": crate::async_rt::diagnostics::snapshot(owner) })
+}
+
+#[derive(Clone, Default, serde::Serialize)]
+struct RealmDiagnostic {
+    phase: String,
+    updated_us: u64,
+    parent: Option<u32>,
+    entry: Option<String>,
+    observations: HashMap<String, String>,
+    scheduling: SchedulingDiagnostic,
+}
+
+// Scalar accounting stays outside V8 so the recorder can explain a stalled
+// worker without entering the isolate. All timestamps share the trace clock.
+#[derive(Clone, Default, serde::Serialize)]
+struct SchedulingDiagnostic {
+    signals: u64,
+    dispatches: u64,
+    ready_since_us: Option<u64>,
+    queue_total_us: u64,
+    queue_max_us: u64,
+    slice_started_us: Option<u64>,
+    slice_total_us: u64,
+    slice_max_us: u64,
+}
+
+impl SchedulingDiagnostic {
+    fn signal(&mut self, now: u64) {
+        self.signals += 1;
+        self.ready_since_us.get_or_insert(now);
+    }
+
+    fn dispatch(&mut self, now: u64) {
+        self.dispatches += 1;
+        if let Some(ready) = self.ready_since_us.take() {
+            let elapsed = now.saturating_sub(ready);
+            self.queue_total_us += elapsed;
+            self.queue_max_us = self.queue_max_us.max(elapsed);
+        }
+        self.slice_started_us = Some(now);
+    }
+
+    fn finish_slice(&mut self, now: u64) {
+        if let Some(started) = self.slice_started_us.take() {
+            let elapsed = now.saturating_sub(started);
+            self.slice_total_us += elapsed;
+            self.slice_max_us = self.slice_max_us.max(elapsed);
+        }
+    }
+}
+
+fn realm_scheduling(owner: u32, update: impl FnOnce(&mut SchedulingDiagnostic, u64)) {
+    if readiness_trace_enabled() {
+        let mut states = realm_diagnostics().lock().unwrap();
+        update(
+            &mut states.entry(owner).or_default().scheduling,
+            readiness_trace_elapsed_us(),
+        );
+    }
+}
+
+fn realm_diagnostics() -> &'static Mutex<HashMap<u32, RealmDiagnostic>> {
+    static STATES: std::sync::OnceLock<Mutex<HashMap<u32, RealmDiagnostic>>> =
+        std::sync::OnceLock::new();
+    STATES.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn realm_created(owner: u32, parent: u32, entry: &str) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    states.insert(
+        owner,
+        RealmDiagnostic {
+            parent: Some(parent),
+            entry: Some(entry.to_owned()),
+            phase: "queued".to_owned(),
+            updated_us: readiness_trace_elapsed_us(),
+            ..Default::default()
+        },
+    );
+}
+
+fn realm_phase(owner: u32, phase: &str) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    if phase == "disposed" {
+        states.remove(&owner);
+        return;
+    }
+    let state = states.entry(owner).or_default();
+    state.phase = phase.to_owned();
+    state.updated_us = readiness_trace_elapsed_us();
+}
+
+fn record_realm_state(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let owner = get_state(scope).borrow().scheduler_workload_owner;
+    let name = args.get(0).to_rust_string_lossy(scope);
+    let value = args.get(1).to_rust_string_lossy(scope);
+    // Diagnostic observations cannot grow without bound within one Realm.
+    if name.len() > 64 || value.len() > 16_384 {
+        return;
+    }
+    let mut states = realm_diagnostics().lock().unwrap();
+    let state = states.entry(owner).or_default();
+    if state.observations.len() < 16 || state.observations.contains_key(&name) {
+        state.observations.insert(name, value);
+    }
+}
+
+// A diagnostic reader must survive a blocked main thread, lost reactor wake,
+// or isolate disposal deadlock. This thread only copies scalar observations;
+// it never enters an isolate, owns its handles, or signals runtime work.
+fn start_readiness_recorder() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    if !readiness_trace_enabled() {
+        return;
+    }
+    let Some(directory) = std::env::var_os("FINO_TRACE_DIRECTORY") else {
+        return;
+    };
+    STARTED.call_once(|| {
+        std::thread::spawn(move || {
+            let directory = std::path::PathBuf::from(directory);
+            if let Err(error) = std::fs::create_dir_all(&directory) {
+                eprintln!("readiness recorder: {error}");
+                return;
+            }
+            let path = directory.join(format!("readiness-{}.json", std::process::id()));
+            let temporary = path.with_extension("tmp");
+            loop {
+                let snapshot = readiness_snapshot(None).to_string();
+                if let Err(error) = std::fs::write(&temporary, snapshot)
+                    .and_then(|()| std::fs::rename(&temporary, &path))
+                {
+                    eprintln!("readiness recorder: {error}");
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(2));
+            }
+        });
+    });
+}
+
 struct ReadinessChange {
     ident: f64,
     filter: i32,
@@ -258,6 +617,8 @@ struct ReadinessChange {
     /// reactor parks the realm and borrows a timer from the thread that is
     /// already sleeping in kqueue/io_uring.
     scheduler_poll: bool,
+    borrowed_fd: Option<RawFd>,
+    trace_id: u64,
 }
 
 impl ReadinessChange {
@@ -273,6 +634,8 @@ impl ReadinessChange {
             cancel_owner: None,
             scheduler_wake: false,
             scheduler_poll: false,
+            borrowed_fd: None,
+            trace_id: 0,
         }
     }
 }
@@ -291,22 +654,39 @@ fn request_scheduler_poll(owner: u32, delay_ms: f64) {
 
 /// Number of `f64` slots per routed readiness completion.
 ///
-/// A completion is seven scalars the kernel already produced. It used to cross
+/// A completion carries seven readiness scalars and one diagnostic operation ID.
+/// It used to cross
 /// to its owning realm as a structured clone — a ValueSerializer round trip, a
 /// heap allocation, a backing store and a `Uint8Array` per event — to move
-/// fifty-six bytes of numbers. The fixed layout below removes all of that: the
+/// a few scalars. The fixed layout below removes all of that: the
 /// whole batch arrives as one `Float64Array`.
-const COMPLETION_SLOTS: usize = 7;
+const COMPLETION_SLOTS: usize = 8;
 
 /// One routed readiness completion in fixed layout.
 ///
-/// Slots: ident, filter, flags, fflags, data, udata, installed.
+/// Slots: ident, filter, flags, fflags, data, udata, installed, trace_id.
 type ReadinessCompletion = [f64; COMPLETION_SLOTS];
 
 #[derive(Default)]
 struct MailboxInner {
     changes: Vec<ReadinessChange>,
+    borrowed_fds: HashMap<RawFd, OwnedFd>,
     events: HashMap<u32, Vec<ReadinessCompletion>>,
+}
+
+impl MailboxInner {
+    /// A queued registration must name the same open file even if its Realm
+    /// closes and reuses the original number before the controller runs.
+    fn borrow_fd(&mut self, fd: RawFd) -> std::io::Result<RawFd> {
+        let borrowed = unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) };
+        if borrowed < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fcntl returned a fresh descriptor owned by this mailbox.
+        self.borrowed_fds
+            .insert(borrowed, unsafe { OwnedFd::from_raw_fd(borrowed) });
+        Ok(borrowed)
+    }
 }
 
 struct Mailbox {
@@ -329,6 +709,36 @@ impl Mailbox {
     fn drain_wake(&self) {
         self.wake.drain();
     }
+}
+
+/// Liveness counters published by the readiness controller in the main realm.
+///
+/// A scheduled realm cannot see the main realm's loop state, and every one of
+/// its readiness watches lives there. When reads and timers go silent together
+/// the question is whether the controller is still routing at all, so it
+/// publishes its registration count and a monotonically increasing routed
+/// count here for any realm to read.
+static CONTROLLER_REGISTRATIONS: AtomicU64 = AtomicU64::new(0);
+static CONTROLLER_ROUTED: AtomicU64 = AtomicU64::new(0);
+/// Wakes discarded because the owner was in neither `parked` nor `residents`.
+///
+/// Every such signal is a readiness event that reached the pool and vanished.
+/// The realm it was meant for stays exactly as idle as if it had never fired.
+static SIGNALS_DROPPED: AtomicU64 = AtomicU64::new(0);
+/// Frames handed to a scheduled realm's queue, and frames its JavaScript has
+/// actually taken off that queue. A gap that grows while a realm is supposed to
+/// be running means the message never reached its loop, which is a different
+/// fault from the realm being woken and then failing to make progress.
+static FRAMES_SENT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FRAMES_DRAINED: AtomicU64 = AtomicU64::new(0);
+
+fn set_readiness_heartbeat(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let registrations = args.get(0).uint32_value(scope).unwrap_or(0);
+    CONTROLLER_REGISTRATIONS.store(registrations as u64, Ordering::Relaxed);
 }
 
 fn mailbox() -> &'static Mailbox {
@@ -408,7 +818,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     }
 
     let saved_async_state = crate::async_rt::swap_state(Some(
-        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1),
+        crate::async_rt::new_state_with_pipe(async_pipe.0, async_pipe.1, Some(owner)),
     ));
     let initialized = (|| {
         if scheduled
@@ -499,6 +909,10 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     let (context, state, module) = match initialized {
         Ok(values) => values,
         Err(error) => {
+            // Initialization failure has the same ownership boundary as normal
+            // disposal: retire before closing a pipe that the controller may
+            // still be watching. Otherwise EOF repeatedly signals a dead owner.
+            retire_owner(owner);
             // The detached async state's Drop closes the eagerly-created wake
             // pipe. These port descriptors otherwise become owned by Workload.
             drop(async_state);
@@ -516,6 +930,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
     let isolate = match unsafe { isolate.try_into_shared() } {
         Ok(isolate) => isolate,
         Err(error) => {
+            retire_owner(owner);
             drop(async_state);
             if let Some((wake_read, partner_write)) = port_fds {
                 unsafe {
@@ -577,8 +992,7 @@ enum Slice {
     /// (V8 background tasks, `Atomics.waitAsync`) and must be revisited on a
     /// timer rather than purely on signal.
     Quiescent { polling: bool },
-    /// The realm still has work, but another realm is ready at a strictly
-    /// higher priority and should get the thread.
+    /// The realm still has work, but another ready Realm can use the thread.
     Preempted,
     /// The realm finished.
     Settled,
@@ -589,13 +1003,23 @@ enum Slice {
 /// The realm is stepped for as long as it reports progress. Leaving early is
 /// deliberately rare: exiting an isolate and entering another costs a Locker
 /// round trip, so a realm that still has completable work keeps the thread
-/// unless `shared` reports a strictly higher-priority realm waiting.
+/// unless another claimable Realm is waiting.
 fn drive_slice(
     workload: &mut Workload,
     active: &mut ActiveWorkload,
     shared: &PoolShared,
 ) -> Result<Slice, String> {
+    // A previous V8 TryCatch may have consumed the interrupt. The request
+    // remains authoritative when this owner is scheduled again.
+    if workload
+        .scheduled
+        .as_ref()
+        .is_some_and(|scheduled| scheduled.was_forced())
+    {
+        return Err("scheduled Realm was force-terminated".to_string());
+    }
     let owner = workload.owner;
+    realm_phase(owner, "running");
     let context_global = workload.context.clone();
     v8::scope!(let isolate_scope, &mut *active.locker);
     let context = v8::Local::new(isolate_scope, &context_global);
@@ -674,7 +1098,18 @@ fn retire_owner(owner: u32) {
     // replacing the successor owner's filter.
     owner_pools().lock().unwrap().remove(&owner);
     let mut inner = mailbox().inner.lock().unwrap();
-    inner.events.remove(&owner);
+    if let Some(events) = inner.events.remove(&owner) {
+        for event in events {
+            trace_readiness(
+                event[7] as u64,
+                owner,
+                "discarded-owner-retired",
+                event[0],
+                event[1] as i32,
+                event[5],
+            );
+        }
+    }
     let mut change = ReadinessChange::control(0.0, 0.0);
     change.cancel_owner = Some(owner);
     inner.changes.push(change);
@@ -683,6 +1118,8 @@ fn retire_owner(owner: u32) {
 }
 
 fn drop_workload(mut workload: Workload) {
+    let owner = workload.owner;
+    realm_phase(owner, "disposing");
     // Clear any pending interrupt before entering the isolate for teardown, so
     // a forced termination cannot unwind the disposal path itself.
     workload
@@ -707,6 +1144,7 @@ fn drop_workload(mut workload: Workload) {
         }
     }
     drop(workload);
+    realm_phase(owner, "disposed");
 }
 
 #[derive(Clone, Copy)]
@@ -756,19 +1194,14 @@ struct Resident {
     active: ActiveWorkload,
 }
 
-#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
-struct ReadyEntry {
-    priority: usize,
-    generation: u64,
-    owner: u32,
-}
-
 struct PoolSharedInner {
+    attached_workers: usize,
     parked: HashMap<u32, PoolItem>,
     events: VecDeque<PoolEvent>,
-    ready: BinaryHeap<ReadyEntry>,
-    priorities: HashMap<u32, usize>,
-    generations: HashMap<u32, u64>,
+    // Owners are never reused. Each pending owner appears once, in first-wake
+    // order; counts are diagnostic and never change admission order.
+    ready: VecDeque<u32>,
+    pending_signals: HashMap<u32, usize>,
     /// Which worker currently has each entered realm. Supersedes a bare set of
     /// active owners: knowing *where* a realm is entered is what lets a signal
     /// wake the one worker that can actually run it.
@@ -820,7 +1253,23 @@ impl PoolSharedInner {
         }
     }
 
+    /// Notify one worker, and stop offering it to the next signal.
+    ///
+    /// A woken worker only takes itself out of `waiting` once it re-acquires
+    /// the queue lock inside `claim`. Until then it is still `waiting.front()`,
+    /// so a burst of signals would every one of them target the same worker: N
+    /// realms become runnable, one worker wakes, it claims one of them, and the
+    /// rest sit in the ready queue with every other worker still asleep. Nothing
+    /// re-examines the queue until an unrelated signal happens by, which is a
+    /// wake-up delayed by however long that takes rather than one that is lost.
+    ///
+    /// Removing the worker here makes each signal reach a different one.
+    /// `claim` already removes itself defensively, so this only moves that
+    /// bookkeeping earlier.
     fn wake_worker(&mut self, worker: usize) {
+        if let Some(index) = self.waiting.iter().position(|entry| *entry == worker) {
+            self.waiting.remove(index);
+        }
         if let Some(wake) = self.wakes.get(worker) {
             wake.notify_all();
         }
@@ -841,11 +1290,11 @@ struct PoolShared {
 impl PoolShared {
     fn new() -> Self {
         let inner = PoolSharedInner {
+            attached_workers: 0,
             parked: HashMap::new(),
             events: VecDeque::new(),
-            ready: BinaryHeap::new(),
-            priorities: HashMap::new(),
-            generations: HashMap::new(),
+            ready: VecDeque::new(),
+            pending_signals: HashMap::new(),
             residents: HashMap::new(),
             waiting: VecDeque::new(),
             wakes: Vec::new(),
@@ -863,9 +1312,15 @@ impl PoolShared {
         let mut inner = self.inner.lock().unwrap();
         let worker = inner.next_worker;
         inner.next_worker += 1;
+        inner.attached_workers += 1;
         let wake = Arc::new(Condvar::new());
         inner.wakes.push(Arc::clone(&wake));
         (worker, wake)
+    }
+
+    fn unregister_worker(&self) {
+        let mut inner = self.inner.lock().unwrap();
+        inner.attached_workers -= 1;
     }
 
     fn submit(self: &Arc<Self>, item: PoolItem) -> u32 {
@@ -885,87 +1340,53 @@ impl PoolShared {
         owner
     }
 
-    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) {
+    fn signal_inner(inner: &mut PoolSharedInner, owner: u32) -> bool {
+        if inner.shutdown
+            || (!inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner))
+        {
+            SIGNALS_DROPPED.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        realm_scheduling(owner, SchedulingDiagnostic::signal);
+        let signals = inner.pending_signals.entry(owner).or_default();
+        if *signals == 0 {
+            inner.ready.push_back(owner);
+        }
+        *signals = signals.saturating_add(1);
+        inner.wake_for(owner);
+        true
+    }
+
+    fn signal(&self, owner: u32) -> bool {
+        Self::signal_inner(&mut self.inner.lock().unwrap(), owner)
+    }
+
+    /// A runnable Realm rejoins the FIFO once. Additional notifications coalesce
+    /// without changing admission order: wake volume is not scheduling priority.
+    fn mark_runnable(&self, owner: u32) {
+        let mut inner = self.inner.lock().unwrap();
         if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
             return;
         }
-        let priority = inner.priorities.entry(owner).or_default();
-        *priority += 1;
-        let generation = inner.generations.entry(owner).or_default();
-        *generation += 1;
-        inner.ready.push(ReadyEntry {
-            priority: *priority,
-            generation: *generation,
-            owner,
-        });
+        if let std::collections::hash_map::Entry::Vacant(entry) = inner.pending_signals.entry(owner)
+        {
+            entry.insert(1);
+            inner.ready.push_back(owner);
+        }
         inner.wake_for(owner);
     }
 
-    fn signal(&self, owner: u32) {
-        Self::signal_inner(&mut self.inner.lock().unwrap(), owner);
-    }
-
-    /// Re-queue a realm that still has work, without treating that as a new
-    /// readiness signal.
-    ///
-    /// A preempted realm has to stay claimable, but it must not outrank the
-    /// realm it is yielding to. Routing this through `signal` would bump its
-    /// priority by one every time it yielded, so the realm that just lost the
-    /// comparison would immediately win the next one and preemption would never
-    /// actually hand the thread over.
-    fn mark_runnable(&self, owner: u32) {
-        {
-            let inner = &mut *self.inner.lock().unwrap();
-            if !inner.parked.contains_key(&owner) && !inner.residents.contains_key(&owner) {
-                return;
-            }
-            // A queued entry must carry a priority of at least one. `claim`
-            // compares a candidate against the entered realm with `<=` and keeps
-            // the incumbent on a tie, re-queueing the candidate — so a
-            // priority-zero entry leaves `claim` permanently able to find a
-            // candidate it will never take, and it spins instead of ever
-            // waiting. Claiming resets the priority to zero, which makes that
-            // state reachable for any realm the moment it is preempted.
-            let priority = inner.priorities.entry(owner).or_default();
-            *priority = (*priority).max(1);
-            let priority = *priority;
-            let generation = inner.generations.entry(owner).or_default();
-            *generation += 1;
-            inner.ready.push(ReadyEntry {
-                priority,
-                generation: *generation,
-                owner,
-            });
-            inner.wake_for(owner);
-        }
-    }
-
-    /// Report whether a different realm is ready at a strictly higher priority
-    /// than the realm a worker currently has entered.
-    ///
-    /// Deliberately conservative: it inspects only the heap root and never
-    /// mutates the queue, so a superseded root, or a root belonging to the
-    /// running realm, simply reports "no reason to switch". Both are transient,
-    /// and `claim` re-evaluates the whole queue at the next quiescence. Being
-    /// wrong here costs a slightly late preemption, never a lost workload.
+    /// Yield at a cooperative boundary when another Realm can use this worker.
+    /// An entered Realm on a different worker is not claimable here; that worker
+    /// receives its own targeted wake. Our own pending wake cannot hide others.
     fn should_yield(&self, current: u32) -> bool {
         let inner = self.inner.lock().unwrap();
-        if inner.shutdown {
-            return true;
-        }
-        let Some(entry) = inner.ready.peek() else {
-            return false;
-        };
-        if entry.owner == current {
-            return false;
-        }
-        if inner.generations.get(&entry.owner).copied().unwrap_or(0) != entry.generation {
-            return false;
-        }
-        if inner.priorities.get(&entry.owner).copied().unwrap_or(0) != entry.priority {
-            return false;
-        }
-        entry.priority > inner.priorities.get(&current).copied().unwrap_or(0)
+        inner.shutdown
+            || inner.ready.iter().any(|owner| {
+                *owner != current
+                    && inner.pending_signals.contains_key(owner)
+                    && !inner.residents.contains_key(owner)
+            })
     }
 
     fn claim(
@@ -983,45 +1404,27 @@ impl PoolShared {
             }
             let mut skipped = Vec::new();
             let candidate = loop {
-                let Some(entry) = inner.ready.pop() else {
+                let Some(owner) = inner.ready.pop_front() else {
                     break None;
                 };
-                let current_generation = inner.generations.get(&entry.owner).copied().unwrap_or(0);
-                let current_priority = inner.priorities.get(&entry.owner).copied().unwrap_or(0);
-                if entry.generation != current_generation || entry.priority != current_priority {
+                if !inner.pending_signals.contains_key(&owner) {
                     continue;
                 }
-                if inner.residents.contains_key(&entry.owner) && Some(entry.owner) != current {
-                    skipped.push(entry);
+                if inner.residents.contains_key(&owner) && Some(owner) != current {
+                    skipped.push(owner);
                     continue;
                 }
-                break Some(entry);
+                break Some(owner);
             };
-            for entry in skipped {
-                inner.ready.push(entry);
+            // Preserve the order of owners held by other workers. Moving these
+            // to the tail would let unrelated admission reorder their wakes.
+            for owner in skipped.into_iter().rev() {
+                inner.ready.push_front(owner);
             }
 
-            if let Some(candidate) = candidate {
-                let current_priority = current
-                    .and_then(|owner| inner.priorities.get(&owner).copied())
-                    .unwrap_or(0);
-                let owner = if let Some(current) = current {
-                    if candidate.owner != current && candidate.priority <= current_priority {
-                        current
-                    } else {
-                        candidate.owner
-                    }
-                } else {
-                    candidate.owner
-                };
-                inner.priorities.remove(&owner);
-                if owner != candidate.owner {
-                    // Keeping our own realm leaves the candidate runnable with
-                    // nobody assigned to it. Whoever woke us handed over a
-                    // single wake-up, so pass it on rather than swallowing it.
-                    inner.ready.push(candidate);
-                    inner.wake_any();
-                }
+            if let Some(owner) = candidate {
+                realm_scheduling(owner, SchedulingDiagnostic::dispatch);
+                inner.pending_signals.remove(&owner);
                 if Some(owner) == current {
                     return Claim::Current;
                 }
@@ -1034,7 +1437,10 @@ impl PoolShared {
             // Nothing is ready. A realm that still has work keeps the thread
             // without blocking; anything else waits to be signalled. Reactor
             // threads never wait on a timeout — every wake-up is a signal.
-            if matches!(current_state, CurrentState::Runnable) && current.is_some() {
+            if matches!(current_state, CurrentState::Runnable)
+                && let Some(owner) = current
+            {
+                realm_scheduling(owner, SchedulingDiagnostic::dispatch);
                 return Claim::Current;
             }
             inner.waiting.push_back(worker);
@@ -1059,8 +1465,7 @@ impl PoolShared {
     fn finish(&self, owner: u32) {
         let mut inner = self.inner.lock().unwrap();
         inner.residents.remove(&owner);
-        inner.priorities.remove(&owner);
-        inner.generations.remove(&owner);
+        inner.pending_signals.remove(&owner);
     }
 
     fn notify(&self, event: PoolEvent) {
@@ -1096,6 +1501,7 @@ impl ReactorThread {
         self.wake.notify_all();
         if let Some(join) = self.join.take() {
             let _ = join.join();
+            self.shared.unregister_worker();
         }
     }
 }
@@ -1117,7 +1523,7 @@ enum Claim {
 enum CurrentState {
     /// Nothing left to do: wait for a readiness signal before running again.
     Idle,
-    /// Still has work; only a strictly higher-priority realm should take over.
+    /// Still has work; rejoin the ready queue behind previously accepted wakes.
     Runnable,
 }
 
@@ -1134,6 +1540,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                     shared.park(resident);
                 }
                 let owner = item.owner;
+                realm_phase(owner, "initializing");
                 // Removing the item from `parked` and recording it as resident
                 // happens under the queue lock, so only this worker can perform
                 // the Pending -> Live transition.
@@ -1153,6 +1560,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                                     ScheduledRealmResult::Error(error.clone())
                                 });
                             }
+                            realm_phase(owner, "disposed");
                             shared.finish(owner);
                             shared.notify(PoolEvent {
                                 kind: if forced {
@@ -1183,20 +1591,23 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
         let mut resident = current.take().expect("reactor worker claimed no workload");
         let owner = resident.item.owner;
         let outcome = drive_slice(resident.item.live_mut(), &mut resident.active, &shared);
+        realm_scheduling(owner, SchedulingDiagnostic::finish_slice);
         let (result, event) = match outcome {
             Ok(Slice::Preempted) => {
+                realm_phase(owner, "preempted");
                 // The realm still has work it could complete immediately, so it
                 // has to stay queued. Its readiness completions were already
                 // consumed, and nothing else will signal a realm whose
                 // remaining work is a resolved promise chain — parking it
                 // without a ready entry would strand it forever. Re-queue at
-                // the same priority so it does not outrank whoever preempted it.
+                // the tail so it does not overtake whoever it yielded to.
                 shared.mark_runnable(owner);
                 current_state = CurrentState::Runnable;
                 current = Some(resident);
                 continue;
             }
             Ok(Slice::Quiescent { polling }) => {
+                realm_phase(owner, if polling { "polling" } else { "waiting" });
                 // A realm whose only remaining work is invisible to the kernel
                 // has nothing that can signal it. Borrow a timer from the main
                 // realm so it is re-signalled like any other readiness event,
@@ -1209,6 +1620,7 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
                 continue;
             }
             Ok(Slice::Settled) => {
+                realm_phase(owner, "settled");
                 let result = if resident.item.live_mut().state.borrow().reload_requested {
                     ScheduledRealmResult::Reload
                 } else {
@@ -1295,6 +1707,11 @@ fn create_workload(
         }
     };
     let wake_fd = async_pipe.0;
+    realm_created(
+        owner,
+        get_state(scope).borrow().scheduler_workload_owner,
+        &entry,
+    );
     let pending = PendingWorkload {
         owner,
         inner: Some(Box::new(PendingWorkloadInner {
@@ -1427,14 +1844,20 @@ fn create_scheduled_realm(
         }
     };
     let reload_requested = Arc::new(AtomicBool::new(false));
+    let owner = next_owner();
     let scheduled = Arc::new(ScheduledRealmState {
+        owner,
         result: Mutex::new(None),
         parent_wake_write: completion_wake_write,
         isolate_handle: Mutex::new(None),
         force_requested: AtomicBool::new(false),
     });
-    let owner = next_owner();
     let wake_fd = async_pipe.0;
+    realm_created(
+        owner,
+        get_state(scope).borrow().scheduler_workload_owner,
+        &entry,
+    );
     let pending = PendingWorkload {
         owner,
         inner: Some(Box::new(PendingWorkloadInner {
@@ -1555,6 +1978,7 @@ fn scheduled_realm_send(
         );
         return;
     };
+    FRAMES_SENT.fetch_add(1, Ordering::Relaxed);
     let _ = realm.tx.send(crate::realm::thread::ThreadMessage {
         header,
         data,
@@ -1672,6 +2096,7 @@ fn start_reactor_pool(
     _args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
+    start_readiness_recorder();
     let mut registered = process_pool().lock().unwrap();
     if registered.is_some() {
         v8util::throw_error(
@@ -1738,23 +2163,106 @@ fn close_reactor_thread(
     thread.shutdown();
 }
 
+/// Read-only snapshot of the reactor pool's scheduling state.
+///
+/// A realm that stops making progress is either parked with nothing queued to
+/// wake it, or queued behind work that never drains. Those look identical from
+/// TypeScript, which can see neither the parked set nor the ready queue, so this
+/// reports both along with the entered realms and the idle worker count.
+/// Diagnostic only: it takes the queue lock, copies counters, and mutates
+/// nothing.
+fn reactor_pool_stats(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let pool = process_pool().lock().unwrap().clone();
+    let Some(pool) = pool else {
+        rv.set(v8::null(scope).into());
+        return;
+    };
+    let inner = pool.inner.lock().unwrap();
+    let object = v8::Object::new(scope);
+    for (name, value) in [
+        ("parked", inner.parked.len() as f64),
+        ("residents", inner.residents.len() as f64),
+        ("ready", inner.ready.len() as f64),
+        ("waitingWorkers", inner.waiting.len() as f64),
+        ("workers", inner.wakes.len() as f64),
+        ("queuedEvents", inner.events.len() as f64),
+        ("pendingSignals", inner.pending_signals.len() as f64),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let number = v8::Number::new(scope, value);
+        object.set(scope, key.into(), number.into());
+    }
+    // Which parked realms have nothing in the ready queue: the set that cannot
+    // be claimed by any worker no matter how long it waits.
+    let queued: std::collections::HashSet<u32> = inner.ready.iter().copied().collect();
+    let unclaimable = inner
+        .parked
+        .keys()
+        .filter(|owner| !queued.contains(owner))
+        .count();
+    let key = v8::String::new(scope, "parkedWithNothingQueued").unwrap();
+    let number = v8::Number::new(scope, unclaimable as f64);
+    object.set(scope, key.into(), number.into());
+    drop(inner);
+    // The mailbox is the link between a readiness event and the realm it wakes.
+    // Undrained changes mean the controller stopped servicing it; undelivered
+    // events mean a realm was signalled but never came back to collect them.
+    let mail = mailbox().inner.lock().unwrap();
+    for (name, value) in [
+        (
+            "controllerRegistrations",
+            CONTROLLER_REGISTRATIONS.load(Ordering::Relaxed) as f64,
+        ),
+        (
+            "controllerRouted",
+            CONTROLLER_ROUTED.load(Ordering::Relaxed) as f64,
+        ),
+        (
+            "signalsDropped",
+            SIGNALS_DROPPED.load(Ordering::Relaxed) as f64,
+        ),
+        ("framesSent", FRAMES_SENT.load(Ordering::Relaxed) as f64),
+        (
+            "framesDrained",
+            FRAMES_DRAINED.load(Ordering::Relaxed) as f64,
+        ),
+        ("mailboxChanges", mail.changes.len() as f64),
+        ("readinessBorrowedFds", mail.borrowed_fds.len() as f64),
+        ("mailboxOwnersWithEvents", mail.events.len() as f64),
+        (
+            "mailboxEvents",
+            mail.events.values().map(Vec::len).sum::<usize>() as f64,
+        ),
+    ] {
+        let key = v8::String::new(scope, name).unwrap();
+        let number = v8::Number::new(scope, value);
+        object.set(scope, key.into(), number.into());
+    }
+    rv.set(object.into());
+}
+
 fn signal_reactor_owner(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     mut rv: v8::ReturnValue,
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
+    rv.set(v8::Boolean::new(scope, signal_owner(owner)).into());
+}
+
+/// Publish native work to its originating scheduled isolate without routing
+/// through the process I/O controller. The queue is populated before this call.
+pub(crate) fn signal_owner(owner: u32) -> bool {
     let pool = owner_pools()
         .lock()
         .unwrap()
         .get(&owner)
         .and_then(Weak::upgrade);
-    if let Some(pool) = pool {
-        pool.signal(owner);
-        rv.set(v8::Boolean::new(scope, true).into());
-    } else {
-        rv.set(v8::Boolean::new(scope, false).into());
-    }
+    pool.is_some_and(|pool| pool.signal(owner))
 }
 
 fn take_reactor_events(
@@ -1805,6 +2313,27 @@ fn take_reactor_events(
     rv.set(result.into());
 }
 
+fn take_stopped_pool(
+    registry: &Mutex<Option<Arc<PoolShared>>>,
+) -> Result<Arc<PoolShared>, &'static str> {
+    let mut registered = registry.lock().unwrap();
+    let pool = registered
+        .as_ref()
+        .ok_or("stopReactorPool: process reactor is not running")?;
+    {
+        let mut inner = pool.inner.lock().unwrap();
+        if inner.attached_workers != 0 {
+            return Err("stopReactorPool: reactor threads are still attached");
+        }
+        // Notification producers may already have upgraded their weak route.
+        // Retire dispatch before unregistering; their Arc keeps the wake pipe
+        // alive until they observe shutdown and release their borrow.
+        inner.shutdown = true;
+        inner.wake_all();
+    }
+    Ok(registered.take().unwrap())
+}
+
 /// Tear down the process reactor pool.
 ///
 /// Every reactor thread must already have been stopped. Validation happens
@@ -1814,33 +2343,12 @@ fn stop_reactor_pool(
     _args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let attached = process_pool()
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(Arc::strong_count);
-    let Some(attached) = attached else {
-        v8util::throw_error(scope, "stopReactorPool: process reactor is not running");
-        return;
-    };
-    // Only the registration itself may hold a reference by this point.
-    if attached > 1 {
-        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
-        return;
-    }
-    let pool = process_pool()
-        .lock()
-        .unwrap()
-        .take()
-        .expect("reactor pool disappeared between validation and close");
-    {
-        let inner = &mut *pool.inner.lock().unwrap();
-        inner.shutdown = true;
-        inner.wake_all();
-    }
-    let Ok(pool) = Arc::try_unwrap(pool) else {
-        v8util::throw_error(scope, "stopReactorPool: reactor threads are still attached");
-        return;
+    let pool = match take_stopped_pool(process_pool()) {
+        Ok(pool) => pool,
+        Err(error) => {
+            v8util::throw_error(scope, error);
+            return;
+        }
     };
     let parked = std::mem::take(&mut pool.inner.lock().unwrap().parked);
     // This callback runs while the root isolate is entered. A parked workload
@@ -1850,10 +2358,7 @@ fn stop_reactor_pool(
         for item in parked.into_values() {
             match item.workload {
                 PoolWorkload::Live(workload) => drop_workload(workload.0),
-                PoolWorkload::Pending(pending) => {
-                    retire_owner(item.owner);
-                    drop(pending);
-                }
+                PoolWorkload::Pending(pending) => drop(pending),
             }
         }
     });
@@ -1876,16 +2381,57 @@ fn readiness_change_from_args(
         cancel_owner: None,
         scheduler_wake: false,
         scheduler_poll: false,
+        borrowed_fd: None,
+        trace_id: 0,
     }
 }
 
 fn register_process_readiness(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
-    _rv: v8::ReturnValue,
+    mut rv: v8::ReturnValue,
 ) {
-    let change = readiness_change_from_args(scope, &args);
-    mailbox().inner.lock().unwrap().changes.push(change);
+    let mut change = readiness_change_from_args(scope, &args);
+    if readiness_trace_enabled() {
+        change.trace_id = next_handle();
+        trace_readiness(
+            change.trace_id,
+            (change.udata / 4294967296.0) as u32,
+            if change.flags & 2 != 0 {
+                "cancel-requested"
+            } else {
+                "registered"
+            },
+            change.ident,
+            change.filter,
+            change.udata,
+        );
+    }
+    let mut inner = mailbox().inner.lock().unwrap();
+    if change.flags & 1 != 0 && matches!(change.filter, -1 | -2 | -4) {
+        match inner.borrow_fd(change.ident as RawFd) {
+            Ok(fd) => change.borrowed_fd = Some(fd),
+            Err(error) => {
+                trace_readiness(
+                    change.trace_id,
+                    (change.udata / 4294967296.0) as u32,
+                    "registration-failed",
+                    change.ident,
+                    change.filter,
+                    change.udata,
+                );
+                drop(inner);
+                v8util::throw_error(
+                    scope,
+                    &format!("readiness descriptor {}: {error}", change.ident),
+                );
+                return;
+            }
+        }
+    }
+    rv.set(v8::Number::new(scope, change.trace_id as f64).into());
+    inner.changes.push(change);
+    drop(inner);
     mailbox().notify();
 }
 
@@ -1896,10 +2442,39 @@ fn register_reactor_wake(
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
     let fd = args.get(1).int32_value(scope).unwrap_or(-1);
+    // Retirement removes the owner before closing its wake pipe. Hold the
+    // same lock while borrowing it so fast-finishing Realms cannot race us.
+    let owners = owner_pools().lock().unwrap();
+    if !owners.contains_key(&owner) {
+        return;
+    }
     let mut change = ReadinessChange::control(owner as f64, 0.0);
     change.ident = fd as f64;
     change.scheduler_wake = true;
-    mailbox().inner.lock().unwrap().changes.push(change);
+    if readiness_trace_enabled() {
+        change.trace_id = next_handle();
+        trace_readiness(
+            change.trace_id,
+            owner,
+            "wake-registered",
+            fd as f64,
+            -1,
+            owner as f64,
+        );
+    }
+    let mut inner = mailbox().inner.lock().unwrap();
+    match inner.borrow_fd(fd) {
+        Ok(fd) => change.borrowed_fd = Some(fd),
+        Err(error) => {
+            drop(inner);
+            drop(owners);
+            v8util::throw_error(scope, &format!("reactor wake descriptor {fd}: {error}"));
+            return;
+        }
+    }
+    inner.changes.push(change);
+    drop(inner);
+    drop(owners);
     mailbox().notify();
 }
 
@@ -1912,7 +2487,15 @@ fn take_readiness_changes(
     let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
     let values = v8::Array::new(scope, changes.len() as i32);
     for (index, change) in changes.into_iter().enumerate() {
-        let tuple = v8::Array::new(scope, 9);
+        trace_readiness(
+            change.trace_id,
+            (change.udata / 4294967296.0) as u32,
+            "controller-received",
+            change.ident,
+            change.filter,
+            change.udata,
+        );
+        let tuple = v8::Array::new(scope, 11);
         for (field, value) in [
             v8::Number::new(scope, change.ident).into(),
             v8::Integer::new(scope, change.filter).into(),
@@ -1926,6 +2509,11 @@ fn take_readiness_changes(
                 .unwrap_or_else(|| v8::null(scope).into()),
             v8::Boolean::new(scope, change.scheduler_wake).into(),
             v8::Boolean::new(scope, change.scheduler_poll).into(),
+            change
+                .borrowed_fd
+                .map(|fd| v8::Integer::new(scope, fd).into())
+                .unwrap_or_else(|| v8::null(scope).into()),
+            v8::Number::new(scope, change.trace_id as f64).into(),
         ]
         .into_iter()
         .enumerate()
@@ -1937,6 +2525,15 @@ fn take_readiness_changes(
     rv.set(values.into());
 }
 
+fn release_readiness_fd(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    let fd = args.get(0).int32_value(scope).unwrap_or(-1);
+    mailbox().inner.lock().unwrap().borrowed_fds.remove(&fd);
+}
+
 fn route_process_readiness(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -1944,9 +2541,19 @@ fn route_process_readiness(
 ) {
     let owner = args.get(0).uint32_value(scope).unwrap_or(0);
     let mut completion: ReadinessCompletion = [0.0; COMPLETION_SLOTS];
-    for (slot, value) in completion.iter_mut().enumerate() {
+    for (slot, value) in completion[..7].iter_mut().enumerate() {
         *value = args.get(slot as i32 + 1).number_value(scope).unwrap_or(0.0);
     }
+    completion[7] = args.get(9).number_value(scope).unwrap_or(0.0);
+    trace_readiness(
+        completion[7] as u64,
+        owner,
+        "routed",
+        completion[0],
+        completion[1] as i32,
+        completion[5],
+    );
+    CONTROLLER_ROUTED.fetch_add(1, Ordering::Relaxed);
     mailbox()
         .inner
         .lock()
@@ -1955,14 +2562,28 @@ fn route_process_readiness(
         .entry(owner)
         .or_default()
         .push(completion);
-    if args.get(COMPLETION_SLOTS as i32 + 1).boolean_value(scope)
-        && let Some(pool) = owner_pools()
-            .lock()
-            .unwrap()
-            .get(&owner)
-            .and_then(Weak::upgrade)
-    {
-        pool.signal(owner);
+    if args.get(8).boolean_value(scope) {
+        let owners = owner_pools().lock().unwrap();
+        if let Some(pool) = owners.get(&owner).and_then(Weak::upgrade) {
+            pool.signal(owner);
+            trace_readiness(
+                completion[7] as u64,
+                owner,
+                "owner-signalled",
+                completion[0],
+                completion[1] as i32,
+                completion[5],
+            );
+        } else {
+            trace_readiness(
+                completion[7] as u64,
+                owner,
+                "owner-absent-at-route",
+                completion[0],
+                completion[1] as i32,
+                completion[5],
+            );
+        }
     }
 }
 
@@ -1984,6 +2605,16 @@ fn take_shared_loop_events(
         .events
         .remove(&owner)
         .unwrap_or_default();
+    for event in &events {
+        trace_readiness(
+            event[7] as u64,
+            owner,
+            "mailbox-drained",
+            event[0],
+            event[1] as i32,
+            event[5],
+        );
+    }
     let slots = events.len() * COMPLETION_SLOTS;
     let bytes = slots * std::mem::size_of::<f64>();
     let store = v8::ArrayBuffer::new_backing_store(scope, bytes);
@@ -2032,14 +2663,20 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "createReactorThread",
         "closeReactorThread",
         "signalReactorOwner",
+        "reactorPoolStats",
+        "setReadinessHeartbeat",
         "takeReactorEvents",
         "stopReactorPool",
         "processReadinessControlFd",
         "registerProcessReadiness",
         "registerReactorWake",
         "takeSharedReadinessChanges",
+        "releaseSharedReadinessFd",
         "routeProcessReadiness",
         "takeSharedLoopEvents",
+        "recordReadinessTrace",
+        "readinessTraceSnapshot",
+        "recordRealmState",
     ];
     let export_names: Vec<v8::Local<v8::String>> = names
         .iter()
@@ -2054,6 +2691,7 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
+    crate::set_fn!(scope, module, "recordRealmState", record_realm_state);
     crate::set_fn!(
         scope,
         module,
@@ -2093,6 +2731,13 @@ fn eval_steps<'a>(
     crate::set_fn!(scope, module, "createReactorThread", create_reactor_thread);
     crate::set_fn!(scope, module, "closeReactorThread", close_reactor_thread);
     crate::set_fn!(scope, module, "signalReactorOwner", signal_reactor_owner);
+    crate::set_fn!(scope, module, "reactorPoolStats", reactor_pool_stats);
+    crate::set_fn!(
+        scope,
+        module,
+        "setReadinessHeartbeat",
+        set_readiness_heartbeat
+    );
     crate::set_fn!(scope, module, "takeReactorEvents", take_reactor_events);
     crate::set_fn!(scope, module, "stopReactorPool", stop_reactor_pool);
     crate::set_fn!(
@@ -2117,6 +2762,12 @@ fn eval_steps<'a>(
     crate::set_fn!(
         scope,
         module,
+        "releaseSharedReadinessFd",
+        release_readiness_fd
+    );
+    crate::set_fn!(
+        scope,
+        module,
         "routeProcessReadiness",
         route_process_readiness
     );
@@ -2126,6 +2777,18 @@ fn eval_steps<'a>(
         "takeSharedLoopEvents",
         take_shared_loop_events
     );
+    crate::set_fn!(
+        scope,
+        module,
+        "recordReadinessTrace",
+        record_readiness_trace
+    );
+    crate::set_fn!(
+        scope,
+        module,
+        "readinessTraceSnapshot",
+        readiness_trace_snapshot
+    );
     Some(v8::undefined(scope).into())
 }
 
@@ -2134,6 +2797,252 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn scheduling_diagnostics_preserve_first_wake_and_account_separate_slices() {
+        let mut diagnostic = SchedulingDiagnostic::default();
+        diagnostic.signal(10);
+        diagnostic.signal(20);
+        diagnostic.dispatch(40);
+        diagnostic.finish_slice(50);
+        diagnostic.signal(60);
+        diagnostic.dispatch(65);
+        diagnostic.finish_slice(85);
+        assert_eq!(diagnostic.signals, 3);
+        assert_eq!(diagnostic.dispatches, 2);
+        assert_eq!(diagnostic.queue_total_us, 35);
+        assert_eq!(diagnostic.queue_max_us, 30);
+        assert_eq!(diagnostic.slice_total_us, 30);
+        assert_eq!(diagnostic.slice_max_us, 20);
+        assert_eq!(diagnostic.ready_since_us, None);
+        assert_eq!(diagnostic.slice_started_us, None);
+    }
+
+    #[test]
+    fn an_older_ready_realm_is_not_starved_by_new_arrivals() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, wake) = pool.register_worker();
+        let stop = AtomicBool::new(false);
+        let submit = |owner| {
+            // Admission and claiming do not enter V8. An empty Pending value
+            // lets this exercise the actual queue without initializing isolates.
+            pool.submit(PoolItem {
+                owner,
+                workload: PoolWorkload::Pending(PendingWorkload { owner, inner: None }),
+            });
+        };
+        let oldest = next_owner();
+        submit(oldest);
+        let mut admitted = false;
+        for _ in 0..64 {
+            submit(next_owner());
+            let Claim::Work(item) = pool.claim(worker, &wake, None, &stop, CurrentState::Idle)
+            else {
+                panic!("ready queue returned no work");
+            };
+            admitted |= item.owner == oldest;
+            pool.finish(item.owner);
+            owner_pools().lock().unwrap().remove(&item.owner);
+            if admitted {
+                break;
+            }
+        }
+        // Every arrival has the same priority and there is always a free
+        // worker. New work must not postpone an already accepted wake forever.
+        assert!(
+            admitted,
+            "64 newer Realms overtook the oldest accepted wake"
+        );
+    }
+
+    #[test]
+    fn a_native_wake_burst_does_not_hide_another_ready_realm() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, _) = pool.register_worker();
+        let current = next_owner();
+        let waiting = next_owner();
+        pool.inner.lock().unwrap().residents.insert(current, worker);
+        pool.submit(PoolItem {
+            owner: waiting,
+            workload: PoolWorkload::Pending(PendingWorkload {
+                owner: waiting,
+                inner: None,
+            }),
+        });
+        for _ in 0..1_000 {
+            assert!(pool.signal(current));
+        }
+        assert!(
+            pool.should_yield(current),
+            "own wake burst hides waiting Realm"
+        );
+        assert_eq!(
+            pool.inner.lock().unwrap().ready.len(),
+            2,
+            "one queue entry per owner"
+        );
+    }
+
+    #[test]
+    fn a_ready_realm_entered_elsewhere_does_not_preempt_this_worker() {
+        let pool = PoolShared::new();
+        let (worker_a, _) = pool.register_worker();
+        let (worker_b, _) = pool.register_worker();
+        let current = next_owner();
+        let other = next_owner();
+        {
+            let mut inner = pool.inner.lock().unwrap();
+            inner.residents.insert(current, worker_a);
+            inner.residents.insert(other, worker_b);
+        }
+        pool.signal(other);
+        assert!(!pool.should_yield(current));
+        // Once the isolate is released by its worker, it can use ours.
+        pool.inner.lock().unwrap().residents.remove(&other);
+        assert!(pool.should_yield(current));
+    }
+
+    #[test]
+    fn pool_shutdown_refuses_attached_workers_without_mutation() {
+        let pool = Arc::new(PoolShared::new());
+        pool.register_worker();
+        let registry = Mutex::new(Some(Arc::clone(&pool)));
+        assert!(take_stopped_pool(&registry).is_err());
+        assert!(registry.lock().unwrap().is_some());
+        assert!(!pool.inner.lock().unwrap().shutdown);
+        pool.unregister_worker();
+        let stopped = take_stopped_pool(&registry).unwrap();
+        assert!(stopped.inner.lock().unwrap().shutdown);
+    }
+
+    #[test]
+    fn pool_shutdown_allows_an_in_flight_native_notification() {
+        let pool = Arc::new(PoolShared::new());
+        let weak = Arc::downgrade(&pool);
+        let registry = Mutex::new(Some(pool));
+        // A producer already upgraded its owner route, but has not signalled
+        // yet. This is not an attached reactor thread.
+        let notification = weak.upgrade().unwrap();
+        notification.inner.lock().unwrap().residents.insert(123, 0);
+        let stopped =
+            take_stopped_pool(&registry).expect("native notification must not prevent shutdown");
+        assert!(registry.lock().unwrap().is_none());
+        assert!(!notification.signal(123));
+        drop(stopped);
+        assert!(
+            weak.upgrade().is_some(),
+            "the producer retains the pool's wake pipe"
+        );
+        drop(notification);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn native_notifications_target_the_owner_and_stop_at_retirement() {
+        let pool = Arc::new(PoolShared::new());
+        let (worker, _) = pool.register_worker();
+        let owner = next_owner();
+        let other = next_owner();
+        pool.inner.lock().unwrap().residents.insert(owner, worker);
+        owner_pools()
+            .lock()
+            .unwrap()
+            .insert(owner, Arc::downgrade(&pool));
+        let (read, write) = create_pipe().unwrap();
+        let previous = crate::async_rt::swap_state(Some(crate::async_rt::new_state_with_pipe(
+            read,
+            write,
+            Some(owner),
+        )));
+        let (_, wake) = crate::async_rt::completion_handle().unwrap();
+        drop(crate::async_rt::swap_state(previous));
+        // No controller exists in this test. All three queue producers share
+        // this handle, which outlives the entered isolate state.
+        wake.notify();
+        assert_eq!(
+            pool.inner.lock().unwrap().pending_signals.get(&owner),
+            Some(&1)
+        );
+        let mut byte = 0_u8;
+        assert_eq!(
+            unsafe { libc::read(read, (&mut byte as *mut u8).cast(), 1) },
+            -1
+        );
+        assert_eq!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EAGAIN)
+        );
+        pool.finish(owner);
+        owner_pools().lock().unwrap().remove(&owner);
+        pool.inner.lock().unwrap().residents.insert(other, worker);
+        wake.notify();
+        assert!(pool.inner.lock().unwrap().pending_signals.is_empty());
+    }
+
+    #[test]
+    fn readiness_trace_is_bounded_and_reports_eviction() {
+        let mut trace = ReadinessTrace::default();
+        for operation in 1..=5 {
+            trace.push(
+                ReadinessTraceEvent {
+                    sequence: 0,
+                    elapsed_us: 0,
+                    operation,
+                    owner: 7,
+                    stage: "registered".to_owned(),
+                    ident: 9.0,
+                    filter: -1,
+                    token: 9.0,
+                },
+                3,
+            );
+        }
+        assert_eq!(trace.sequence, 5);
+        assert_eq!(trace.dropped, 2);
+        assert_eq!(
+            trace
+                .events
+                .iter()
+                .map(|event| event.operation)
+                .collect::<Vec<_>>(),
+            vec![3, 4, 5]
+        );
+        assert_eq!(trace.events.front().unwrap().sequence, 3);
+    }
+
+    #[test]
+    fn readiness_borrow_survives_original_descriptor_reuse() {
+        let (read, write) = create_pipe().unwrap();
+        let mut mailbox = MailboxInner::default();
+        assert!(mailbox.borrow_fd(-1).is_err());
+        assert!(mailbox.borrowed_fds.is_empty());
+        let borrowed = mailbox.borrow_fd(read).unwrap();
+        assert_ne!(borrowed, read);
+        unsafe {
+            // Replace the original number with the pipe's write endpoint.
+            assert_eq!(libc::dup2(write, read), read);
+            assert_eq!(libc::write(write, b"x".as_ptr().cast(), 1), 1);
+            let mut byte = 0_u8;
+            assert_eq!(libc::read(borrowed, (&mut byte as *mut u8).cast(), 1), 1);
+            assert_eq!(byte, b'x');
+            libc::close(read);
+            libc::close(write);
+        }
+        mailbox.borrowed_fds.remove(&borrowed);
+        assert!(mailbox.borrowed_fds.is_empty());
+    }
+
+    #[test]
+    fn retired_ready_entries_do_not_hide_waiting_work() {
+        let pool = PoolShared::new();
+        {
+            let mut inner = pool.inner.lock().unwrap();
+            inner.ready.push_back(1);
+            inner.pending_signals.insert(3, 1);
+            inner.ready.push_back(3);
+        }
+        assert!(pool.should_yield(1));
+    }
 
     #[test]
     fn empty_pool_waits_for_work() {

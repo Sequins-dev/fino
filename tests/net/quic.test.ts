@@ -37,6 +37,7 @@ import {
 } from 'fino:net/socket';
 import { DiskFileSystem } from 'fino:file';
 import * as loop from 'internal:runtime/loop';
+import { RealQuicDatagramTransportFactory } from 'internal:net/quic/core';
 import {
   CB_ACK_DATAGRAM,
   CID_DATA,
@@ -849,6 +850,64 @@ describe('QUIC hardening options', { exclusive: true }, () => {
   });
 });
 describe('QUIC endpoint lifecycle', () => {
+  it('never registers readiness or performs I/O after a datagram transport closes', async (t) => {
+    const transport = await new RealQuicDatagramTransportFactory().bind({
+      family: 'ipv4',
+      ip: '127.0.0.1',
+      port: 0,
+    });
+    const baseline = loop._activeHandleCounts();
+    void transport.waitReadable();
+    void transport.waitWritable();
+    transport.close();
+    t.equal(
+      loop._activeHandleCounts().reads,
+      baseline.reads,
+      'close removes the pending read watch',
+    );
+    t.equal(
+      loop._activeHandleCounts().writes,
+      baseline.writes,
+      'close removes the pending write watch',
+    );
+    const read = transport.waitReadable();
+    const write = transport.waitWritable();
+    void read.catch(() => {});
+    void write.catch(() => {});
+    try {
+      t.equal(
+        loop._activeHandleCounts().reads,
+        baseline.reads,
+        'closed fd does not acquire a read watch',
+      );
+      t.equal(
+        loop._activeHandleCounts().writes,
+        baseline.writes,
+        'closed fd does not acquire a write watch',
+      );
+      if (
+        loop._activeHandleCounts().reads !== baseline.reads ||
+        loop._activeHandleCounts().writes !== baseline.writes
+      )
+        return;
+      await t.rejects(() => read, /closed/);
+      await t.rejects(() => write, /closed/);
+      t.deepEqual(transport.recvBatch!(4, 1200), []);
+      t.equal(
+        transport.recvBatchEach!(4, 1200, () => {
+          throw new Error('closed transport delivered a packet');
+        }),
+        0,
+      );
+      t.deepEqual(transport.sendBatch!([{ data: new Uint8Array([1]), dest: transport.address }]), {
+        sent: 0,
+        errno: EAGAIN,
+      });
+    } finally {
+      loop.removeRead(transport.id);
+      loop.removeWrite(transport.id);
+    }
+  });
   it('listen and connect require native ngtcp2 support', async (t) => {
     if (quicAvailable) return;
     const endpoint = new QuicEndpoint({ alpnProtocols: ['fino-hq'] });

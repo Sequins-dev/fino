@@ -13,6 +13,7 @@ import { quicAvailable } from 'fino:net/quic';
 import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 import * as loop from 'internal:runtime/loop';
+import { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import { compress } from 'fino:compress';
 const CERT_PATH = new URL('./fixtures/test.crt', import.meta.url).pathname;
 const KEY_PATH = new URL('./fixtures/test.key', import.meta.url).pathname;
@@ -229,13 +230,28 @@ describe('HttpClient over HTTP/1.1', { exclusive: true }, () => {
         () => client.request('/headers-timeout', { timeouts: { headers: 20 } }),
         /headers timeout/,
       );
-      const idle = await client.request('/body-timeout', { timeouts: { bodyIdle: 20 } });
-      const iterator = idle.body![Symbol.asyncIterator]();
-      t.equal(new TextDecoder().decode((await iterator.next()).value), 'first');
-      await t.rejects(() => iterator.next(), /body idle timeout/);
-      const total = await client.request('/body-timeout', { timeouts: { total: 20 } });
-      await loop.timeout(40);
-      t.equal(total.session.capacity.active, 0, 'total timeout releases an unread response');
+      // Hold virtual time until each successful I/O step has completed, then
+      // advance the deadline being tested without a 20ms wall-clock race.
+      const clock = new VirtualTimerQueue(0);
+      loop._setVirtualTimerQueue(clock, () => true);
+      try {
+        const idle = await client.request('/body-timeout', { timeouts: { bodyIdle: 20 } });
+        const iterator = idle.body![Symbol.asyncIterator]();
+        t.equal(new TextDecoder().decode((await iterator.next()).value), 'first');
+        const idleRejected = t.rejects(() => iterator.next(), /body idle timeout/);
+        t.equal(clock.earliest(), 20, 'body idle deadline is armed for the next chunk');
+        clock.advance();
+        await idleRejected;
+
+        const total = await client.request('/body-timeout', { timeouts: { total: 20 } });
+        t.equal(total.session.capacity.active, 1, 'unread response holds its slot');
+        t.equal(clock.earliest(), clock.now() + 20, 'total deadline remains armed after headers');
+        clock.advance();
+        await Promise.resolve();
+        t.equal(total.session.capacity.active, 0, 'total timeout releases an unread response');
+      } finally {
+        loop._setVirtualTimerQueue(null);
+      }
       const decoded = await client.request('/compressed');
       t.equal(await decoded.text(), 'compressed');
       const encoded = await client.request('/compressed', { decompress: false });

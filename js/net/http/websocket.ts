@@ -997,6 +997,15 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    */
   #rawReader: BytesReader | null = null;
   /**
+   * Cancellation for connect work that precedes a socket -- currently the DNS
+   * lookup. `#teardown()` can close a reader, but before one exists a name
+   * resolution in flight would keep its UDP socket and retry timer alive for
+   * the rest of the resolver's schedule.
+   *
+   * @internal
+   */
+  readonly #connectAbort: AbortController = new AbortController();
+  /**
    * Private property `#rawWriter` used by `WebSocketConnection`.
    *
    * This implementation detail is included when documentation is built with
@@ -1917,7 +1926,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
     let sock: Socket | null = null;
     try {
       // DNS lookup
-      const { address, family } = await lookup(hostname);
+      const { address, family } = await lookup(hostname, { signal: this.#connectAbort.signal });
       if (this.#readyState === CLOSED) return;
       const addr: IPv4Address | IPv6Address =
         family === 6
@@ -2015,7 +2024,8 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
           writer.close();
         } catch (_) {}
       this.#socket = null;
-      this.#fireError(err);
+      // A lookup we aborted ourselves is teardown, not a connection error.
+      if (!this.#connectAbort.signal.aborted) this.#fireError(err);
       this.#teardown();
     }
   }
@@ -2534,6 +2544,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
   #teardown(): void {
     const alreadyClosed = this.#readyState === CLOSED;
     this.#readyState = CLOSED;
+    this.#connectAbort.abort();
     this.#closeIterators();
     if (!alreadyClosed) {
       const code = this.#closeReceived?.code ?? 1006;

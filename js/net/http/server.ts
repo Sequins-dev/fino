@@ -21,8 +21,11 @@
  * plaintext connection opens with the HTTP/2 client preface (prior-knowledge
  * h2c), or to the HTTP/2 driver when a TLS connection negotiates `h2` through
  * ALPN. Setting `h3` additionally opens an HTTP/3 (QUIC) listener on the same
- * host and port. The selected driver owns per-connection keep-alive, pipelining,
- * and protocol-upgrade logic.
+ * host and port. With HTTP/3 and `port: 0`, await `server.ready` before
+ * publishing the port: startup may select another candidate if the TCP port
+ * is occupied by UDP. It tries at most 16 candidates, and never changes an
+ * explicitly requested port. The selected driver owns per-connection keep-alive,
+ * pipelining, and protocol-upgrade logic.
  *
  * HTTP/1.1 connections are kept alive by default: the driver loops over requests
  * on the same TCP connection until the client sends `Connection: close`, the
@@ -52,7 +55,7 @@
  * - HTTP/2: https://www.rfc-editor.org/rfc/rfc9113
  * - HTTP/3: https://www.rfc-editor.org/rfc/rfc9114
  */
-import { Socket } from '../socket.ts';
+import { Socket, EADDRINUSE } from '../socket.ts';
 import { TlsSocket, createTlsServerContext } from '../tls.ts';
 import { sslCtxFree } from '../../internal/openssl.ts';
 import type { TlsPeerInfo } from '../tls.ts';
@@ -161,27 +164,28 @@ export interface ServeOptions {
 /**
  * Handle to a running server returned by `serve()` and `serveHttp()`.
  *
- * The server begins accepting connections immediately and keeps the event loop
- * alive until it is closed. It implements `Symbol.asyncDispose`, so an
- * `await using` binding closes it automatically when the scope exits.
+ * The server accepts connections once its requested listeners are ready and
+ * keeps the event loop alive until it is closed. It implements
+ * `Symbol.asyncDispose`, so an `await using` binding closes it automatically
+ * when the scope exits.
  *
  * ```ts no_run
  * import { serveHttp } from 'fino:net/http/server';
  *
  * await using server = serveHttp({ port: 0 }, async () => new Response('hi'));
- * console.log(server.address.ip, server.port);
  * await server.ready;
+ * console.log(server.address.ip, server.port);
  * // server.close() runs at scope exit via asyncDispose
  * ```
  */
 export interface ServeServer {
-  /** The bound socket address (IP family, IP, and actual port). */
+  /** The bound socket address. Await `ready` for the final address when using HTTP/3 with `port: 0`. */
   address: {
     family: string;
     ip: string;
     port: number;
   };
-  /** The actual bound port. Read this after `port: 0` to learn the ephemeral port. */
+  /** The bound port. With HTTP/3 and `port: 0`, await `ready` for the final shared TCP/UDP port. */
   readonly port: number;
   /** Resolves when all requested listeners, including the optional HTTP/3 listener, are ready. */
   readonly ready: Promise<void>;
@@ -620,7 +624,9 @@ function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
  * `hostname` defaults to `0.0.0.0` for IPv4 and `::` for explicit IPv6, and
  * `port` may be `0` to request an ephemeral port. When `tls` is present, the
  * server loads the certificate and key paths and advertises HTTP/2 through ALPN
- * when libnghttp2 is available.
+ * when libnghttp2 is available. With `h3` and `port: 0`, await `ready` before
+ * reading the final port. Startup tries up to 16 shared TCP/UDP port candidates
+ * when UDP is occupied; an explicit port is never changed.
  * `close()` stops accepting, closes the listening socket, releases TLS state,
  * and resolves after in-flight connections finish. `backlog`, `reuseAddr`, and
  * `reusePort` are passed to the underlying socket listener.
@@ -641,7 +647,7 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
     if (options.tls === undefined) throw new Error('serve: h3 requires tls certificate and key');
     requireH3();
   }
-  const tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
+  let tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
   const tlsProtocols = options.tls?.protocols ?? (h2Available ? ['h2', 'http/1.1'] : ['http/1.1']);
   const alpnProtocols = tlsProtocols.filter((protocol): protocol is 'h2' | 'http/1.1' => {
     return protocol === 'http/1.1' || (protocol === 'h2' && h2Available);
@@ -668,7 +674,8 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
   const closeSignal = new Promise<null>(function captureCloseResolve(resolve) {
     closeSignalResolve = () => resolve(null);
   });
-  const boundAddress = tcpServer.address;
+  let boundAddress = tcpServer.address;
+  let closing = false;
   if (boundAddress.family !== 'ipv4' && boundAddress.family !== 'ipv6') {
     for (const callback of tlsCallbacks) {
       try {
@@ -726,9 +733,11 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
           rejectUnauthorized: options.tls?.rejectUnauthorized,
         }
       : {};
-  const h3Ready: Promise<void> =
-    h3Options !== undefined && h3Options !== false
-      ? serveH3(
+  const h3Ready = (async (): Promise<void> => {
+    if (h3Options === undefined || h3Options === false) return;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        h3Server = await serveH3(
           {
             ...((typeof h3Options === 'object' ? h3Options.quic : undefined) ?? {}),
             ...h3TlsOptions,
@@ -739,16 +748,40 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
           },
           _handlerFor('h3', 'quic') as any,
           { onWebTransport: _webTransportHandlerFor('h3', 'quic') },
-        ).then((server) => {
-          h3Server = server;
-        })
-      : Promise.resolve();
+        );
+        return;
+      } catch (error) {
+        // TCP and UDP have independent port namespaces. A TCP ephemeral port
+        // can already belong to another UDP socket; keep both listeners bound
+        // to the same port by selecting a new TCP candidate before accepting.
+        if (
+          closing ||
+          options.port !== 0 ||
+          attempt >= 15 ||
+          !(error instanceof Error) ||
+          !('errno' in error) ||
+          error.errno !== -EADDRINUSE
+        )
+          throw error;
+        tcpServer.close();
+        tcpServer = Socket.listen(_listenAddress(options), _listenOptions(options));
+        const address = tcpServer.address;
+        if (address.family !== 'ipv4' && address.family !== 'ipv6') {
+          throw new TypeError('serve: expected an IP server address');
+        }
+        boundAddress = address;
+      }
+    }
+  })();
   h3Ready.catch(() => {
+    closing = true;
     if (closeSignalResolve) closeSignalResolve();
     tcpServer.close();
   });
   (async function acceptLoop() {
     try {
+      await h3Ready.catch(() => {});
+      if (closing) return;
       while (true) {
         const tcpConn: Awaited<ReturnType<typeof tcpServer.accept>> | null = await Promise.race([
           tcpServer.accept(),
@@ -846,7 +879,9 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
     console.error('[serve] acceptLoop DIED:', err);
   });
   return {
-    address: boundAddress,
+    get address() {
+      return boundAddress;
+    },
     get port() {
       return boundAddress.port;
     },
@@ -854,6 +889,7 @@ export function serve(options: ServeOptions, handler: ServerAcceptHandler): Serv
       return h3Ready;
     },
     async close(): Promise<void> {
+      closing = true;
       if (closeSignalResolve) closeSignalResolve();
       tcpServer.close();
       for (const callback of tlsCallbacks) {

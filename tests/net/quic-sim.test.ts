@@ -2127,6 +2127,8 @@ describe('QUIC simulator conformance', () => {
       const clientStream = await pipe.pumpUntil(clientStreamPromise);
       await pipe.runUntilSettled();
       const localStopSending = once(clientStream, 'stopsending');
+      const peerClosed = once(serverStream, 'close');
+      pipe.reorder(10);
       clientStream.stopSending(66);
       t.equal(
         decodeUtf8((await pipe.pumpUntil(readBytes(clientStream.reader.read())))!),
@@ -2139,7 +2141,10 @@ describe('QUIC simulator conformance', () => {
         'receive-only stream ends after STOP_SENDING',
       );
       const localStop = await pipe.pumpUntil(localStopSending);
-      await pipe.runUntilSettled();
+      // The local notification does not acknowledge peer shutdown. Drive
+      // delayed control traffic and its ACK until the peer stream closes.
+      await pipe.pumpUntil(peerClosed);
+      t.equal(server.state, 'connected', 'stream shutdown does not close the connection');
       t.equal(
         localStop.errorCode,
         66,

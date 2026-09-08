@@ -282,7 +282,9 @@ describe('Watcher', () => {
     await watcher.watch(path);
     await watcher.watch(path);
     await writeText(fs, path, 'changed');
-    const events = await collectEvents(watcher, 2, 250);
+    // The short quiet window starts after the first notification arrives.
+    const events = await collectEvents(watcher, 1);
+    if (events.length > 0) events.push(...(await collectEvents(watcher, 1, 250)));
     watcher.close();
     await fs.unlink(path);
     t.ok(events.length >= 1, 'duplicate watch still delivers a notification');

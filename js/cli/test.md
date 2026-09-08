@@ -32,6 +32,7 @@ can be consumed by TAP tooling.
 | --- | --- | --- |
 | `files...` | strings | Required. Test files, directories, or glob patterns to import and run. |
 | `--filter` | string | Run only registered tests whose full path contains the filter text. |
+| `--timeout` | number | Per-test deadline in milliseconds. Defaults to `60000`; `0` waits forever. |
 | `--show-output` | `failures`, `always`, or `never` | Control captured console output. Defaults to `failures`. |
 | `--durations` | boolean | Add TAP duration metadata to result lines. |
 | `--parallel` | boolean | Run each test file in an isolated Realm, with bounded top-level group concurrency. |
@@ -41,6 +42,30 @@ can be consumed by TAP tooling.
 Console output is captured by default and printed for failures. Use
 `--show-output=always` for live debugging output or `--show-output=never` to
 suppress captured output in failure details.
+
+## Deadlines
+
+Every test body runs under a deadline. A test that exceeds it fails with a
+`TestTimeoutError` naming the limit, so a hang is reported as one failing test
+rather than a run that never finishes. The default is 60 seconds; `--timeout`
+changes it for the whole run and `--timeout 0` disables it.
+
+A test that is legitimately slower than the run-wide limit can raise its own
+without loosening the default for everything else:
+
+```ts no_run
+it('replays the full cassette', { timeout: 300_000 }, async (t) => {
+  // ...
+});
+```
+
+Under `--parallel` the coordinator derives its own deadlines from this value.
+Each test or lifecycle-hook transition renews the worker deadline. It uses the
+current test’s timeout (including an override or `0`) plus 30 seconds of slack;
+a group of healthy tests can therefore run longer than one test’s limit. Hooks
+use the run default. Console output and unrelated timers do not renew it. A
+worker that stops reporting progress, or fails to exit within the stall threshold,
+is reported as a named lifecycle failure.
 
 ## Parallel files
 

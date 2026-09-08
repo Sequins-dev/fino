@@ -35,7 +35,7 @@
  * await testCommand.parse(['--filter', 'socket', 'tests/net']);
  * ```
  */
-import { cwd, env } from '../process.ts';
+import { cwd, env, exit as processExit } from '../process.ts';
 import { Task } from '../task.ts';
 import { DiskFileSystem } from 'fino:file';
 import { Realm } from 'fino:realm';
@@ -44,14 +44,22 @@ import { startCoverage } from 'internal:coverage';
 import { formatDurationMs } from 'internal:duration';
 import { ConcurrentTaskChannel } from 'internal:concurrent-task-channel';
 import { captureProcessOutput } from 'internal:runtime/output-capture';
-import { timeout as loopTimeout } from 'internal:runtime/loop';
+import {
+  _activeHandleCounts as activeHandleCounts,
+  alive as loopAlive,
+  timeout as loopTimeout,
+} from 'internal:runtime/loop';
 import { configuredReactorThreadCount } from 'internal:scheduler/readiness';
 import type runTestFile from '../internal/test-worker.ts';
+import { _runActive as testRunActive } from '../test/test.ts';
+import { reactorPoolStats, readinessTraceSnapshot } from 'internal:scheduler-native';
+import { analyzeReadiness } from 'internal:scheduler/readiness-analysis';
 import type {
   TestFileCompletion,
   TestFileCompletionAck,
   TestFileRegistration,
   TestGroupCompletion,
+  TestGroupProgress,
   TestGroupResult,
   TestGroupStart,
 } from '../internal/test-worker.ts';
@@ -62,6 +70,29 @@ type ParallelLineWriter = (line?: string) => void;
 
 const DEFAULT_PARALLEL_GROUPS_PER_REACTOR = 10;
 const PARALLEL_REALM_EXIT_DIAGNOSTIC_MS = 5_000;
+/**
+ * Floor for how long the parallel coordinator tolerates no progress at all.
+ *
+ * The effective threshold is always above the per-test deadline — see
+ * `stallThresholdMs`. A single slow test legitimately blocks progress for its
+ * whole deadline, so a fixed threshold below that reports a stall for a run
+ * that is merely loaded, which is exactly the false alarm this watchdog exists
+ * to avoid producing.
+ */
+const PARALLEL_STALL_FLOOR_MS = 120_000;
+/**
+ * How long to tolerate no progress, given the run's per-test deadline.
+ *
+ * A hung test fails itself at its own deadline, so exceeding that plus slack
+ * means the coordinator is stuck on something no test owns.
+ */
+function stallThresholdMs(options: Parameters<typeof runTestFile>[1]): number {
+  const perTest = options.timeout;
+  if (perTest === 0) return 0;
+  const base =
+    typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0 ? perTest : 60_000;
+  return Math.max(PARALLEL_STALL_FLOOR_MS, base + 60_000);
+}
 
 /**
  * Calculate the parallel test admission limit from the configured reactor pool
@@ -101,7 +132,10 @@ interface ParallelFileCompletion extends TestFileCompletion {
 interface PreparedParallelTest {
   file: ParallelTestFile;
   registeredTests: TestFileRegistration['tests'];
-  execute(index: number): Promise<ParallelTestResult>;
+  execute(
+    index: number,
+    note?: (stage: string, deadline?: number) => void,
+  ): Promise<ParallelTestResult>;
   completion: Promise<ParallelFileCompletion>;
   completionReported: Promise<TestFileCompletion>;
 }
@@ -141,6 +175,7 @@ async function prepareParallelFile(
 
   let registered = false;
   let canStart = true;
+  let startFailure: string | undefined;
   let workerCompletion: TestFileCompletion | undefined;
   let resolveCompletionReported!: (completion: TestFileCompletion) => void;
   const completionReported = new Promise<TestFileCompletion>((resolve) => {
@@ -156,6 +191,7 @@ async function prepareParallelFile(
     canStart = startable;
     resolveRegistration(tests);
   };
+  const progressWaiters = new Map<number, (progress: TestGroupProgress) => void>();
   const resultWaiters = new Map<number, (result: TestGroupResult) => void>();
   const failPending = (error: string) => {
     for (const resolve of resultWaiters.values()) {
@@ -175,6 +211,7 @@ async function prepareParallelFile(
     const message = (event as MessageEvent).data as
       | TestFileRegistration
       | TestGroupCompletion
+      | TestGroupProgress
       | TestFileCompletion
       | undefined;
     if (message?.kind === 'fino:test:registered') {
@@ -187,6 +224,10 @@ async function prepareParallelFile(
       realm.port.postMessage({ kind: 'fino:test:complete-ack' } satisfies TestFileCompletionAck);
       return;
     }
+    if (message?.kind === 'fino:test:progress') {
+      progressWaiters.get(message.index)?.(message);
+      return;
+    }
     if (message?.kind !== 'fino:test:result') return;
     const resolve = resultWaiters.get(message.index);
     if (resolve === undefined) return;
@@ -197,16 +238,35 @@ async function prepareParallelFile(
   realm.port.start();
   void callOutcome.then((outcome) => {
     if ('error' in outcome) {
+      startFailure ??= outcome.error;
       finishRegistration([{ exclusive: false }], false);
       failPending(outcome.error);
     }
   });
   void completionOutcome.then((error) => {
     if (error !== undefined) {
+      startFailure ??= error;
       finishRegistration([{ exclusive: false }], false);
       failPending(error);
     }
   });
+  // A Realm that neither registers, fails, nor exits would hold the file loop
+  // here for the life of the job. Terminating it turns that into one reported
+  // failure; the outcome handlers above then supply the text.
+  const registrationDeadline = workerResultDeadlineMs(options);
+  if (registrationDeadline > 0) {
+    const expiry = loopTimeout(registrationDeadline);
+    expiry.unref();
+    const arrived = await Promise.race([registration.then(() => true), expiry.then(() => false)]);
+    if (!arrived) {
+      startFailure ??= `${file.display} test Realm did not register within ${registrationDeadline}ms`;
+      realm.terminate({ force: true });
+      finishRegistration([{ exclusive: false }], false);
+      failPending(startFailure);
+    } else {
+      expiry.cancel();
+    }
+  }
   const registeredTests = await registration;
   const fileCompletion = Promise.all([callOutcome, completionOutcome]).then(
     ([callResult, realmError]): ParallelFileCompletion => {
@@ -230,13 +290,17 @@ async function prepareParallelFile(
     registeredTests,
     completion: fileCompletion,
     completionReported,
-    async execute(index: number): Promise<ParallelTestResult> {
+    async execute(
+      index: number,
+      note?: (stage: string, deadline?: number) => void,
+    ): Promise<ParallelTestResult> {
+      note?.('start');
       if (!canStart) {
-        const [callResult, realmError] = await Promise.all([callOutcome, completionOutcome]);
-        const error =
-          ('error' in callResult ? callResult.error : undefined) ??
-          realmError ??
-          `${file.display} stopped before test execution`;
+        // `canStart` only goes false from a handler that has already recorded
+        // why. Awaiting the call and Realm outcomes here to re-derive the text
+        // would block on a Realm that failed to load but has not exited, which
+        // holds an admission slot and deadlocks any exclusive group behind it.
+        const error = startFailure ?? `${file.display} stopped before test execution`;
         return {
           file,
           result: {
@@ -253,8 +317,78 @@ async function prepareParallelFile(
       const result = new Promise<TestGroupResult>((resolve) => {
         resultWaiters.set(index, resolve);
       });
+      note?.('posted');
       realm.port.postMessage({ kind: 'fino:test:start', index } satisfies TestGroupStart);
-      return { file, result: await result };
+      // The worker enforces each test's own deadline, but only while it is
+      // running one. A Realm that wedges outside a test body — or a reply that
+      // never arrives — would otherwise leave this await pending for the life
+      // of the job, which is a stall with no test to blame it on.
+      let deadline = workerResultDeadlineMs(options);
+      let lastProgress = 'awaiting worker progress';
+      let expiry: ReturnType<typeof loopTimeout> | undefined;
+      let generation = 0;
+      let expire!: () => void;
+      const expired = new Promise<null>((resolve) => {
+        expire = () => resolve(null);
+      });
+      const arm = (stage: string, nextDeadline: number): void => {
+        deadline = nextDeadline;
+        lastProgress = stage;
+        const token = ++generation;
+        expiry?.cancel();
+        expiry = undefined;
+        note?.(stage, deadline);
+        if (deadline <= 0) return;
+        expiry = loopTimeout(deadline);
+        expiry.unref();
+        void expiry.then(() => {
+          if (generation === token) expire();
+        });
+      };
+      // Only actual test/hook transitions renew the lease. An unrelated timer
+      // or console output cannot keep a hung test alive. Each operation carries
+      // its own timeout, including a per-test override or explicit zero.
+      progressWaiters.set(index, (progress) => {
+        arm(progress.name, workerResultDeadlineMs({ timeout: progress.timeout }));
+      });
+      arm('awaiting worker progress', deadline);
+      const settled = await Promise.race([result.then((value) => ({ value })), expired]);
+      progressWaiters.delete(index);
+      generation++;
+      expiry?.cancel();
+      if (settled === null) {
+        resultWaiters.delete(index);
+        // Groups within a file are chained, so a Realm that has stopped
+        // responding would otherwise cost the full deadline once per remaining
+        // group -- twelve groups is eighteen minutes of dead run. One missed
+        // reply is enough to call the Realm lost: stop it and fail the rest
+        // immediately.
+        // Include the pool's own view. A Realm that stopped making progress is
+        // either parked with nothing queued to wake it, or queued behind work
+        // that never drains; `parkedWithNothingQueued` separates the two, and
+        // nothing visible from TypeScript otherwise can.
+        const pool = reactorPoolStats();
+        const error =
+          `${file.display} test Realm did not report progress for group ${index} within ${deadline}ms (last: ${lastProgress})` +
+          (pool === null ? '' : `; reactor pool ${JSON.stringify(pool)}`);
+        startFailure ??= error;
+        canStart = false;
+        failPending(error);
+        realm.terminate({ force: true });
+        return {
+          file,
+          result: {
+            output: [],
+            diagnostics: [],
+            tests: 0,
+            passed: 0,
+            failed: 0,
+            skipped: 0,
+            error,
+          },
+        };
+      }
+      return { file, result: settled.value };
     },
   };
 }
@@ -296,6 +430,10 @@ function printParallelResult(
       result.file.display,
       label,
     );
+    // Also emit the reason inline. The end-of-run failure details are the only
+    // other place it appears, and a run that bails out never reaches them --
+    // which is exactly the run whose reason matters most.
+    for (const line of result.result.error.split('\n')) write(`# ${line}`);
     diagnostics.push({
       title: `${result.file.display} ${label}`,
       errors: [result.result.error.split('\n')],
@@ -342,6 +480,101 @@ function parallelResultPointCount(result: ParallelTestResult): number {
   return result.result.tests + (result.result.error === undefined ? 0 : 1);
 }
 
+/**
+ * Fail the run if the parallel coordinator makes no progress.
+ *
+ * A hung test fails itself against its own deadline, so a coordinator that
+ * stops advancing is stuck on something no test owns — most often a worker
+ * Realm whose loop never drains, which leaves an orphaned child and a CI job
+ * that gets cancelled at its own timeout with nothing after the last group.
+ *
+ * The watchdog timer is unreferenced, so it cannot keep the Realm alive by
+ * itself; it only fires while something else is holding the run open.
+ */
+function startStallWatchdog(
+  write: (text: string) => void,
+  pending: () => string[],
+  admission: () => unknown,
+  inFlight: () => string[],
+  sweep: () => boolean,
+  tickMs: number,
+  thresholdMs: number,
+): { progress: () => void; stop: () => void } {
+  if (thresholdMs <= 0) return { progress: () => {}, stop: () => {} };
+  let last = performance.now();
+  let stopped = false;
+  let armed: ReturnType<typeof loopTimeout> | null = null;
+  const arm = (): void => {
+    if (stopped) return;
+    const timer = loopTimeout(tickMs);
+    timer.unref();
+    armed = timer;
+    void timer.then(() => {
+      if (stopped) return;
+      // Abandoning a group is progress: it releases an admission slot and
+      // unblocks whatever was queued behind it. Bailing out in the same tick
+      // would report a stall the run was about to recover from on its own.
+      if (sweep()) {
+        last = performance.now();
+        arm();
+        return;
+      }
+      if (performance.now() - last < thresholdMs) {
+        arm();
+        return;
+      }
+      const waiting = pending();
+      write(
+        `Bail out! no test progress for ${Math.round(thresholdMs / 1000)}s; the run is stalled`,
+      );
+      write(`# still pending: ${waiting.length > 0 ? waiting.join(', ') : '(none reported)'}`);
+      const executing = inFlight();
+      write(`# in flight: ${executing.length > 0 ? executing.join(', ') : '(none)'}`);
+      write(`# admission: ${JSON.stringify(admission())}`);
+      write(`# active handles: ${JSON.stringify(activeHandleCounts())}`);
+      processExit(1);
+    });
+  };
+  arm();
+  return {
+    progress: (): void => {
+      last = performance.now();
+    },
+    stop: (): void => {
+      stopped = true;
+      armed?.cancel();
+      armed = null;
+    },
+  };
+}
+/**
+ * How long the coordinator tolerates no test/hook progress from a worker.
+ *
+ * Derived from the per-test deadline so a legitimately slow test is never cut
+ * off by it, plus slack for the Realm's own setup and teardown. A run that
+ * disables test deadlines disables this too — the caller has said it wants to
+ * wait forever, and that should mean everywhere.
+ */
+/**
+ * How often the stall watchdog wakes.
+ *
+ * It has to be short enough that a group past its deadline is abandoned before
+ * the stall threshold is reached, or the run bails out on a condition it was
+ * about to recover from on its own.
+ */
+function watchdogTickMs(options: Parameters<typeof runTestFile>[1]): number {
+  const threshold = stallThresholdMs(options);
+  const deadline = workerResultDeadlineMs(options);
+  const bound = deadline > 0 ? Math.min(threshold, deadline) : threshold;
+  return Math.max(1_000, Math.floor(bound / 8));
+}
+function workerResultDeadlineMs(options: Parameters<typeof runTestFile>[1]): number {
+  const perTest = options.timeout;
+  if (perTest === 0) return 0;
+  const base =
+    typeof perTest === 'number' && Number.isFinite(perTest) && perTest > 0 ? perTest : 60_000;
+  return base + 30_000;
+}
 async function runParallelTests(
   files: ParallelTestFile[],
   options: Parameters<typeof runTestFile>[1],
@@ -351,12 +584,86 @@ async function runParallelTests(
   const started = performance.now();
   const capture = captureProcessOutput();
   const write = capture.writeStdoutLine;
+  let traceReported = false;
+  const reportReadinessTrace = (context: string): void => {
+    if (traceReported) return;
+    const trace = readinessTraceSnapshot();
+    const snapshot = JSON.parse(trace);
+    if (!snapshot.enabled) return;
+    traceReported = true;
+    write(`# readiness trace context: ${tapName(context)}`);
+    write(`# readiness analysis: ${JSON.stringify(analyzeReadiness(snapshot))}`);
+    write(`# readiness trace: ${trace}`);
+  };
   try {
     const concurrency = parallelTestConcurrency(configuredReactorThreadCount());
     const channel = new ConcurrentTaskChannel<ParallelTestResult>(concurrency, {
       outputOrder: ordered ? 'claim' : 'completion',
     });
     write('TAP version 13');
+    // Which admitted groups are executing right now, when each was admitted,
+    // and how to fail one from outside. A stalled run is one task that never
+    // settles; naming it is the difference between "the run hung" and a file
+    // to go look at.
+    interface InFlightGroup {
+      label: string;
+      stage: string;
+      startedAt: number;
+      deadline: number;
+      force: (result: ParallelTestResult) => void;
+    }
+    const inFlight = new Map<number, InFlightGroup>();
+    const groupDeadline = workerResultDeadlineMs(options);
+    // `execute()` arms its own deadline, but a deadline is only as good as the
+    // timer behind it. Enforcing it a second time from the watchdog -- whose
+    // timer is the one thing a stalled run proves still fires -- means a single
+    // wedged group can no longer hold an exclusive barrier, and everything
+    // queued behind it, for the life of the job.
+    const sweepOverdueGroups = (): boolean => {
+      let abandoned = false;
+      const now = performance.now();
+      for (const [index, group] of inFlight) {
+        const waited = now - group.startedAt;
+        const groupDeadline = group.deadline;
+        // The operation is still inside its explicit lease (possibly infinite).
+        // Do not let the global no-progress watchdog override that contract.
+        if (groupDeadline <= 0 || waited < groupDeadline) watchdog.progress();
+        if (groupDeadline <= 0) continue;
+        if (waited < groupDeadline) continue;
+        inFlight.delete(index);
+        abandoned = true;
+        write(
+          `# abandoning ${group.label} after ${Math.round(waited)}ms in ${group.stage}; its own deadline did not fire`,
+        );
+        const pool = reactorPoolStats();
+        if (pool !== null) write(`# reactor pool: ${JSON.stringify(pool)}`);
+        reportReadinessTrace(group.label);
+        group.force({
+          file: { display: group.label, specifier: group.label },
+          result: {
+            output: [],
+            diagnostics: [],
+            tests: 0,
+            passed: 0,
+            failed: 0,
+            skipped: 0,
+            error: `${group.label} did not report within ${groupDeadline}ms (stage ${group.stage})`,
+          },
+        });
+      }
+      return abandoned;
+    };
+    const watchdog = startStallWatchdog(
+      write,
+      () => [...pendingFiles.keys()],
+      () => channel.stats(),
+      () => [...inFlight.values()].map((group) => `${group.label} [${group.stage}]`),
+      sweepOverdueGroups,
+      watchdogTickMs(options),
+      stallThresholdMs(options),
+    );
+    const progress = watchdog.progress;
+    const stopStallWatchdog = watchdog.stop;
     const output = (async () => {
       let total = 0;
       let passed = 0;
@@ -370,6 +677,9 @@ async function runParallelTests(
             `Bail out! ${tapName(entry.file.display)} emitted ${points} points for one admitted test group`,
           );
           throw new Error(`${entry.file.display} emitted an invalid top-level test result`);
+        }
+        if (entry.result.failed > 0 || entry.result.error !== undefined) {
+          reportReadinessTrace(entry.file.display);
         }
         const synthetic = printParallelResult(entry, total, diagnostics, write);
         total += entry.result.tests + synthetic;
@@ -433,10 +743,35 @@ async function runParallelTests(
         const ready = previous;
         previous = settled;
         const resolver = channel.claim();
+        const groupLabel = `${file.display} group ${index}${exclusive ? ' (exclusive)' : ''}`;
         const task = (async () => {
           await resolver.schedule({ exclusive, ready });
+          let forceGroup!: (result: ParallelTestResult) => void;
+          const forced = new Promise<ParallelTestResult>((resolve) => {
+            forceGroup = resolve;
+          });
+          const tracked: InFlightGroup = {
+            label: groupLabel,
+            stage: 'scheduled',
+            startedAt: performance.now(),
+            deadline: groupDeadline,
+            force: forceGroup,
+          };
+          inFlight.set(resolver.index, tracked);
           try {
-            resolver.resolve(await test.execute(index));
+            resolver.resolve(
+              await Promise.race([
+                test.execute(index, (stage, deadline) => {
+                  tracked.stage = stage;
+                  if (deadline !== undefined) {
+                    tracked.startedAt = performance.now();
+                    tracked.deadline = deadline;
+                    watchdog.progress();
+                  }
+                }),
+                forced,
+              ]),
+            );
           } catch (error) {
             resolver.resolve({
               file: test.file,
@@ -451,6 +786,8 @@ async function runParallelTests(
               },
             });
           } finally {
+            inFlight.delete(resolver.index);
+            progress();
             release();
           }
         })();
@@ -460,8 +797,35 @@ async function runParallelTests(
     channel.close();
     await Promise.all(taskCompletions);
     const totals = await output;
-    await Promise.all(fileCompletions);
+    // Past this point there is no test progress left to watch, and the wait
+    // below has its own deadline. Leaving the watchdog armed would let it race
+    // that deadline and report a legitimate slow shutdown as a stall.
+    stopStallWatchdog();
+    // Every group has reported by here; what is left is each worker Realm
+    // shutting down. A Realm that never exits would otherwise hold the run
+    // open forever with nothing left to report — the original shape of this
+    // failure in CI, where the log ends after the last group and the job is
+    // cancelled at its own timeout with an orphaned child behind it.
+    const shutdownDeadline = stallThresholdMs(options);
+    if (shutdownDeadline > 0) {
+      const expiry = loopTimeout(shutdownDeadline);
+      expiry.unref();
+      const finished = await Promise.race([
+        Promise.all(fileCompletions).then(() => true),
+        expiry.then(() => false),
+      ]);
+      if (!finished) {
+        for (const name of pendingFiles.keys()) {
+          lifecycleErrors.push(`${name} test Realm did not exit within ${shutdownDeadline}ms`);
+        }
+      } else {
+        expiry.cancel();
+      }
+    } else {
+      await Promise.all(fileCompletions);
+    }
     await capture.finish();
+    stopStallWatchdog();
     if (totals.total !== registeredTests) {
       write(`Bail out! registered ${registeredTests} test groups but emitted ${totals.total}`);
       throw new Error('parallel test registration count changed during execution');
@@ -472,6 +836,9 @@ async function runParallelTests(
     write(`# pass  ${totals.passed}`);
     if (totals.skipped > 0) write(`# skip  ${totals.skipped}`);
     write(`# time  ${formatDurationMs(performance.now() - started)}`);
+    if (totals.failed > 0 || lifecycleErrors.length > 0) {
+      reportReadinessTrace('parallel test completion');
+    }
     if (totals.failed > 0) {
       write(`# fail  ${totals.failed}`);
       printParallelFailureDetails(totals.diagnostics, options.showOutput ?? 'failures', write);
@@ -601,6 +968,72 @@ async function expandArg(arg: string): Promise<string[]> {
  * await test.parse(['--coverage=artifacts/socket.json', 'tests/net']);
  * ```
  */
+/**
+ * How long the runner waits, after every test has reported, for the Realm to
+ * fall idle before it treats the remainder as a leak.
+ */
+const SHUTDOWN_GRACE_MS = 5_000;
+/**
+ * Fail the run if the Realm is still held open once the results are in.
+ *
+ * A test that leaks a descriptor watch, a timer, or a child process does not
+ * fail — it finishes, reports `ok`, and then keeps the loop alive so the
+ * process never exits. CI sees no failure at all, just a job cancelled at its
+ * own timeout with nothing in the log after the last group. This turns that
+ * into a diagnosis: which handle kinds are still registered, printed against
+ * the run that leaked them.
+ *
+ * The watchdog timer is unreferenced, so it can only fire while something else
+ * is holding the Realm open — exactly the condition worth reporting.
+ *
+ * Only applies when this command owns the process. `fino test` also runs
+ * in-process, nested inside another run's tests, and there the live handles
+ * belong to the caller — reporting them would be wrong and exiting would take
+ * the caller down with us.
+ */
+/**
+ * Import one test module under a deadline.
+ *
+ * A module whose top level never settles would otherwise hold a serial run
+ * open for the life of the job with no test to blame it on. The import cannot
+ * be cancelled, so the only useful outcome is to name the file and exit; the
+ * message goes to `console.log` because `exit()` flushes stdout while the
+ * command writer buffers separately.
+ */
+async function importWithin(specifier: string, display: string, deadlineMs: number): Promise<void> {
+  if (deadlineMs <= 0) {
+    await import(specifier);
+    return;
+  }
+  const expiry = loopTimeout(deadlineMs);
+  expiry.unref();
+  const loaded = await Promise.race([import(specifier).then(() => true), expiry.then(() => false)]);
+  if (!loaded) {
+    console.log(`Bail out! ${tapName(display)} did not finish loading within ${deadlineMs}ms`);
+    console.log(`# active handles: ${JSON.stringify(activeHandleCounts())}`);
+    processExit(1);
+  }
+  expiry.cancel();
+}
+async function reportLeakedHandles(ownsProcess: boolean): Promise<boolean> {
+  if (!ownsProcess || !loopAlive()) return false;
+  const grace = loopTimeout(SHUTDOWN_GRACE_MS);
+  grace.unref();
+  await grace;
+  if (!loopAlive()) return false;
+  const counts = activeHandleCounts();
+  const held = Object.entries(counts)
+    .filter(([, value]) => (typeof value === 'number' ? value > 0 : value === true))
+    .map(([name, value]) => `${name}=${String(value)}`);
+  // console goes to the same stdout `exit()` flushes synchronously; a task
+  // writer buffers separately and would lose the diagnostic on the way out.
+  console.log(`# leaked handles: still alive ${SHUTDOWN_GRACE_MS}ms after the last test reported`);
+  console.log(
+    `# ${held.length > 0 ? held.join(' ') : 'no counted handles; V8 tasks or a wake source'}`,
+  );
+  console.log('# exiting rather than hanging; find the test that did not clean up');
+  return true;
+}
 const command = new Task({
   name: 'test',
   description: 'Run test files',
@@ -614,9 +1047,15 @@ const command = new Task({
       parallel?: unknown;
       ordered?: unknown;
       coverage?: unknown;
+      timeout?: unknown;
     },
     ctx,
   ) {
+    // `fino test` can be invoked from inside a test — the CLI's own suite does
+    // it — and a nested run must not judge the outer run's handles as its own
+    // leak, nor exit the process out from under it. A live loop is not the
+    // signal: a bare script already has a wake-pipe read registered.
+    const ownsProcess = !testRunActive();
     const testFiles = Array.isArray(input.files) ? input.files : [];
     const filter = typeof input.filter === 'string' ? input.filter : undefined;
     const showOutput = typeof input['show-output'] === 'string' ? input['show-output'] : 'failures';
@@ -624,6 +1063,10 @@ const command = new Task({
     const parallel = input.parallel === true;
     const ordered = input.ordered === true;
     const coveragePath = typeof input.coverage === 'string' ? input.coverage : undefined;
+    const timeout = typeof input.timeout === 'number' ? input.timeout : undefined;
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout < 0)) {
+      throw new Error(`Invalid --timeout value "${String(input.timeout)}" (expected ms >= 0)`);
+    }
     if (showOutput !== 'failures' && showOutput !== 'always' && showOutput !== 'never') {
       throw new Error(
         `Invalid --show-output value "${showOutput}" (expected failures, always, or never)`,
@@ -650,16 +1093,18 @@ const command = new Task({
         ? {
             showOutput,
             durations,
+            timeout,
           }
         : {
             filter,
             showOutput,
             durations,
+            timeout,
           };
     let output: unknown;
+    const parallelFiles: ParallelTestFile[] = [];
     if (parallel) {
       const seen = new Set<string>();
-      const parallelFiles: ParallelTestFile[] = [];
       for (const file of importFiles) {
         const specifier = normalizeModuleSpecifier(file);
         if (seen.has(specifier)) continue;
@@ -669,12 +1114,34 @@ const command = new Task({
           specifier,
         });
       }
-      output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
-    } else {
-      for (const file of importFiles) await import(normalizeModuleSpecifier(file));
-      const { run } = await import('fino:test/test');
-      output = await run(runOptions);
     }
+    // A failing run throws, and the leak check has to happen anyway: a test
+    // that both fails and leaks would otherwise print its failure and then
+    // hang forever on the leaked handle, since nothing after this point runs.
+    let runFailure: unknown;
+    try {
+      if (parallel) {
+        output = await runParallelTests(parallelFiles, runOptions, ctx.signal, ordered);
+      } else {
+        const importDeadline = workerResultDeadlineMs(runOptions);
+        for (const file of importFiles) {
+          await importWithin(normalizeModuleSpecifier(file), file, importDeadline);
+        }
+        const { run } = await import('fino:test/test');
+        output = await run(runOptions);
+      }
+    } catch (error) {
+      runFailure = error;
+    }
+    if (await reportLeakedHandles(ownsProcess)) {
+      // Throwing would not help: whatever leaked still holds the loop open, so
+      // the process would report the failure and then hang anyway. Exiting is
+      // the only way to turn the leak into a result CI can see. Print why the
+      // run failed first, because exiting skips the CLI's own error reporting.
+      if (runFailure !== undefined) console.log(`# ${errorText(runFailure)}`);
+      processExit(1);
+    }
+    if (runFailure !== undefined) throw runFailure;
     if (ctx.writer.mode === 'json') {
       const result = {
         command: 'test',
@@ -684,6 +1151,7 @@ const command = new Task({
         filter,
         showOutput,
         durations,
+        timeout,
         parallel,
         ordered,
         coverage: coveragePath,
@@ -720,6 +1188,11 @@ const command = new Task({
         flags: '--ordered',
         type: 'boolean',
         description: 'Emit parallel test groups in deterministic registration order',
+      },
+      {
+        flags: '--timeout',
+        type: 'number',
+        description: 'Per-test deadline in ms (default 60000; 0 waits forever)',
       },
       {
         flags: '--coverage',

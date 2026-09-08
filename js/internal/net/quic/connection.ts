@@ -2725,6 +2725,9 @@ export class QuicConnection extends EventTarget {
             }
           }
         }
+        // Packet callbacks can close this connection or retire the path. Do
+        // not install another watch after that boundary releases its socket.
+        if (this.#closed || !this.#clientTransports.has(transport.id)) break;
         await transport.waitReadable();
       } catch (error) {
         if (!this.#closed) this.#fail(error instanceof Error ? error : new Error(String(error)));

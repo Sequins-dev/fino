@@ -38,7 +38,7 @@ describe('CLI commands: run', () => {
     t.equal(stderr, '', 'script does not write stderr');
     t.ok(stdout.includes('cli fixture ran'), 'script was imported and executed');
   });
-  it('writes one thread-labeled pprof for every in-process Realm', async (t) => {
+  it('profiles every in-process Realm with thread labels', { timeout: 120_000 }, async (t) => {
     await withTempProject(
       {
         'entry.ts': [

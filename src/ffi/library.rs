@@ -57,6 +57,7 @@ impl DynLib {
 ///
 /// The `Cif` is built once at `dlopen` time and reused on every call.
 pub struct FfiSymbol {
+    pub diagnostic_label: String,
     pub code_ptr: CodePtr,
     pub cif: Cif,
     pub param_types: Vec<NativeType>,
@@ -103,6 +104,7 @@ impl FfiSymbol {
         };
 
         Ok(Self {
+            diagnostic_label: String::new(),
             code_ptr,
             cif,
             fast_call_kind: if !fast_enabled || nonblocking || variadic.is_some() {

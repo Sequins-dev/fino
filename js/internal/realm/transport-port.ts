@@ -21,10 +21,20 @@ import {
 } from 'internal:realm/envelope';
 import { nativeSend, nativeRecv } from 'internal:thread-port';
 import { sandboxPortRecv, sandboxPortSend } from 'internal:realm-native';
-import { scheduledRealmRecv, scheduledRealmSend } from 'internal:scheduler-native';
+import {
+  scheduledRealmRecv,
+  scheduledRealmSend,
+  recordRealmState,
+} from 'internal:scheduler-native';
+import { env } from 'internal:process';
 import { createTransitChannel } from 'internal:transit-port';
 import { readable, removeRead } from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
+
+// Retain control metadata only: payloads can contain secrets or application data.
+const traceControl = env['FINO_TRACE_READINESS'] === '1';
+let nextDiagnosticPort = 0;
+const controlHistory: [number, number, string, number, number][] = [];
 
 /** Direction relative to the observed transport endpoint. @internal */
 export type TransportFrameDirection = 'outbound' | 'inbound';
@@ -79,6 +89,21 @@ interface TransportObservationInput {
 export abstract class BaseTransportPort extends EventTarget {
   #observers = new Set<TransportObserver>();
   #sequence = 0;
+  #diagnosticPort = traceControl ? ++nextDiagnosticPort : 0;
+
+  #trace(stage: string, envelope?: Envelope): void {
+    if (!traceControl) return;
+    controlHistory.push([
+      Date.now(),
+      this.#diagnosticPort,
+      stage,
+      envelope?.kind ?? -1,
+      envelope?.correlation ?? -1,
+    ]);
+    if (controlHistory.length > 64) controlHistory.shift();
+    recordRealmState('transport', JSON.stringify(controlHistory));
+  }
+
   /**
    * True once start() has run; _dispatchMessage drops messages while the port
    * is unstarted.
@@ -115,12 +140,14 @@ export abstract class BaseTransportPort extends EventTarget {
   start(): void {
     if (this._started || this._closed) return;
     this._started = true;
+    this.#trace('started');
     this._onStart();
   }
   /**
    * Close this port and stop delivery.
    */
   close(): void {
+    this.#trace('closed');
     this._closed = true;
     this._started = false;
     this._onClose();
@@ -231,7 +258,11 @@ export abstract class BaseTransportPort extends EventTarget {
     message: unknown,
     transferOrOpts?: Transferable[] | StructuredSerializeOptions,
   ): void {
-    if (this._closed) return;
+    if (this._closed) {
+      this.#trace('send-closed', envelope);
+      return;
+    }
+    this.#trace('sending', envelope);
     const rawTransfer: Transferable[] | undefined = Array.isArray(transferOrOpts)
       ? (transferOrOpts as Transferable[])
       : (transferOrOpts as StructuredSerializeOptions | undefined)?.transfer;
@@ -268,6 +299,7 @@ export abstract class BaseTransportPort extends EventTarget {
     );
     const [data, ...stores] = parts;
     this._send(encodeEnvelope(envelope), data!, stores, portInfos);
+    this.#trace('sent', envelope);
     if (this.#observers.size > 0) {
       this.#observe({
         direction: 'outbound',
@@ -309,12 +341,17 @@ export abstract class BaseTransportPort extends EventTarget {
     correlation: number,
     sourceParts: readonly Uint8Array[],
   ): void {
-    if (this._closed) return;
+    const envelope = { kind, correlation };
+    if (this._closed) {
+      this.#trace('send-closed', envelope);
+      return;
+    }
+    this.#trace('sending', envelope);
     const parts = sourceParts.map((part) => part.slice());
     const [data, ...stores] = parts;
     if (data === undefined) throw new TypeError('Serialized control payload requires data');
-    const envelope = { kind, correlation };
     this._send(encodeEnvelope(envelope), data, stores, []);
+    this.#trace('sent', envelope);
     if (this.#observers.size > 0) {
       this.#observe({
         direction: 'outbound',
@@ -347,8 +384,12 @@ export abstract class BaseTransportPort extends EventTarget {
     ports: MessagePort[] = [],
     header?: Uint8Array,
   ): void {
-    if (!this._started) return;
+    if (!this._started) {
+      this.#trace('receive-unstarted');
+      return;
+    }
     const envelope = decodeEnvelope(header);
+    this.#trace('received', envelope);
     if (this.#observers.size > 0) {
       const parts = stores === undefined ? [buf] : [buf, ...stores];
       this.#observe({
@@ -367,6 +408,7 @@ export abstract class BaseTransportPort extends EventTarget {
         stores && stores.length > 0 ? stores : undefined,
       );
     } catch (err) {
+      this.#trace('decode-error', envelope);
       const event = new MessageEvent('messageerror', { data: err });
       _markEventTrusted(event);
       this.dispatchEvent(event);
@@ -376,11 +418,14 @@ export abstract class BaseTransportPort extends EventTarget {
       case EnvelopeKind.RpcResponse: {
         const response = value as { result?: unknown; error?: string };
         if (response?.error !== undefined) {
-          if (!rejectRpc(envelope.correlation, response.error)) {
+          const matched = rejectRpc(envelope.correlation, response.error);
+          this.#trace(matched ? 'rpc-rejected' : 'rpc-stream-error', envelope);
+          if (!matched) {
             errStream(envelope.correlation, response.error);
           }
         } else {
-          resolveRpc(envelope.correlation, response?.result);
+          const matched = resolveRpc(envelope.correlation, response?.result);
+          this.#trace(matched ? 'rpc-resolved' : 'rpc-unmatched', envelope);
         }
         return;
       }
@@ -398,8 +443,12 @@ export abstract class BaseTransportPort extends EventTarget {
     }
     if (envelope.kind !== EnvelopeKind.Message) {
       for (const handler of this.#controlHandlers) {
-        if (handler(envelope, value)) return;
+        if (handler(envelope, value)) {
+          this.#trace('handled', envelope);
+          return;
+        }
       }
+      this.#trace('unclaimed', envelope);
       // Unclaimed runtime protocol is dropped rather than surfaced. Delivering
       // it as a message would let application listeners see frames they have no
       // business seeing, and would resurrect the payload sniffing this replaced.

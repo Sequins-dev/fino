@@ -348,6 +348,40 @@ describe('EventSource integration', () => {
       else (globalThis as any).location = oldLocation;
     }
   });
+  it('close() abandons a name resolution that is still in flight', async (t) => {
+    // Constructing an EventSource starts resolving immediately. Closing it
+    // before the socket exists used to leave the resolver's UDP socket and
+    // retry timer running for the rest of its schedule, which kept the whole
+    // Realm's event loop alive well after the test returned.
+    // The observable is the resolver's referenced retry timer: that is what
+    // holds the event loop open. The read count is not usable here because
+    // registering the query socket replaces the loop's own wake-pipe watch.
+    const before = loop._activeHandleCounts();
+    const source = new EventSource('http://eventsource-close-while-resolving.invalid/stream');
+    // Poll rather than sleeping a fixed interval: on a cold resolver the query
+    // only starts once /etc/resolv.conf has been read.
+    let during = loop._activeHandleCounts();
+    for (
+      let waited = 0;
+      waited < 4000 && during.referencedTimers <= before.referencedTimers;
+      waited += 25
+    ) {
+      await loop.timeout(25);
+      during = loop._activeHandleCounts();
+    }
+    t.ok(
+      during.referencedTimers > before.referencedTimers,
+      'the in-flight resolution holds the loop open',
+    );
+    source.close();
+    await loop.timeout(50);
+    const after = loop._activeHandleCounts();
+    t.equal(
+      after.referencedTimers,
+      before.referencedTimers,
+      'closing releases the resolver timer instead of serving out its schedule',
+    );
+  });
   it('throws SyntaxError DOMException for invalid URLs', (t) => {
     t.throws(
       () => new EventSource('http://this is invalid/'),

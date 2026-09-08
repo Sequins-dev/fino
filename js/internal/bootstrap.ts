@@ -63,9 +63,14 @@ import {
   _trackAtomicsWaiter,
   _untrackAtomicsWaiter,
   _schedulerPollingRequired,
+  _activeHandleCounts,
 } from './runtime/loop.ts';
 import { drainMicrotasks, runLoop } from 'internal:async-context';
-import { setSchedulerPollingRequired, usesProcessReadiness } from 'internal:scheduler-native';
+import {
+  setSchedulerPollingRequired,
+  usesProcessReadiness,
+  recordRealmState,
+} from 'internal:scheduler-native';
 import { EnvelopeKind } from 'internal:realm/envelope';
 import { wakeFd } from 'internal:async-runtime';
 import { registerRealmProfiling } from 'internal:process-profiler';
@@ -407,8 +412,18 @@ export function driveLoop(
 ): void {
   const processScheduled = usesProcessReadiness();
   let emptyTicks = 0;
+  const tracing = env['FINO_TRACE_READINESS'] === '1';
+  let lastDiagnostic = '';
+  function report(done: boolean): void {
+    if (!tracing) return;
+    const state = JSON.stringify({ entry: getEntryPath(), done, handles: _activeHandleCounts() });
+    if (state === lastDiagnostic) return;
+    lastDiagnostic = state;
+    recordRealmState('loop', state);
+  }
   function step(): number {
     const initiallyDone = isDone();
+    report(initiallyDone);
     if (initiallyDone && (finishWhenDone() || !alive())) return -1;
     // A reactor-scheduled realm never blocks here: its readiness completions
     // are delivered by the main thread, which owns the only backend.
@@ -428,7 +443,16 @@ export function driveLoop(
     // run that shutdown to completion. Without this second check a realm could
     // finish during a turn that dispatched no events and be parked forever,
     // because nothing would ever step it again to notice.
-    const done = isDone();
+    let done = isDone();
+    if (!done && count + delivered + advanced === 0) {
+      // This completion check can start asynchronous shutdown after the
+      // checkpoint above. Drain that cleanup and observe its result before
+      // reporting quiescence: the host cannot count microtasks alone as
+      // progress, and a finished Realm has no future I/O to wake it again.
+      drainMicrotasks();
+      done = isDone();
+    }
+    report(done);
     if (done && (finishWhenDone() || !alive())) return -1;
     return count + delivered + advanced;
   }

@@ -2094,6 +2094,8 @@ export class Realm<F extends RealmFn = RealmFn> {
   #scheduledShutdownRegistration: { dispose(): void } | null = null;
   /** Calls whose response still owns this realm during shutdown. @internal */
   #activeCalls = 0;
+  /** A one-shot call result starts child shutdown; its hooks must finish normally. @internal */
+  #callReturned = false;
   /** Pending spawn for remote realms; resolves to childPortId after SPAWN_ACK. */
   /**
    * Private property `#spawnPromise` used by `Realm`.
@@ -2446,7 +2448,9 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#scheduledRules = rules;
       this.#scheduledCompletion = this.#startScheduledRealm(opts, rules, false, bootstrapData);
       this.#scheduledShutdownRegistration = registerShutdownHook(() => {
-        if (this.#activeCalls === 0) this.terminate({ force: true });
+        if (this.#activeCalls === 0 && (!this.#callReturned || this.#scheduledOpts !== null)) {
+          this.terminate({ force: true });
+        }
         return this.#scheduledCompletion!.catch(() => {});
       });
       void this.#scheduledCompletion.then(
@@ -2620,6 +2624,7 @@ export class Realm<F extends RealmFn = RealmFn> {
           }
           if (settled) return true;
           settled = true;
+          this.#callReturned = true;
           stop();
           port.close();
           _resolveCallResponse(envelope.kind, value, resolve, reject);

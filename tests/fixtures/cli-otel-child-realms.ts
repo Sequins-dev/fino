@@ -24,10 +24,9 @@ async function runChild(realm: Realm): Promise<void> {
   ]);
   console.log('child:message');
   realm.terminate();
-  await Promise.race([
-    running.catch(() => {}),
-    new Promise<void>((resolve) => setTimeout(resolve, 20)),
-  ]);
+  // The next marker owns a new child; wait for this child's shutdown exports
+  // instead of classifying late exports as traffic from the next child.
+  await running;
 }
 
 await runChild(new Realm({ entry, data: { label: 'inherited' } }));

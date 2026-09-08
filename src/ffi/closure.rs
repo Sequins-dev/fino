@@ -7,7 +7,6 @@
 //! must return a non-Promise scalar result.
 
 use std::ffi::c_void;
-use std::os::unix::io::RawFd;
 use std::sync::{Arc, Condvar, Mutex};
 
 use libffi::low::Callback;
@@ -27,13 +26,14 @@ unsafe extern "C" {
 // ---------------------------------------------------------------------------
 
 struct CallbackData {
+    owner: u32,
     callback_id: usize,
     param_types: Vec<NativeType>,
     result_type: NativeType,
     context: v8::Global<v8::Context>,
     func: v8::Global<v8::Function>,
     js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
-    wake_write: RawFd,
+    wake_write: Arc<crate::async_rt::NativeWake>,
 }
 
 // SAFETY: only primitive types and Arc (Send).
@@ -97,7 +97,10 @@ unsafe extern "C" fn trampoline(
     let slot: Arc<(Mutex<Option<Result<js_calls::CallResult, String>>>, Condvar)> =
         Arc::new((Mutex::new(None), Condvar::new()));
 
+    let trace_id =
+        crate::async_rt::diagnostics::begin(data.owner, "callback", &data.callback_id.to_string());
     let request = JsCallRequest {
+        trace_id,
         callback_id: data.callback_id,
         args: send_args,
         param_types: data.param_types.clone(),
@@ -106,9 +109,7 @@ unsafe extern "C" fn trampoline(
 
     // Submit to the V8 thread queue and wake the event loop.
     data.js_call_requests.lock().unwrap().push(request);
-    unsafe {
-        libc::write(data.wake_write, b"\x01".as_ptr() as *const c_void, 1);
-    }
+    data.wake_write.notify();
 
     // Block until the V8 thread fills the slot.
     let (lock, cvar) = slot.as_ref();
@@ -117,6 +118,7 @@ unsafe extern "C" fn trampoline(
         guard = cvar.wait(guard).unwrap();
     }
     let outcome = guard.take().unwrap();
+    crate::async_rt::diagnostics::finish(trace_id, "native-resumed");
 
     // Write the result into C's return-value buffer.
     unsafe { js_calls::write_c_result(result_ptr, &data.result_type, outcome) };
@@ -193,6 +195,9 @@ pub fn new_callback(
     let context = v8::Global::new(scope, context);
 
     let userdata = Box::new(CallbackData {
+        owner: crate::state::get_state(scope)
+            .borrow()
+            .scheduler_workload_owner,
         callback_id,
         param_types: param_types.clone(),
         result_type,

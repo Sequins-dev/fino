@@ -69,11 +69,13 @@
  */
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
+import { Stat } from 'internal:file/stat';
 import * as loop from 'internal:runtime/loop';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';
 const EAGAIN = os === 'darwin' ? 35 : 11;
 const lib = dlopen(LIBC, {
+  fstat: { parameters: ['i32', 'buffer'], result: 'i32' },
   read: {
     parameters: ['i32', 'buffer', 'i32'],
     result: 'i32',
@@ -1882,9 +1884,10 @@ export class FdReader extends BufferedBytesReader {
   /**
    * Whether this descriptor can be read safely before installing a watch.
    *
-   * Linux nonblocking descriptors use the usual read-until-`EAGAIN` pattern so
-   * data that arrived before watch registration cannot be stranded. Blocking
-   * descriptors and macOS retain readiness-first behavior.
+   * Regular files must read through EOF without waiting for future bytes.
+   * Linux nonblocking streams use the read-until-`EAGAIN` pattern so data that
+   * arrived before watch registration cannot be stranded. Other streams retain
+   * readiness-first behavior.
    *
    * @internal
    */
@@ -1917,6 +1920,13 @@ export class FdReader extends BufferedBytesReader {
     this.#fd = fd;
     const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
     this.#readBeforeReady = os === 'linux' && flags >= 0 && (flags & O_NONBLOCK) !== 0;
+    const statBuf = new ArrayBuffer(256);
+    if (lib.symbols.fstat(fd, statBuf) === 0) {
+      const stat = Stat.parse(statBuf);
+      // A vnode's kqueue read filter need not fire at EOF. File type is stable
+      // for this borrowed descriptor; size and offset are not readiness gates.
+      this.#readBeforeReady ||= stat.isFile() || stat.isDirectory();
+    }
   }
   /**
    * Raw borrowed file descriptor.

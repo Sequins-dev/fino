@@ -213,6 +213,7 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
+        timeout-minutes: 10
         run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
 
   release-readiness:
@@ -263,4 +264,5 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
+        timeout-minutes: 10
         run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
