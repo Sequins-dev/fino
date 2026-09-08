@@ -76,13 +76,17 @@ import {
   usesProcessReadiness,
 } from 'internal:scheduler-native';
 import { serialize } from 'internal:serializer';
-import { EnvelopeKind } from 'internal:realm/envelope';
+import { EnvelopeKind, type Envelope } from 'internal:realm/envelope';
 import type { ClusterClient } from 'internal:cluster/client';
 import { ClusterPort, getCluster } from 'fino:cluster';
 import { topic, otelRuntimeTopic, otelRuntimeEvent } from '../internal/opentelemetry/common.ts';
 import { registerShutdownHook } from '../internal/shutdown.ts';
 import { transpile as transpileTypeScript } from '../format/typescript.ts';
-import { createChildCoverageContext, type CoverageRealmContext } from 'internal:coverage';
+import {
+  acceptRealmCoverage,
+  createChildCoverageContext,
+  type CoverageRealmContext,
+} from 'internal:coverage';
 import { UnboundedChannel } from '../internal/stream.ts';
 // Pre-cache OTel topic instances for realm lifecycle events.
 // Gated on hasSubscribers so realms that don't use OTel pay no cost.
@@ -326,10 +330,6 @@ function realmBootstrapData(opts: RealmOptions): RealmBootstrapData | undefined 
   }
   if (endpoint) data.cliOtel = { endpoint };
   return Object.keys(data).length === 0 ? undefined : data;
-}
-function serializeRealmBootstrapData(opts: RealmOptions): string | undefined {
-  const data = realmBootstrapData(opts);
-  return data === undefined ? undefined : JSON.stringify(data);
 }
 // ---------------------------------------------------------------------------
 // ImportMap - helper for building the child-specific rule list
@@ -2210,6 +2210,20 @@ export class Realm<F extends RealmFn = RealmFn> {
    * @internal
    */
   #activeChildPort: ProcessPort | null = null;
+  /** Parent-owned writes triggered by child runtime envelopes. @internal */
+  #channelWork: Promise<void> = Promise.resolve();
+  /** Route final child coverage through the parent-owned artifact writer. @internal */
+  #configureCoveragePort(
+    port: RealmPort | ProcessPort,
+    coverage: CoverageRealmContext | undefined,
+  ): void {
+    if (coverage === undefined) return;
+    port._addControlHandler((envelope: Envelope, value: unknown) => {
+      if (envelope.kind !== EnvelopeKind.Coverage) return false;
+      this.#channelWork = this.#channelWork.then(() => acceptRealmCoverage(coverage, value));
+      return true;
+    });
+  }
   /**
    * Create a Realm whose entrypoint is in-memory module source.
    *
@@ -2294,6 +2308,7 @@ export class Realm<F extends RealmFn = RealmFn> {
     this.#handle = scheduled.handle;
     const port = createScheduledPort(scheduled.portWakeFd, scheduled.handle);
     this.port = port;
+    this.#configureCoveragePort(port, bootstrapData?.coverage);
     registerReactorWake(scheduled.owner, scheduled.wakeFd);
     if (reloading) {
       for (const rule of rules) {
@@ -2310,6 +2325,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       removeRead(scheduled.completionFd);
       port.close();
       closeScheduledRealm(scheduled.handle);
+      await this.#channelWork;
       if (status.kind === 'error') {
         const message = status.error ?? 'scheduled realm failed';
         const error = new Error(message.replace(/^Error:\s*/, '').split('\n', 1)[0]);
@@ -2420,6 +2436,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getSandboxPortWakeReadFd(handle) as number;
       this.port = createSandboxPort(wakeReadFd, handle);
+      this.#configureCoveragePort(this.port, bootstrapData?.coverage);
     } else if (opts.process) {
       this.#kind = 'process';
       const bootstrapData = realmBootstrapData(opts);
@@ -2434,6 +2451,7 @@ export class Realm<F extends RealmFn = RealmFn> {
       this.#handle = handle;
       const wakeReadFd = getProcessSocketFd(handle) as number;
       this.port = new ProcessPort(wakeReadFd, handle);
+      this.#configureCoveragePort(this.port, bootstrapData?.coverage);
     } else {
       if (!usesProcessReadiness()) {
         throw new Error(
@@ -2504,15 +2522,17 @@ export class Realm<F extends RealmFn = RealmFn> {
    */
   #spawnChild(): number {
     const opts = this.#watchOpts!;
+    const bootstrapData = realmBootstrapData(opts);
     const handle = createProcessContext(
       opts.root ?? '',
       opts.entry,
       this.#watchSerializedRules,
       true,
       serializeRealmData(opts.data),
-      serializeRealmBootstrapData(opts),
+      bootstrapData === undefined ? undefined : JSON.stringify(bootstrapData),
     ) as number;
     this.#activeChildPort = new ProcessPort(getProcessSocketFd(handle) as number, handle);
+    this.#configureCoveragePort(this.#activeChildPort, bootstrapData?.coverage);
     return handle;
   }
   /**
@@ -2583,7 +2603,9 @@ export class Realm<F extends RealmFn = RealmFn> {
         resolve,
         reject,
       );
-    });
+    })
+      .then(() => this.#channelWork)
+      .finally(() => (this.#activeChildPort ?? this.port).close());
     return this.#processCompletion;
   }
   /**
@@ -2592,7 +2614,8 @@ export class Realm<F extends RealmFn = RealmFn> {
    * The call starts the realm, sends a Call envelope, and resolves
    * with the returned value. It rejects if the realm exits before returning, if
    * the child serializes a call error, or if the remote cluster reports exit.
-   * The port is closed after the first response for non-streaming calls.
+   * Local ports remain open through child shutdown so final runtime control
+   * frames can drain after the call result.
    *
    * ```ts no_run
    * import { Realm } from 'fino:realm';
@@ -2626,7 +2649,6 @@ export class Realm<F extends RealmFn = RealmFn> {
           settled = true;
           this.#callReturned = true;
           stop();
-          port.close();
           _resolveCallResponse(envelope.kind, value, resolve, reject);
           return true;
         });
@@ -2705,7 +2727,6 @@ export class Realm<F extends RealmFn = RealmFn> {
             return false;
           }
           stop();
-          port.close();
           _resolveCallResponse(envelope.kind, value, resolve, reject);
           return true;
         });

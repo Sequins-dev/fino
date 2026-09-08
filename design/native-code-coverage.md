@@ -245,8 +245,8 @@ coordinator does not wait forever for a shard which cannot arrive.
 ### TypeScript coordinator
 
 Coverage is enabled in a test workload Isolate, but participating Realms can
-run on reactor workers, dedicated threads, or child processes. The TypeScript
-coordinator in each participating Isolate owns:
+run on reactor workers, dedicated threads, or child processes. The owning
+TypeScript coordinator owns:
 
 - the resolved artifact path and run root;
 - child Realm ids, parent relationships, and incomplete-Realm placeholders;
@@ -269,12 +269,14 @@ already cached for that resource. The loader does not decode mappings on behalf
 of coverage. Inspector dispatch remains the pre-existing generic transport,
 and the runtime version is ordinary `internal:process` metadata.
 
-Each Realm atomically replaces its TypeScript-written crash placeholder in a
-run-specific temporary shard directory from TypeScript. This works for
-in-process and process Realms without adding coverage messages to the user
-Realm protocol.
-The owning test process is the only final artifact writer, so individual Realms
-never race to overwrite the canonical JSON path.
+The child normalizes its final snapshot, then publishes the shard through the
+existing Realm transport as an internal coverage control frame. Its spawning
+parent validates the parent-issued Realm id and metadata before atomically
+replacing that Realm's crash placeholder in the run-specific shard directory.
+Control frames remain hidden from user message listeners but visible to
+transport observers. A Realm never writes its own shard; the main transport
+path owns the copied child data. The root test process remains the only writer
+of the canonical artifact assembled from those temporary shards.
 
 ### Realm identity
 

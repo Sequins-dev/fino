@@ -4,8 +4,9 @@
  * Coverage-specific Chrome DevTools Protocol behavior lives here rather than
  * in the Rust inspector binding. Coverage run identity, Realm inheritance,
  * crash placeholders, normalization, and aggregation are all implemented in
- * TypeScript. Native code provides only generic inspector transport, loader
- * source-map access, and Realm bootstrap-data transport.
+ * TypeScript. Native code provides only generic inspector transport and loader
+ * source-map access. Child contexts and completed shards cross the ordinary
+ * observed Realm channel.
  *
  * The collector implements the precise-coverage subset of:
  *
@@ -29,6 +30,7 @@ import type {
   CoverageSnapshot,
   CoverageSummary,
   RawScript,
+  RealmShard,
 } from 'internal:coverage/model';
 
 interface ProtocolError {
@@ -55,6 +57,9 @@ export interface CoverageProtocol {
   start(): void;
   take(): CoverageSnapshot;
 }
+
+/** Publish one normalized child-Realm shard through its owning channel. @internal */
+export type CoveragePublisher = (shard: RealmShard) => void | Promise<void>;
 
 let expectedResponseId: number | undefined;
 let expectedResponse: ProtocolResponse | undefined;
@@ -195,18 +200,37 @@ export function createChildCoverageContext(
   return child;
 }
 
+/** Validate and persist a child shard received by its owning Realm. @internal */
+export async function acceptRealmCoverage(
+  expected: CoverageRealmContext,
+  value: unknown,
+): Promise<void> {
+  const shard = value as RealmShard;
+  if (shard?.realm?.id !== expected.realm.id) {
+    throw new Error('fino:coverage — child submitted coverage for a different realm');
+  }
+  if (
+    shard.realm.parentId !== expected.realm.parentId ||
+    shard.realm.kind !== expected.realm.kind ||
+    shard.realm.entry !== expected.realm.entry
+  ) {
+    throw new Error('fino:coverage — child submitted different realm metadata');
+  }
+  const { writeCoverageShard } = await import('internal:coverage/model');
+  await writeCoverageShard(expected.run, shard);
+}
+
 /** Start this Realm's inspector collector, adopting inherited bootstrap state. @internal */
 export function startRealmCoverage(inherited?: CoverageRealmContext): void {
   if (collecting) return;
   if (inherited !== undefined) context = inherited;
   if (context === null) return;
-  writeCoveragePlaceholderSync(context.run, context.realm);
   protocol.start();
   collecting = true;
 }
 
 /** Take, normalize, and publish the current Realm's final snapshot once. @internal */
-export async function finishRealmCoverage(): Promise<void> {
+export async function finishRealmCoverage(publish?: CoveragePublisher): Promise<void> {
   if (!collecting) return;
   collecting = false;
   const realmContext = context;
@@ -226,7 +250,8 @@ export async function finishRealmCoverage(): Promise<void> {
       ],
     };
   }
-  await writeCoverageShard(realmContext.run, shard);
+  if (publish === undefined) await writeCoverageShard(realmContext.run, shard);
+  else await publish(shard);
 }
 
 /** Start a test coverage run and its root-Realm collector. @internal */
@@ -240,6 +265,7 @@ export async function startCoverage(path: string): Promise<void> {
     realm: missingRealm(`realm-${pid}-0`, null, 'test', null),
     toolVersion: runtimeVersion,
   };
+  writeCoveragePlaceholderSync(context.run, context.realm);
   startRealmCoverage();
 }
 
