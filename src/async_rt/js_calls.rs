@@ -6,7 +6,8 @@
 //! awaits it on the LocalExecutor and wakes the blocking thread when done.
 
 use std::ffi::c_void;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 
 use ::v8;
 use smallvec::SmallVec;
@@ -74,12 +75,51 @@ pub enum SendArg {
 
 /// A pending JS callback invocation.
 pub struct JsCallRequest {
+    pub active: Arc<AtomicBool>,
     pub trace_id: u64,
     pub callback_id: usize,
     pub args: Vec<SendArg>,
     pub param_types: Vec<NativeType>,
     /// Filled by the V8 thread; the blocking thread waits on the condvar.
     pub result_slot: Arc<(Mutex<Option<Result<CallResult, String>>>, Condvar)>,
+}
+
+type ResultSlot = (Mutex<Option<Result<CallResult, String>>>, Condvar);
+
+/// One Realm's callback ingress. Closing and enqueueing share a lock so a late
+/// foreign call cannot miss shutdown and wait forever on a retired executor.
+#[derive(Default)]
+pub struct CallbackPort {
+    closed: bool,
+    requests: Vec<JsCallRequest>,
+    pending: Vec<Weak<ResultSlot>>,
+}
+impl CallbackPort {
+    pub fn push(&mut self, request: JsCallRequest) {
+        if self.closed {
+            fill_slot(
+                &request.result_slot,
+                Err("FfiCallback: Realm is closed".into()),
+            );
+            return;
+        }
+        self.pending.retain(|slot| slot.strong_count() > 0);
+        self.pending.push(Arc::downgrade(&request.result_slot));
+        self.requests.push(request);
+    }
+    pub fn drain(&mut self) -> Vec<JsCallRequest> {
+        std::mem::take(&mut self.requests)
+    }
+    pub fn is_closed(&self) -> bool {
+        self.closed
+    }
+    pub fn close(&mut self) {
+        self.closed = true;
+        self.requests.clear();
+        for slot in self.pending.drain(..).filter_map(|slot| slot.upgrade()) {
+            fill_slot(&slot, Err("FfiCallback: Realm is closed".into()));
+        }
+    }
 }
 
 /// Register a JS function and return its isolate-local slot index.
@@ -125,6 +165,13 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
     }
 
     for req in requests {
+        if !req.active.load(Ordering::Acquire) {
+            fill_slot(
+                &req.result_slot,
+                Err("FfiCallback: callback is closed".into()),
+            );
+            continue;
+        }
         super::diagnostics::stage(req.trace_id, "invoking");
         let func_local = crate::async_rt::with_callback_table(|table| {
             table
@@ -198,7 +245,7 @@ pub fn process_requests(scope: &mut v8::PinScope, requests: Vec<JsCallRequest>) 
 /// `args` must be the libffi callback argument array for `param_types`.
 pub unsafe fn invoke_registered_callback_sync_from_c_args(
     scope: &mut v8::PinScope,
-    func_global: &v8::Global<v8::Function>,
+    callback_id: usize,
     args: *const *const c_void,
     param_types: &[NativeType],
 ) -> Result<CallResult, String> {
@@ -208,16 +255,14 @@ pub unsafe fn invoke_registered_callback_sync_from_c_args(
         js_args.push(unsafe { c_arg_to_v8(scope, arg_ptr, ty) });
     }
 
-    call_global_callback_sync(scope, func_global, &js_args)
-}
-
-fn call_global_callback_sync(
-    scope: &mut v8::PinScope,
-    func_global: &v8::Global<v8::Function>,
-    js_args: &[v8::Local<v8::Value>],
-) -> Result<CallResult, String> {
-    let func = v8::Local::new(scope, func_global);
-    call_local_callback_sync(scope, func, js_args)
+    let function = crate::async_rt::with_callback_table(|table| {
+        table
+            .get(callback_id)
+            .and_then(|entry| entry.as_ref())
+            .map(|f| v8::Local::new(scope, f))
+    })
+    .ok_or_else(|| "FfiCallback: callback is closed".to_string())?;
+    call_local_callback_sync(scope, function, &js_args)
 }
 
 fn call_local_callback_sync(
@@ -572,5 +617,66 @@ fn call_result_to_f64(r: &CallResult) -> f64 {
     match r {
         CallResult::F64(f) => *f,
         other => call_result_to_i64(other) as f64,
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    fn request() -> (JsCallRequest, Arc<ResultSlot>) {
+        let slot = Arc::new((Mutex::new(None), Condvar::new()));
+        (
+            JsCallRequest {
+                active: Arc::new(AtomicBool::new(true)),
+                trace_id: 0,
+                callback_id: 0,
+                args: vec![],
+                param_types: vec![],
+                result_slot: Arc::clone(&slot),
+            },
+            slot,
+        )
+    }
+    #[test]
+    fn shutdown_wakes_queued_and_already_drained_calls() {
+        let mut port = CallbackPort::default();
+        let (first, first_slot) = request();
+        port.push(first);
+        let _running = port.drain();
+        let (second, second_slot) = request();
+        port.push(second);
+        port.close();
+        assert!(first_slot.0.lock().unwrap().as_ref().unwrap().is_err());
+        assert!(second_slot.0.lock().unwrap().as_ref().unwrap().is_err());
+        assert!(port.drain().is_empty());
+        let (late, late_slot) = request();
+        port.push(late);
+        assert!(late_slot.0.lock().unwrap().as_ref().unwrap().is_err());
+    }
+    #[test]
+    fn dropping_realm_state_closes_its_foreign_callback_port() {
+        let state = crate::async_rt::new_state();
+        let port = Arc::clone(&state.js_call_requests);
+        let (call, slot) = request();
+        port.lock().unwrap().push(call);
+        drop(state);
+        assert!(port.lock().unwrap().is_closed());
+        assert!(slot.0.lock().unwrap().as_ref().unwrap().is_err());
+    }
+    #[test]
+    fn realm_teardown_releases_native_roots_after_closing_the_port() {
+        let mut state = crate::async_rt::new_state();
+        let port = Arc::clone(&state.js_call_requests);
+        let released = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = Arc::clone(&released);
+        state.native_owners.insert(
+            1,
+            Box::new(move || {
+                assert!(port.lock().unwrap().is_closed());
+                count.fetch_add(1, Ordering::SeqCst);
+            }),
+        );
+        drop(state);
+        assert_eq!(released.load(Ordering::SeqCst), 1);
     }
 }

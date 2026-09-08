@@ -25,6 +25,7 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "ffiFunction",
         "Pointer",
         "FfiCallback",
+        "FfiResource",
         "structType",
     ]
     .iter()
@@ -58,6 +59,11 @@ fn ffi_eval<'a>(
     let cb_fn = cb_tmpl.get_function(scope)?;
     let cb_key = v8::String::new(scope, "FfiCallback")?;
     module.set_synthetic_module_export(scope, cb_key, cb_fn.into())?;
+
+    let resource_fn =
+        v8::FunctionTemplate::new(scope, ffi_resource_constructor).get_function(scope)?;
+    let resource_key = v8::String::new(scope, "FfiResource")?;
+    module.set_synthetic_module_export(scope, resource_key, resource_fn.into())?;
 
     let struct_tmpl = v8::FunctionTemplate::new(scope, struct_type_callback);
     let struct_fn = struct_tmpl.get_function(scope)?;
@@ -522,7 +528,17 @@ fn ffi_callback_constructor(
             }
         };
 
-    let ext = v8::External::new(scope, handle_ptr as *mut std::ffi::c_void);
+    let ext = pointer::into_js(scope, handle_ptr.cast());
+    register_owner_cell(
+        scope,
+        ext,
+        Box::new(move || {
+            let handle = unsafe { Box::from_raw(handle_ptr) };
+            if let Some(inner) = &handle.inner {
+                inner.revoke();
+            }
+        }),
+    );
     let close_tmpl = v8::FunctionTemplate::builder(ffi_callback_close)
         .data(ext.into())
         .build(scope);
@@ -531,12 +547,29 @@ fn ffi_callback_constructor(
         None => return,
     };
 
+    let lease_fn = match v8::FunctionTemplate::builder(ffi_callback_lease)
+        .data(ext.into())
+        .build(scope)
+        .get_function(scope)
+    {
+        Some(f) => f,
+        None => return,
+    };
+    let block_fn = v8::FunctionTemplate::builder(ffi_callback_block)
+        .data(ext.into())
+        .build(scope)
+        .get_function(scope)
+        .unwrap();
     let ptr_val = pointer::into_js(scope, code_ptr);
     let result_obj = v8::Object::new(scope);
     let ptr_key = v8::String::new(scope, "pointer").unwrap();
     let close_key = v8::String::new(scope, "close").unwrap();
     result_obj.set(scope, ptr_key.into(), ptr_val);
     result_obj.set(scope, close_key.into(), close_fn.into());
+    let block_key = v8::String::new(scope, "block").unwrap();
+    result_obj.set(scope, block_key.into(), block_fn.into());
+    let lease_key = v8::String::new(scope, "lease").unwrap();
+    result_obj.set(scope, lease_key.into(), lease_fn.into());
     if let Some(dispose_key) = symbol_property(scope, "dispose") {
         result_obj.set(scope, dispose_key, close_fn.into());
     }
@@ -563,19 +596,263 @@ fn symbol_property<'s>(
 }
 
 fn ffi_callback_close(
-    _scope: &mut v8::PinScope,
+    scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
     _rv: v8::ReturnValue,
 ) {
-    let ext = match v8::Local::<v8::External>::try_from(args.data()) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let handle = unsafe { &mut *(ext.value() as *mut closure::CallbackHandle) };
-    if let Some(_inner) = handle.inner.take() {
-        crate::async_rt::js_calls::unregister_callback(handle.id);
-        // _inner drops here, freeing the Closure and CallbackData
+    let raw = owned_pointer(scope, args.data(), true);
+    if raw.is_null() {
+        return;
     }
+    let handle = unsafe { &*raw.cast::<closure::CallbackHandle>() };
+    if let Some(inner) = &handle.inner {
+        inner.revoke();
+        crate::async_rt::js_calls::unregister_callback(handle.id);
+        crate::async_rt::with_ffi_contexts(|contexts| {
+            contexts.remove(&handle.id);
+        });
+    }
+    release_owner_cell(args.data());
+}
+
+fn owned_pointer(
+    scope: &mut v8::PinScope,
+    value: v8::Local<v8::Value>,
+    take: bool,
+) -> *mut std::ffi::c_void {
+    let pointer = pointer::from_js(scope, value).unwrap_or(std::ptr::null_mut());
+    if take {
+        if let Ok(buffer) = v8::Local::<v8::ArrayBuffer>::try_from(value) {
+            if let Some(data) = buffer.data() {
+                unsafe {
+                    data.as_ptr().cast::<usize>().write_unaligned(0);
+                }
+            }
+        }
+    }
+    pointer
+}
+
+/// A lease may be released only after its native consumer has stopped using
+/// the pointer, including returning from its last invocation.
+fn ffi_callback_lease(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let raw = owned_pointer(scope, args.data(), false);
+    if raw.is_null() {
+        v8util::throw_type_error(scope, "FfiCallback is closed");
+        return;
+    }
+    let handle = unsafe { &*raw.cast::<closure::CallbackHandle>() };
+    let Some(inner) = handle.inner.as_ref() else {
+        v8util::throw_type_error(scope, "FfiCallback is closed");
+        return;
+    };
+    let lease = std::sync::Arc::into_raw(std::sync::Arc::clone(inner));
+    let external = pointer::into_js(scope, lease.cast_mut().cast());
+    register_owner_cell(
+        scope,
+        external,
+        Box::new(move || unsafe {
+            drop(std::sync::Arc::from_raw(lease));
+        }),
+    );
+    let close = v8::FunctionTemplate::builder(ffi_callback_lease_close)
+        .data(external.into())
+        .build(scope)
+        .get_function(scope)
+        .unwrap();
+    let object = v8::Object::new(scope);
+    let ptr = pointer::into_js(scope, handle._code_ptr);
+    let key = v8::String::new(scope, "pointer").unwrap();
+    object.set(scope, key.into(), ptr);
+    let key = v8::String::new(scope, "close").unwrap();
+    object.set(scope, key.into(), close.into());
+    if let Some(key) = symbol_property(scope, "dispose") {
+        object.set(scope, key, close.into());
+    }
+    rv.set(object.into());
+}
+fn ffi_callback_lease_close(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    owned_pointer(scope, args.data(), true);
+    release_owner_cell(args.data());
+}
+
+fn register_owner_cell(
+    scope: &mut v8::PinScope,
+    cell: v8::Local<v8::Value>,
+    release: Box<dyn FnOnce()>,
+) {
+    let cell = v8::Local::<v8::ArrayBuffer>::try_from(cell).unwrap();
+    let store = cell.get_backing_store();
+    crate::async_rt::register_native_owner(
+        cell.data().unwrap().as_ptr() as usize,
+        Box::new(move || {
+            release();
+            drop(store);
+        }),
+    );
+    let _ = scope;
+}
+fn release_owner_cell(cell: v8::Local<v8::Value>) {
+    let cell = v8::Local::<v8::ArrayBuffer>::try_from(cell).unwrap();
+    crate::async_rt::release_native_owner(cell.data().unwrap().as_ptr() as usize);
+}
+
+fn ffi_resource_constructor(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let Some(pointer) = pointer::from_js(scope, args.get(0)) else {
+        return;
+    };
+    let Some(destructor) = pointer::from_js(scope, args.get(1)) else {
+        return;
+    };
+    if pointer.is_null() || destructor.is_null() {
+        v8util::throw_type_error(scope, "FfiResource pointer and destructor must not be null");
+        return;
+    }
+    let cell = pointer::into_js(scope, pointer);
+    register_owner_cell(
+        scope,
+        cell,
+        Box::new(move || {
+            let release: unsafe extern "C" fn(*mut std::ffi::c_void) =
+                unsafe { std::mem::transmute(destructor) };
+            unsafe {
+                release(pointer);
+            }
+        }),
+    );
+    let close = v8::FunctionTemplate::builder(ffi_callback_lease_close)
+        .data(cell.into())
+        .build(scope)
+        .get_function(scope)
+        .unwrap();
+    let result = v8::Object::new(scope);
+    let key = v8::String::new(scope, "pointer").unwrap();
+    let pointer = pointer::into_js(scope, pointer);
+    result.set(scope, key.into(), pointer);
+    let key = v8::String::new(scope, "close").unwrap();
+    result.set(scope, key.into(), close.into());
+    if let Some(key) = symbol_property(scope, "dispose") {
+        result.set(scope, key, close.into());
+    }
+    rv.set(result.into());
+}
+
+fn ffi_callback_block(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (&args, &mut rv);
+        v8util::throw_type_error(scope, "Objective-C blocks require macOS");
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let raw = owned_pointer(scope, args.data(), false);
+        if raw.is_null() {
+            v8util::throw_type_error(scope, "FfiCallback is closed");
+            return;
+        }
+        let handle = unsafe { &*raw.cast::<closure::CallbackHandle>() };
+        let Some(inner) = handle.inner.as_ref().map(std::sync::Arc::clone) else {
+            return;
+        };
+        // Resource getters can re-enter JS and close the callback. Hold native
+        // ownership before reading them so that revocation cannot free `inner`.
+        // Validate every descriptor before transferring resource ownership.
+        let mut resources = Vec::new();
+        if !args.get(0).is_null_or_undefined() {
+            let Ok(array) = v8::Local::<v8::Array>::try_from(args.get(0)) else {
+                v8util::throw_type_error(scope, "block resources must be an array");
+                return;
+            };
+            for i in 0..array.length() {
+                let Some(value) = array.get_index(scope, i) else {
+                    return;
+                };
+                let Ok(object) = v8::Local::<v8::Object>::try_from(value) else {
+                    v8util::throw_type_error(scope, "block resource must be an object");
+                    return;
+                };
+                let key = v8::String::new(scope, "pointer").unwrap();
+                let Some(value) = object.get(scope, key.into()) else {
+                    return;
+                };
+                let Some(pointer) = pointer::from_js(scope, value) else {
+                    return;
+                };
+                let key = v8::String::new(scope, "release").unwrap();
+                let Some(value) = object.get(scope, key.into()) else {
+                    return;
+                };
+                let Some(release) = pointer::from_js(scope, value) else {
+                    return;
+                };
+                if release.is_null() {
+                    v8util::throw_type_error(scope, "block resource release must not be null");
+                    return;
+                }
+                resources.push((pointer as usize, release as usize));
+            }
+        }
+        let resources = resources
+            .into_iter()
+            .map(|(pointer, destructor)| closure::blocks::Resource {
+                pointer,
+                destructor,
+            })
+            .collect();
+        let block = closure::blocks::create(&inner, resources);
+        if block.is_null() {
+            v8util::throw_error(scope, "could not allocate Objective-C block");
+            return;
+        }
+        let cell = pointer::into_js(scope, block);
+        register_owner_cell(
+            scope,
+            cell,
+            Box::new(move || unsafe {
+                closure::blocks::release(block);
+            }),
+        );
+        let close = v8::FunctionTemplate::builder(ffi_callback_block_close)
+            .data(cell.into())
+            .build(scope)
+            .get_function(scope)
+            .unwrap();
+        let result = v8::Object::new(scope);
+        let key = v8::String::new(scope, "pointer").unwrap();
+        let pointer = pointer::into_js(scope, block);
+        result.set(scope, key.into(), pointer);
+        let key = v8::String::new(scope, "close").unwrap();
+        result.set(scope, key.into(), close.into());
+        if let Some(key) = symbol_property(scope, "dispose") {
+            result.set(scope, key, close.into());
+        }
+        rv.set(result.into());
+    }
+}
+#[cfg(target_os = "macos")]
+fn ffi_callback_block_close(
+    scope: &mut v8::PinScope,
+    args: v8::FunctionCallbackArguments,
+    _rv: v8::ReturnValue,
+) {
+    owned_pointer(scope, args.data(), true);
+    release_owner_cell(args.data());
 }
 
 // ---------------------------------------------------------------------------
