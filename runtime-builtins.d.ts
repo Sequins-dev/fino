@@ -251,6 +251,37 @@ declare module 'fino:ffi' {
    * Field descriptor accepted by `structType()`.
    */
   export type StructField = StructFieldTuple | StructFieldDescriptor;
+  /** An explicitly owned native pointer, also released during Realm teardown. */
+  export interface FfiOwnedPointer {
+    /** Borrowed native pointer; do not use after disposal. */
+    readonly pointer: ArrayBuffer;
+    /** Release this ownership reference once. */
+    close(): void;
+    /** Release the ownership reference at scope exit. */
+    [Symbol.dispose](): void;
+  }
+  /**
+   * Owns a callback's native code independently of its JavaScript registration.
+   * Keep this lease alive until the native API has acknowledged that it will no
+   * longer call the pointer and its last invocation has returned. A resolved
+   * promise inside the JavaScript handler is not that acknowledgement.
+   * Ordinary leases must finish before the owning Realm shuts down. Use native
+   * block copies when an Apple API needs ownership that outlives the Realm.
+   */
+  export interface FfiCallbackLease extends FfiOwnedPointer {}
+  /**
+   * Own a native pointer using a C `void(void*)` destructor. Disposal is
+   * idempotent and Realm teardown releases unclosed resources. The destructor
+   * must not call JavaScript, and its library must remain loaded until release.
+   * The borrowed `pointer` must not be used after close.
+   *
+   * ```ts no_run
+   * using memory = new FfiResource(libc.symbols.malloc(64), libc.pointers.free);
+   * ```
+   */
+  export const FfiResource: {
+    new (pointer: ArrayBuffer, release: ArrayBuffer): FfiOwnedPointer;
+  };
   /**
    * Callback object returned by `new FfiCallback()`.
    */
@@ -259,11 +290,30 @@ declare module 'fino:ffi' {
      * Native function pointer to pass to C APIs.
      */
     readonly pointer: ArrayBuffer;
+    /** Acquire independent native ownership; throws after close. */
+    lease(): FfiCallbackLease;
     /**
-     * Release the native callback trampoline.
+     * Create an Apple Objective-C block with native copy/dispose ownership.
+     * The block inserts its implicit first argument automatically. Native block
+     * copies retain the callback code independently; close revokes JavaScript
+     * invocation but copied blocks remain safe until their native release.
      *
-     * The method is idempotent. Do not close the callback while native code may
-     * still call `pointer`.
+     * Each resource transfers one owned native reference to the block. `release`
+     * must point to a synchronous C `void(void*)` destructor that never calls JS;
+     * it runs on the thread releasing the last block copy. Descriptors are
+     * validated before ownership transfers. Throws outside macOS.
+     *
+     * Close the returned block to release its JS-owned reference. Realm teardown
+     * also releases outstanding ownership roots; native copies may outlive it.
+     */
+    block(resources?: readonly { pointer: ArrayBuffer; release: ArrayBuffer }[]): FfiOwnedPointer;
+    /**
+     * Revoke JavaScript invocation and release the callback's code reference.
+     *
+     * Outstanding leases keep the native entry point valid; later calls return
+     * a zero/null result without invoking JavaScript. Already-running handlers
+     * may finish. Without a lease, native code must have stopped using `pointer`
+     * before close. The method is idempotent.
      */
     close(): void;
     /**

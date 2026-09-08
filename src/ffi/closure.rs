@@ -7,6 +7,7 @@
 //! must return a non-Promise scalar result.
 
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use libffi::low::Callback;
@@ -21,8 +22,7 @@ unsafe extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// Per-callback userdata — stored in a `Box` that is leaked to give `'static`.
-// Freed explicitly in `FfiCallbackInner::drop`.
+// Native state contains no V8 handles; foreign leases may outlive the Realm.
 // ---------------------------------------------------------------------------
 
 struct CallbackData {
@@ -30,9 +30,8 @@ struct CallbackData {
     callback_id: usize,
     param_types: Vec<NativeType>,
     result_type: NativeType,
-    context: v8::Global<v8::Context>,
-    func: v8::Global<v8::Function>,
-    js_call_requests: Arc<Mutex<Vec<JsCallRequest>>>,
+    active: Arc<AtomicBool>,
+    js_call_requests: Arc<Mutex<js_calls::CallbackPort>>,
     wake_write: Arc<crate::async_rt::NativeWake>,
 }
 
@@ -53,7 +52,19 @@ unsafe extern "C" fn trampoline(
     let data = userdata;
     let result_ptr: *mut c_void = result as *mut c_void;
 
-    if crate::async_rt::is_v8_thread() {
+    if !data.active.load(Ordering::Acquire) || data.js_call_requests.lock().unwrap().is_closed() {
+        unsafe {
+            js_calls::write_c_result(
+                result_ptr,
+                &data.result_type,
+                Ok(js_calls::CallResult::Void),
+            )
+        };
+        return;
+    }
+    let own_realm = crate::async_rt::js_call_handle()
+        .is_some_and(|(port, _)| Arc::ptr_eq(&port, &data.js_call_requests));
+    if own_realm {
         let mut isolate = unsafe { v8__Isolate__GetCurrent() };
         if isolate.is_null() {
             unsafe {
@@ -68,12 +79,26 @@ unsafe extern "C" fn trampoline(
 
         let isolate = unsafe { v8::Isolate::ref_from_raw_isolate_ptr_mut(&mut isolate) };
         v8::callback_scope!(unsafe let cb_scope, isolate);
-        let context = v8::Local::new(cb_scope, &data.context);
+        let context = crate::async_rt::with_ffi_contexts(|contexts| {
+            contexts
+                .get(&data.callback_id)
+                .map(|context| v8::Local::new(cb_scope, context))
+        });
+        let Some(context) = context else {
+            unsafe {
+                js_calls::write_c_result(
+                    result_ptr,
+                    &data.result_type,
+                    Ok(js_calls::CallResult::Void),
+                )
+            };
+            return;
+        };
         let scope = &mut v8::ContextScope::new(cb_scope, context);
         let outcome = unsafe {
             js_calls::invoke_registered_callback_sync_from_c_args(
                 scope,
-                &data.func,
+                data.callback_id,
                 args,
                 &data.param_types,
             )
@@ -100,6 +125,7 @@ unsafe extern "C" fn trampoline(
     let trace_id =
         crate::async_rt::diagnostics::begin(data.owner, "callback", &data.callback_id.to_string());
     let request = JsCallRequest {
+        active: Arc::clone(&data.active),
         trace_id,
         callback_id: data.callback_id,
         args: send_args,
@@ -133,29 +159,26 @@ unsafe extern "C" fn trampoline(
 /// Dropped explicitly by `close()`. The function pointer is valid as long as
 /// this struct is alive.
 pub struct FfiCallbackInner {
-    // `Drop::drop` runs before field drops. We free `userdata_ptr` there;
-    // the closure is still technically alive at that point, but no C code
-    // can reach it after close() is called, so this is safe.
+    // Drop executable closure storage before its immutable native userdata.
     _closure: Closure<'static>,
-    userdata_ptr: *mut CallbackData,
+    data: Arc<CallbackData>,
 }
 
-// SAFETY: FfiCallbackInner is only accessed from the V8 thread.
+// SAFETY: ABI metadata is immutable, state is atomic or mutex protected, and
+// foreign owners release only after the final invocation has returned.
 unsafe impl Send for FfiCallbackInner {}
+unsafe impl Sync for FfiCallbackInner {}
 
-impl Drop for FfiCallbackInner {
-    fn drop(&mut self) {
-        if !self.userdata_ptr.is_null() {
-            unsafe { drop(Box::from_raw(self.userdata_ptr)) };
-        }
-        // `_closure` drops automatically after this impl returns.
+impl FfiCallbackInner {
+    pub fn revoke(&self) {
+        self.data.active.store(false, Ordering::Release);
     }
 }
 
 /// Opaque handle stored as a `v8::External` on the JS object.
 pub struct CallbackHandle {
     /// `Some` when open, `None` after `close()`.
-    pub inner: Option<FfiCallbackInner>,
+    pub inner: Option<Arc<FfiCallbackInner>>,
     pub id: usize,
     /// Raw function pointer for passing to C as a `pointer` argument.
     pub _code_ptr: *mut c_void,
@@ -181,32 +204,31 @@ pub fn new_callback(
     let (js_call_requests, wake_write) =
         crate::async_rt::js_call_handle().ok_or("FfiCallback: runtime not initialised")?;
 
-    let func_local = v8::Local::new(scope, &func_global);
-    let func = v8::Global::new(scope, func_local);
     let callback_id = js_calls::register_callback(func_global);
+    let context = v8::Global::new(scope, scope.get_current_context());
+    crate::async_rt::with_ffi_contexts(|contexts| {
+        contexts.insert(callback_id, context);
+    });
 
     // Build the libffi CIF.
     let ffi_params: Vec<_> = param_types.iter().map(|t| t.to_ffi_type()).collect();
     let ffi_result = result_type.to_ffi_type();
     let cif = Cif::new(ffi_params.into_iter(), ffi_result);
 
-    // Leak the userdata so the closure can hold a `'static` reference.
-    let context = scope.get_current_context();
-    let context = v8::Global::new(scope, context);
+    // Arc keeps userdata stable until every native owner releases its closure.
 
-    let userdata = Box::new(CallbackData {
+    let userdata = Arc::new(CallbackData {
         owner: crate::state::get_state(scope)
             .borrow()
             .scheduler_workload_owner,
         callback_id,
         param_types: param_types.clone(),
         result_type,
-        context,
-        func,
+        active: Arc::new(AtomicBool::new(true)),
         js_call_requests,
         wake_write,
     });
-    let userdata_ptr: *mut CallbackData = Box::into_raw(userdata);
+    let userdata_ptr = Arc::as_ptr(&userdata);
     let userdata_ref: &'static CallbackData = unsafe { &*userdata_ptr };
 
     // Create the libffi closure.
@@ -221,12 +243,16 @@ pub fn new_callback(
 
     let inner = FfiCallbackInner {
         _closure: closure,
-        userdata_ptr,
+        data: userdata,
     };
     let handle = Box::new(CallbackHandle {
-        inner: Some(inner),
+        inner: Some(Arc::new(inner)),
         id: callback_id,
         _code_ptr: code_ptr,
     });
     Ok((Box::into_raw(handle), code_ptr))
 }
+
+#[cfg(target_os = "macos")]
+#[path = "blocks.rs"]
+pub mod blocks;

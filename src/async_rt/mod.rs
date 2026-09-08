@@ -143,7 +143,7 @@ pub struct IsolateAsyncState {
     /// Completed async FFI calls waiting to be resolved into JS promises.
     pub completions: Arc<Mutex<Vec<FfiCompletion>>>,
     /// Pending cross-thread JS callback invocations (from `FfiCallback` trampolines).
-    pub js_call_requests: Arc<Mutex<Vec<js_calls::JsCallRequest>>>,
+    pub js_call_requests: Arc<Mutex<js_calls::CallbackPort>>,
     /// Released `Pointer.view` external buffers awaiting their `onRelease`
     /// callback (fire-and-forget; deleters never block or touch V8).
     pub view_releases: Arc<Mutex<Vec<ViewRelease>>>,
@@ -154,6 +154,17 @@ pub struct IsolateAsyncState {
     resolver_table: Vec<Option<v8::Global<v8::PromiseResolver>>>,
     /// JS callbacks registered by this isolate for native invocation.
     callback_table: Vec<Option<v8::Global<v8::Function>>>,
+    ffi_contexts: std::collections::HashMap<usize, v8::Global<v8::Context>>,
+    native_owners: std::collections::HashMap<usize, Box<dyn FnOnce()>>,
+}
+
+impl Drop for IsolateAsyncState {
+    fn drop(&mut self) {
+        self.js_call_requests.lock().unwrap().close();
+        for (_, release) in self.native_owners.drain() {
+            release();
+        }
+    }
 }
 
 thread_local! {
@@ -191,7 +202,7 @@ pub fn new_state_with_pipe(
     IsolateAsyncState {
         executor: async_executor::LocalExecutor::new(),
         completions: Arc::new(Mutex::new(Vec::new())),
-        js_call_requests: Arc::new(Mutex::new(Vec::new())),
+        js_call_requests: Arc::new(Mutex::new(js_calls::CallbackPort::default())),
         view_releases: Arc::new(Mutex::new(Vec::new())),
         // SAFETY: ownership of both fresh descriptors moves into this state.
         wake: Arc::new(NativeWake {
@@ -202,6 +213,8 @@ pub fn new_state_with_pipe(
         }),
         resolver_table: Vec::new(),
         callback_table: Vec::new(),
+        ffi_contexts: std::collections::HashMap::new(),
+        native_owners: std::collections::HashMap::new(),
     }
 }
 
@@ -215,6 +228,44 @@ pub(crate) fn with_callback_table<R>(
                 .as_mut()
                 .expect("async_rt::init() not called")
                 .callback_table,
+        )
+    })
+}
+
+/// Native ownership roots are released on explicit close or Realm teardown.
+/// Destructors must not access V8; callback ingress closes before teardown runs them.
+pub(crate) fn register_native_owner(key: usize, release: Box<dyn FnOnce()>) {
+    STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()
+            .expect("async state")
+            .native_owners
+            .insert(key, release);
+    });
+}
+pub(crate) fn release_native_owner(key: usize) {
+    let release = STATE.with(|state| {
+        state
+            .borrow_mut()
+            .as_mut()
+            .and_then(|state| state.native_owners.remove(&key))
+    });
+    if let Some(release) = release {
+        release();
+    }
+}
+
+pub(crate) fn with_ffi_contexts<R>(
+    callback: impl FnOnce(&mut std::collections::HashMap<usize, v8::Global<v8::Context>>) -> R,
+) -> R {
+    STATE.with(|state| {
+        callback(
+            &mut state
+                .borrow_mut()
+                .as_mut()
+                .expect("async state")
+                .ffi_contexts,
         )
     })
 }
@@ -239,12 +290,6 @@ pub fn shutdown() {
     STATE.with(|s| {
         *s.borrow_mut() = None;
     });
-}
-
-/// Returns true when called from the V8 isolate thread (i.e. `init()` has been called here).
-/// Used by `FfiCallback` trampolines to detect same-thread calls that would deadlock.
-pub fn is_v8_thread() -> bool {
-    STATE.with(|s| s.borrow().is_some())
 }
 
 /// Get the wake-pipe read fd (for `internal:async-runtime` to export as `wakeFd`).
@@ -310,7 +355,7 @@ pub fn completion_handle() -> Option<NativeQueueHandle<FfiCompletion>> {
 
 /// Get the JS-call-request queue + retained wake pipe (for `FfiCallback` trampolines).
 /// Returns None if `init()` hasn't been called on this thread.
-pub fn js_call_handle() -> Option<NativeQueueHandle<js_calls::JsCallRequest>> {
+pub fn js_call_handle() -> Option<(Arc<Mutex<js_calls::CallbackPort>>, Arc<NativeWake>)> {
     STATE.with(|s| {
         s.borrow()
             .as_ref()
@@ -414,7 +459,7 @@ fn drain_js_call_requests(scope: &mut v8::PinScope) -> bool {
             .as_ref()
             .map(|st| {
                 let mut q = st.js_call_requests.lock().unwrap();
-                std::mem::take(&mut *q)
+                q.drain()
             })
             .unwrap_or_default()
     });
