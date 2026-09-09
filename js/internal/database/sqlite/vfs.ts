@@ -2,9 +2,14 @@
  * internal:database/sqlite/vfs — JS-implemented sqlite3_vfs backed by fino:file FileSystem.
  *
  * Builds a `sqlite3_vfs` struct and a shared `sqlite3_io_methods` struct, each
- * filled with `FfiCallback` function pointers. The VFS delegates all file I/O
+ * filled with `FfiCallback` function pointers. The VFS delegates named file I/O
  * to a `FileSystem` instance from `fino:file`, so sqlite inherits whatever
  * provider the realm has (DiskFileSystem, MemoryFileSystem, S3FileSystem, etc.).
+ * Unnamed temporary files use a private MemoryFileSystem and are deleted on
+ * close. Their storage is ephemeral and consumes Realm memory, including when
+ * SQLite spills a statement journal. Named files retain the supplied provider.
+ *
+ * [SQLite VFS xOpen and delete-on-close contract](https://www.sqlite.org/c3ref/vfs.html)
  *
  * ## struct layouts (64-bit)
  *
@@ -81,6 +86,7 @@
  * @internal
  */
 import { FfiCallback, Pointer } from 'fino:ffi';
+import { MemoryFileSystem } from 'fino:file/memory';
 import type { FileSystem, FileHandle } from 'internal:file/provider';
 import {
   SQLITE_OK,
@@ -171,6 +177,7 @@ type SyncFileHandle = FileHandle & {
   tryLockSync?: (mode: 'shared' | 'exclusive' | 'none') => boolean;
 };
 type VfsFileState = {
+  removeOnClose?: () => void;
   handle: FileHandle;
   path: string;
   lockLevel: number;
@@ -256,6 +263,7 @@ function _openMode(flags: number): string {
  */
 const REGISTERED_VFS = new Set<FinoVFS>();
 export class FinoVFS {
+  #temporaryFs = new MemoryFileSystem({ now: () => 0 });
   /**
    * The provider every VFS file operation is delegated to.
    *
@@ -401,7 +409,11 @@ export class FinoVFS {
         try {
           const syncHandle = state.handle as SyncFileHandle;
           if (typeof syncHandle.closeSync !== 'function') return SQLITE_IOERR_CLOSE;
-          syncHandle.closeSync();
+          try {
+            syncHandle.closeSync();
+          } finally {
+            state.removeOnClose?.();
+          }
           return SQLITE_OK;
         } catch {
           return SQLITE_IOERR_CLOSE;
@@ -776,6 +788,7 @@ export class FinoVFS {
     // Pre-compute the io_methods address once.
     const ioMAddr = Pointer.addr(new Uint8Array(ioM)) as bigint;
     let nextId = 1;
+    const temporaryFs = this.#temporaryFs;
     const xOpen = new FfiCallback(
       {
         parameters: ['pointer', 'pointer', 'pointer', 'i32', 'pointer'],
@@ -788,17 +801,31 @@ export class FinoVFS {
         flags: number,
         pOutFlags: ArrayBuffer | null,
       ) => {
-        const path = zName ? readCStr(zName) : '';
-        if (!path) return SQLITE_OK;
+        // xOpen must initialize pMethods even on failure. A null name means
+        // a real temporary file, not a successful no-op (SQLite may spill a
+        // statement journal here during a large transaction).
+        Pointer.writePointer(pFile, 0, null);
+        const id = nextId++;
+        const provider = zName ? fs : temporaryFs;
+        const path = zName ? readCStr(zName) : `/sqlite-temp-${id}`;
+        if (!path) return SQLITE_IOERR;
         const mode = _openMode(flags);
         try {
-          const openSync = (fs as SyncFileSystem).openSync;
+          const openSync = (provider as SyncFileSystem).openSync;
+          const unlinkSync = (provider as SyncFileSystem).unlinkSync;
+          const deleteOnClose = (flags & 8) !== 0; // SQLITE_OPEN_DELETEONCLOSE
           if (typeof openSync !== 'function') return SQLITE_IOERR;
-          const handle = openSync.call(fs, path, mode);
-          const id = nextId++;
+          if (deleteOnClose && typeof unlinkSync !== 'function') return SQLITE_IOERR;
+          const handle = openSync.call(provider, path, mode);
           if (!dataVersions.has(path)) dataVersions.set(path, 1);
           handles.set(id, {
             handle,
+            removeOnClose: deleteOnClose
+              ? () => {
+                  unlinkSync!.call(provider, path);
+                  dataVersions.delete(path);
+                }
+              : undefined,
             path,
             lockLevel: SQLITE_LOCK_NONE,
             chunkSize: 0,
