@@ -959,7 +959,6 @@ static BUILTINS: &[BuiltinEntry] = &[
         "internal:scheduler/bootstrap",
         "internal/scheduler/bootstrap"
     ),
-    source_builtin!("internal:scheduler/reactor", "internal/scheduler/reactor"),
     source_builtin!(
         "internal:scheduler/readiness",
         "internal/scheduler/readiness"
@@ -1018,12 +1017,9 @@ fn builtin_source_path(spec: &str) -> Option<&'static str> {
     static MAP: OnceLock<std::collections::HashMap<&'static str, &'static str>> = OnceLock::new();
     let map = MAP.get_or_init(|| {
         let mut m = std::collections::HashMap::new();
-        // Entries registered outside the BUILTINS slice (e.g. internal/main.mjs
-        // compiled inline in runtime.rs and re-registered as "internal:main").
-        m.insert("internal:main", "internal/main");
         for (specifier, kind) in BUILTINS {
             if let BuiltinKind::Source { path, .. } = kind {
-                m.insert(specifier, path);
+                m.insert(*specifier, *path);
             }
         }
         m

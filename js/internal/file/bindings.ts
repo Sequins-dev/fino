@@ -43,6 +43,7 @@ interface LoopModule {
     res: number;
   }>;
   readable(fd: number): Promise<number>;
+  readOwned(fd: number, capacity: number, signal?: AbortSignal): Promise<Uint8Array>;
 }
 interface AsyncOpsModule {
   asyncOpen(raw: object, pathBuf: ArrayBuffer, flags: number, mode: number, id: number): void;

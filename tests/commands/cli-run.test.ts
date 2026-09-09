@@ -82,7 +82,11 @@ describe('CLI commands: run', () => {
         t.ok(explicit.stdout.includes('manual-profile:'), 'public profiler remains usable');
 
         const profilePath = `${dir}/profile.pb`;
-        const profile = await new DiskFileSystem().readFile(profilePath);
+        const profile = await new DiskFileSystem().readFile(profilePath).catch((error) => {
+          throw new Error(
+            `Explicit profile missing: ${String(error)}; stdout=${explicit.stdout}; stderr=${explicit.stderr}; status=${JSON.stringify(explicit.result)}`,
+          );
+        });
         const labels = pprofThreadLabels(profile);
         const uniqueLabels = new Set(labels);
         t.ok(labels.length > 0, 'pprof samples carry thread labels');
@@ -103,7 +107,15 @@ describe('CLI commands: run', () => {
         await fs.unlink(profilePath);
         const shorthand = await runCli(['--profile', 'entry.ts'], { cwd: dir });
         t.equal(shorthand.result.code, 0, 'root shorthand profile exits successfully');
-        t.ok((await new DiskFileSystem().readFile(profilePath)).byteLength > 0);
+        let shorthandProfile: Uint8Array;
+        try {
+          shorthandProfile = await new DiskFileSystem().readFile(profilePath);
+        } catch (error) {
+          throw new Error(
+            `Shorthand profile missing: ${String(error)}; stdout=${shorthand.stdout}; stderr=${shorthand.stderr}; status=${JSON.stringify(shorthand.result)}`,
+          );
+        }
+        t.ok(shorthandProfile.byteLength > 0);
 
         await fs.unlink(profilePath);
         const failed = await runCli(['run', '--profile', 'error.ts'], { cwd: dir });

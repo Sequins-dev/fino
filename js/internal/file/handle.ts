@@ -8,9 +8,9 @@
  *
  * The `File` owns the descriptor lifecycle. Readers and writers created from a
  * file share the same descriptor, so callers close the `File` once all derived
- * streams are finished. A locally owned Linux loop can use io_uring completion
- * operations. Reactor-pooled realms perform the syscall in this TypeScript
- * isolate so the process reactor remains readiness-only.
+ * streams are finished. Reactor Realms receive regular-file chunks as owned
+ * buffers from the native service. Blocking disk operations use the host's
+ * existing blocking-work pool, without blocking its readiness loop.
  *
  * ## Example
  *
@@ -40,6 +40,7 @@ import {
 } from './bindings.ts';
 import { Stat } from './stat.ts';
 import { FdWriter } from '../stream.ts';
+import { usesProcessReadiness } from 'internal:scheduler-native';
 import type { Path } from '../../file/path.ts';
 /**
  * An opened file handle over a single POSIX descriptor.
@@ -51,9 +52,8 @@ import type { Path } from '../../file/path.ts';
  * handle share the same underlying fd, so close the `File` — not the individual
  * stream — to release it. Closing flushes any writer created by `writer()`.
  *
- * A locally owned Linux loop can use io_uring completions. Reactor-pooled
- * realms keep the read and its buffer in this isolate. macOS waits for readiness
- * only on stream-like descriptors. Every method throws if the
+ * Reactor Realms use the native owned-buffer service for regular-file chunks.
+ * Dedicated sandbox loops retain their restricted local backend. Every method throws if the
  * handle is already closed.
  *
  * ```ts no_run
@@ -227,11 +227,13 @@ export class File {
     const bufSize = 65536;
     const path = this.#path.toString();
     let readinessRequired = true;
+    let nativeRead = false;
     if (!this.#closed && !asyncOps) {
       const statBuf = new ArrayBuffer(256);
       if (lib.symbols.fstat(fd, statBuf) !== 0) throwErrno('fstat', path);
       const stat = Stat.parse(statBuf);
       readinessRequired = !stat.isFile() && !stat.isDirectory();
+      nativeRead = usesProcessReadiness() && stat.isFile();
     }
     const iterable: AsyncIterable<Uint8Array> = {
       [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -242,6 +244,12 @@ export class File {
                 done: true,
                 value: undefined,
               };
+            if (nativeRead) {
+              const bytes = await loopModule!.readOwned(fd, bufSize);
+              return bytes.byteLength === 0
+                ? { done: true, value: undefined }
+                : { done: false, value: bytes };
+            }
             const buf = new ArrayBuffer(bufSize);
             let n: number;
             if (asyncOps) {

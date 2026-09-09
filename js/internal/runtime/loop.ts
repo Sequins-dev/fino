@@ -71,6 +71,9 @@ import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
 import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
+  submitOwnedIo,
+  cancelOwnedIo,
+  takeOwnedIo,
   currentWorkloadOwner,
   recordReadinessTrace,
   registerProcessReadiness as registerNativeReadiness,
@@ -208,6 +211,59 @@ const _wakeSourceCallbacks: Map<number, () => void> = new Map();
 let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
+const _io = new Map<
+  number,
+  {
+    resolve(value: Uint8Array | undefined): void;
+    reject(error: unknown): void;
+    cleanup(): void;
+    signal: AbortSignal | undefined;
+    read: boolean;
+    fd: number;
+  }
+>();
+
+/** Submit a consuming native write. All views of the backing buffer detach before return. @internal */
+export function writeOwned(fd: number, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+  return ownedIo(fd, bytes, signal).then(() => {});
+}
+
+/** Read into native-owned storage and receive the completed allocation. @internal */
+export function readOwned(fd: number, capacity: number, signal?: AbortSignal): Promise<Uint8Array> {
+  return ownedIo(fd, capacity, signal) as Promise<Uint8Array>;
+}
+
+function ownedIo(
+  fd: number,
+  value: Uint8Array | number,
+  signal?: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  signal?.throwIfAborted();
+  const id = submitOwnedIo(fd, value);
+  return new Promise((resolve, reject) => {
+    const abort = () => cancelOwnedIo(id);
+    _io.set(id, {
+      resolve,
+      reject,
+      signal,
+      fd,
+      read: typeof value === 'number',
+      cleanup: () => signal?.removeEventListener('abort', abort),
+    });
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+/** Cancel this Realm's operations before an owning descriptor is closed/reused. @internal */
+export function cancelOwnedFd(fd: number): void {
+  for (const [id, operation] of _io) {
+    if (operation.fd !== fd) continue;
+    cancelOwnedIo(id);
+    _io.delete(id);
+    operation.cleanup();
+    if (operation.read) operation.resolve(new Uint8Array());
+    else operation.reject(new Error('Descriptor closed during write'));
+  }
+}
 let _virtualTimers: VirtualTimerQueue | null = null;
 let _virtualTimeBlocked: (() => boolean) | null = null;
 const TASK_TOKEN_BASE = 4294967296;
@@ -250,7 +306,7 @@ function registerProcessReadiness(
 /**
  * Register interest in a persistent watch's installation acknowledgement.
  *
- * The main realm confirms installation as an ordinary routed completion, so
+ * The native host confirms installation as an ordinary routed completion, so
  * this is an ordinary promise resolution like every other readiness signal —
  * the calling realm parks instead of blocking its reactor thread.
  */
@@ -260,7 +316,7 @@ function _awaitInstall(filter: number, token: number): Promise<void> {
 /**
  * Settle a pending install acknowledgement that is never going to arrive.
  *
- * Removing a watch before the main realm confirms it means the arming its
+ * Removing a watch before the native host confirms it means the arming its
  * caller is waiting on will never happen. Resolving is the honest answer to
  * "am I still waiting?" — the wait is over, and the watch being asked about no
  * longer exists. Leaving the promise pending instead strands whoever awaited
@@ -306,7 +362,7 @@ function traceEvent(ev: LoopEvent, stage: string): void {
 }
 function _dispatch(ev: LoopEvent): void {
   // Resolvers are keyed by the token the watch was registered with, never by
-  // the bare descriptor. The main realm installs watches on behalf of every
+  // the bare descriptor. The native host installs watches on behalf of every
   // workload realm, so two owners routinely wait on the same descriptor number;
   // keying by fd would let one registration silently replace the other and
   // strand the loser forever.
@@ -441,6 +497,20 @@ export function flush(): void {
  * ```
  */
 export function tick(timeoutMs: number | null): number {
+  const completedIo = takeOwnedIo();
+  for (const [id, result, bytes] of completedIo) {
+    const pending = _io.get(id);
+    if (pending === undefined) continue;
+    _io.delete(id);
+    pending.cleanup();
+    if (result < 0)
+      pending.reject(
+        pending.signal?.aborted
+          ? pending.signal.reason
+          : new Error(`native I/O failed: errno ${-result}`),
+      );
+    else pending.resolve(bytes);
+  }
   // Routed completions arrive as one flat Float64Array — `COMPLETION_SLOTS`
   // scalars per event — rather than a structured clone per event.
   const batch = takeSharedLoopEvents(_workloadOwner);
@@ -461,7 +531,7 @@ export function tick(timeoutMs: number | null): number {
   }
   const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
   for (const ev of events) _dispatch(ev);
-  return routed + events.length;
+  return routed + events.length + completedIo.length;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.
@@ -501,6 +571,7 @@ export function loopFd(): number {
  */
 export function alive(): boolean {
   return (
+    _io.size > 0 ||
     (_virtualTimers !== null && _virtualTimers.referencedSize() > 0) ||
     _reads.size > 0 ||
     _writes.size > 0 ||
@@ -510,7 +581,7 @@ export function alive(): boolean {
     _vnodes.size > 0 ||
     // A persistent watch that has been requested but not yet confirmed is
     // outstanding work: the realm must not exit between asking for it and the
-    // main realm arming it, or the awaiting caller would never settle.
+    // native host arming it, or the awaiting caller would never settle.
     _installs.size > 0 ||
     hasPendingV8Tasks() ||
     _atomicsWaiters > 0
@@ -587,8 +658,8 @@ export function _activeHandleCounts(): {
   pendingV8Tasks: boolean;
 } {
   return {
-    reads: _reads.size,
-    writes: _writes.size,
+    reads: _reads.size + [..._io.values()].filter((operation) => operation.read).length,
+    writes: _writes.size + [..._io.values()].filter((operation) => !operation.read).length,
     timers: _timers.size,
     referencedTimers: _timers.size - _unreferencedTimers.size,
     unreferencedTimers: _unreferencedTimers.size,
@@ -1058,7 +1129,7 @@ export function signal(signo: number, callback: () => void, forToken?: number): 
   _signals.set(token, callback);
   if (_processReadiness && EVFILT_SIGNAL !== null) {
     // Stop the default action here, synchronously, before handing the watch to
-    // the main realm. Arming is asynchronous, and a signal that arrives in the
+    // the native host. Arming is asynchronous, and a signal that arrives in the
     // gap would otherwise run its default disposition and kill the process.
     _suppressSignalDefault?.(signo);
     const installed = _awaitInstall(EVFILT_SIGNAL, token);

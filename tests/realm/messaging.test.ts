@@ -72,7 +72,7 @@ describe('Realm messaging', { exclusive: true }, () => {
     realm.terminate();
     await run;
   });
-  it('process child uses bootstrap realmPort and leaves fino:realm/self.port undefined', async (t) => {
+  it('process entry Realm exposes the same parent port as other reactor Realms', async (t) => {
     const realm = new Realm({
       process: true,
       entry: new URL('./fixtures/self-port-report.ts', import.meta.url).pathname,
@@ -82,9 +82,9 @@ describe('Realm messaging', { exclusive: true }, () => {
       /* terminated after test */
     });
     const report = await first;
-    t.equal(report.selfPort, false, 'process child does not expose fino:realm/self.port');
+    t.equal(report.selfPort, true, 'process entry exposes fino:realm/self.port');
     t.equal(report.realmPort, true, 'process child exposes bootstrap realmPort');
-    t.equal(report.samePort, false, 'process child has no self port to compare');
+    t.equal(report.samePort, true, 'process entry uses one parent port');
     t.equal(report.transport, 'parent', 'process child talks back over its parent link');
     realm.terminate();
     await run;

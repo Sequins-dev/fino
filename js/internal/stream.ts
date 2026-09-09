@@ -25,10 +25,12 @@
  *     readInto view. BufferedBytesChannel owns one capacity-sized segment.
  *     UnboundedBytesChannel appends capacity-sized segments as needed.
  *
- *   FdReader / FdWriter   — libc read(2) / write(2)
+ *   FdReader / FdWriter   — native owned-buffer read/write service
  *   TlsReader / TlsWriter — SSL_read / SSL_write (in fino:tls)
  *     Concrete I/O implementations extending the buffered variants. Each
- *     implements one template method (doPullInto / doFlush) with the syscall loop.
+ *     implements one template method (doPullInto / doFlush). Reactor streams
+ *     submit buffers to the Rust host; sandbox and blocking descriptors retain
+ *     their local FFI path. BYOB reads copy into the caller's borrowed view.
  *
  *
  * ## Transforms are external
@@ -71,6 +73,7 @@ import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import { Stat } from 'internal:file/stat';
 import * as loop from 'internal:runtime/loop';
+import { usesProcessReadiness } from 'internal:scheduler-native';
 const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';
 const EAGAIN = os === 'darwin' ? 35 : 11;
@@ -104,6 +107,15 @@ const F_GETFL = 3;
 const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
 function getErrno(): number {
   return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
+}
+/** Native admission accepts nonblocking streams and regular files. @internal */
+function nativeDescriptor(fd: number): boolean {
+  if (!usesProcessReadiness()) return false;
+  const flags = Number(lib.symbols.fcntl(fd, F_GETFL, 0));
+  if (flags < 0) return false;
+  if ((flags & O_NONBLOCK) !== 0) return true;
+  const stat = new ArrayBuffer(256);
+  return lib.symbols.fstat(fd, stat) === 0 && Stat.parse(stat).isFile();
 }
 // ---------------------------------------------------------------------------
 // Reader<T> — generic async producer of values
@@ -1850,6 +1862,8 @@ export abstract class BufferedBytesReader extends BytesReader {
  * @internal
  */
 export class FdReader extends BufferedBytesReader {
+  #nativeIo: boolean;
+  #nativeRead: AbortController | null = null;
   /**
    * Private property `#fd` used by `FdReader`.
    *
@@ -1913,11 +1927,13 @@ export class FdReader extends BufferedBytesReader {
    */
   constructor(fd: number, onClose: () => void | Promise<void>) {
     super(async () => {
+      this.#nativeRead?.abort(new Error('Reader closed'));
       loop.removeRead(fd);
       this.#cancelPendingRead?.();
       await onClose();
     });
     this.#fd = fd;
+    this.#nativeIo = nativeDescriptor(fd);
     const flags = lib.symbols.fcntl(fd, F_GETFL, 0) as number;
     this.#readBeforeReady = os === 'linux' && flags >= 0 && (flags & O_NONBLOCK) !== 0;
     const statBuf = new ArrayBuffer(256);
@@ -1985,7 +2001,8 @@ export class FdReader extends BufferedBytesReader {
    *
    * The method waits for readability when needed, fills the supplied storage,
    * returns a done result on EOF or after close, rejects an actively aborted
-   * wait with the signal reason, and treats non-EAGAIN read failures as EOF.
+   * wait with the signal reason. Native I/O failures reject; the local legacy
+   * path treats non-EAGAIN read failures as EOF.
    *
    * ```js
    * import { FdReader } from 'fino:stream';
@@ -2000,6 +2017,27 @@ export class FdReader extends BufferedBytesReader {
     buffer: Uint8Array,
     options?: BytesReadOptions,
   ): Promise<ReadResult<number>> {
+    if (this.#nativeIo) {
+      if (this.closed) return READ_DONE;
+      const controller = new AbortController();
+      this.#nativeRead = controller;
+      const signal = options?.signal;
+      const abort = () => controller.abort(signal?.reason);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort();
+      try {
+        const bytes = await loop.readOwned(this.#fd, buffer.byteLength, controller.signal);
+        if (bytes.byteLength === 0) return READ_DONE;
+        buffer.set(bytes);
+        return readResult(bytes.byteLength);
+      } catch (error) {
+        if (this.closed) return READ_DONE;
+        throw error;
+      } finally {
+        signal?.removeEventListener('abort', abort);
+        this.#nativeRead = null;
+      }
+    }
     while (true) {
       if (this.closed) return READ_DONE;
       if (this.#fd < 0) throw new Error('read failed');
@@ -2538,7 +2576,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
   protected async _flushHeld(): Promise<void> {
     const slice = this._takePending();
     if (slice === null) return;
-    await this.doFlush(slice);
+    await this.doFlush(slice, true);
   }
   /**
    * Coalesce or emit one buffer, assuming the queue is already held.
@@ -2589,6 +2627,9 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * Implementations must emit all bytes in `buf` or throw. Calls are serialized
    * per writer, so an implementation that suspends on backpressure keeps the
    * descriptor to itself until it returns.
+   * When `owned` is true, the slice has independent backing storage that the
+   * implementation may transfer or detach. Otherwise `buf` is borrowed and
+   * must remain usable by its caller after the flush.
    *
    * ```js
    * import { BufferedBytesWriter } from 'fino:stream';
@@ -2601,7 +2642,7 @@ export abstract class BufferedBytesWriter extends BytesWriter {
    * @param buf Pending bytes to emit.
    * @returns A promise that resolves after all bytes are flushed.
    */
-  protected abstract doFlush(buf: Uint8Array): Promise<void>;
+  protected abstract doFlush(buf: Uint8Array, owned?: boolean): Promise<void>;
   /**
    * Wrap an existing byte writer with coalescing behavior.
    *
@@ -2778,9 +2819,10 @@ const COALESCE_LIMIT = 65536;
  * Buffered writer backed by a POSIX file descriptor.
  *
  * `FdWriter` borrows the descriptor; the `onClose` callback owns descriptor
- * cleanup. Normal flushing uses libc `write(2)` and waits for runtime
- * writability on EAGAIN. `writev()` coalesces small batches and uses
- * scatter/gather `writev(2)` for large batches.
+ * cleanup. Reactor streams transfer owned copies to the Rust I/O service,
+ * which handles partial writes and readiness. The BytesWriter contract still
+ * borrows caller storage, so copying before native submission is explicit.
+ * Local descriptors use FFI write/writev and readiness waits.
  *
  * ```js
  * import { FdWriter } from 'fino:stream';
@@ -2792,6 +2834,7 @@ const COALESCE_LIMIT = 65536;
  * @internal
  */
 export class FdWriter extends BufferedBytesWriter {
+  #nativeIo: boolean;
   /**
    * Private property `#fd` used by `FdWriter`.
    *
@@ -2902,6 +2945,7 @@ export class FdWriter extends BufferedBytesWriter {
   constructor(fd: number, onClose: () => void | Promise<void>) {
     super(onClose);
     this.#fd = fd;
+    this.#nativeIo = nativeDescriptor(fd);
   }
   /**
    * Raw borrowed file descriptor.
@@ -2967,7 +3011,13 @@ export class FdWriter extends BufferedBytesWriter {
    * @returns A promise that resolves after all bytes are written.
    * @internal
    */
-  protected async doFlush(buf: Uint8Array): Promise<void> {
+  protected async doFlush(buf: Uint8Array, owned: boolean = false): Promise<void> {
+    if (this.#nativeIo) {
+      // BytesWriter's borrowing contract retains the caller's buffer. Make
+      // that copy explicit here; Rust only ever accepts transferred ownership.
+      await loop.writeOwned(this.#fd, owned ? buf : buf.slice());
+      return;
+    }
     let off = 0;
     while (off < buf.byteLength) {
       const slice = off === 0 ? buf : buf.subarray(off);
@@ -2989,8 +3039,9 @@ export class FdWriter extends BufferedBytesWriter {
    * Fast path (total at most 64 KiB): push each vec through the inherited
    * coalesce buffer, usually producing one syscall when it flushes.
    *
-   * Slow path (total over 64 KiB): flush pending bytes, then use true
-   * scatter/gather via `writev(2)` with no data copy. `count` must not exceed
+   * Native descriptors submit through the buffered writer chain; the local
+   * fallback flushes pending bytes and uses scatter/gather `writev(2)` for
+   * batches over 64 KiB. `count` must not exceed
    * the internal iovec limit. Closed writers, too many vectors, EAGAIN retry
    * failures, and writev errors throw.
    *
@@ -3009,6 +3060,7 @@ export class FdWriter extends BufferedBytesWriter {
     if (count === 0) return queueWriterOperation(this, async () => {});
     if (count > MAX_IOV)
       return Promise.reject(new Error(`writev: too many vectors (max ${MAX_IOV})`));
+    if (this.#nativeIo) return super.writev(vecs, count);
     let totalLen = 0;
     for (let i = 0; i < count; i++) totalLen += vecs[i]!.byteLength;
     if (totalLen <= COALESCE_LIMIT) {

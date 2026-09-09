@@ -3,8 +3,6 @@ import { describe, it } from 'fino:test/test';
 import { File } from 'internal:file/handle';
 import { dlopen } from 'fino:ffi';
 import { os } from 'internal:process';
-import { Realm } from 'fino:realm';
-import { usesProcessReadiness } from 'internal:scheduler-native';
 const libc = dlopen(os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6', {
   pipe: { parameters: ['buffer'], result: 'i32' },
   fcntl: { parameters: ['i32', 'i32', 'i32'], result: 'i32', variadic: 2 },
@@ -43,25 +41,8 @@ function openPipe() {
 }
 
 describe('File disposal after failures', () => {
-  if (usesProcessReadiness()) {
-    it('preserves disposal guarantees in an independently pumped process Realm', async () => {
-      using realm = Realm.fromSource(
-        `
-        const { usesProcessReadiness } = await import('internal:scheduler-native');
-        if (usesProcessReadiness()) throw new Error('expected an independent event loop');
-        const { _prepareRun, _runPreparedEntry } = await import('fino:test/test');
-        await import(${JSON.stringify(import.meta.url)});
-        const prepared = _prepareRun();
-        for (let index = 0; index < prepared.count; index++) {
-          const result = await _runPreparedEntry(prepared, index);
-          if (result.failed) throw new Error(JSON.stringify(result.diagnostics));
-        }
-      `,
-        { process: true },
-      );
-      await realm.run();
-    });
-  }
+  // Process entrypoints now use the same reactor driver; there is no separate
+  // process-main JavaScript event loop to exercise here.
 
   for (const sync of [false, true]) {
     it(`releases the descriptor when ${sync ? 'synchronous' : 'asynchronous'} writer flushing throws`, async (t) => {

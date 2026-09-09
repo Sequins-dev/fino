@@ -8,6 +8,7 @@ mod fdutil;
 mod ffi;
 mod inspector_module;
 mod loader;
+mod native_io;
 mod net_native;
 mod platform;
 mod profiler;

@@ -23,6 +23,14 @@ the minimum infrastructure needed to bootstrap and host TypeScript:
 - expose compile-time or operating-system primitives that cannot safely be
   expressed through the existing TypeScript/FFI layers.
 
+The process main thread is a pure Rust host: it never enters a JavaScript
+isolate. The native host owns readiness and the owned-buffer read/write service;
+ordinary JavaScript, including the CLI entry Realm, executes on the reactor pool.
+Potentially blocking file operations use the shared Rust blocking-work pool.
+This native mechanism does not move protocol, provider, or application policy
+out of TypeScript. Thread-restricted sandbox Realms retain their separate
+enforcement boundary.
+
 I/O, networking, protocols, standard-library behavior, orchestration, policy,
 and other higher-level systems belong in `js/`. Fino deliberately calls system
 libraries through `fino:ffi`; needing libc or an OS API is not by itself a
@@ -106,8 +114,9 @@ Important runtime mechanics:
 
 - V8 uses explicit microtask checkpoints. The Rust host pumps platform work,
   executor resolutions, and microtasks; TypeScript owns the higher-level loop.
-- `internal:runtime/loop` abstracts the platform backends implemented in
-  TypeScript, including kqueue on macOS and io_uring on Linux.
+- `internal:runtime/loop` owns each Realm's timers, promises, and delivery state.
+  Reactor Realms submit readiness and owned-buffer operations to the native host.
+  Dedicated sandbox loops retain their restricted TypeScript platform backend.
 - The scheduler moves ordinary child isolates across a shared reactor pool.
   Avoid introducing isolate-thread affinity or process-global per-Realm state.
 - `fino:*` is public. `internal:*` is restricted by the loader. Preserve that

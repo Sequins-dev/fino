@@ -452,63 +452,8 @@ pub struct FinoState {
 }
 
 impl FinoState {
-    /// Create the root-Realm state (no entry_path, no channels, default import rules).
-    pub fn new_root(
-        process_env: ProcessEnv,
-        package_map_json: Option<String>,
-        root_queue: v8::MicrotaskQueueHandle,
-        import_rules: Vec<ImportRule>,
-    ) -> Self {
-        Self {
-            process_env,
-            package_map_json,
-            root_queue,
-            import_rules,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            transpile_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            scheduler_workload_owner: 0,
-            uses_process_readiness: false,
-            scheduler_polling_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            pending_resolutions: Rc::new(RefCell::new(Vec::new())),
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            process_profile: None,
-            entry_path: None,
-            terminated: false,
-            reload_requested: false,
-            watch_mode: false,
-            repl_mode: false,
-            realm_data: None,
-            realm_bootstrap_data: None,
-            sandboxed_thread: false,
-            sandbox_cgroup_path: None,
-            reload_requested_signal: None,
-            entry_error: None,
-            port: None,
-            inspector_state: None,
-            channel_rx: None,
-            channel_tx: None,
-            wake_read_fd: None,
-            wake_write_fd: None,
-            process_contexts: Vec::new(),
-            sandbox_contexts: Vec::new(),
-        }
-    }
-
-    /// Create a child-Realm state (embedded, reactor-pooled, or process).
-    ///
-    /// Fields that differ from `new_root` are taken as parameters; all
-    /// module-cache and callback fields start empty/None.
+    /// Create Realm state for reactor and sandbox execution.
+    /// Module caches and callbacks start empty; host inputs are explicit.
     pub fn new_child(
         process_env: ProcessEnv,
         package_map_json: Option<String>,
