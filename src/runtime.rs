@@ -8,6 +8,9 @@ use crate::state::ProcessEnv;
 
 static V8_INIT: OnceLock<()> = OnceLock::new();
 
+#[cfg(target_os = "linux")]
+extern "C" fn idle_profiler_signal(_: libc::c_int) {}
+
 /// Newtype wrapper so `SharedPtr<Allocator>` can be stored in a global.
 ///
 /// The V8 default allocator is thread-safe (malloc/free under the hood) and
@@ -32,6 +35,27 @@ pub(crate) fn shared_allocator() -> v8::SharedPtr<v8::Allocator> {
 
 pub(crate) fn init_v8() {
     V8_INIT.get_or_init(|| {
+        // V8 restores the previous SIGPROF disposition when its last sampler
+        // stops. A sample can still be pending on another reactor at that
+        // point. Keep late samples harmless without blocking active sampling.
+        // A caught handler (unlike SIG_IGN) resets on exec for external children.
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            assert_eq!(
+                libc::sigaction(libc::SIGPROF, std::ptr::null(), &mut action),
+                0
+            );
+            if action.sa_sigaction == libc::SIG_DFL {
+                action.sa_sigaction = idle_profiler_signal as *const () as usize;
+                action.sa_flags = libc::SA_RESTART;
+                libc::sigemptyset(&mut action.sa_mask);
+                assert_eq!(
+                    libc::sigaction(libc::SIGPROF, &action, std::ptr::null_mut()),
+                    0
+                );
+            }
+        }
         let mut flags = "--turbo_fast_api_calls".to_string();
         if std::env::var_os("FINO_ALLOW_NATIVES_SYNTAX").is_some() {
             flags.push_str(" --allow_natives_syntax");
