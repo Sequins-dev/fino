@@ -820,6 +820,8 @@ export class Database {
    * `{ readonly: true }` opens read-only. Each connection registers a private
    * Fino VFS name so file operations go through the chosen filesystem provider,
    * and a Realm shutdown hook unregisters it if the connection is leaked.
+   * Unnamed temporary files and journals use private in-memory storage, released
+   * on close, even when the main database uses a disk-backed provider.
    * Throws when SQLite is unavailable, open fails, or VFS registration fails.
    *
    * ```ts no_run
