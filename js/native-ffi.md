@@ -67,9 +67,32 @@ returned buffer unless `onRelease` owns cleanup.
 
 ## Callbacks And Blocking Work
 
-`FfiCallback` creates native-callable JS callbacks. Retain the callback object
-for as long as native code may call it; dropping it while native code still has
-the function pointer is unsafe.
+`FfiCallback` creates native-callable JS callbacks. Closing a callback revokes
+JavaScript invocation. Acquire `callback.lease()` when native work needs to keep
+its executable pointer alive independently: subsequent calls return zero after
+revocation. Release the lease only after the native API acknowledges completion
+and its last callback invocation has returned. Resolving a Promise inside the
+handler does not establish that condition. Ordinary leases must finish before
+the owning Realm shuts down.
+
+On macOS, `callback.block()` creates an Objective-C block and supplies its
+implicit block argument automatically. Apple APIs that copy the block own the
+callback code until their final native release, even after Realm shutdown.
+Closing the returned block releases your reference; closing the callback
+revokes JavaScript invocation through every copy. The optional resource list
+transfers owned native references to the block, each paired with a synchronous
+C `void(void*)` destructor. These destructors must never call JavaScript.
+
+Use `FfiResource` for an owned allocation or native object:
+
+```ts no_run
+using memory = new FfiResource(libc.symbols.malloc(64), libc.pointers.free);
+Pointer.writeU8(memory.pointer, 0, 42);
+```
+
+Its destructor runs once on explicit disposal or Realm teardown. Keep the
+library containing the destructor loaded until release. Ownership roots are
+released explicitly or at teardown; garbage collection is not a cleanup signal.
 
 Mark long-running symbols `async: true` so they run on the native
 blocking pool instead of stalling the JS event loop.
