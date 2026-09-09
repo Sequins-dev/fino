@@ -30,12 +30,21 @@ export interface MetalDeviceInfo {
   readonly maxBufferLength: number;
 }
 
+/** Owned native compilation result; metadata is pipeline-specific. */
+export interface CompiledMetalPipeline {
+  readonly pointer: ObjectHandle;
+  readonly threadExecutionWidth: number;
+  readonly maxThreadsPerThreadgroup: number;
+  close(): void;
+}
+
 /**
  * Native operations used by the ownership layer, injectable for lifecycle tests.
  * Create methods return owned references or null; contents returns a borrowed
  * pointer valid while its buffer lives. A native buffer keeps its device alive.
  */
 export interface MetalMemoryApi {
+  compile(device: ObjectHandle, source: string, entry: string): Promise<CompiledMetalPipeline>;
   createDevice(): ObjectHandle | null;
   info(device: ObjectHandle): MetalDeviceInfo;
   createBuffer(device: ObjectHandle, byteLength: number): ObjectHandle | null;
@@ -70,6 +79,26 @@ class MetalDevice {
     this.#api = api;
     this.#handle = handle;
     this.info = info;
+  }
+
+  /**
+   * Compile MSL 3.0 with fast math disabled, without blocking the Realm loop.
+   * Closing this device while compilation is pending discards the resulting
+   * pipeline and rejects after native completion; it does not cancel Metal work.
+   */
+  async compile(source: string, entry: string): Promise<MetalPipeline> {
+    if (!this.#handle) throw new Error('Metal device is closed');
+    if (typeof source !== 'string' || typeof entry !== 'string' || !entry || entry.includes('\0')) {
+      throw new TypeError(
+        'Metal compilation requires source text and a non-empty entry name without NUL',
+      );
+    }
+    const result = await this.#api.compile(this.#handle, source, entry);
+    if (!this.#handle) {
+      result.close();
+      throw new Error('Metal device closed during compilation');
+    }
+    return new MetalPipeline(result, entry);
   }
 
   /** Allocate shared storage. Zero logical bytes use a one-byte native allocation. */
@@ -139,6 +168,30 @@ class MetalBuffer {
     if (handle) this.#api.release(handle);
   }
   /** Dispose this buffer owner. */
+  [Symbol.dispose](): void {
+    this.close();
+  }
+}
+
+/** Owned compiled pipeline. Obtain from the device that will submit it. */
+class MetalPipeline {
+  #owned: CompiledMetalPipeline | null;
+  readonly entry: string;
+  readonly threadExecutionWidth: number;
+  readonly maxThreadsPerThreadgroup: number;
+  constructor(owned: CompiledMetalPipeline, entry: string) {
+    this.#owned = owned;
+    this.entry = entry;
+    this.threadExecutionWidth = owned.threadExecutionWidth;
+    this.maxThreadsPerThreadgroup = owned.maxThreadsPerThreadgroup;
+  }
+  /** Release once. Native execution is not part of this layer yet. */
+  close(): void {
+    const owned = this.#owned;
+    this.#owned = null;
+    owned?.close();
+  }
+  /** Dispose this pipeline owner. */
   [Symbol.dispose](): void {
     this.close();
   }
