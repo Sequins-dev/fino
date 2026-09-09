@@ -26,7 +26,9 @@ the minimum infrastructure needed to bootstrap and host TypeScript:
 The process main thread is a pure Rust host: it never enters a JavaScript
 isolate. The native host owns readiness and the owned-buffer read/write service;
 ordinary JavaScript, including the CLI entry Realm, executes on the reactor pool.
-Potentially blocking file operations use the shared Rust blocking-work pool.
+Linux retains io_uring for readiness and owned-buffer I/O, including files;
+fallback backends send potentially blocking file operations to the shared Rust
+blocking-work pool.
 This native mechanism does not move protocol, provider, or application policy
 out of TypeScript. Thread-restricted sandbox Realms retain their separate
 enforcement boundary.

@@ -315,6 +315,7 @@ pub struct FinoState {
     pub scheduler_workload_owner: u32,
     /// Whether readiness registrations are routed through the process loop.
     pub uses_process_readiness: bool,
+    pub is_process_entry: bool,
     /// Reports whether a quiescent scheduled workload still needs polling.
     pub scheduler_polling_fn: Option<v8::Global<v8::Function>>,
 
@@ -350,6 +351,7 @@ pub struct FinoState {
     /// Raw pointer to the V8 CpuProfiler, created lazily on first startProfiling
     /// call. Disposed before isolate teardown.
     pub cpu_profiler: Option<*mut std::ffi::c_void>,
+    pub public_profiles: Vec<crate::profiler::PublicProfile>,
     /// Automatic process-profile registration for this Realm. This owns a
     /// separate V8 profiler so the public `fino:profiler` recordings retain
     /// their existing named-profile semantics.
@@ -488,12 +490,14 @@ impl FinoState {
             on_done_fn: None,
             scheduler_workload_owner: 0,
             uses_process_readiness: false,
+            is_process_entry: false,
             scheduler_polling_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
+            public_profiles: Vec::new(),
             process_profile: None,
             entry_path,
             terminated: false,

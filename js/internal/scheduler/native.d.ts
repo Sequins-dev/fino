@@ -51,11 +51,17 @@ export function signalReactorOwner(owner: number): boolean;
  * Reads and writes require nonblocking streams or regular files. A unique
  * operation id identifies completion; failures before admission throw.
  */
-export function submitOwnedIo(fd: number, data: Uint8Array | number): number;
+export function submitOwnedIo(fd: number, data: Uint8Array | Uint8Array[] | number): number;
+/** Open a file on the shared native blocking pool and return an fd or negative errno. @internal */
+export function nativeFileOpen(path: string, flags: number, mode: number): Promise<number>;
+/** Close an owned fd on the shared native blocking pool and return zero or negative errno. @internal */
+export function nativeFileClose(fd: number): Promise<number>;
+/** Whether this is the process entry, independent of its reactor execution. @internal */
+export function isProcessEntryRealm(): boolean;
 /** Request cancellation of this Realm's operation. Storage survives until native completion. */
 export function cancelOwnedIo(id: number): void;
-/** Drain this Realm's operation/result/read-buffer completions without serialization. */
-export function takeOwnedIo(): Array<[number, number, Uint8Array?]>;
+/** Drain flat operation/result/read-buffer triples without serialization. */
+export function takeOwnedIo(): Array<number | Uint8Array | undefined>;
 /**
  * Read-only snapshot of the reactor pool's scheduling state, or `null` when the
  * process reactor is not running.
@@ -65,6 +71,8 @@ export function takeOwnedIo(): Array<[number, number, Uint8Array?]>;
  */
 export function reactorPoolStats(): {
   nativeIo: boolean;
+  ioBackend: 'io_uring' | 'kqueue';
+  nativeBufferReuses: number;
   parked: number;
   residents: number;
   ready: number;

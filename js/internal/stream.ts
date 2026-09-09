@@ -2001,8 +2001,7 @@ export class FdReader extends BufferedBytesReader {
    *
    * The method waits for readability when needed, fills the supplied storage,
    * returns a done result on EOF or after close, rejects an actively aborted
-   * wait with the signal reason. Native I/O failures reject; the local legacy
-   * path treats non-EAGAIN read failures as EOF.
+   * wait with the signal reason, and treats non-EAGAIN read failures as EOF.
    *
    * ```js
    * import { FdReader } from 'fino:stream';
@@ -2032,7 +2031,8 @@ export class FdReader extends BufferedBytesReader {
         return readResult(bytes.byteLength);
       } catch (error) {
         if (this.closed) return READ_DONE;
-        throw error;
+        if (signal?.aborted) throw signal.reason;
+        return READ_DONE;
       } finally {
         signal?.removeEventListener('abort', abort);
         this.#nativeRead = null;
@@ -3015,7 +3015,12 @@ export class FdWriter extends BufferedBytesWriter {
     if (this.#nativeIo) {
       // BytesWriter's borrowing contract retains the caller's buffer. Make
       // that copy explicit here; Rust only ever accepts transferred ownership.
-      await loop.writeOwned(this.#fd, owned ? buf : buf.slice());
+      try {
+        await loop.writeOwned(this.#fd, owned ? buf : buf.slice());
+      } catch {
+        if (this.closed) throw new Error('Writer closed during write');
+        throw new Error('write failed');
+      }
       return;
     }
     let off = 0;
@@ -3039,9 +3044,9 @@ export class FdWriter extends BufferedBytesWriter {
    * Fast path (total at most 64 KiB): push each vec through the inherited
    * coalesce buffer, usually producing one syscall when it flushes.
    *
-   * Native descriptors submit through the buffered writer chain; the local
-   * fallback flushes pending bytes and uses scatter/gather `writev(2)` for
-   * batches over 64 KiB. `count` must not exceed
+   * Batches over 64 KiB flush pending bytes and use a single scatter/gather
+   * operation. Native descriptors transfer owned copies together; the local
+   * fallback uses `writev(2)` directly. `count` must not exceed
    * the internal iovec limit. Closed writers, too many vectors, EAGAIN retry
    * failures, and writev errors throw.
    *
@@ -3060,7 +3065,6 @@ export class FdWriter extends BufferedBytesWriter {
     if (count === 0) return queueWriterOperation(this, async () => {});
     if (count > MAX_IOV)
       return Promise.reject(new Error(`writev: too many vectors (max ${MAX_IOV})`));
-    if (this.#nativeIo) return super.writev(vecs, count);
     let totalLen = 0;
     for (let i = 0; i < count; i++) totalLen += vecs[i]!.byteLength;
     if (totalLen <= COALESCE_LIMIT) {
@@ -3076,6 +3080,17 @@ export class FdWriter extends BufferedBytesWriter {
     // concurrently would rewrite this one's vectors mid-syscall.
     return queueWriterOperation(this, async () => {
       await this._flushHeld();
+      if (this.#nativeIo) {
+        try {
+          await loop.writeOwned(
+            this.#fd,
+            vecs.slice(0, count).map((vec) => vec.slice()),
+          );
+        } catch {
+          throw new Error('writev failed');
+        }
+        return;
+      }
       const cursors = this.#cursors;
       cursors.fill(0, 0, count);
       const view = this.#iovView;

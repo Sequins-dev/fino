@@ -11,6 +11,9 @@ pub(crate) struct Event {
 }
 
 pub(crate) struct Kernel {
+    #[cfg(target_os = "linux")]
+    ring: super::uring::Ring,
+    #[cfg(target_os = "macos")]
     fd: OwnedFd,
     watches: HashMap<u64, (RawFd, i32)>,
     groups: HashMap<(RawFd, i32), BTreeSet<u64>>,
@@ -20,17 +23,22 @@ pub(crate) struct Kernel {
 
 impl Kernel {
     pub fn new() -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        let ring = super::uring::Ring::new()?;
         #[cfg(target_os = "macos")]
         let fd = unsafe { libc::kqueue() };
-        #[cfg(target_os = "linux")]
-        let fd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+        #[cfg(target_os = "macos")]
         if fd < 0 {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(target_os = "macos")]
         unsafe {
             libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
         }
         Ok(Self {
+            #[cfg(target_os = "linux")]
+            ring,
+            #[cfg(target_os = "macos")]
             fd: unsafe { OwnedFd::from_raw_fd(fd) },
             watches: HashMap::new(),
             groups: HashMap::new(),
@@ -97,20 +105,18 @@ impl Kernel {
             } else {
                 ident
             };
-            let mut event = libc::epoll_event {
-                events: (if filter == -2 {
-                    libc::EPOLLOUT
+            let result = self.ring.poll(
+                token,
+                fd,
+                if filter == -2 {
+                    libc::POLLOUT
                 } else {
-                    libc::EPOLLIN
-                }) as u32
-                    | libc::EPOLLET as u32,
-                u64: token,
-            };
-            if unsafe { libc::epoll_ctl(self.fd.as_raw_fd(), libc::EPOLL_CTL_ADD, fd, &mut event) }
-                < 0
-            {
+                    libc::POLLIN
+                } as u32,
+            );
+            if let Err(error) = result {
                 self.signals.remove(&ident);
-                return Err(io::Error::last_os_error());
+                return Err(error);
             }
             self.watches.insert(token, (ident, filter));
         }
@@ -121,6 +127,8 @@ impl Kernel {
     pub fn remove(&mut self, token: u64) {
         if let Some((fd, filter)) = self.watches.remove(&token) {
             let group = self.groups.get_mut(&(fd, filter)).unwrap();
+            #[cfg(target_os = "linux")]
+            let was_representative = group.first() == Some(&token);
             group.remove(&token);
             if !group.is_empty() {
                 #[cfg(target_os = "linux")]
@@ -130,23 +138,22 @@ impl Kernel {
                         .get(&fd)
                         .filter(|_| filter == -6)
                         .map_or(fd, AsRawFd::as_raw_fd);
-                    let mut event = libc::epoll_event {
-                        events: (if filter == -2 {
-                            libc::EPOLLOUT
-                        } else {
-                            libc::EPOLLIN
-                        }) as u32
-                            | libc::EPOLLET as u32,
-                        u64: *group.iter().next().unwrap(),
-                    };
-                    unsafe {
-                        libc::epoll_ctl(
-                            self.fd.as_raw_fd(),
-                            libc::EPOLL_CTL_MOD,
-                            native_fd,
-                            &mut event,
-                        );
+                    if !was_representative {
+                        return;
                     }
+                    self.ring.cancel(token);
+                    // Replace the representative without losing other owners.
+                    self.ring
+                        .poll(
+                            *group.iter().next().unwrap(),
+                            native_fd,
+                            if filter == -2 {
+                                libc::POLLOUT
+                            } else {
+                                libc::POLLIN
+                            } as u32,
+                        )
+                        .expect("rearm retained poll");
                 }
                 return;
             }
@@ -174,19 +181,7 @@ impl Kernel {
             }
             #[cfg(target_os = "linux")]
             {
-                let native_fd = self
-                    .signals
-                    .get(&fd)
-                    .filter(|_| filter == -6)
-                    .map_or(fd, AsRawFd::as_raw_fd);
-                unsafe {
-                    libc::epoll_ctl(
-                        self.fd.as_raw_fd(),
-                        libc::EPOLL_CTL_DEL,
-                        native_fd,
-                        std::ptr::null_mut(),
-                    );
-                }
+                self.ring.cancel(token);
                 if filter == -6 {
                     self.signals.remove(&fd);
                 }
@@ -236,48 +231,94 @@ impl Kernel {
         }
         #[cfg(target_os = "linux")]
         {
-            let mut events: [libc::epoll_event; 256] = unsafe { std::mem::zeroed() };
-            let count = unsafe {
-                libc::epoll_wait(
-                    self.fd.as_raw_fd(),
-                    events.as_mut_ptr(),
-                    events.len() as i32,
-                    timeout_ms,
-                )
-            };
-            if count < 0 {
-                return interrupted();
-            }
-            let mut result = Vec::new();
-            for event in &events[..count as usize] {
-                let token = event.u64;
-                let Some(&(ident, filter)) = self.watches.get(&token) else {
-                    continue;
-                };
-                if let Some(fd) = self.signals.get(&ident).filter(|_| filter == -6) {
-                    let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
-                    while unsafe {
-                        libc::read(
-                            fd.as_raw_fd(),
-                            (&mut info as *mut libc::signalfd_siginfo).cast(),
-                            std::mem::size_of_val(&info),
-                        )
-                    } > 0
-                    {}
-                }
-                for token in &self.groups[&(ident, filter)] {
-                    result.push(Event {
-                        token: *token,
-                        data: 0,
+            let completions = self.ring.wait(timeout_ms)?;
+            let mut events = Vec::new();
+            for (token, result) in completions {
+                if token & super::IO_TOKEN != 0 {
+                    events.push(Event {
+                        token,
+                        data: result as i64,
                         flags: 0,
                     });
+                } else if let Some(&(ident, filter)) = self.watches.get(&token) {
+                    if let Some(fd) = self.signals.get(&ident).filter(|_| filter == -6) {
+                        let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
+                        while unsafe {
+                            libc::read(
+                                fd.as_raw_fd(),
+                                (&mut info as *mut libc::signalfd_siginfo).cast(),
+                                std::mem::size_of_val(&info),
+                            )
+                        } > 0
+                        {}
+                    }
+                    for token in &self.groups[&(ident, filter)] {
+                        events.push(Event {
+                            token: *token,
+                            data: 0,
+                            flags: 0,
+                        });
+                    }
                 }
             }
-            Ok(result)
+            Ok(events)
+        }
+    }
+
+    pub fn has_completion_io(&self) -> bool {
+        #[cfg(target_os = "linux")]
+        {
+            true
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            false
+        }
+    }
+    pub fn name(&self) -> &'static str {
+        if self.has_completion_io() {
+            "io_uring"
+        } else {
+            "kqueue"
+        }
+    }
+    pub unsafe fn submit_io(&mut self, token: u64, fd: RawFd, ptr: *mut u8, len: u32, write: bool) {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            self.ring.io(token, fd, ptr, len, write);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (token, fd, ptr, len, write);
+            unreachable!();
+        }
+    }
+    pub fn cancel_io(&mut self, token: u64) {
+        #[cfg(target_os = "linux")]
+        self.ring.cancel(token);
+        #[cfg(not(target_os = "linux"))]
+        let _ = token;
+    }
+    pub unsafe fn submit_writev(
+        &mut self,
+        token: u64,
+        fd: RawFd,
+        iov: *const libc::iovec,
+        len: u32,
+    ) {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            self.ring.writev(token, fd, iov, len);
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = (token, fd, iov, len);
+            unreachable!();
         }
     }
 }
 
+#[cfg(target_os = "macos")]
 fn interrupted() -> io::Result<Vec<Event>> {
     let error = io::Error::last_os_error();
     if error.kind() == io::ErrorKind::Interrupted {

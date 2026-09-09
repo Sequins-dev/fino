@@ -1,5 +1,27 @@
 import { test } from 'fino:test/test';
 import { startProfiling, stopProfiling } from 'fino:profiler';
+import { pprofFunctionSampleCounts } from './fixtures/pprof.ts';
+test('profiling retains samples across reactor yields', async (t) => {
+  startProfiling('yielding');
+  function beforeYield() {
+    const end = Date.now() + 100;
+    while (Date.now() < end) Math.sqrt(Date.now());
+  }
+  beforeYield();
+  for (let i = 0; i < 8; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const phase = new Function(`return function afterYield${i}() {
+      const end = Date.now() + 100;
+      while (Date.now() < end) Math.sqrt(Date.now());
+    }`)();
+    phase();
+  }
+  const samples = pprofFunctionSampleCounts(stopProfiling('yielding'));
+  t.ok((samples.get('beforeYield') ?? 0) >= 5, 'samples the initial execution slice');
+  for (let i = 0; i < 8; i++) {
+    t.ok((samples.get(`afterYield${i}`) ?? 0) >= 5, `samples rescheduled slice ${i}`);
+  }
+});
 test('startProfiling and stopProfiling return pprof bytes', (t) => {
   startProfiling('test');
   let sum = 0;

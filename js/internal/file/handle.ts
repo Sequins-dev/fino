@@ -9,8 +9,8 @@
  * The `File` owns the descriptor lifecycle. Readers and writers created from a
  * file share the same descriptor, so callers close the `File` once all derived
  * streams are finished. Reactor Realms receive regular-file chunks as owned
- * buffers from the native service. Blocking disk operations use the host's
- * existing blocking-work pool, without blocking its readiness loop.
+ * buffers from the native service. Linux submits them through io_uring;
+ * fallback hosts use the blocking-work pool without blocking readiness.
  *
  * ## Example
  *
@@ -29,6 +29,7 @@ import {
   isDarwin,
   loopModule,
   asyncOps,
+  nativeFileOps,
   throwErrno,
   throwErrnoCode,
   _toPath,
@@ -52,9 +53,10 @@ import type { Path } from '../../file/path.ts';
  * handle share the same underlying fd, so close the `File` — not the individual
  * stream — to release it. Closing flushes any writer created by `writer()`.
  *
- * Reactor Realms use the native owned-buffer service for regular-file chunks.
- * Dedicated sandbox loops retain their restricted local backend. Every method throws if the
- * handle is already closed.
+ * Reactor Realms use the native owned-buffer service for regular-file chunks,
+ * backed by io_uring on Linux and the blocking-work pool on fallback hosts.
+ * Dedicated sandbox loops retain their restricted local backend. Every method
+ * throws if the handle is already closed.
  *
  * ```ts no_run
  * import { File } from 'internal:file/handle';
@@ -519,9 +521,10 @@ export class File {
    * Concurrent and repeated calls share the same cleanup promise. Any pending
    * writer created by `writer()` is flushed before the fd is released. If
    * flushing fails, the descriptor is still released and the flush error is
-   * reported to the caller. A locally owned Linux loop can issue `IORING_OP_CLOSE`; pooled realms
-   * and macOS call `close(2)` from this isolate. This method also backs
-   * `Symbol.asyncDispose`.
+   * reported to the caller. A locally owned Linux loop can issue
+   * `IORING_OP_CLOSE`; reactor Realms transfer close to the shared native
+   * blocking pool so their isolate remains movable while it completes. This
+   * method also backs `Symbol.asyncDispose`.
    *
    * ```ts no_run
    * await using file = new File(fd, fs, '/tmp/scratch', 'w');
@@ -551,6 +554,9 @@ export class File {
         await loop.submit(function submitAsyncClose(raw: object, id: number) {
           ops.asyncClose(raw, fd, id);
         });
+      } else if (nativeFileOps) {
+        const result = await nativeFileOps.close(this.#fd);
+        if (result < 0) throwErrnoCode('close', this.#path.toString(), result);
       } else {
         lib.symbols.close(this.#fd);
       }

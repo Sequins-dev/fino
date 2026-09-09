@@ -754,6 +754,15 @@ fn uses_process_readiness(
     rv.set(v8::Boolean::new(scope, enabled).into());
 }
 
+fn is_process_entry_realm(
+    scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    let entry = get_state(scope).borrow().is_process_entry;
+    rv.set(v8::Boolean::new(scope, entry).into());
+}
+
 fn set_scheduler_polling_required(
     scope: &mut v8::PinScope,
     args: v8::FunctionCallbackArguments,
@@ -789,8 +798,11 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
         async_pipe,
     } = inner;
     crate::runtime::init_v8();
-    let params = v8::CreateParams::default()
+    let mut params = v8::CreateParams::default()
         .array_buffer_allocator(crate::runtime::shared_allocator().clone());
+    if entry == "internal:scheduler/bootstrap" {
+        params = params.heap_limits(0, 1 << 30);
+    }
     let mut isolate = crate::v8_isolate_group::new_isolate(params);
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
     isolate.set_allow_atomics_wait(true);
@@ -847,6 +859,7 @@ fn setup_workload(inner: PendingWorkloadInner, owner: u32) -> Result<Workload, S
         );
         state.scheduler_workload_owner = owner;
         state.uses_process_readiness = true;
+        state.is_process_entry = scheduled.is_none();
         scope.set_slot(Rc::new(RefCell::new(state)));
         let initial_frame = v8::Array::new(scope, 0);
         scope.set_continuation_preserved_embedder_data(initial_frame.into());
@@ -950,8 +963,18 @@ fn activate(workload: &mut Workload) -> ActiveWorkload {
     // ActiveWorkload is always dropped before its containing Workload, so
     // extending this outer borrow does not permit the SharedIsolate owner to
     // disappear while the guard is live.
-    let locker = unsafe { std::mem::transmute::<v8::Locker<'_>, v8::Locker<'static>>(locker) };
+    let mut locker = unsafe { std::mem::transmute::<v8::Locker<'_>, v8::Locker<'static>>(locker) };
     let saved_async_state = crate::async_rt::swap_state(workload.async_state.take());
+    let profiling = {
+        let state = workload.state.borrow();
+        !state.public_profiles.is_empty() || state.process_profile.is_some()
+    };
+    if profiling {
+        v8::scope!(let isolate_scope, &mut *locker);
+        let context = v8::Local::new(isolate_scope, &workload.context);
+        let scope = &mut v8::ContextScope::new(isolate_scope, context);
+        crate::profiler::resume_profiles(scope, &mut workload.state.borrow_mut());
+    }
     ActiveWorkload {
         saved_async_state,
         locker,
@@ -959,6 +982,7 @@ fn activate(workload: &mut Workload) -> ActiveWorkload {
 }
 
 fn deactivate(workload: &mut Workload, active: ActiveWorkload) {
+    crate::profiler::pause_profiles(&mut workload.state.borrow_mut());
     let ActiveWorkload {
         saved_async_state,
         locker,
@@ -2026,7 +2050,18 @@ fn reactor_pool_stats(
     let key = v8::String::new(scope, "nativeIo").unwrap();
     let native_io = v8::Boolean::new(scope, true);
     object.set(scope, key.into(), native_io.into());
+    let key = v8::String::new(scope, "ioBackend").unwrap();
+    let backend = v8::String::new(
+        scope,
+        host::IO_BACKEND.get().copied().unwrap_or("uninitialized"),
+    )
+    .unwrap();
+    object.set(scope, key.into(), backend.into());
     for (name, value) in [
+        (
+            "nativeBufferReuses",
+            crate::native_io::BUFFER_REUSES.load(Ordering::Relaxed) as f64,
+        ),
         ("parked", inner.parked.len() as f64),
         ("residents", inner.residents.len() as f64),
         ("ready", inner.ready.len() as f64),
@@ -2349,11 +2384,11 @@ pub(crate) fn notify_io() {
     mailbox().notify();
 }
 
-pub(crate) fn with_live_owner(owner: u32, publish: impl FnOnce(bool)) {
+pub(crate) fn with_live_owner(owner: u32, publish: impl FnOnce(bool) -> bool) {
     let owners = owner_pools().lock().unwrap();
     let pool = owners.get(&owner).and_then(Weak::upgrade);
-    publish(pool.is_some());
-    if let Some(pool) = pool {
+    let notify = publish(pool.is_some());
+    if notify && let Some(pool) = pool {
         pool.signal(owner);
     }
 }
@@ -2361,10 +2396,13 @@ pub(crate) fn with_live_owner(owner: u32, publish: impl FnOnce(bool)) {
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let names = [
         "submitOwnedIo",
+        "nativeFileOpen",
+        "nativeFileClose",
         "cancelOwnedIo",
         "takeOwnedIo",
         "currentWorkloadOwner",
         "usesProcessReadiness",
+        "isProcessEntryRealm",
         "setSchedulerPollingRequired",
         "createScheduledRealm",
         "scheduledRealmSend",
@@ -2396,8 +2434,11 @@ fn eval_steps<'a>(
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
     crate::set_fn!(scope, module, "submitOwnedIo", crate::native_io::submit);
+    crate::set_fn!(scope, module, "nativeFileOpen", crate::native_io::open);
+    crate::set_fn!(scope, module, "nativeFileClose", crate::native_io::close);
     crate::set_fn!(scope, module, "cancelOwnedIo", crate::native_io::cancel);
     crate::set_fn!(scope, module, "takeOwnedIo", crate::native_io::take);
+    crate::set_fn!(scope, module, "isProcessEntryRealm", is_process_entry_realm);
     crate::set_fn!(scope, module, "recordRealmState", record_realm_state);
     crate::set_fn!(
         scope,
@@ -2474,6 +2515,103 @@ mod tests {
     use super::*;
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn profiling_follows_an_isolate_to_a_different_thread() {
+        crate::profiler::begin_migration_test_profile();
+        let (send, receive) = mpsc::sync_channel(1);
+        let (release, released) = mpsc::sync_channel(1);
+        let first = std::thread::spawn(move || {
+            let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+            let owner = next_owner();
+            let mut workload = setup_workload(
+                PendingWorkloadInner {
+                    entry: root
+                        .join("tests/fixtures/profiler-migration.ts")
+                        .to_string_lossy()
+                        .into_owned(),
+                    process_env: ProcessEnv {
+                        root,
+                        args: vec![],
+                        env_vars: HashMap::new(),
+                        exec_path: String::new(),
+                    },
+                    package_map_json: None,
+                    import_rules: crate::state::default_import_rules(),
+                    channel_rx: None,
+                    channel_tx: None,
+                    wake_read_fd: None,
+                    wake_write_fd: None,
+                    watch_mode: false,
+                    repl_mode: false,
+                    realm_data: None,
+                    realm_bootstrap_data: None,
+                    reload_requested_signal: None,
+                    scheduled: None,
+                    port_fds: None,
+                    async_pipe: create_pipe().unwrap(),
+                },
+                owner,
+            )
+            .unwrap();
+            let mut active = activate(&mut workload);
+            let pool = PoolShared::new();
+            drive_slice(&mut workload, &mut active, &pool).unwrap();
+            deactivate(&mut workload, active);
+            send.send(TransferWorkload(workload)).ok().unwrap();
+            // Keep the originating OS thread alive: this is migration, not
+            // disposal of the thread originally targeted by the V8 sampler.
+            released.recv().unwrap();
+        });
+        let transfer = receive.recv().unwrap();
+        let result = std::thread::spawn(move || {
+            let mut workload = {
+                let transferred = transfer;
+                transferred.0
+            };
+            let mut active = activate(&mut workload);
+            let success = {
+                v8::scope!(let isolate_scope, &mut *active.locker);
+                let context = v8::Local::new(isolate_scope, &workload.context);
+                let scope = &mut v8::ContextScope::new(isolate_scope, context);
+                v8::tc_scope!(tc, scope);
+                let source = v8::String::new(tc, "finishMigrationProbe()").unwrap();
+                let script = v8::Script::compile(tc, source, None).unwrap();
+                let mut success = script.run(tc).is_some();
+                if success {
+                    let bytes = crate::profiler::finish_migration_test_profile(tc);
+                    let store =
+                        v8::ArrayBuffer::new_backing_store_from_bytes(bytes.into_boxed_slice())
+                            .make_shared();
+                    let buffer = v8::ArrayBuffer::with_backing_store(tc, &store);
+                    let bytes = v8::Uint8Array::new(tc, buffer, 0, store.byte_length()).unwrap();
+                    let key = v8::String::new(tc, "checkMigrationProfile").unwrap();
+                    let global = context.global(tc);
+                    let check = global.get(tc, key.into()).unwrap();
+                    let check = v8::Local::<v8::Function>::try_from(check).unwrap();
+                    let receiver = v8::undefined(tc);
+                    success = check.call(tc, receiver.into(), &[bytes.into()]).is_some();
+                }
+                if !success {
+                    eprintln!(
+                        "{}",
+                        crate::realm::child::catch_message(tc).unwrap_or_default()
+                    );
+                }
+                success
+            };
+            deactivate(&mut workload, active);
+            drop_workload(workload);
+            success
+        })
+        .join();
+        release.send(()).unwrap();
+        first.join().unwrap();
+        assert!(
+            result.unwrap(),
+            "profile lost samples across thread migration"
+        );
+    }
 
     #[test]
     fn scheduling_diagnostics_preserve_first_wake_and_account_separate_slices() {

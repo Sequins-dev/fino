@@ -41,9 +41,11 @@ pub struct FfiCompletion {
     /// Index into the thread-local `RESOLVER_TABLE` on the isolate's thread.
     pub resolver_id: usize,
     pub result: Result<RawFfiResult, String>,
+    /// Native descriptor transferred to JavaScript only if its resolver is consumed.
+    pub owned_fd: Option<OwnedFd>,
 }
 
-// FfiCompletion is fully Send: resolver_id is usize, RawFfiResult is all Copy.
+// FfiCompletion is fully Send and may retain native ownership until delivery.
 
 /// The raw return value from an async FFI call (stored as bytes + type tag).
 pub struct RawFfiResult {
@@ -116,6 +118,16 @@ pub fn push_resolver(resolver: v8::Global<v8::PromiseResolver>) -> usize {
         let id = table.len();
         table.push(Some(resolver));
         id
+    })
+}
+
+/// Whether the active isolate is awaiting a native async completion.
+pub fn has_pending_resolvers() -> bool {
+    STATE.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .is_some_and(|state| state.resolver_table.iter().any(Option::is_some))
     })
 }
 
@@ -446,7 +458,7 @@ fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
         return false;
     }
 
-    for completion in completions {
+    for mut completion in completions {
         let global = match take_resolver(completion.resolver_id) {
             Some(g) => g,
             None => {
@@ -459,6 +471,10 @@ fn drain_ffi_completions(scope: &mut v8::PinScope) -> bool {
         match completion.result {
             Ok(raw) => {
                 if let Some(val) = raw_to_v8(scope, &raw) {
+                    if let Some(fd) = completion.owned_fd.take() {
+                        use std::os::fd::IntoRawFd;
+                        let _ = fd.into_raw_fd();
+                    }
                     let _ = resolver.resolve(scope, val);
                 }
             }

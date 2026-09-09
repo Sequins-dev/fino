@@ -1,12 +1,10 @@
 /**
  * internal:runtime/loop — global event loop singleton.
  *
- * Ordinary realms on one OS thread attach to a thread backend. Process-pool
- * workloads instead send scalar registrations to the main TypeScript
- * orchestration realm, which owns the process backend. Each task captures its
- * realm owner in scalar user data. Native routing returns readiness to that
- * owner, then this module resolves the realm-local promise and leaves actual
- * reads, writes, and buffer ownership in the workload's TypeScript.
+ * Dedicated sandbox realms attach to a thread-local backend. Ordinary realms
+ * instead send owner-tagged registrations and owned buffers to the native
+ * process host. That Rust host owns readiness and performs reads and writes;
+ * this module resolves the corresponding Realm-local promises.
  *
  *
  * ## API
@@ -47,12 +45,10 @@
  *
  * - macOS uses kqueue, including `proc()` and `vnode()` support. Generic
  *   `submit()` completions are not available there.
- * - Linux first tries io_uring for readiness, timers, signals, and completion
- *   events. If `io_uring_setup(2)` is denied by the kernel or sandbox, the
- *   selector falls back to poll(2).
- * - The Linux poll fallback preserves the loop contract for readiness, timers,
- *   signals, and completion events, but file completions are queued
- *   synchronously rather than performed by kernel async I/O.
+ * - Linux requires io_uring for process-host readiness and owned-buffer I/O.
+ *   Startup fails explicitly if the kernel cannot create the ring.
+ * - macOS process-host reads and writes use nonblocking kqueue readiness;
+ *   potentially blocking regular-file work runs on the shared blocking pool.
  *
  * Platform-only APIs fail explicitly when their backend cannot provide them:
  * `proc()` and `vnode()` are macOS-only, while `submit()` requires a completion
@@ -67,7 +63,11 @@
  *
  * @internal
  */
-import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import {
+  drainMicrotasks,
+  hasPendingV8Tasks,
+  hasPendingNativeTasks,
+} from 'internal:async-context';
 import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
@@ -224,7 +224,11 @@ const _io = new Map<
 >();
 
 /** Submit a consuming native write. All views of the backing buffer detach before return. @internal */
-export function writeOwned(fd: number, bytes: Uint8Array, signal?: AbortSignal): Promise<void> {
+export function writeOwned(
+  fd: number,
+  bytes: Uint8Array | Uint8Array[],
+  signal?: AbortSignal,
+): Promise<void> {
   return ownedIo(fd, bytes, signal).then(() => {});
 }
 
@@ -235,7 +239,7 @@ export function readOwned(fd: number, capacity: number, signal?: AbortSignal): P
 
 function ownedIo(
   fd: number,
-  value: Uint8Array | number,
+  value: Uint8Array | Uint8Array[] | number,
   signal?: AbortSignal,
 ): Promise<Uint8Array | undefined> {
   signal?.throwIfAborted();
@@ -498,7 +502,10 @@ export function flush(): void {
  */
 export function tick(timeoutMs: number | null): number {
   const completedIo = takeOwnedIo();
-  for (const [id, result, bytes] of completedIo) {
+  for (let index = 0; index < completedIo.length; index += 3) {
+    const id = completedIo[index] as number;
+    const result = completedIo[index + 1] as number;
+    const bytes = completedIo[index + 2] as Uint8Array | undefined;
     const pending = _io.get(id);
     if (pending === undefined) continue;
     _io.delete(id);
@@ -584,6 +591,7 @@ export function alive(): boolean {
     // native host arming it, or the awaiting caller would never settle.
     _installs.size > 0 ||
     hasPendingV8Tasks() ||
+    hasPendingNativeTasks() ||
     _atomicsWaiters > 0
   );
 }

@@ -30,7 +30,7 @@
  */
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
-import { usesProcessReadiness } from 'internal:scheduler-native';
+import { usesProcessReadiness, nativeFileOpen, nativeFileClose } from 'internal:scheduler-native';
 import { encodeUtf8, decodeUtf8 } from '../encoding.ts';
 import { getRealmCwd } from 'internal:process/cwd';
 import { Path } from '../../file/path.ts';
@@ -154,9 +154,9 @@ export let loopModule: LoopModule | null = null;
 /**
  * Linux io_uring async file operation bindings for a locally owned loop.
  *
- * `null` on macOS and in reactor-pooled realms. Pooled realms keep buffer
- * ownership and the actual filesystem syscall in their own TypeScript isolate
- * instead of submitting completion work to the shared readiness reactor.
+ * `null` on macOS and in reactor-pooled realms. Reactor Realms use the native
+ * owned-buffer service for reads and the shared blocking pool for file
+ * lifecycle calls; dedicated Linux loops retain their local io_uring backend.
  *
  * ```typescript no_run
  * import { asyncOps } from 'internal:file/bindings';
@@ -168,6 +168,10 @@ export let loopModule: LoopModule | null = null;
 export let asyncOps: AsyncOpsModule | null = null;
 loopModule = await import('internal:runtime/loop');
 const processReadiness = usesProcessReadiness();
+/** Async file lifecycle operations for reactor Realms. @internal */
+export const nativeFileOps = processReadiness
+  ? { open: nativeFileOpen, close: nativeFileClose }
+  : null;
 if (!isDarwin && !processReadiness) {
   asyncOps = await import('internal:runtime/loop-backend');
 }

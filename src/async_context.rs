@@ -7,7 +7,8 @@
 //! - `getCPED` / `setCPED`: V8 Torque builtins extracted from the extras binding
 //!   object. These compile to direct CPED memory loads/stores on the V8 isolate
 //!   and can be inlined by TurboFan/Maglev — no native barrier crossing.
-//! - `drainMicrotasks`, `hasPendingV8Tasks`, `scheduleSync`, `runLoop`: host loop
+//! - `drainMicrotasks`, `hasPendingV8Tasks`, `hasPendingNativeTasks`,
+//!   `scheduleSync`, `runLoop`: host loop
 //!   primitives that must remain in Rust.
 
 use ::v8;
@@ -28,6 +29,7 @@ pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::
         "setCPED",
         "drainMicrotasks",
         "hasPendingV8Tasks",
+        "hasPendingNativeTasks",
         "scheduleSync",
         "runLoop",
     ]
@@ -64,6 +66,12 @@ fn eval_steps<'a>(
 
     crate::set_fn!(scope, module, "drainMicrotasks", drain_microtasks);
     crate::set_fn!(scope, module, "hasPendingV8Tasks", has_pending_v8_tasks);
+    crate::set_fn!(
+        scope,
+        module,
+        "hasPendingNativeTasks",
+        has_pending_native_tasks
+    );
     crate::set_fn!(scope, module, "scheduleSync", schedule_sync);
     crate::set_fn!(scope, module, "runLoop", run_loop);
 
@@ -101,6 +109,16 @@ fn has_pending_v8_tasks(
     mut rv: v8::ReturnValue,
 ) {
     rv.set_bool(scope.has_pending_background_tasks());
+}
+
+/// Returns true while a native async call still owns a Promise resolver for
+/// this isolate. The Realm may park and migrate while its completion is in flight.
+fn has_pending_native_tasks(
+    _scope: &mut v8::PinScope,
+    _args: v8::FunctionCallbackArguments,
+    mut rv: v8::ReturnValue,
+) {
+    rv.set_bool(crate::async_rt::has_pending_resolvers());
 }
 
 /// Schedule `fn` to be called from Rust outside any microtask checkpoint.

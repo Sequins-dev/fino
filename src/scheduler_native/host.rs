@@ -5,6 +5,8 @@ use crate::native_io::kernel::Kernel;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+pub(super) static IO_BACKEND: OnceLock<&'static str> = OnceLock::new();
+
 #[derive(Default)]
 struct Isolates {
     stopping: bool,
@@ -77,6 +79,7 @@ impl Drop for Driver {
 impl Driver {
     fn new(pool: &PoolShared) -> Result<Self, String> {
         let mut kernel = Kernel::new().map_err(|e| e.to_string())?;
+        let _ = IO_BACKEND.set(kernel.name());
         kernel
             .arm(1, mailbox().wake.read_fd(), -1, 0)
             .map_err(|e| e.to_string())?;
@@ -221,8 +224,16 @@ impl Driver {
                 continue;
             }
             if event.token & crate::native_io::IO_TOKEN != 0 {
-                self.io
-                    .progress(&mut self.kernel, event.token & !crate::native_io::IO_TOKEN)?;
+                if self.kernel.has_completion_io() {
+                    self.io.completed(
+                        &mut self.kernel,
+                        event.token & !crate::native_io::IO_TOKEN,
+                        event.data,
+                    )?;
+                } else {
+                    self.io
+                        .progress(&mut self.kernel, event.token & !crate::native_io::IO_TOKEN)?;
+                }
                 continue;
             }
             if let Some(registration) = self.registrations.get(&event.token) {
