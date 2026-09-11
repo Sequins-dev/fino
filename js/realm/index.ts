@@ -66,7 +66,10 @@ import type {
   ProcessSandboxOptions,
   ProcessSandboxResources,
 } from '../process.ts';
-import { readable, removeRead } from 'internal:runtime/loop';
+import {
+  readableControl as readable,
+  removeControlRead as removeRead,
+} from 'internal:runtime/loop';
 import {
   closeScheduledRealm,
   createScheduledRealm,

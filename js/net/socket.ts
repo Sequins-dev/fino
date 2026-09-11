@@ -127,8 +127,9 @@
  * const reply = await reader.read();
  * ```
  */
-import { dlopen, Pointer } from 'fino:ffi';
-import { networkInterfaces as nativeNetworkInterfaces } from 'internal:net-native';
+import { Pointer } from 'fino:ffi';
+import { socket as socketIo } from 'internal:io';
+import { networkInterfaces as nativeNetworkInterfaces } from 'internal:io';
 import { os } from 'internal:process';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import * as loop from '../internal/runtime/loop.ts';
@@ -406,132 +407,7 @@ const errnoFn = isDarwin ? '__error' : '__errno_location';
 // ---------------------------------------------------------------------------
 // Open libc
 // ---------------------------------------------------------------------------
-const LIBC = isDarwin ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-const _defs = {
-  socket: {
-    parameters: ['i32', 'i32', 'i32'],
-    result: 'i32',
-  },
-  bind: {
-    parameters: ['i32', 'buffer', 'u32'],
-    result: 'i32',
-  },
-  getsockname: {
-    parameters: ['i32', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  connect: {
-    parameters: ['i32', 'buffer', 'u32'],
-    result: 'i32',
-  },
-  listen: {
-    parameters: ['i32', 'i32'],
-    result: 'i32',
-  },
-  accept: {
-    parameters: ['i32', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  send: {
-    parameters: ['i32', 'buffer', 'usize', 'i32'],
-    result: 'isize',
-  },
-  recv: {
-    parameters: ['i32', 'buffer', 'usize', 'i32'],
-    result: 'isize',
-  },
-  sendto: {
-    parameters: ['i32', 'buffer', 'usize', 'i32', 'buffer', 'u32'],
-    result: 'isize',
-  },
-  recvfrom: {
-    parameters: ['i32', 'buffer', 'usize', 'i32', 'buffer', 'buffer'],
-    result: 'isize',
-  },
-  sendmsg: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'isize',
-  },
-  recvmsg: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'isize',
-  },
-  setsockopt: {
-    parameters: ['i32', 'i32', 'i32', 'buffer', 'u32'],
-    result: 'i32',
-  },
-  getsockopt: {
-    parameters: ['i32', 'i32', 'i32', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  shutdown: {
-    parameters: ['i32', 'i32'],
-    result: 'i32',
-  },
-  close: {
-    parameters: ['i32'],
-    result: 'i32',
-  },
-  unlink: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  fcntl: {
-    parameters: ['i32', 'i32', 'i32'],
-    result: 'i32',
-    variadic: 2,
-  },
-  inet_pton: {
-    parameters: ['i32', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  inet_ntop: {
-    parameters: ['i32', 'buffer', 'buffer', 'u32'],
-    result: 'pointer',
-  },
-  if_nameindex: {
-    parameters: [],
-    result: 'pointer',
-  },
-  if_freenameindex: {
-    parameters: ['pointer'],
-    result: 'void',
-  },
-  if_nametoindex: {
-    parameters: ['buffer'],
-    result: 'u32',
-  },
-  [errnoFn]: {
-    parameters: [],
-    result: 'pointer',
-  },
-};
-// accept4 is Linux-only (sets SOCK_NONBLOCK atomically on the accepted socket)
-if (isLinux) {
-  _defs.accept4 = {
-    parameters: ['i32', 'buffer', 'buffer', 'i32'],
-    result: 'i32',
-  };
-  _defs.sendmmsg = {
-    parameters: ['i32', 'buffer', 'u32', 'i32'],
-    result: 'i32',
-  };
-  _defs.recvmmsg = {
-    parameters: ['i32', 'buffer', 'u32', 'i32', 'buffer'],
-    result: 'i32',
-  };
-}
-if (isDarwin) {
-  _defs.sendmsg_x = {
-    parameters: ['i32', 'buffer', 'u32', 'i32'],
-    result: 'i32',
-  };
-  _defs.recvmsg_x = {
-    parameters: ['i32', 'buffer', 'u32', 'i32'],
-    result: 'i32',
-  };
-}
-const lib = dlopen(LIBC, _defs);
+const lib = socketIo;
 function getErrno(): number {
   return Pointer.readI32(lib.symbols[errnoFn]!() as ArrayBuffer, 0);
 }

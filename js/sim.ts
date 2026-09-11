@@ -9,6 +9,10 @@
  * The child owns its local values and execution state. The parent owns Facade
  * implementations, journal copies, and Realm cleanup. Filesystem and network
  * fakes are separate adapters and are not installed implicitly.
+ * Descriptor I/O and application readiness are denied by default, even when a
+ * high-level file or socket module is inherited. Trusted harness overrides can
+ * replace `internal:io` and `internal:runtime/readiness` to admit virtual devices.
+ * The runtime's control transport remains live independently of those devices.
  *
  * ## Example
  *
@@ -381,6 +385,18 @@ export async function simulate<Result = unknown>(
       ...(options.faults?.latency === undefined ? {} : { responseLatency: options.faults.latency }),
     },
     overrides: ImportMap.deny([
+      {
+        pattern: 'internal:io',
+        directive: { type: 'source', code: "export * from 'internal:sim/io';", source_map: '' },
+      },
+      {
+        pattern: 'internal:runtime/readiness',
+        directive: {
+          type: 'source',
+          code: "export * from 'internal:sim/readiness';",
+          source_map: '',
+        },
+      },
       { pattern: 'internal:runtime/loop', directive: 'inherit' },
       { pattern: entry, directive: 'inherit' },
       ...worldRules(options.world ?? {}),

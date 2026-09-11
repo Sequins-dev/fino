@@ -63,7 +63,7 @@
  * const [reader, writer] = socket.split();
  * ```
  */
-import * as openssl from '../internal/openssl.ts';
+import { tls as openssl } from 'internal:io';
 import * as loop from '../internal/runtime/loop.ts';
 import { BufferedBytesReader, BufferedBytesWriter, type ReadResult } from '../internal/stream.ts';
 import { Socket, connectTcp, close as closeFd, setNonblocking } from './socket.ts';

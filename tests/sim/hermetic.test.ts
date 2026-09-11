@@ -8,6 +8,18 @@ const UNDECLARED_IMPORT_PROBE = new URL('./fixtures/undeclared-import-probe.ts',
   .pathname;
 
 describe('simulation hermeticity', { exclusive: true }, () => {
+  it('does not grant native effects by inheriting a high-level module', async (t) => {
+    const report = await simulate<string[]>({
+      entry: new URL('./fixtures/native-io-probe.ts', import.meta.url).pathname,
+      overrides: [
+        { pattern: 'fino:file', directive: 'inherit' },
+        { pattern: 'fino:net/socket', directive: 'inherit' },
+        { pattern: 'fino:process', directive: 'inherit' },
+      ],
+    });
+    for (const result of report.result) t.match(result, /unavailable in a simulation/);
+    t.equal(report.result.length, 2);
+  });
   it('rejects ambient capabilities that bypass Facades and the journal', async (t) => {
     const report = await simulate({ entry: AMBIENT_ESCAPE_PROBE, seed: 'hermetic' });
     const results = report.result as Record<string, string>;

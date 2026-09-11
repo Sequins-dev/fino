@@ -28,7 +28,10 @@ import {
 } from 'internal:scheduler-native';
 import { env } from 'internal:process';
 import { createTransitChannel } from 'internal:transit-port';
-import { readable, removeRead } from 'internal:runtime/loop';
+import {
+  readableControl as readable,
+  removeControlRead as removeRead,
+} from 'internal:runtime/loop';
 import { resolveRpc, rejectRpc, pushChunk, endStream, errStream } from 'internal:parent-rpc';
 
 // Retain control metadata only: payloads can contain secrets or application data.

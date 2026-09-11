@@ -52,6 +52,8 @@
       "internal:openssl": ["./js/internal/openssl.ts"],
       "internal:package_manager": ["./js/internal/package_manager.ts"],
       "internal:runtime/*": ["./js/internal/runtime/*.ts"],
+      "internal:io": ["./js/internal/io.ts"],
+      "internal:io/*": ["./js/internal/io/*.ts"],
       "internal:scheduler-native": ["./js/internal/scheduler/native.d.ts"],
       "internal:sim/*": ["./js/internal/sim/*.ts"],
       "internal:shutdown": ["./js/internal/shutdown.ts"],
