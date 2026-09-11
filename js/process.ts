@@ -97,8 +97,9 @@
  * const { code } = await proc.wait();
  * ```
  */
-import { os, arch, args, env, execPath } from 'internal:process';
-import { dlopen } from 'fino:ffi';
+import { process as lib, pipe2Lib } from 'internal:io';
+import { processInfo } from 'internal:io';
+const { os, arch, args, env, execPath } = processInfo;
 import { spawnStrictSandboxed } from './internal/security/sandbox/spawn.ts';
 import { killAndRemoveCgroup, cgroupCpuAvailable } from './internal/security/sandbox/cgroup.ts';
 import { landlockAvailable } from './internal/security/sandbox/landlock.ts';
@@ -543,7 +544,6 @@ export interface ProcessStats {
 // ---------------------------------------------------------------------------
 // Platform constants
 // ---------------------------------------------------------------------------
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const isLinux = os === 'linux';
 // fcntl(2) constants
 const F_SETFD = 2;
@@ -554,40 +554,6 @@ const _SIGTERM = 15;
 // ---------------------------------------------------------------------------
 // libc FFI
 // ---------------------------------------------------------------------------
-const lib = dlopen(LIBC, {
-  getpid: {
-    parameters: [],
-    result: 'i32',
-  },
-  getppid: {
-    parameters: [],
-    result: 'i32',
-  },
-  _exit: {
-    parameters: ['i32'],
-    result: 'void',
-  },
-  pipe: {
-    parameters: ['buffer'],
-    result: 'i32',
-  },
-  fcntl: {
-    parameters: ['i32', 'i32', 'i32'],
-    result: 'i32',
-  },
-  getrusage: {
-    parameters: ['i32', 'buffer'],
-    result: 'i32',
-  },
-});
-const pipe2Lib = isLinux
-  ? dlopen(LIBC, {
-      pipe2: {
-        parameters: ['buffer', 'i32'],
-        result: 'i32',
-      },
-    })
-  : null;
 const RUSAGE_SELF = 0;
 let lastEventLoopLagMs = 0;
 // ---------------------------------------------------------------------------

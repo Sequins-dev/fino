@@ -17,22 +17,12 @@
  * }
  * ```
  */
-import { dlopen } from 'fino:ffi';
+import { terminal as lib } from 'internal:io';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 import { os } from 'internal:process';
 import { stdout as processStdout, stderr as processStderr } from './process.ts';
 import type { BytesWriter } from './internal/stream.ts';
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-const lib = dlopen(LIBC, {
-  isatty: {
-    parameters: ['i32'],
-    result: 'i32',
-  },
-  read: {
-    parameters: ['i32', 'buffer', 'usize'],
-    result: 'isize',
-  },
-});
+
 /**
  * Return whether a numeric file descriptor is attached to a terminal.
  *

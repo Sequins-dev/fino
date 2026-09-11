@@ -67,36 +67,14 @@
  *
  * @internal
  */
-import { dlopen, Pointer } from 'fino:ffi';
+import { Pointer } from 'fino:ffi';
+import { stream } from 'internal:io';
 import { os } from 'internal:process';
 import { Stat } from 'internal:file/stat';
 import * as loop from 'internal:runtime/loop';
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const errnoFn = os === 'darwin' ? '__error' : '__errno_location';
 const EAGAIN = os === 'darwin' ? 35 : 11;
-const lib = dlopen(LIBC, {
-  fstat: { parameters: ['i32', 'buffer'], result: 'i32' },
-  read: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'i32',
-  },
-  write: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'i32',
-  },
-  writev: {
-    parameters: ['i32', 'buffer', 'i32'],
-    result: 'i32',
-  },
-  fcntl: {
-    parameters: ['i32', 'i32', 'i32'],
-    result: 'i32',
-  },
-  [errnoFn]: {
-    parameters: [],
-    result: 'pointer',
-  },
-});
+const lib = stream;
 // iovec layout on 64-bit: { void *iov_base (8 bytes), size_t iov_len (8 bytes) }
 const IOVEC_SIZE = 16;
 const MAX_IOV = 16;

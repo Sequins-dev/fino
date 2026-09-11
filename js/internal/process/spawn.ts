@@ -12,13 +12,13 @@
  * - [POSIX `waitpid`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/wait.html)
  * - [Linux `pidfd_open(2)`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
  */
-import { dlopen, Pointer } from 'fino:ffi';
+import { spawn as lib, spawnChdirLib, spawnInheritLib, spawnCloseFromLib } from 'internal:io';
+import { Pointer } from 'fino:ffi';
 import { os } from 'internal:process';
 import { encodeUtf8 } from 'internal:encoding';
 import * as loop from '../runtime/loop.ts';
 
 const isLinux = os === 'linux';
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const F_GETFL = 3;
 const F_SETFL = 4;
 const O_NONBLOCK = isLinux ? 2048 : 4;
@@ -31,78 +31,6 @@ const POSIX_SPAWN_SETSIGDEF = 0x0004;
 const POSIX_SPAWN_SETSIGMASK = 0x0008;
 const POSIX_SPAWN_CLOEXEC_DEFAULT = 0x4000;
 const POSIX_SPAWN_SETSID = isLinux ? 0x80 : 0x0400;
-
-const lib = dlopen(LIBC, {
-  close: { parameters: ['i32'], result: 'i32' },
-  fcntl: { parameters: ['i32', 'i32', 'i32'], result: 'i32', variadic: 2 },
-  kill: { parameters: ['i32', 'i32'], result: 'i32' },
-  waitpid: { parameters: ['i32', 'buffer', 'i32'], result: 'i32' },
-  syscall: { parameters: ['i64', 'i64', 'i64'], result: 'i64' },
-  posix_spawnp: {
-    parameters: ['buffer', 'buffer', 'buffer', 'buffer', 'buffer', 'buffer'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_init: { parameters: ['buffer'], result: 'i32' },
-  posix_spawn_file_actions_destroy: { parameters: ['buffer'], result: 'i32' },
-  posix_spawn_file_actions_addopen: {
-    parameters: ['buffer', 'i32', 'buffer', 'i32', 'i32'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_adddup2: {
-    parameters: ['buffer', 'i32', 'i32'],
-    result: 'i32',
-  },
-  posix_spawn_file_actions_addclose: {
-    parameters: ['buffer', 'i32'],
-    result: 'i32',
-  },
-  posix_spawnattr_init: { parameters: ['buffer'], result: 'i32' },
-  posix_spawnattr_destroy: { parameters: ['buffer'], result: 'i32' },
-  posix_spawnattr_setflags: { parameters: ['buffer', 'u16'], result: 'i32' },
-  posix_spawnattr_setsigdefault: {
-    parameters: ['buffer', 'buffer'],
-    result: 'i32',
-  },
-  posix_spawnattr_setsigmask: { parameters: ['buffer', 'buffer'], result: 'i32' },
-});
-
-const spawnChdirLib = (() => {
-  try {
-    return dlopen(LIBC, {
-      posix_spawn_file_actions_addchdir_np: {
-        parameters: ['buffer', 'buffer'],
-        result: 'i32',
-      },
-    });
-  } catch (_) {
-    return null;
-  }
-})();
-
-const spawnInheritLib =
-  os === 'darwin'
-    ? dlopen(LIBC, {
-        posix_spawn_file_actions_addinherit_np: {
-          parameters: ['buffer', 'i32'],
-          result: 'i32',
-        },
-      })
-    : null;
-
-const spawnCloseFromLib = isLinux
-  ? (() => {
-      try {
-        return dlopen(LIBC, {
-          posix_spawn_file_actions_addclosefrom_np: {
-            parameters: ['buffer', 'i32'],
-            result: 'i32',
-          },
-        });
-      } catch (_) {
-        return null;
-      }
-    })()
-  : null;
 
 function check(rc: number, action: string): void {
   if (rc !== 0) throw new Error(`${action} failed: errno ${rc}`);

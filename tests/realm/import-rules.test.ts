@@ -66,6 +66,40 @@ describe('ImportMap.deny', () => {
   });
 });
 describe('ImportMap.inherit', () => {
+  it('preserves a parent provider replacement in a descendant', async (t) => {
+    using parent = new Realm({
+      entry: 'app:parent',
+      overrides: ImportMap.inherit([
+        {
+          pattern: 'app:provider',
+          directive: { type: 'source', code: 'export const value = 42;', source_map: '' },
+        },
+        {
+          pattern: 'app:child',
+          directive: {
+            type: 'source',
+            code: "import { value } from 'app:provider'; export default () => value;",
+            source_map: '',
+          },
+        },
+        {
+          pattern: 'app:parent',
+          directive: {
+            type: 'source',
+            code: `
+          import { Realm, ImportMap } from 'fino:realm';
+          export default async function () {
+            using child = new Realm({ entry: 'app:child', overrides: ImportMap.inherit([]) });
+            return await child.call();
+          }
+        `,
+            source_map: '',
+          },
+        },
+      ]),
+    });
+    t.equal(await parent.call(), 42);
+  });
   it('prepends an inherit-all default before caller rules', (t) => {
     t.deepEqual(
       ImportMap.inherit([

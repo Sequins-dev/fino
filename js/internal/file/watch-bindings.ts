@@ -45,7 +45,8 @@
  * @internal
  */
 import { os } from 'internal:process';
-import { dlopen, Pointer } from 'fino:ffi';
+import { Pointer } from 'fino:ffi';
+import { watch } from 'internal:io';
 import { encodeUtf8, decodeUtf8 } from 'internal:encoding';
 /**
  * True when the runtime is running on macOS.
@@ -241,32 +242,7 @@ let _inotifyRead: ((fd: number, buf: ArrayBuffer) => number) | null = null;
 let _inotifyClose: ((fd: number) => void) | null = null;
 let _parseEvents: ((buf: ArrayBuffer, n: number) => InotifyEvent[]) | null = null;
 if (!isDarwin) {
-  const lib = dlopen('libc.so.6', {
-    inotify_init1: {
-      parameters: ['i32'],
-      result: 'i32',
-    },
-    inotify_add_watch: {
-      parameters: ['i32', 'buffer', 'u32'],
-      result: 'i32',
-    },
-    inotify_rm_watch: {
-      parameters: ['i32', 'i32'],
-      result: 'i32',
-    },
-    read: {
-      parameters: ['i32', 'buffer', 'usize'],
-      result: 'isize',
-    },
-    close: {
-      parameters: ['i32'],
-      result: 'i32',
-    },
-    __errno_location: {
-      parameters: [],
-      result: 'pointer',
-    },
-  });
+  const lib = watch!;
   function errnoVal(): number {
     return Pointer.readI32(lib.symbols.__errno_location(), 0);
   }

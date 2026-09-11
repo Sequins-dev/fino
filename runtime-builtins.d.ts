@@ -684,6 +684,12 @@ declare module 'internal:docgen' {
   export function extractModule(path: string): string;
 }
 
+/** internal:net-native — host interface enumeration. @internal */
+declare module 'internal:net-native' {
+  /** Enumerate host interfaces; the socket adapter validates the native records. */
+  export function networkInterfaces(): unknown[];
+}
+
 /**
  * internal:runtime/loop-backend — platform event-loop backend.
  *
@@ -754,6 +760,8 @@ declare module 'internal:runtime/loop-backend' {
    * Watch a child process when supported by the backend.
    */
   export const addProc: ((raw: object, pid: number) => void) | undefined;
+  /** Suppress a signal's default host action before asynchronous registration. */
+  export const suppressSignalDefault: ((signo: number) => void) | undefined;
   /**
    * Stop watching a child process when supported by the backend.
    */

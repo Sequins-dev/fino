@@ -14,25 +14,16 @@
  *
  * @internal
  */
-import { dlopen } from 'fino:ffi';
+import { capture as lib } from 'internal:io';
 import { os } from 'internal:process';
 import { FdReader } from '../stream.ts';
 import { writeLine } from './libc.ts';
 
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const F_GETFL = 3;
 const F_SETFL = 4;
 const F_SETFD = 2;
 const FD_CLOEXEC = 1;
 const O_NONBLOCK = os === 'darwin' ? 4 : 2048;
-
-const lib = dlopen(LIBC, {
-  pipe: { parameters: ['buffer'], result: 'i32' },
-  dup: { parameters: ['i32'], result: 'i32' },
-  dup2: { parameters: ['i32', 'i32'], result: 'i32' },
-  close: { parameters: ['i32'], result: 'i32' },
-  fcntl: { parameters: ['i32', 'i32', 'i32'], result: 'i32' },
-});
 
 interface RedirectedDescriptor {
   target: 1 | 2;

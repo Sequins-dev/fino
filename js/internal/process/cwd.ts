@@ -8,29 +8,9 @@
  *
  * @internal
  */
-import { dlopen } from 'fino:ffi';
+import { cwd as lib } from 'internal:io';
 import { os } from 'internal:process';
 import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
-
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
-const lib = dlopen(LIBC, {
-  getcwd: {
-    parameters: ['buffer', 'usize'],
-    result: 'pointer',
-  },
-  realpath: {
-    parameters: ['buffer', 'buffer'],
-    result: 'pointer',
-  },
-  opendir: {
-    parameters: ['buffer'],
-    result: 'pointer',
-  },
-  closedir: {
-    parameters: ['pointer'],
-    result: 'i32',
-  },
-});
 
 function cstr(value: string): ArrayBuffer {
   const bytes = encodeUtf8(value);

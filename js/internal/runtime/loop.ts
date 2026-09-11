@@ -3,8 +3,9 @@
  *
  * Dedicated sandbox realms attach to a thread-local backend. Ordinary realms
  * instead send owner-tagged readiness registrations to the native process
- * host. That host signals runnable Realms independently of busy reactors;
- * TypeScript performs byte I/O directly in the Realm.
+ * host. That Rust host signals runnable Realms independently of busy reactors;
+ * Realm-local TypeScript providers perform all byte I/O. Application readiness
+ * can be replaced independently of trusted runtime control-transport watches.
  *
  *
  * ## API
@@ -48,7 +49,7 @@
  * - Linux requires io_uring for process-host readiness.
  *   Startup fails explicitly if the kernel cannot create the ring.
  * - Socket reads and writes execute directly on the current reactor after
- *   readiness. Regular files retain their direct filesystem semantics.
+ *   readiness. Regular files retain the direct filesystem provider semantics.
  *
  * Platform-only APIs fail explicitly when their backend cannot provide them:
  * `proc()` and `vnode()` are macOS-only, while `submit()` requires a completion
@@ -69,10 +70,14 @@ import * as backend from 'internal:runtime/loop-backend';
 import {
   currentWorkloadOwner,
   recordReadinessTrace,
+  registerProcessReadiness as registerControlReadiness,
+  takeSharedLoopEvents as takeControlEvents,
+} from 'internal:scheduler-native';
+import {
   registerProcessReadiness as registerNativeReadiness,
   takeSharedLoopEvents,
   usesProcessReadiness,
-} from 'internal:scheduler-native';
+} from 'internal:runtime/readiness';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -168,9 +173,6 @@ const _addVnode = backend.addVnode as
 const _addSignal = backend.addSignal as
   | ((raw: object, signo: number, ident?: number) => void)
   | undefined;
-const _suppressSignalDefault = backend.suppressSignalDefault as
-  | ((signo: number) => void)
-  | undefined;
 const _addPersistentRead = backend.addPersistentRead as
   | ((raw: object, fd: number, ident?: number) => void)
   | undefined;
@@ -185,6 +187,7 @@ function rawBackend(): object {
   return (_raw ??= backend.create() as object);
 }
 const _reads: Map<number, (avail: number) => void> = new Map();
+const _controlReads = new Set<number>();
 const _writes: Map<number, () => void> = new Map();
 const _timers: Map<number, () => void> = new Map();
 const _unreferencedTimers: Set<number> = new Set();
@@ -227,7 +230,8 @@ function registerProcessReadiness(
   data: number,
   token: number,
 ): void {
-  const operation = registerNativeReadiness(ident, filter, flags, fflags, data, token);
+  const register = _controlReads.has(token) ? registerControlReadiness : registerNativeReadiness;
+  const operation = register(ident, filter, flags, fflags, data, token);
   if (!operation) return;
   const key = `${filter}:${token}`;
   const previous = _readinessOperations.get(key);
@@ -437,9 +441,17 @@ export function flush(): void {
  * ```
  */
 export function tick(timeoutMs: number | null): number {
+  let routed = dispatchBatch(takeControlEvents(_workloadOwner));
+  if (takeSharedLoopEvents !== takeControlEvents)
+    routed += dispatchBatch(takeSharedLoopEvents(_workloadOwner));
+  const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
+  for (const ev of events) _dispatch(ev);
+  return routed + events.length;
+}
+
+function dispatchBatch(batch: Float64Array): number {
   // Routed completions arrive as one flat Float64Array — `COMPLETION_SLOTS`
   // scalars per event — rather than a structured clone per event.
-  const batch = takeSharedLoopEvents(_workloadOwner);
   const routed = batch.length / COMPLETION_SLOTS;
   for (let index = 0; index < routed; index++) {
     const base = index * COMPLETION_SLOTS;
@@ -455,9 +467,7 @@ export function tick(timeoutMs: number | null): number {
       traceId: batch[base + 7]!,
     });
   }
-  const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
-  for (const ev of events) _dispatch(ev);
-  return routed + events.length;
+  return routed;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.
@@ -672,12 +682,31 @@ export function readable(fd: number, forToken?: number): Promise<number> {
   return new Promise(function onReadable(resolve) {
     const token = forToken ?? taskToken(fd);
     _reads.set(token, resolve);
-    if (_processReadiness) {
-      registerProcessReadiness(fd, EVFILT_READ, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
-    } else {
-      _addRead(rawBackend(), fd, token);
+    try {
+      if (_processReadiness) {
+        registerProcessReadiness(fd, EVFILT_READ, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+      } else {
+        _addRead(rawBackend(), fd, token);
+      }
+    } catch (error) {
+      _reads.delete(token);
+      throw error;
     }
   });
+}
+
+/** Wait for trusted runtime transport traffic independently of guest readiness. @internal */
+export function readableControl(fd: number): Promise<number> {
+  const token = taskToken(-fd - 1);
+  _controlReads.add(token);
+  return readable(fd, token);
+}
+
+/** Retire a trusted transport watch before its descriptor is released. @internal */
+export function removeControlRead(fd: number): void {
+  const token = taskToken(-fd - 1);
+  removeRead(fd, token);
+  _controlReads.delete(token);
 }
 /**
  * Resolve the next time `fd` becomes writable.
@@ -701,10 +730,15 @@ export function writable(fd: number, forToken?: number): Promise<void> {
   return new Promise(function onWritable(resolve) {
     const token = forToken ?? taskToken(fd);
     _writes.set(token, resolve);
-    if (_processReadiness) {
-      registerProcessReadiness(fd, EVFILT_WRITE, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
-    } else {
-      _addWrite(rawBackend(), fd, token);
+    try {
+      if (_processReadiness) {
+        registerProcessReadiness(fd, EVFILT_WRITE, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+      } else {
+        _addWrite(rawBackend(), fd, token);
+      }
+    } catch (error) {
+      _writes.delete(token);
+      throw error;
     }
   });
 }
@@ -737,10 +771,15 @@ export function timeout(ms: number): CancelablePromise {
   const token = taskToken(id);
   const p = new Promise<void>(function onTimeout(resolve) {
     _timers.set(token, resolve);
-    if (_processReadiness) {
-      registerProcessReadiness(id, EVFILT_TIMER, EV_ADD_ENABLE_ONESHOT, 0, ms, token);
-    } else {
-      _addTimer(rawBackend(), token, ms);
+    try {
+      if (_processReadiness) {
+        registerProcessReadiness(id, EVFILT_TIMER, EV_ADD_ENABLE_ONESHOT, 0, ms, token);
+      } else {
+        _addTimer(rawBackend(), token, ms);
+      }
+    } catch (error) {
+      _timers.delete(token);
+      throw error;
     }
   }) as CancelablePromise;
   p.cancel = function cancelTimeout() {
@@ -794,7 +833,12 @@ export function proc(pid: number, forToken?: number): Promise<void> {
     // Register before calling addProc so the event can never be missed.
     _procs.set(token, resolve);
     if (_processReadiness) {
-      registerProcessReadiness(pid, EVFILT_PROC!, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+      try {
+        registerProcessReadiness(pid, EVFILT_PROC!, EV_ADD_ENABLE_ONESHOT, 0, 0, token);
+      } catch (error) {
+        _procs.delete(token);
+        throw error;
+      }
       return;
     }
     const registered = _addProc(rawBackend(), pid, token);
@@ -991,7 +1035,13 @@ export function vnode(
   _vnodes.set(token, callback);
   if (_processReadiness && EVFILT_VNODE !== null) {
     const installed = _awaitInstall(EVFILT_VNODE, token);
-    registerProcessReadiness(fd, EVFILT_VNODE, EV_ADD_ENABLE_CLEAR, fflags, 0, token);
+    try {
+      registerProcessReadiness(fd, EVFILT_VNODE, EV_ADD_ENABLE_CLEAR, fflags, 0, token);
+    } catch (error) {
+      _vnodes.delete(token);
+      _cancelInstall(EVFILT_VNODE, token);
+      throw error;
+    }
     return installed;
   }
   _addVnode(rawBackend(), fd, fflags, token);
@@ -1054,12 +1104,14 @@ export function signal(signo: number, callback: () => void, forToken?: number): 
   const token = forToken ?? taskToken(signo);
   _signals.set(token, callback);
   if (_processReadiness && EVFILT_SIGNAL !== null) {
-    // Stop the default action here, synchronously, before handing the watch to
-    // the native host. Arming is asynchronous, and a signal that arrives in the
-    // gap would otherwise run its default disposition and kill the process.
-    _suppressSignalDefault?.(signo);
     const installed = _awaitInstall(EVFILT_SIGNAL, token);
-    registerProcessReadiness(signo, EVFILT_SIGNAL, EV_ADD_ENABLE_CLEAR, 0, 0, token);
+    try {
+      registerProcessReadiness(signo, EVFILT_SIGNAL, EV_ADD_ENABLE_CLEAR, 0, 0, token);
+    } catch (error) {
+      _signals.delete(token);
+      _cancelInstall(EVFILT_SIGNAL, token);
+      throw error;
+    }
     return installed;
   }
   _addSignal(rawBackend(), signo, token);

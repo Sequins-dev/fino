@@ -34,40 +34,11 @@
  *
  * @internal
  */
+import { terminalMode as lib } from 'internal:io';
 import { env, os } from 'internal:process';
-import { dlopen } from 'fino:ffi';
 import { signal, signalArmed } from 'fino:process';
-const LIBC = os === 'darwin' ? '/usr/lib/libSystem.B.dylib' : 'libc.so.6';
 const TCSANOW = 0;
 const TIOCGWINSZ = os === 'darwin' ? 1074295912 : 21523;
-const lib = (() => {
-  try {
-    return dlopen(LIBC, {
-      tcgetattr: {
-        parameters: ['i32', 'buffer'],
-        result: 'i32',
-      },
-      tcsetattr: {
-        parameters: ['i32', 'i32', 'buffer'],
-        result: 'i32',
-      },
-      cfmakeraw: {
-        parameters: ['buffer'],
-        result: 'void',
-      },
-      // `ioctl` is variadic. On ABIs such as macOS arm64, the trailing
-      // argument is otherwise marshalled in the wrong location and
-      // TIOCGWINSZ silently falls back to the default size.
-      ioctl: {
-        parameters: ['i32', 'u64', 'buffer'],
-        result: 'i32',
-        variadic: 2,
-      },
-    });
-  } catch (_) {
-    return null;
-  }
-})();
 /**
  * A terminal's usable area measured in character cells.
  *

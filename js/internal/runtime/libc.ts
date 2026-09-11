@@ -1,43 +1,13 @@
 /**
  * internal:runtime/libc — low-level C library bindings for raw stdio and the process ID.
  *
- * This module opens the platform's C library via `fino:ffi` at load time and
- * exposes the small set of primitives that the rest of the Fino standard
- * library builds on. It is intentionally minimal: only functions needed by
- * multiple other modules, and awkward to reopen in each of them, live here.
- * The bound signatures are exactly `write(2)`, `printf(3)`, and `getpid(2)` —
- * nothing more.
+ * Console output and process observations are mediated by internal:io. The
+ * production provider binds libc directly on the current reactor; simulations
+ * can record, replace, or reject these operations without opening native libc.
+ * This formatting layer adds no cross-thread transport or byte ownership change.
  *
- * The exports fall into three groups: raw output (`writeBytes`, `writeLine`,
- * `printfRaw`), process identity (`getpid`), and a no-op lifecycle hook
- * (`close`).
- *
- *
- * ## Why this exists as a separate module
- *
- * Fino's design principle is "thin Rust, everything else in JS". That means
- * even basic output (e.g. `console.log`) is implemented in JS. This module
- * bridges the gap between JS and the OS by opening libc and exposing
- * `write(2)` directly, so console-style output does not depend on any Rust
- * host function.
- *
- * By centralising this here, other modules (the console global, the logger)
- * don't each need to open libc themselves for simple output needs. Modules
- * that need more libc functions (sockets, files, etc.) open libc themselves
- * with their own specific function signatures rather than growing this one.
- *
- *
- * ## Platform detection
- *
- * The C library path differs by OS, so `openLibc` tries a fixed list of
- * candidates and keeps the first that `dlopen` accepts:
- *   - macOS:         `/usr/lib/libSystem.B.dylib`
- *   - Linux (glibc): `libc.so.6`
- *   - Linux (musl):  `libc.so`
- *
- * If every candidate fails the module throws while loading — Fino cannot run
- * without a C library, so this surfaces immediately rather than on first use.
- *
+ * The output family provides write(2), printf(3), getpid(2), and sysconf(3).
+ * Callers needing bulk asynchronous I/O should use the stream endpoints.
  *
  * ## printf vs write
  *
@@ -72,57 +42,13 @@
  *
  * @internal
  */
-import { dlopen } from 'fino:ffi';
-import type { DynamicLibrary } from 'fino:ffi';
+import { output } from 'internal:io';
 import { os } from 'internal:process';
 import { encodeUtf8 } from '../encoding.ts';
 // ---------------------------------------------------------------------------
 // Platform library path
 // ---------------------------------------------------------------------------
-function openLibc(): DynamicLibrary<{
-  write: {
-    parameters: ['i32', 'buffer', 'usize'];
-    result: 'isize';
-  };
-  printf: {
-    parameters: ['buffer'];
-    result: 'i32';
-  };
-  getpid: {
-    parameters: [];
-    result: 'i32';
-  };
-  sysconf: {
-    parameters: ['i32'];
-    result: 'isize';
-  };
-}> {
-  const candidates = ['/usr/lib/libSystem.B.dylib', 'libc.so.6', 'libc.so'];
-  for (const path of candidates) {
-    try {
-      return dlopen(path, {
-        write: {
-          parameters: ['i32', 'buffer', 'usize'],
-          result: 'isize',
-        },
-        printf: {
-          parameters: ['buffer'],
-          result: 'i32',
-        },
-        getpid: {
-          parameters: [],
-          result: 'i32',
-        },
-        sysconf: {
-          parameters: ['i32'],
-          result: 'isize',
-        },
-      });
-    } catch (_) {}
-  }
-  throw new Error('fino:libc — could not open the platform C library');
-}
-const _lib = openLibc();
+const _lib = output;
 // `_SC_NPROCESSORS_ONLN` is not a standardised value: Darwin and glibc assign
 // it different numbers, so it has to be selected per platform.
 const _SC_NPROCESSORS_ONLN = os === 'darwin' ? 58 : 84;

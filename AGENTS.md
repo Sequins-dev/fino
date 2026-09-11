@@ -26,8 +26,9 @@ the minimum infrastructure needed to bootstrap and host TypeScript:
 The process main thread is a pure Rust host: it never enters a JavaScript
 isolate. The native host owns readiness registration and signaling only;
 ordinary JavaScript, including the CLI entry Realm, executes on the reactor pool.
-Realm-local TypeScript performs I/O directly on the current reactor.
-Linux retains io_uring for readiness.
+Realm-local TypeScript providers perform I/O directly on the current reactor.
+Linux retains io_uring for readiness. Simulation replaces both the I/O provider
+and application-readiness interface, independently of trusted control transport.
 This native mechanism does not move protocol, provider, or application policy
 out of TypeScript. Thread-restricted sandbox Realms retain their separate
 enforcement boundary.
@@ -117,7 +118,7 @@ Important runtime mechanics:
   executor resolutions, and microtasks; TypeScript owns the higher-level loop.
 - `internal:runtime/loop` owns each Realm's timers, promises, and delivery state.
   Reactor Realms submit scalar readiness requests to the native host and perform
-  byte I/O directly in TypeScript.
+  byte I/O through the replaceable `internal:io` provider.
   Dedicated sandbox loops retain their restricted TypeScript platform backend.
 - The scheduler moves ordinary child isolates across a shared reactor pool.
   Avoid introducing isolate-thread affinity or process-global per-Realm state.
