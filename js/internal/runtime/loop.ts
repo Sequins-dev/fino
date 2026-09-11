@@ -1,12 +1,10 @@
 /**
  * internal:runtime/loop — global event loop singleton.
  *
- * Ordinary realms on one OS thread attach to a thread backend. Process-pool
- * workloads instead send scalar registrations to the main TypeScript
- * orchestration realm, which owns the process backend. Each task captures its
- * realm owner in scalar user data. Native routing returns readiness to that
- * owner, then this module resolves the realm-local promise and leaves actual
- * reads, writes, and buffer ownership in the workload's TypeScript.
+ * Dedicated sandbox realms attach to a thread-local backend. Ordinary realms
+ * instead send owner-tagged readiness registrations to the native process
+ * host. That host signals runnable Realms independently of busy reactors;
+ * TypeScript performs byte I/O directly in the Realm.
  *
  *
  * ## API
@@ -47,12 +45,10 @@
  *
  * - macOS uses kqueue, including `proc()` and `vnode()` support. Generic
  *   `submit()` completions are not available there.
- * - Linux first tries io_uring for readiness, timers, signals, and completion
- *   events. If `io_uring_setup(2)` is denied by the kernel or sandbox, the
- *   selector falls back to poll(2).
- * - The Linux poll fallback preserves the loop contract for readiness, timers,
- *   signals, and completion events, but file completions are queued
- *   synchronously rather than performed by kernel async I/O.
+ * - Linux requires io_uring for process-host readiness.
+ *   Startup fails explicitly if the kernel cannot create the ring.
+ * - Socket reads and writes execute directly on the current reactor after
+ *   readiness. Regular files retain their direct filesystem semantics.
  *
  * Platform-only APIs fail explicitly when their backend cannot provide them:
  * `proc()` and `vnode()` are macOS-only, while `submit()` requires a completion
@@ -67,7 +63,7 @@
  *
  * @internal
  */
-import { drainMicrotasks, hasPendingV8Tasks } from 'internal:async-context';
+import { drainMicrotasks, hasPendingV8Tasks, hasPendingNativeTasks } from 'internal:async-context';
 import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
@@ -250,7 +246,7 @@ function registerProcessReadiness(
 /**
  * Register interest in a persistent watch's installation acknowledgement.
  *
- * The main realm confirms installation as an ordinary routed completion, so
+ * The native host confirms installation as an ordinary routed completion, so
  * this is an ordinary promise resolution like every other readiness signal —
  * the calling realm parks instead of blocking its reactor thread.
  */
@@ -260,7 +256,7 @@ function _awaitInstall(filter: number, token: number): Promise<void> {
 /**
  * Settle a pending install acknowledgement that is never going to arrive.
  *
- * Removing a watch before the main realm confirms it means the arming its
+ * Removing a watch before the native host confirms it means the arming its
  * caller is waiting on will never happen. Resolving is the honest answer to
  * "am I still waiting?" — the wait is over, and the watch being asked about no
  * longer exists. Leaving the promise pending instead strands whoever awaited
@@ -306,7 +302,7 @@ function traceEvent(ev: LoopEvent, stage: string): void {
 }
 function _dispatch(ev: LoopEvent): void {
   // Resolvers are keyed by the token the watch was registered with, never by
-  // the bare descriptor. The main realm installs watches on behalf of every
+  // the bare descriptor. The native host installs watches on behalf of every
   // workload realm, so two owners routinely wait on the same descriptor number;
   // keying by fd would let one registration silently replace the other and
   // strand the loser forever.
@@ -510,9 +506,10 @@ export function alive(): boolean {
     _vnodes.size > 0 ||
     // A persistent watch that has been requested but not yet confirmed is
     // outstanding work: the realm must not exit between asking for it and the
-    // main realm arming it, or the awaiting caller would never settle.
+    // native host arming it, or the awaiting caller would never settle.
     _installs.size > 0 ||
     hasPendingV8Tasks() ||
+    hasPendingNativeTasks() ||
     _atomicsWaiters > 0
   );
 }
@@ -1058,7 +1055,7 @@ export function signal(signo: number, callback: () => void, forToken?: number): 
   _signals.set(token, callback);
   if (_processReadiness && EVFILT_SIGNAL !== null) {
     // Stop the default action here, synchronously, before handing the watch to
-    // the main realm. Arming is asynchronous, and a signal that arrives in the
+    // the native host. Arming is asynchronous, and a signal that arrives in the
     // gap would otherwise run its default disposition and kill the process.
     _suppressSignalDefault?.(signo);
     const installed = _awaitInstall(EVFILT_SIGNAL, token);

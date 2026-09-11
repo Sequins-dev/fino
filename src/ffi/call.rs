@@ -416,6 +416,7 @@ pub fn ffi_call_async<'s>(
                 trace_id,
                 resolver_id,
                 result,
+                owned_fd: None,
             });
         // Wake the main thread's event loop (kqueue/io_uring readable on pipe).
         wake_write.notify();

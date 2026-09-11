@@ -8,7 +8,6 @@ import { describe, it } from 'fino:test/test';
 import { Realm } from 'fino:realm';
 import * as schedulerNative from 'internal:scheduler-native';
 import { onlineProcessors } from 'internal:runtime/libc';
-import { selectReactorThreadCount } from 'internal:scheduler/readiness';
 import { Process, env, execPath } from 'fino:process';
 import type echoFn from './fixtures/echo-fn.ts';
 import type sumFn from './fixtures/multi-arg-fn.ts';
@@ -33,13 +32,6 @@ function childEnv(reactorThreads: number): Record<string, string> {
 }
 
 describe('Reactor scheduler native surface', () => {
-  it('reserves a processor without reducing multi-core hosts below two reactors', (t) => {
-    t.equal(selectReactorThreadCount(1), 1, 'single-processor hosts retain one reactor');
-    t.equal(selectReactorThreadCount(2), 2, 'multi-processor hosts retain two reactors');
-    t.equal(selectReactorThreadCount(3), 2, 'three-processor hosts reserve one processor');
-    t.equal(selectReactorThreadCount(8), 7, 'larger hosts reserve exactly one processor');
-    t.equal(selectReactorThreadCount(8, '4'), 4, 'an explicit override controls the pool');
-  });
   it('does not expose retired compatibility operations', (t) => {
     for (const name of [
       'sharedLoopDescriptor',
@@ -61,12 +53,25 @@ describe('Reactor scheduler native surface', () => {
       // completion instead of blocking the registering thread.
       'registerProcessPersistentReadiness',
       'acknowledgeProcessReadiness',
+      'startReactorPool',
+      'stopReactorPool',
+      'createWorkload',
+      'createReactorThread',
+      'closeReactorThread',
+      'takeReactorEvents',
+      'processReadinessControlFd',
+      'takeSharedReadinessChanges',
+      'releaseSharedReadinessFd',
     ]) {
       t.equal(name in schedulerNative, false, `${name} is not exported`);
     }
   });
   it('exposes one create-and-submit path onto the process pool', (t) => {
-    for (const name of ['startReactorPool', 'createWorkload', 'stopReactorPool']) {
+    for (const name of [
+      'createScheduledRealm',
+      'registerProcessReadiness',
+      'takeSharedLoopEvents',
+    ]) {
       t.equal(name in schedulerNative, true, `${name} is exported`);
     }
   });

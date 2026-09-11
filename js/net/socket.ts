@@ -6,6 +6,8 @@
  * `Socket` class with async `connect()` / `listen()` and a `split()` method
  * that divides a connection into independent `Reader` and `Writer` halves
  * (from `fino:stream`).
+ * Native socket semantics follow [socket(2)](https://man7.org/linux/man-pages/man2/socket.2.html)
+ * and [accept(2)](https://man7.org/linux/man-pages/man2/accept.2.html).
  *
  *
  * ## Address families and address objects
@@ -618,7 +620,7 @@ export const SOCK_DGRAM = 2;
  * const type = SOCK_STREAM | SOCK_NONBLOCK;
  * ```
  */
-export const SOCK_NONBLOCK = isLinux ? 524288 : 0;
+export const SOCK_NONBLOCK = isLinux ? 2048 : 0;
 /** TCP protocol number.
  *
  * ```ts no_run
@@ -1289,7 +1291,8 @@ export function accept(
   new DataView(lenBuf).setUint32(0, 128, true);
   let clientFd;
   if (isLinux && setNonblock) {
-    clientFd = lib.symbols.accept4!(serverFd, addrBuf, lenBuf, SOCK_NONBLOCK);
+    // Keep descriptor inheritance separate from the open-file nonblocking flag.
+    clientFd = lib.symbols.accept4!(serverFd, addrBuf, lenBuf, SOCK_NONBLOCK | 524288);
   } else {
     clientFd = lib.symbols.accept(serverFd, addrBuf, lenBuf);
   }

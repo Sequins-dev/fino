@@ -635,7 +635,7 @@ pub fn run_process_child(socket_fd: RawFd, config: SpawnConfig) -> Result<(), St
         }
     });
 
-    let result = super::child::run_child_isolate(super::child::ChildConfig {
+    let result = crate::scheduler_native::run_process(super::child::ChildConfig {
         process_env: crate::state::ProcessEnv {
             root: std::path::PathBuf::from(&config.root),
             args: config.args,

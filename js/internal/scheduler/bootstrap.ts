@@ -1,19 +1,64 @@
 /**
  * internal:scheduler/bootstrap — CLI bootstrap workload.
  *
- * The process main realm submits this module as the initial reactor workload.
+ * The native process host submits this module as the initial reactor workload.
  * This workload reads the process arguments itself; CLI parsing, command
  * selection, execution, output, and shutdown hooks all happen here on the
  * worker pool.
  *
  * @internal
  */
+import { beginProcessProfiling, finishProcessProfiling } from 'internal:process-profiler';
 import root from '../../commands/root.ts';
 import { argv, exit } from '../../process.ts';
 import { runShutdownHooks } from '../shutdown.ts';
 import { runLauncher } from '../security/sandbox/launcher.ts';
 import { finishCoverage } from 'internal:coverage';
 import type { CoverageMetric, CoverageSummary } from 'internal:coverage/model';
+
+const nonRunCommands = new Set([
+  'test',
+  'coverage',
+  'bench',
+  'load',
+  'install',
+  'init',
+  'doc',
+  'fmt',
+  'lint',
+  'task',
+  'repl',
+]);
+
+function scanOptionPrefix(args: string[], start: number) {
+  let profile = false;
+  for (let index = start; index < args.length; index++) {
+    const argument = args[index]!;
+    if (argument === '--') return { profile, positional: undefined, next: args.length };
+    if (argument === '--profile') {
+      profile = true;
+      continue;
+    }
+    if (argument === '--otlp-endpoint') {
+      index++;
+      continue;
+    }
+    if (argument.startsWith('-')) continue;
+    return { profile, positional: argument, next: index + 1 };
+  }
+  return { profile, positional: undefined, next: args.length };
+}
+
+/** Detect the run flag before creating the CLI workload Realm. */
+function processProfileRequested(args: string[]): boolean {
+  const root = scanOptionPrefix(args, 0);
+  if (root.positional === 'run') {
+    const run = scanOptionPrefix(args, root.next);
+    return run.positional !== undefined && (root.profile || run.profile);
+  }
+  if (root.positional === undefined || nonRunCommands.has(root.positional)) return false;
+  return root.profile;
+}
 
 function coverageComments(summary: CoverageSummary): string {
   const metric = (name: string, value: CoverageMetric) =>
@@ -43,6 +88,8 @@ if (argv[1] === '--sandbox-launcher') {
 }
 const cliArgv = normalizeCliArgv(argv.slice(1));
 const wantsJson = cliArgv.includes('--json');
+const profileRequested = processProfileRequested(cliArgv);
+if (profileRequested) beginProcessProfiling();
 let commandError: unknown;
 try {
   const result = await root.parse(
@@ -74,5 +121,14 @@ try {
 } catch (error) {
   if (commandError === undefined) commandError = error;
   else console.error(`[coverage] ${error instanceof Error ? error.message : String(error)}`);
+}
+if (profileRequested) {
+  try {
+    const profile = finishProcessProfiling();
+    const { DiskFileSystem } = await import('../../file/fs.ts');
+    await new DiskFileSystem().writeFile('profile.pb', profile);
+  } catch (error) {
+    commandError ??= error;
+  }
 }
 if (commandError !== undefined) throw commandError;

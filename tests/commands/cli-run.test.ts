@@ -1,7 +1,7 @@
 /** CLI root, run, watch, and REPL dispatch integration tests. */
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { env, execPath, Process } from 'fino:process';
+import { env, execPath, os, Process } from 'fino:process';
 import * as loop from 'internal:runtime/loop';
 import {
   decodeUtf8,
@@ -14,6 +14,17 @@ import {
 } from './cli-test-helpers.ts';
 
 describe('CLI commands: run', () => {
+  it(
+    'survives a pending Linux sample after profiler teardown',
+    { skip: os !== 'linux' },
+    async (t) => {
+      const { result, stdout, stderr } = await runCli([
+        'tests/fixtures/profiler-pending-signal.ts',
+      ]);
+      t.equal(result.code, 0, `status=${JSON.stringify(result)}; stderr=${stderr}`);
+      t.ok(stdout.includes('survived pending profiler signal'));
+    },
+  );
   it('prints root help with command list', async (t) => {
     const stdout = await parseRoot(['--help']);
     t.ok(stdout.includes('Usage: fino'), 'usage mentions fino root command');
@@ -77,12 +88,20 @@ describe('CLI commands: run', () => {
       },
       async (dir, fs) => {
         const explicit = await runCli(['run', '--profile', 'entry.ts'], { cwd: dir });
-        t.equal(explicit.result.code, 0, 'profiled run exits successfully');
+        t.equal(
+          explicit.result.code,
+          0,
+          `profiled run exits successfully: ${JSON.stringify(explicit.result)}; stderr=${explicit.stderr}`,
+        );
         t.equal(explicit.stderr, '', 'profiled run does not write stderr');
         t.ok(explicit.stdout.includes('manual-profile:'), 'public profiler remains usable');
 
         const profilePath = `${dir}/profile.pb`;
-        const profile = await new DiskFileSystem().readFile(profilePath);
+        const profile = await new DiskFileSystem().readFile(profilePath).catch((error) => {
+          throw new Error(
+            `Explicit profile missing: ${String(error)}; stdout=${explicit.stdout}; stderr=${explicit.stderr}; status=${JSON.stringify(explicit.result)}`,
+          );
+        });
         const labels = pprofThreadLabels(profile);
         const uniqueLabels = new Set(labels);
         t.ok(labels.length > 0, 'pprof samples carry thread labels');
@@ -102,8 +121,20 @@ describe('CLI commands: run', () => {
 
         await fs.unlink(profilePath);
         const shorthand = await runCli(['--profile', 'entry.ts'], { cwd: dir });
-        t.equal(shorthand.result.code, 0, 'root shorthand profile exits successfully');
-        t.ok((await new DiskFileSystem().readFile(profilePath)).byteLength > 0);
+        t.equal(
+          shorthand.result.code,
+          0,
+          `root shorthand profile exits successfully: ${JSON.stringify(shorthand.result)}; stderr=${shorthand.stderr}`,
+        );
+        let shorthandProfile: Uint8Array;
+        try {
+          shorthandProfile = await new DiskFileSystem().readFile(profilePath);
+        } catch (error) {
+          throw new Error(
+            `Shorthand profile missing: ${String(error)}; stdout=${shorthand.stdout}; stderr=${shorthand.stderr}; status=${JSON.stringify(shorthand.result)}`,
+          );
+        }
+        t.ok(shorthandProfile.byteLength > 0);
 
         await fs.unlink(profilePath);
         const failed = await runCli(['run', '--profile', 'error.ts'], { cwd: dir });

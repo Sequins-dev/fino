@@ -1,19 +1,15 @@
 /**
  * internal:scheduler-native — irreducible V8/thread/mailbox primitives.
  *
- * TypeScript owns all scheduling and readiness policy. These functions only
- * create and transfer isolates, command worker threads, and carry scalar
- * readiness metadata between realms.
+ * The native main-thread host owns pool lifecycle and I/O readiness. Reactor
+ * Realms register scalar watches and consume owner-addressed readiness events.
+ * TypeScript retains protocol, provider, and application policy.
  *
  * @internal
  */
 export function currentWorkloadOwner(): number;
 export function usesProcessReadiness(): boolean;
 export function setSchedulerPollingRequired(callback: () => boolean): void;
-export function createWorkload(entryPath: string): {
-  owner: number;
-  wakeFd: number;
-};
 export function createScheduledRealm(
   root: string,
   entryPath: string,
@@ -46,11 +42,10 @@ export function takeScheduledRealmStatus(handle: number): {
 export function closeScheduledRealm(handle: number): void;
 export function forceScheduledRealm(handle: number): boolean;
 
-export function startReactorPool(): number;
-export function createReactorThread(): number;
-export function closeReactorThread(thread: number): void;
 /** Signal an active owner, returning false once that owner has retired. */
 export function signalReactorOwner(owner: number): boolean;
+/** Whether this is the process entry, independent of its reactor execution. @internal */
+export function isProcessEntryRealm(): boolean;
 /**
  * Read-only snapshot of the reactor pool's scheduling state, or `null` when the
  * process reactor is not running.
@@ -58,9 +53,9 @@ export function signalReactorOwner(owner: number): boolean;
  * `parkedWithNothingQueued` is the diagnostic that matters: those realms cannot
  * be claimed by any worker no matter how long it waits.
  */
-/** Publish the readiness controller's registration count for diagnostics. */
-export function setReadinessHeartbeat(registrations: number): void;
 export function reactorPoolStats(): {
+  nativeReadiness: boolean;
+  ioBackend: 'io_uring' | 'kqueue';
   parked: number;
   residents: number;
   ready: number;
@@ -79,15 +74,7 @@ export function reactorPoolStats(): {
   mailboxOwnersWithEvents: number;
   mailboxEvents: number;
 } | null;
-export function takeReactorEvents(): Array<{
-  kind: 'activated' | 'settled' | 'error';
-  worker: number;
-  owner: number;
-  error?: string;
-}>;
-export function stopReactorPool(): void;
 
-export function processReadinessControlFd(): number;
 export function registerProcessReadiness(
   ident: number,
   filter: number,
@@ -97,22 +84,6 @@ export function registerProcessReadiness(
   udata: number,
 ): number;
 export function registerReactorWake(owner: number, fd: number): void;
-export type ReadinessChangeTuple = [
-  ident: number,
-  filter: number,
-  flags: number,
-  fflags: number,
-  data: number,
-  udata: number,
-  cancelOwner: number | null,
-  schedulerWake: boolean,
-  schedulerPoll: boolean,
-  borrowedFd: number | null,
-  traceId: number,
-];
-export function takeSharedReadinessChanges(): ReadinessChangeTuple[];
-/** Release a controller-owned descriptor after removing its kernel watch. */
-export function releaseSharedReadinessFd(fd: number): void;
 export function routeProcessReadiness(
   owner: number,
   ident: number,
