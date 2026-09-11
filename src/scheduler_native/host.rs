@@ -1,7 +1,7 @@
 //! Main-thread host. This module never creates a V8 scope or enters an isolate.
 
+use super::kernel::Kernel;
 use super::*;
-use crate::native_io::kernel::Kernel;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -57,7 +57,6 @@ impl Registration {
 
 struct Driver {
     kernel: Kernel,
-    io: crate::native_io::Engine,
     registrations: HashMap<u64, Registration>,
     keys: HashMap<(u32, i32, u64), u64>,
 }
@@ -88,7 +87,6 @@ impl Driver {
             .map_err(|e| e.to_string())?;
         Ok(Self {
             kernel,
-            io: Default::default(),
             registrations: HashMap::new(),
             keys: HashMap::new(),
         })
@@ -104,7 +102,6 @@ impl Driver {
     }
     fn drain(&mut self) -> Result<(), String> {
         mailbox().drain_wake();
-        self.io.drain(&mut self.kernel)?;
         let changes = std::mem::take(&mut mailbox().inner.lock().unwrap().changes);
         for change in changes {
             if change.cancel_owner.is_none()
@@ -221,19 +218,6 @@ impl Driver {
         self.drain()?;
         for event in events {
             if event.token <= 2 {
-                continue;
-            }
-            if event.token & crate::native_io::IO_TOKEN != 0 {
-                if self.kernel.has_completion_io() {
-                    self.io.completed(
-                        &mut self.kernel,
-                        event.token & !crate::native_io::IO_TOKEN,
-                        event.data,
-                    )?;
-                } else {
-                    self.io
-                        .progress(&mut self.kernel, event.token & !crate::native_io::IO_TOKEN)?;
-                }
                 continue;
             }
             if let Some(registration) = self.registrations.get(&event.token) {

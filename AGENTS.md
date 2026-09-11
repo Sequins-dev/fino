@@ -24,11 +24,10 @@ the minimum infrastructure needed to bootstrap and host TypeScript:
   expressed through the existing TypeScript/FFI layers.
 
 The process main thread is a pure Rust host: it never enters a JavaScript
-isolate. The native host owns readiness and the owned-buffer read/write service;
+isolate. The native host owns readiness registration and signaling only;
 ordinary JavaScript, including the CLI entry Realm, executes on the reactor pool.
-Linux retains io_uring for readiness and owned-buffer I/O, including files;
-fallback backends send potentially blocking file operations to the shared Rust
-blocking-work pool.
+Realm-local TypeScript performs I/O directly on the current reactor.
+Linux retains io_uring for readiness.
 This native mechanism does not move protocol, provider, or application policy
 out of TypeScript. Thread-restricted sandbox Realms retain their separate
 enforcement boundary.
@@ -117,7 +116,8 @@ Important runtime mechanics:
 - V8 uses explicit microtask checkpoints. The Rust host pumps platform work,
   executor resolutions, and microtasks; TypeScript owns the higher-level loop.
 - `internal:runtime/loop` owns each Realm's timers, promises, and delivery state.
-  Reactor Realms submit readiness and owned-buffer operations to the native host.
+  Reactor Realms submit scalar readiness requests to the native host and perform
+  byte I/O directly in TypeScript.
   Dedicated sandbox loops retain their restricted TypeScript platform backend.
 - The scheduler moves ordinary child isolates across a shared reactor pool.
   Avoid introducing isolate-thread affinity or process-global per-Realm state.

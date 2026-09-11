@@ -1,15 +1,14 @@
 /**
- * Native owned-buffer socket transfer latency, including allocation and admission.
+ * Reactor-local socket transfer latency through the direct I/O provider.
  *
  * One loopback connection is reused per measurement. Each iteration consumes a
- * new write allocation, receives every byte, and checks the byte count. Run an
+ * borrowed write allocation, receives every byte, and checks the byte count. Run an
  * optimized binary on an otherwise idle host; these are not comparative claims.
  */
 import { bench } from 'fino:bench';
 import { Socket } from 'fino:net/socket';
-import { readOwned, writeOwned } from 'internal:runtime/loop';
 
-bench('native owned-buffer transfer', (b) => {
+bench('reactor-local transfer', (b) => {
   for (const size of [64, 4096, 65536]) {
     b.measure(`${size} bytes`, {
       setup() {
@@ -17,18 +16,21 @@ bench('native owned-buffer transfer', (b) => {
         const sockets = Socket.connect(listener.address).then(async (client) => {
           const peer = await listener.accept();
           if (peer === null) throw new Error('missing accepted connection');
-          return { client, peer };
+          const [, writer] = client.split();
+          const [reader] = peer.split();
+          return { client, peer, reader, writer };
         });
         return { listener, sockets };
       },
       async fn({ sockets }) {
-        const { client, peer } = await sockets;
-        const written = writeOwned(client.fd, new Uint8Array(size));
+        const { reader, writer } = await sockets;
+        const written = writer.write(new Uint8Array(size)).then(() => writer.flush());
+        const buffer = new Uint8Array(size);
         let remaining = size;
         while (remaining > 0) {
-          const bytes = await readOwned(peer.fd, remaining);
-          if (bytes.byteLength === 0) throw new Error('unexpected EOF');
-          remaining -= bytes.byteLength;
+          const result = await reader.readInto(buffer.subarray(size - remaining));
+          if (result.done || result.value === 0) throw new Error('unexpected EOF');
+          remaining -= result.value;
         }
         await written;
       },

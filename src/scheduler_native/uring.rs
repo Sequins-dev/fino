@@ -1,4 +1,4 @@
-//! Single-owner submission/completion ring. Cancellation never releases an
+//! Single-owner readiness ring. Cancellation never releases an
 //! operation's resources before its original terminal completion arrives.
 use io_uring::{IoUring, opcode, squeue, types};
 use std::collections::{HashMap, VecDeque};
@@ -11,7 +11,7 @@ struct Poll {
 }
 struct Request {
     token: u64,
-    poll: Option<Poll>,
+    poll: Poll,
     cancelled: bool,
 }
 pub(super) struct Ring {
@@ -31,7 +31,7 @@ impl Ring {
             next: 1,
         })
     }
-    fn insert(&mut self, token: u64, entry: squeue::Entry, poll: Option<Poll>) {
+    fn insert(&mut self, token: u64, entry: squeue::Entry, poll: Poll) {
         let id = self.next;
         self.next += 1;
         self.tokens.insert(token, id);
@@ -52,21 +52,8 @@ impl Ring {
         }
         let fd = unsafe { OwnedFd::from_raw_fd(copied) };
         let entry = opcode::PollAdd::new(types::Fd(copied), mask).build();
-        self.insert(token, entry, Some(Poll { fd, mask }));
+        self.insert(token, entry, Poll { fd, mask });
         Ok(())
-    }
-    /// The caller retains fd and the entire allocation until this token's CQE.
-    pub unsafe fn io(&mut self, token: u64, fd: RawFd, ptr: *mut u8, len: u32, write: bool) {
-        let entry = if write {
-            opcode::Write::new(types::Fd(fd), ptr, len)
-                .offset(u64::MAX)
-                .build()
-        } else {
-            opcode::Read::new(types::Fd(fd), ptr, len)
-                .offset(u64::MAX)
-                .build()
-        };
-        self.insert(token, entry, None);
     }
     pub fn cancel(&mut self, token: u64) {
         let Some(id) = self.tokens.remove(&token) else {
@@ -78,21 +65,11 @@ impl Ring {
                 .push_back(opcode::AsyncCancel::new(id).build().user_data(0));
         }
     }
-    /// The caller retains both the vector table and its buffers until CQE.
-    pub unsafe fn writev(&mut self, token: u64, fd: RawFd, iov: *const libc::iovec, len: u32) {
-        self.insert(
-            token,
-            opcode::Writev::new(types::Fd(fd), iov, len)
-                .offset(u64::MAX)
-                .build(),
-            None,
-        );
-    }
     fn flush(&mut self) {
         let mut sq = self.ring.submission();
         while let Some(entry) = self.queued.front() {
             // Bound each submission batch and drain CQEs between batches.
-            // All referenced buffers/fds live in the driver until CQE.
+            // All referenced descriptors live in the driver until CQE.
             if unsafe { sq.push(entry) }.is_err() {
                 break;
             }
@@ -151,19 +128,13 @@ impl Ring {
             if self.tokens.get(&request.token) == Some(&id) {
                 self.tokens.remove(&request.token);
             }
-            if let Some(poll) = request.poll {
-                if !request.cancelled && result >= 0 {
-                    events.push((request.token, result));
-                    let entry =
-                        opcode::PollAdd::new(types::Fd(poll.fd.as_raw_fd()), poll.mask).build();
-                    self.insert(request.token, entry, Some(poll));
-                } else if !request.cancelled && result != -libc::ECANCELED {
-                    return Err(io::Error::from_raw_os_error(-result));
-                }
-            } else {
-                // Cancel CQEs are not the operation's completion. Only this
-                // original request CQE permits its owner to release the buffer.
+            let poll = request.poll;
+            if !request.cancelled && result >= 0 {
                 events.push((request.token, result));
+                let entry = opcode::PollAdd::new(types::Fd(poll.fd.as_raw_fd()), poll.mask).build();
+                self.insert(request.token, entry, poll);
+            } else if !request.cancelled && result != -libc::ECANCELED {
+                return Err(io::Error::from_raw_os_error(-result));
             }
         }
         Ok(events)
@@ -187,50 +158,39 @@ impl Drop for Ring {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fdutil::WakePipe;
+    use std::collections::HashSet;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
 
     #[test]
-    fn completions_survive_submission_and_completion_queue_pressure() {
+    fn queues_past_ring_capacity_and_drains_cancelled_watches() {
         let mut ring = Ring::new().unwrap();
-        let pipe = WakePipe::new().unwrap();
-        for token in 1..=4096 {
-            unsafe {
-                ring.io(token, pipe.read_fd(), std::ptr::dangling_mut(), 0, false);
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        let count = 1100;
+        for token in 1..=count {
+            ring.poll(token, reader.as_raw_fd(), libc::POLLIN as u32)
+                .unwrap();
+        }
+        writer.write_all(&[1]).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut seen = HashSet::new();
+        while seen.len() < count as usize {
+            for (token, _) in ring.wait(10).unwrap() {
+                seen.insert(token);
             }
+            assert!(Instant::now() < deadline, "queued readiness was lost");
         }
-        let mut completed = std::collections::HashSet::new();
-        while completed.len() < 4096 {
-            for (token, result) in ring.wait(100).unwrap() {
-                assert_eq!(result, 0);
-                assert!(completed.insert(token), "duplicate completion");
-            }
+        for token in 1..=count {
+            ring.cancel(token);
         }
-    }
-
-    #[test]
-    fn cancelling_an_operation_does_not_cancel_a_reused_logical_token() {
-        let mut ring = Ring::new().unwrap();
-        let pipe = WakePipe::new().unwrap();
-        let mut old = [0u8; 1];
-        unsafe {
-            ring.io(7, pipe.read_fd(), old.as_mut_ptr(), 1, false);
+        while !ring.requests.is_empty() {
+            assert!(
+                ring.wait(10).unwrap().is_empty(),
+                "cancelled watch was delivered"
+            );
+            assert!(Instant::now() < deadline, "cancelled watches did not drain");
         }
-        assert!(ring.wait(0).unwrap().is_empty());
-        ring.cancel(7);
-        let mut results = Vec::new();
-        while results.is_empty() {
-            results.extend(ring.wait(100).unwrap());
-        }
-        assert_eq!(results, [(7, -libc::ECANCELED)]);
-        let mut next = [0u8; 1];
-        unsafe {
-            ring.io(7, pipe.read_fd(), next.as_mut_ptr(), 1, false);
-        }
-        pipe.notify();
-        let mut results = Vec::new();
-        while results.is_empty() {
-            results.extend(ring.wait(100).unwrap());
-        }
-        assert_eq!(results, [(7, 1)]);
+        assert!(ring.tokens.is_empty());
     }
 }

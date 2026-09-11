@@ -2383,7 +2383,6 @@ export class Socket {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
-    loop.cancelOwnedFd(this.#fd);
     loop.removeRead(this.#fd);
     loop.removeWrite(this.#fd);
     shutdown(this.#fd, SHUT_RDWR);

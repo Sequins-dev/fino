@@ -2,7 +2,7 @@
  * internal:scheduler-native — irreducible V8/thread/mailbox primitives.
  *
  * The native main-thread host owns pool lifecycle and I/O readiness. Reactor
- * Realms submit operations with owned buffers and consume native completions.
+ * Realms register scalar watches and consume owner-addressed readiness events.
  * TypeScript retains protocol, provider, and application policy.
  *
  * @internal
@@ -44,24 +44,8 @@ export function forceScheduledRealm(handle: number): boolean;
 
 /** Signal an active owner, returning false once that owner has retired. */
 export function signalReactorOwner(owner: number): boolean;
-/**
- * Admit one native read (numeric capacity) or consuming write (byte view).
- * Admission validates the descriptor and the process budget of 4096 operations
- * and 64 MiB of retained backing storage before synchronously detaching writes.
- * Reads and writes require nonblocking streams or regular files. A unique
- * operation id identifies completion; failures before admission throw.
- */
-export function submitOwnedIo(fd: number, data: Uint8Array | Uint8Array[] | number): number;
-/** Open a file on the shared native blocking pool and return an fd or negative errno. @internal */
-export function nativeFileOpen(path: string, flags: number, mode: number): Promise<number>;
-/** Close an owned fd on the shared native blocking pool and return zero or negative errno. @internal */
-export function nativeFileClose(fd: number): Promise<number>;
 /** Whether this is the process entry, independent of its reactor execution. @internal */
 export function isProcessEntryRealm(): boolean;
-/** Request cancellation of this Realm's operation. Storage survives until native completion. */
-export function cancelOwnedIo(id: number): void;
-/** Drain flat operation/result/read-buffer triples without serialization. */
-export function takeOwnedIo(): Array<number | Uint8Array | undefined>;
 /**
  * Read-only snapshot of the reactor pool's scheduling state, or `null` when the
  * process reactor is not running.
@@ -70,9 +54,8 @@ export function takeOwnedIo(): Array<number | Uint8Array | undefined>;
  * be claimed by any worker no matter how long it waits.
  */
 export function reactorPoolStats(): {
-  nativeIo: boolean;
+  nativeReadiness: boolean;
   ioBackend: 'io_uring' | 'kqueue';
-  nativeBufferReuses: number;
   parked: number;
   residents: number;
   ready: number;

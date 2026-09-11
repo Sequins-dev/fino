@@ -3,7 +3,7 @@
 //! The Rust host owns readiness, pool sizing, worker placement,
 //! lifecycle, and metrics. JavaScript only executes while a reactor owns its
 //! isolate. Protocol and application policy remain in TypeScript; the host
-//! carries native operations and owned byte buffers without a JS intermediary.
+//! carries scalar readiness requests without a JavaScript intermediary.
 
 use std::{
     cell::RefCell,
@@ -27,6 +27,9 @@ use crate::{
 };
 
 mod host;
+mod kernel;
+#[cfg(target_os = "linux")]
+mod uring;
 pub(crate) use host::{run_command, run_process};
 
 struct Workload {
@@ -1113,7 +1116,6 @@ fn retire_owner(owner: u32) {
     // recycled an async wake fd and re-arm that descriptor for this old owner,
     // replacing the successor owner's filter.
     owner_pools().lock().unwrap().remove(&owner);
-    crate::native_io::retire(owner);
     let mut inner = mailbox().inner.lock().unwrap();
     if let Some(events) = inner.events.remove(&owner) {
         for event in events {
@@ -2047,9 +2049,9 @@ fn reactor_pool_stats(
     };
     let inner = pool.inner.lock().unwrap();
     let object = v8::Object::new(scope);
-    let key = v8::String::new(scope, "nativeIo").unwrap();
-    let native_io = v8::Boolean::new(scope, true);
-    object.set(scope, key.into(), native_io.into());
+    let key = v8::String::new(scope, "nativeReadiness").unwrap();
+    let native_readiness = v8::Boolean::new(scope, true);
+    object.set(scope, key.into(), native_readiness.into());
     let key = v8::String::new(scope, "ioBackend").unwrap();
     let backend = v8::String::new(
         scope,
@@ -2058,10 +2060,6 @@ fn reactor_pool_stats(
     .unwrap();
     object.set(scope, key.into(), backend.into());
     for (name, value) in [
-        (
-            "nativeBufferReuses",
-            crate::native_io::BUFFER_REUSES.load(Ordering::Relaxed) as f64,
-        ),
         ("parked", inner.parked.len() as f64),
         ("residents", inner.residents.len() as f64),
         ("ready", inner.ready.len() as f64),
@@ -2380,26 +2378,8 @@ fn take_shared_loop_events(
     }
 }
 
-pub(crate) fn notify_io() {
-    mailbox().notify();
-}
-
-pub(crate) fn with_live_owner(owner: u32, publish: impl FnOnce(bool) -> bool) {
-    let owners = owner_pools().lock().unwrap();
-    let pool = owners.get(&owner).and_then(Weak::upgrade);
-    let notify = publish(pool.is_some());
-    if notify && let Some(pool) = pool {
-        pool.signal(owner);
-    }
-}
-
 pub fn create_module<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Module> {
     let names = [
-        "submitOwnedIo",
-        "nativeFileOpen",
-        "nativeFileClose",
-        "cancelOwnedIo",
-        "takeOwnedIo",
         "currentWorkloadOwner",
         "usesProcessReadiness",
         "isProcessEntryRealm",
@@ -2433,11 +2413,6 @@ fn eval_steps<'a>(
     module: v8::Local<'a, v8::Module>,
 ) -> Option<v8::Local<'a, v8::Value>> {
     v8::callback_scope!(unsafe let scope, context);
-    crate::set_fn!(scope, module, "submitOwnedIo", crate::native_io::submit);
-    crate::set_fn!(scope, module, "nativeFileOpen", crate::native_io::open);
-    crate::set_fn!(scope, module, "nativeFileClose", crate::native_io::close);
-    crate::set_fn!(scope, module, "cancelOwnedIo", crate::native_io::cancel);
-    crate::set_fn!(scope, module, "takeOwnedIo", crate::native_io::take);
     crate::set_fn!(scope, module, "isProcessEntryRealm", is_process_entry_realm);
     crate::set_fn!(scope, module, "recordRealmState", record_realm_state);
     crate::set_fn!(

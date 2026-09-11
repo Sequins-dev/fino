@@ -8,9 +8,9 @@
  *
  * The `File` owns the descriptor lifecycle. Readers and writers created from a
  * file share the same descriptor, so callers close the `File` once all derived
- * streams are finished. Reactor Realms receive regular-file chunks as owned
- * buffers from the native service. Linux submits them through io_uring;
- * fallback hosts use the blocking-work pool without blocking readiness.
+ * streams are finished. A locally owned Linux loop can use io_uring completion
+ * operations. Reactor-pooled realms perform the syscall in this TypeScript
+ * isolate so the process reactor remains readiness-only.
  *
  * ## Example
  *
@@ -29,7 +29,6 @@ import {
   isDarwin,
   loopModule,
   asyncOps,
-  nativeFileOps,
   throwErrno,
   throwErrnoCode,
   _toPath,
@@ -41,7 +40,6 @@ import {
 } from './bindings.ts';
 import { Stat } from './stat.ts';
 import { FdWriter } from '../stream.ts';
-import { usesProcessReadiness } from 'internal:scheduler-native';
 import type { Path } from '../../file/path.ts';
 /**
  * An opened file handle over a single POSIX descriptor.
@@ -53,10 +51,10 @@ import type { Path } from '../../file/path.ts';
  * handle share the same underlying fd, so close the `File` — not the individual
  * stream — to release it. Closing flushes any writer created by `writer()`.
  *
- * Reactor Realms use the native owned-buffer service for regular-file chunks,
- * backed by io_uring on Linux and the blocking-work pool on fallback hosts.
- * Dedicated sandbox loops retain their restricted local backend. Every method
- * throws if the handle is already closed.
+ * A locally owned Linux loop can use io_uring completions. Reactor-pooled
+ * realms keep the read and its buffer in this isolate. macOS waits for readiness
+ * only on stream-like descriptors. Every method throws if the
+ * handle is already closed.
  *
  * ```ts no_run
  * import { File } from 'internal:file/handle';
@@ -229,13 +227,11 @@ export class File {
     const bufSize = 65536;
     const path = this.#path.toString();
     let readinessRequired = true;
-    let nativeRead = false;
     if (!this.#closed && !asyncOps) {
       const statBuf = new ArrayBuffer(256);
       if (lib.symbols.fstat(fd, statBuf) !== 0) throwErrno('fstat', path);
       const stat = Stat.parse(statBuf);
       readinessRequired = !stat.isFile() && !stat.isDirectory();
-      nativeRead = usesProcessReadiness() && stat.isFile();
     }
     const iterable: AsyncIterable<Uint8Array> = {
       [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
@@ -246,12 +242,6 @@ export class File {
                 done: true,
                 value: undefined,
               };
-            if (nativeRead) {
-              const bytes = await loopModule!.readOwned(fd, bufSize);
-              return bytes.byteLength === 0
-                ? { done: true, value: undefined }
-                : { done: false, value: bytes };
-            }
             const buf = new ArrayBuffer(bufSize);
             let n: number;
             if (asyncOps) {
@@ -521,10 +511,9 @@ export class File {
    * Concurrent and repeated calls share the same cleanup promise. Any pending
    * writer created by `writer()` is flushed before the fd is released. If
    * flushing fails, the descriptor is still released and the flush error is
-   * reported to the caller. A locally owned Linux loop can issue
-   * `IORING_OP_CLOSE`; reactor Realms transfer close to the shared native
-   * blocking pool so their isolate remains movable while it completes. This
-   * method also backs `Symbol.asyncDispose`.
+   * reported to the caller. A locally owned Linux loop can issue `IORING_OP_CLOSE`; pooled realms
+   * and macOS call `close(2)` from this isolate. This method also backs
+   * `Symbol.asyncDispose`.
    *
    * ```ts no_run
    * await using file = new File(fd, fs, '/tmp/scratch', 'w');
@@ -554,9 +543,6 @@ export class File {
         await loop.submit(function submitAsyncClose(raw: object, id: number) {
           ops.asyncClose(raw, fd, id);
         });
-      } else if (nativeFileOps) {
-        const result = await nativeFileOps.close(this.#fd);
-        if (result < 0) throwErrnoCode('close', this.#path.toString(), result);
       } else {
         lib.symbols.close(this.#fd);
       }

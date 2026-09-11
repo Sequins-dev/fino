@@ -2,9 +2,9 @@
  * internal:runtime/loop — global event loop singleton.
  *
  * Dedicated sandbox realms attach to a thread-local backend. Ordinary realms
- * instead send owner-tagged registrations and owned buffers to the native
- * process host. That Rust host owns readiness and performs reads and writes;
- * this module resolves the corresponding Realm-local promises.
+ * instead send owner-tagged readiness registrations to the native process
+ * host. That host signals runnable Realms independently of busy reactors;
+ * TypeScript performs byte I/O directly in the Realm.
  *
  *
  * ## API
@@ -45,10 +45,10 @@
  *
  * - macOS uses kqueue, including `proc()` and `vnode()` support. Generic
  *   `submit()` completions are not available there.
- * - Linux requires io_uring for process-host readiness and owned-buffer I/O.
+ * - Linux requires io_uring for process-host readiness.
  *   Startup fails explicitly if the kernel cannot create the ring.
- * - macOS process-host reads and writes use nonblocking kqueue readiness;
- *   potentially blocking regular-file work runs on the shared blocking pool.
+ * - Socket reads and writes execute directly on the current reactor after
+ *   readiness. Regular files retain their direct filesystem semantics.
  *
  * Platform-only APIs fail explicitly when their backend cannot provide them:
  * `proc()` and `vnode()` are macOS-only, while `submit()` requires a completion
@@ -63,17 +63,10 @@
  *
  * @internal
  */
-import {
-  drainMicrotasks,
-  hasPendingV8Tasks,
-  hasPendingNativeTasks,
-} from 'internal:async-context';
+import { drainMicrotasks, hasPendingV8Tasks, hasPendingNativeTasks } from 'internal:async-context';
 import type { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
 import * as backend from 'internal:runtime/loop-backend';
 import {
-  submitOwnedIo,
-  cancelOwnedIo,
-  takeOwnedIo,
   currentWorkloadOwner,
   recordReadinessTrace,
   registerProcessReadiness as registerNativeReadiness,
@@ -211,63 +204,6 @@ const _wakeSourceCallbacks: Map<number, () => void> = new Map();
 let _nextTimerId = 1;
 let _nextCompletionId = 1;
 let _atomicsWaiters = 0;
-const _io = new Map<
-  number,
-  {
-    resolve(value: Uint8Array | undefined): void;
-    reject(error: unknown): void;
-    cleanup(): void;
-    signal: AbortSignal | undefined;
-    read: boolean;
-    fd: number;
-  }
->();
-
-/** Submit a consuming native write. All views of the backing buffer detach before return. @internal */
-export function writeOwned(
-  fd: number,
-  bytes: Uint8Array | Uint8Array[],
-  signal?: AbortSignal,
-): Promise<void> {
-  return ownedIo(fd, bytes, signal).then(() => {});
-}
-
-/** Read into native-owned storage and receive the completed allocation. @internal */
-export function readOwned(fd: number, capacity: number, signal?: AbortSignal): Promise<Uint8Array> {
-  return ownedIo(fd, capacity, signal) as Promise<Uint8Array>;
-}
-
-function ownedIo(
-  fd: number,
-  value: Uint8Array | Uint8Array[] | number,
-  signal?: AbortSignal,
-): Promise<Uint8Array | undefined> {
-  signal?.throwIfAborted();
-  const id = submitOwnedIo(fd, value);
-  return new Promise((resolve, reject) => {
-    const abort = () => cancelOwnedIo(id);
-    _io.set(id, {
-      resolve,
-      reject,
-      signal,
-      fd,
-      read: typeof value === 'number',
-      cleanup: () => signal?.removeEventListener('abort', abort),
-    });
-    signal?.addEventListener('abort', abort, { once: true });
-  });
-}
-/** Cancel this Realm's operations before an owning descriptor is closed/reused. @internal */
-export function cancelOwnedFd(fd: number): void {
-  for (const [id, operation] of _io) {
-    if (operation.fd !== fd) continue;
-    cancelOwnedIo(id);
-    _io.delete(id);
-    operation.cleanup();
-    if (operation.read) operation.resolve(new Uint8Array());
-    else operation.reject(new Error('Descriptor closed during write'));
-  }
-}
 let _virtualTimers: VirtualTimerQueue | null = null;
 let _virtualTimeBlocked: (() => boolean) | null = null;
 const TASK_TOKEN_BASE = 4294967296;
@@ -501,23 +437,6 @@ export function flush(): void {
  * ```
  */
 export function tick(timeoutMs: number | null): number {
-  const completedIo = takeOwnedIo();
-  for (let index = 0; index < completedIo.length; index += 3) {
-    const id = completedIo[index] as number;
-    const result = completedIo[index + 1] as number;
-    const bytes = completedIo[index + 2] as Uint8Array | undefined;
-    const pending = _io.get(id);
-    if (pending === undefined) continue;
-    _io.delete(id);
-    pending.cleanup();
-    if (result < 0)
-      pending.reject(
-        pending.signal?.aborted
-          ? pending.signal.reason
-          : new Error(`native I/O failed: errno ${-result}`),
-      );
-    else pending.resolve(bytes);
-  }
   // Routed completions arrive as one flat Float64Array — `COMPLETION_SLOTS`
   // scalars per event — rather than a structured clone per event.
   const batch = takeSharedLoopEvents(_workloadOwner);
@@ -538,7 +457,7 @@ export function tick(timeoutMs: number | null): number {
   }
   const events = _processReadiness ? [] : _wait(rawBackend(), routed > 0 ? 0 : timeoutMs);
   for (const ev of events) _dispatch(ev);
-  return routed + events.length + completedIo.length;
+  return routed + events.length;
 }
 /**
  * The pollable fd of this loop's backend, or `-1` when the backend has none.
@@ -578,7 +497,6 @@ export function loopFd(): number {
  */
 export function alive(): boolean {
   return (
-    _io.size > 0 ||
     (_virtualTimers !== null && _virtualTimers.referencedSize() > 0) ||
     _reads.size > 0 ||
     _writes.size > 0 ||
@@ -666,8 +584,8 @@ export function _activeHandleCounts(): {
   pendingV8Tasks: boolean;
 } {
   return {
-    reads: _reads.size + [..._io.values()].filter((operation) => operation.read).length,
-    writes: _writes.size + [..._io.values()].filter((operation) => !operation.read).length,
+    reads: _reads.size,
+    writes: _writes.size,
     timers: _timers.size,
     referencedTimers: _timers.size - _unreferencedTimers.size,
     unreferencedTimers: _unreferencedTimers.size,

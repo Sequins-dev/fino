@@ -233,14 +233,8 @@ impl Kernel {
         {
             let completions = self.ring.wait(timeout_ms)?;
             let mut events = Vec::new();
-            for (token, result) in completions {
-                if token & super::IO_TOKEN != 0 {
-                    events.push(Event {
-                        token,
-                        data: result as i64,
-                        flags: 0,
-                    });
-                } else if let Some(&(ident, filter)) = self.watches.get(&token) {
+            for (token, _result) in completions {
+                if let Some(&(ident, filter)) = self.watches.get(&token) {
                     if let Some(fd) = self.signals.get(&ident).filter(|_| filter == -6) {
                         let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
                         while unsafe {
@@ -265,56 +259,51 @@ impl Kernel {
         }
     }
 
-    pub fn has_completion_io(&self) -> bool {
-        #[cfg(target_os = "linux")]
-        {
-            true
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            false
-        }
-    }
     pub fn name(&self) -> &'static str {
-        if self.has_completion_io() {
+        if cfg!(target_os = "linux") {
             "io_uring"
         } else {
             "kqueue"
         }
     }
-    pub unsafe fn submit_io(&mut self, token: u64, fd: RawFd, ptr: *mut u8, len: u32, write: bool) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            self.ring.io(token, fd, ptr, len, write);
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (token, fd, ptr, len, write);
-            unreachable!();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::{Duration, Instant};
+
+    fn next(kernel: &mut Kernel) -> Vec<Event> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let events = kernel.wait(10).unwrap();
+            if !events.is_empty() {
+                return events;
+            }
+            assert!(Instant::now() < deadline, "readiness was lost");
         }
     }
-    pub fn cancel_io(&mut self, token: u64) {
-        #[cfg(target_os = "linux")]
-        self.ring.cancel(token);
-        #[cfg(not(target_os = "linux"))]
-        let _ = token;
-    }
-    pub unsafe fn submit_writev(
-        &mut self,
-        token: u64,
-        fd: RawFd,
-        iov: *const libc::iovec,
-        len: u32,
-    ) {
-        #[cfg(target_os = "linux")]
-        unsafe {
-            self.ring.writev(token, fd, iov, len);
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = (token, fd, iov, len);
-            unreachable!();
-        }
+
+    #[test]
+    fn readiness_does_not_consume_bytes_and_removed_watch_stays_retired() {
+        let mut kernel = Kernel::new().unwrap();
+        let (mut reader, mut writer) = UnixStream::pair().unwrap();
+        kernel.arm(1, reader.as_raw_fd(), -1, 0).unwrap();
+        kernel.arm(2, reader.as_raw_fd(), -1, 0).unwrap();
+        kernel.remove(1);
+        writer.write_all(&[7]).unwrap();
+        let events = next(&mut kernel);
+        assert!(events.iter().all(|event| event.token == 2));
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [7]);
+        kernel.remove(2);
+        kernel.arm(3, reader.as_raw_fd(), -1, 0).unwrap();
+        writer.write_all(&[8]).unwrap();
+        assert!(next(&mut kernel).iter().all(|event| event.token == 3));
+        kernel.remove(3);
     }
 }
 

@@ -50,7 +50,6 @@ import {
   isDarwin,
   loopModule,
   asyncOps,
-  nativeFileOps,
   cstr,
   throwErrno,
   throwErrnoCode,
@@ -299,13 +298,8 @@ export class DiskFileSystem extends FileSystem {
       });
       fd = result.res;
       if (fd < 0) throwErrnoCode('open', s, fd);
-    } else if (nativeFileOps) {
-      // Reactor Realms keep potentially blocking lifecycle calls off their
-      // movable isolate thread. The native result retains the exact errno.
-      fd = await nativeFileOps.open(s, flags, 438);
-      if (fd < 0) throwErrnoCode('open', s, fd);
     } else {
-      // Dedicated macOS sandbox: open in this TypeScript isolate.
+      // macOS and reactor-pooled Linux: open in this TypeScript isolate.
       // Note: libffi on macOS ARM64 may not correctly pass the mode argument
       // to the variadic open(2) syscall. Use fchmod to ensure newly-created
       // files get standard permissions (rw-r--r--) regardless.

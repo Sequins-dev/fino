@@ -67,7 +67,11 @@ describe('Reactor scheduler native surface', () => {
     }
   });
   it('exposes one create-and-submit path onto the process pool', (t) => {
-    for (const name of ['createScheduledRealm', 'submitOwnedIo', 'takeOwnedIo']) {
+    for (const name of [
+      'createScheduledRealm',
+      'registerProcessReadiness',
+      'takeSharedLoopEvents',
+    ]) {
       t.equal(name in schedulerNative, true, `${name} is exported`);
     }
   });
