@@ -310,20 +310,24 @@ export type { FieldProps, FieldsetProps, PanelProps, StackProps } from './compon
 export {
   Blockquote,
   Bold,
+  Caption,
   Code,
   Heading,
   InlineCode,
   Italic,
+  Lead,
   Link,
   List,
 } from './components/typography.ts';
 export type {
   BlockquoteProps,
   BoldProps,
+  CaptionProps,
   CodeProps,
   HeadingProps,
   InlineCodeProps,
   ItalicProps,
+  LeadProps,
   LinkProps,
   ListProps,
 } from './components/typography.ts';
@@ -416,6 +420,7 @@ export {
 } from './components/overlay.ts';
 export {
   Badge,
+  Callout,
   KeyHint,
   ProgressBar,
   SPINNER_FRAMES,
@@ -426,6 +431,7 @@ export {
 } from './components/feedback.ts';
 export type {
   BadgeProps,
+  CalloutProps,
   KeyHintEntry,
   KeyHintProps,
   NormalizedProgress,

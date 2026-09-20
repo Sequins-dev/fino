@@ -3,6 +3,7 @@ import { h } from 'fino:ui';
 import {
   Blockquote,
   Bold,
+  Caption,
   Code,
   Field,
   Fieldset,
@@ -14,13 +15,14 @@ import {
   Input,
   Italic,
   Link,
+  Lead,
   List,
   Panel,
   Rule,
   Text,
   VStack,
 } from 'fino:ui/components';
-import { htmlPage, pageCss, toHtml } from 'fino:ui/components/html';
+import { componentCss, htmlPage, pageCss, toHtml } from 'fino:ui/components/html';
 import { renderToHtml } from 'fino:ui/html';
 import { iconForm } from 'internal:ui/components/icons';
 import { layoutPreviews } from 'internal:ui/components/layout.preview';
@@ -96,6 +98,16 @@ describe('fino:ui/components typography family', () => {
       'level one adds a rule',
     );
     t.ok(html(h(Heading, { level: 3 }, 'Guide')).startsWith('<h3'), 'HTML keeps heading level');
+  });
+
+  it('renders lead and caption roles in both targets', (t) => {
+    const out = html(h(VStack, null, h(Lead, null, 'Main idea'), h(Caption, null, 'Context')));
+    t.ok(out.includes('<p class="ui-lead">Main idea</p>'), 'HTML identifies lead copy');
+    t.ok(out.includes('<small class="ui-caption">Context</small>'), 'HTML identifies captions');
+    const app = createTuiHarness(24, 2);
+    app.render(h(VStack, null, h(Lead, null, 'Main idea'), h(Caption, null, 'Context')));
+    t.ok(app.ansi().includes('\x1b[1m'), 'terminal lead copy is emphasized');
+    t.ok(app.ansi().includes('\x1b[2m'), 'terminal captions are muted');
   });
 
   it('renders prose structures and safe links as native HTML', (t) => {
@@ -180,6 +192,10 @@ describe('fino:ui/components icon family and previews', () => {
       groups.map((group) => group.title),
       ['Layout', 'Typography', 'Icons'],
     );
+    t.ok(
+      groups[1]!.previews.some((preview) => preview.key === 'prose-roles'),
+      'typography previews include lead and caption roles',
+    );
     const panel = groups[0]!.previews[0]!;
     t.deepEqual(defaultArgs(panel), { title: 'Session', width: 30 });
     t.deepEqual(parseArgs(panel, { title: 'Build', width: '100' }), {
@@ -195,5 +211,10 @@ describe('fino:ui/components icon family and previews', () => {
       t.equal(css.split(selector).length - 1, 1, `${selector} is registered once`);
     }
     t.ok(htmlPage('ok').includes('.ui-code-content'), 'page shell carries family styles');
+    t.ok(componentCss().includes('.ui-code-content'), 'component CSS is available to other shells');
+    t.notOk(
+      componentCss().includes('body {\n  margin:'),
+      'component CSS omits application page styling',
+    );
   });
 });

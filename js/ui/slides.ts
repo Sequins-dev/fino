@@ -17,9 +17,12 @@
  * session and its own SSE stream without changing presenter state. All session
  * state is process-local and resets with the application.
  *
- * MDX and component modules are trusted executable code. Components must be
- * synchronous server-rendered Fino UI components; browser hydration and
- * arbitrary client action registration are outside this module.
+ * MDX and component modules are trusted executable code. File-backed decks may
+ * export `theme` variables, a trusted `styles` string, and Markdown `components`
+ * overrides. The default mappings render fenced code through the shared
+ * syntax-highlighting component. Components must be synchronous server-rendered
+ * Fino UI components; browser hydration and arbitrary client action registration
+ * are outside this module.
  *
  * ```ts no_run
  * import { App } from 'fino:net/http/app';
@@ -48,6 +51,8 @@ import {
   type NormalizedChild,
   type VNode,
 } from 'fino:ui';
+import { Code } from 'fino:ui/components';
+import { componentCss } from 'fino:ui/components/html';
 import { renderToHtml } from 'fino:ui/html';
 /** Metadata optionally exported by a slide module. */
 export interface PresentationMeta {
@@ -68,6 +73,8 @@ export interface PresentationModule {
   meta?: PresentationMeta;
   /** Optional CSS variables applied to viewer and presenter pages. */
   theme?: PresentationTheme;
+  /** Optional trusted CSS appended to the viewer and presenter page styles. */
+  styles?: string;
   /** Optional Markdown element and deck primitive overrides. */
   components?: Record<string, string | Component<any>>;
 }
@@ -94,6 +101,7 @@ interface Manifest {
   slides: SlideRecord[];
   meta: PresentationMeta;
   theme: PresentationTheme;
+  styles: string;
 }
 interface Patch {
   id: string;
@@ -155,12 +163,28 @@ function Footer(props: { children?: NormalizedChild[] }): VNode {
 function Steps(props: { children?: NormalizedChild[] }): VNode {
   return h('div', { 'data-fino-steps': true }, props.children ?? []);
 }
-const deckComponents: Record<string, Component<any>> = {
+
+function MarkdownPre(props: { children?: NormalizedChild[] }): VNode {
+  const children = props.children ?? [];
+  const code = children.length === 1 && typeof children[0] !== 'string' ? children[0] : null;
+  if (code?.type !== 'code' || !code.children.every((child) => typeof child === 'string'))
+    return h('pre', null, children);
+  const className = code.props.className ?? code.props.class;
+  const language =
+    typeof className === 'string' && className.startsWith('language-')
+      ? className.slice('language-'.length)
+      : undefined;
+  return h(Code, { code: code.children.join(''), language });
+}
+
+/** Default MDX and presentation primitive mappings used by slide decks. */
+const slideComponents: Readonly<Record<string, Component<any>>> = {
   Notes,
   Head,
   Header,
   Footer,
   Steps,
+  pre: MarkdownPre,
 };
 function isVNode(value: NormalizedChild): value is VNode {
   return typeof value !== 'string';
@@ -270,7 +294,8 @@ function pageShell(
   );
 }
 const sharedStyle = `
-:root{--slides-paper:#f1eadc;--slides-ink:#171713;--slides-accent:#e4542f;--slides-muted:#8e877a;--slides-panel:#24231f;color-scheme:light}
+${componentCss()}
+:root{--slides-paper:#f1eadc;--slides-ink:#171713;--slides-accent:#e4542f;--slides-muted:#8e877a;--slides-panel:#24231f;--ui-bg:var(--slides-paper);--ui-fg:var(--slides-ink);--ui-surface:var(--slides-panel);--ui-border:var(--slides-muted);--ui-accent:var(--slides-accent);--tui-cyan:var(--slides-accent);--tui-green:#4f8a67;--tui-blue:#52759b;--tui-yellow:#a66b21;--tui-red:#a33f35;--tui-bright-black:var(--slides-muted);color-scheme:light}
 *{box-sizing:border-box}html,body{margin:0;min-height:100%;background:var(--slides-ink);color:var(--slides-ink)}
 body{font-family:"Avenir Next Condensed","Helvetica Neue",sans-serif}.fino-slide-viewport{position:relative;display:grid;place-items:center;overflow:hidden;container-type:size}.fino-slide-surface{width:min(100cqw,177.7777778cqh);height:min(100cqh,56.25cqw);aspect-ratio:16/9;container-type:inline-size}.fino-slide-frame{position:relative;width:100%;height:100%;font-size:1.25cqw;overflow:hidden;background:var(--slides-paper);color:var(--slides-ink);box-shadow:0 2.5em 8em #0009;isolation:isolate;container-type:inline-size}
 .fino-slide-frame:before{content:"";position:absolute;inset:0;z-index:-1;opacity:.2;background-image:radial-gradient(#171713 .034375em,transparent .034375em);background-size:.3125em .3125em}
@@ -341,7 +366,7 @@ export class Presentation {
     if (typeof this.#source === 'string') {
       const filename = this.#filename(this.#source);
       const loaded = await this.#evaluateFile(filename);
-      this.#install(loaded.vnode, loaded.meta, loaded.theme);
+      this.#install(loaded.vnode, loaded.meta, loaded.theme, loaded.styles);
       this.#current = this.#renderBroadcast();
       await this.#startWatch(filename);
       return;
@@ -349,13 +374,13 @@ export class Presentation {
     const module = this.#source;
     const rendered = module.default({
       components: {
-        ...deckComponents,
+        ...slideComponents,
         ...(module.components ?? {}),
       },
     });
     if (!rendered || typeof rendered !== 'object' || typeof rendered.type !== 'string')
       throw new TypeError('Presentation module default export must return a Fino VNode');
-    this.#install(rendered, module.meta ?? {}, module.theme ?? {});
+    this.#install(rendered, module.meta ?? {}, module.theme ?? {}, module.styles ?? '');
     this.#current = this.#renderBroadcast();
   }
   #filename(specifier: string): string {
@@ -367,19 +392,25 @@ export class Presentation {
     vnode: VNode;
     meta: PresentationMeta;
     theme: PresentationTheme;
+    styles: string;
   }> {
     // The deck renders in the child and its tree is structured-cloned back, so
+    // lower components while their implementations are still available, then
     // convert inside the realm: toPortable() names the offending prop path,
     // where a raw clone failure would only say the value was uncloneable.
     const wrapper = `
       import Deck, * as deckModule from ${JSON.stringify(filename)};
-      import { renderStatic } from 'fino:ui';
+      import { lowerTree, renderStatic } from 'fino:ui';
+      import 'fino:ui/html';
+      import 'fino:ui/components/html';
+      import { slideComponents } from 'fino:ui/slides';
       import { portableSink } from 'fino:ui/portable';
       export default function renderPresentationModule() {
         return {
-          vnode: renderStatic(() => Deck(), portableSink()),
+          vnode: renderStatic(() => lowerTree(Deck({ components: { ...slideComponents, ...(deckModule.components ?? {}) } }), 'html'), portableSink()),
           meta: deckModule.meta ?? {},
           theme: deckModule.theme ?? {},
+          styles: deckModule.styles ?? '',
         };
       }
     `;
@@ -388,6 +419,7 @@ export class Presentation {
         vnode: VNode;
         meta: PresentationMeta;
         theme: PresentationTheme;
+        styles: string;
       }
     >(wrapper);
     try {
@@ -399,7 +431,12 @@ export class Presentation {
       realm.terminate();
     }
   }
-  #install(rendered: VNode, meta: PresentationMeta, theme: PresentationTheme): void {
+  #install(
+    rendered: VNode,
+    meta: PresentationMeta,
+    theme: PresentationTheme,
+    styles: string,
+  ): void {
     // The manifest is read off the element tree — `data-fino-slide`,
     // `data-fino-steps`, `data-fino-notes` — so components have to resolve to
     // their elements before it can be walked.
@@ -410,6 +447,7 @@ export class Presentation {
       slides,
       meta,
       theme,
+      styles,
     };
     this.#clampState(this.#state);
     for (const session of this.#viewerSessions.values()) this.#clampState(session.state);
@@ -441,7 +479,7 @@ export class Presentation {
         await new Promise<void>((resolve) => setTimeout(resolve, 60));
         try {
           const loaded = await this.#evaluateFile(filename);
-          this.#install(loaded.vnode, loaded.meta, loaded.theme);
+          this.#install(loaded.vnode, loaded.meta, loaded.theme, loaded.styles);
           this.#diagnostic = '';
         } catch (error) {
           this.#diagnostic = error instanceof Error ? error.message : String(error);
@@ -635,7 +673,13 @@ async function send(command){const body=new URLSearchParams({command,session,non
 document.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='ArrowDown'){event.preventDefault();send('next');}else if(event.key==='ArrowLeft'||event.key==='ArrowUp'){event.preventDefault();send('previous');}});
 document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`
       : `${patchClient}const stream=new EventSource(location.pathname.replace(/\\/$/,'')+'/_events');stream.addEventListener('patch',applyPatch);document.querySelector('[data-fullscreen]').addEventListener('click',()=>document.documentElement.requestFullscreen?.());`;
-    return pageShell(title, this.#manifest.meta.lang ?? 'en', body, viewerStyle, script);
+    return pageShell(
+      title,
+      this.#manifest.meta.lang ?? 'en',
+      body,
+      `${viewerStyle}\n${this.#manifest.styles}`,
+      script,
+    );
   }
   #presenterPage(): Response {
     const title = `${this.#manifest.meta.title ?? 'Presentation'} · Presenter`;
@@ -647,7 +691,13 @@ function bind(){root.querySelectorAll('[data-command]').forEach(button=>button.o
 document.addEventListener('keydown',event=>{if(event.key==='ArrowRight'||event.key==='PageDown'){event.preventDefault();send('next');}else if(event.key==='ArrowLeft'||event.key==='PageUp'){event.preventDefault();send('previous');}else if(event.key==='Home'){event.preventDefault();send('reset');}});
 let touch=0;document.addEventListener('touchstart',event=>{touch=event.changedTouches[0].clientX},{passive:true});document.addEventListener('touchend',event=>{const delta=event.changedTouches[0].clientX-touch;if(Math.abs(delta)>45)send(delta<0?'next':'previous')},{passive:true});
 setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock=root.querySelector('[data-clock]');if(!shell||!clock)return;const seconds=Math.max(0,Math.floor((Date.now()-Number(shell.dataset.startedAt))/1000));clock.textContent=String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');},1000);bind();`;
-    return pageShell(title, this.#manifest.meta.lang ?? 'en', body, presenterStyle, script);
+    return pageShell(
+      title,
+      this.#manifest.meta.lang ?? 'en',
+      body,
+      `${presenterStyle}\n${this.#manifest.styles}`,
+      script,
+    );
   }
   /**
    * Create the audience router and its SSE endpoints.
@@ -750,4 +800,4 @@ setInterval(()=>{const shell=root.querySelector('[data-started-at]');const clock
     await this.close();
   }
 }
-export { Footer, Head, Header, Notes, Steps };
+export { Footer, Head, Header, Notes, slideComponents, Steps };

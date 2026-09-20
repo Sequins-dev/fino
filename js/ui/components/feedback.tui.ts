@@ -6,6 +6,7 @@ import { styles } from 'fino:ui/components/theme';
 import { timeout as loopTimeout } from 'internal:runtime/loop';
 import {
   Badge,
+  Callout,
   KeyHint,
   ProgressBar,
   SPINNER_FRAMES,
@@ -55,6 +56,17 @@ mapComponentLowering(Badge, 'tui', (props) => {
     Text,
     { ...rest, style: [styles[variant ?? 'accent'], styles.inverse] } as Props,
     ` ${label} `,
+  );
+});
+
+mapComponentLowering(Callout, 'tui', (props, children) => {
+  const { title, variant, ...rest } = props;
+  const color = styles[variant ?? 'accent'].fg;
+  return h(
+    Box,
+    { ...rest, direction: 'column', border: true, borderColor: color, paddingX: 1 } as Props,
+    title === undefined ? null : h(Text, { bold: true }, title),
+    ...children,
   );
 });
 

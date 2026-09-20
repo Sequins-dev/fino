@@ -47,9 +47,9 @@ console.log(page);
 ```
 
 Component families keep their CSS beside their implementation and register the
-fragment once. `htmlPage()` aggregates fragments registered by family modules
-loaded in the current Realm with the base palette, avoiding a second monolithic
-stylesheet.
+fragment once. `componentCss()` returns those fragments for hosts such as slide
+decks that already own a document shell. `htmlPage()` combines them with the
+catalog's base palette.
 
 ## Layout families
 
@@ -76,8 +76,8 @@ const settings = (
 
 ## Typography and code
 
-Headings, emphasis, links, quotes, lists, and inline code use semantic HTML and
-equivalent terminal styling. `Code` delegates tokenization to the reusable
+Headings, lead copy, captions, emphasis, links, quotes, lists, and inline code
+use semantic HTML and equivalent terminal styling. `Code` delegates tokenization to the reusable
 `highlightLines()` service from `fino:format/typescript`, so HTML classes and
 terminal colors are two presentations of the same token runs.
 
@@ -263,7 +263,8 @@ const overlays = (
 ## Feedback and display
 
 `Badge`, `Spinner`, `ProgressBar`, `KeyHint`, `Tag`, and `TagGroup` provide
-compact status surfaces. `normalizeProgress()` is the one clamping and
+compact status surfaces. `Callout` presents explanatory content with an optional
+title and semantic tone. `normalizeProgress()` is the one clamping and
 percentage contract used by both HTML and terminal progress bars. Unpinned
 terminal spinners share one clock whose lifetime is explicitly held by a live
 TUI app, so multiple spinners do not install multiple timers and stopped apps

@@ -3,6 +3,7 @@ import { h } from 'fino:ui';
 import type { VNode } from 'fino:ui';
 import {
   Badge,
+  Callout,
   Card,
   EmptyState,
   ProgressBar,
@@ -38,11 +39,14 @@ describe('feedback and display components', () => {
         h(Card, { title: 'Unsafe', image: { src: 'javascript:alert(1)', alt: 'bad' } }),
         h(StatusDot, { status: 'busy' }),
         h(EmptyState, { title: 'Nothing here' }),
+        h(Callout, { title: 'Note', variant: 'warning' }, 'Check this'),
       ),
     );
     t.ok(out.includes('100%'));
     t.equal(out.includes('<img'), false);
     t.ok(out.includes('aria-label="busy"'));
+    t.ok(out.includes('<aside class="ui-callout is-warning"'));
+    t.ok(out.includes('<strong class="ui-callout-title">Note</strong>'));
     for (const marker of ['.ui-progress-wrap {', '.ui-card {']) {
       t.equal(pageCss().split(marker).length - 1, 1, `${marker} is registered once`);
     }
@@ -58,6 +62,7 @@ describe('feedback and display components', () => {
         h(Spinner, { tick: SPINNER_FRAMES.length + 2 }),
         h(ProgressBar, { value: 0.5, width: 4, showPercent: true }),
         h(StatusDot, { status: 'ok', label: 'Healthy' }),
+        h(Callout, { title: 'Note', variant: 'warning' }, 'Check this'),
       ),
     );
     const text = app.lines().map(plainLine).join('\n');
@@ -65,10 +70,17 @@ describe('feedback and display components', () => {
     t.ok(text.includes(SPINNER_FRAMES[2]!));
     t.ok(text.includes('██░░ 50%'));
     t.ok(text.includes('Healthy'));
+    t.ok(text.includes('Note'));
+    t.ok(text.includes('Check this'));
   });
 
   it('keeps feedback and display previews co-located and renderable', (t) => {
-    for (const group of [feedbackPreviews(), displayPreviews()]) {
+    const feedback = feedbackPreviews();
+    t.ok(
+      feedback.previews.some((preview) => preview.key === 'callout'),
+      'feedback previews include callouts',
+    );
+    for (const group of [feedback, displayPreviews()]) {
       t.ok(group.previews.length > 0);
       for (const preview of group.previews) {
         t.ok(html(preview.view(defaultArgs(preview))).length > 0, `${group.title}/${preview.key}`);
