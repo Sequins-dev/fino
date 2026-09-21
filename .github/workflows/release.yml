@@ -1,0 +1,243 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the v prefix (for example, 0.1.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate version and release state
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo 'Releases must be run from the main branch.' >&2
+            exit 1
+          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo 'Version must be a stable semantic version such as 0.1.0.' >&2
+            exit 1
+          fi
+
+          tag="v$VERSION"
+          if git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null \
+            || gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists." >&2
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: validate
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    env:
+      FINO_VERSION: ${{ needs.validate.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            os: linux
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            os: linux
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            os: macos
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo and V8 build
+        id: build-cache
+        uses: ./.github/actions/cache-cargo-deps
+        with:
+          profile: release
+
+      - name: Install Linux native dependencies
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ca-certificates \
+            cmake \
+            curl \
+            g++ \
+            git \
+            libsqlite3-dev \
+            make \
+            perl \
+            pkg-config \
+            python3 \
+            xz-utils
+
+      - name: Install native LLVM on Linux
+        if: matrix.os == 'linux'
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo 'deb https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' \
+            | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang-23 libclang-23-dev
+          {
+            echo 'CLANG_BASE_PATH=/usr/lib/llvm-23'
+            echo 'LIBCLANG_PATH=/usr/lib/llvm-23/lib'
+          } >> "$GITHUB_ENV"
+
+      - name: Install current Linux protocol dependencies
+        if: matrix.os == 'linux'
+        uses: ./.github/actions/install-linux-protocol-deps
+        with:
+          prefix: ${{ runner.temp }}/fino-protocol-deps
+
+      - name: Install macOS native dependencies
+        if: matrix.os == 'macos'
+        run: |
+          brew install gnutls libnghttp2 libnghttp3 libngtcp2 llvm openssl@3 sqlite
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Check V8 artifact cache readiness
+        id: v8-cache-ready
+        if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
+        run: |
+          if [[ -s target/release/gn_out/obj/librusty_v8.a \
+            && -s target/release/gn_out/src_binding.rs ]]; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save V8 build artifact cache
+        if: ${{ !cancelled() && steps.v8-cache-ready.outputs.ready == 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            target/release/gn_out/obj/librusty_v8.a
+            target/release/gn_out/src_binding.rs
+          key: ${{ steps.build-cache.outputs.v8-cache-key }}
+
+      - name: Run Rust tests
+        run: cargo test --release --quiet --locked
+
+      - name: Verify release binary
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          test "$(./target/release/fino --version)" = "fino $FINO_VERSION"
+          file target/release/fino
+          case "$TARGET" in
+            x86_64-*) file target/release/fino | grep -Eq 'x86[-_]64|x86_64' ;;
+            aarch64-*|arm64-*) file target/release/fino | grep -Eq 'aarch64|arm64' ;;
+          esac
+
+      - name: Sign and notarize macOS binary
+        if: matrix.os == 'macos'
+        env:
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          keychain="$RUNNER_TEMP/fino-signing.keychain-db"
+          keychain_password="$(openssl rand -base64 32)"
+          printf '%s' "$APPLE_CERTIFICATE_P12" | base64 -D > "$RUNNER_TEMP/certificate.p12"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$RUNNER_TEMP/certificate.p12" \
+            -k "$keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain"
+
+          codesign --force --options runtime --timestamp \
+            --keychain "$keychain" --sign "$APPLE_SIGNING_IDENTITY" target/release/fino
+          codesign --verify --deep --strict --verbose=2 target/release/fino
+
+          notarization_archive="$RUNNER_TEMP/fino-notarization.zip"
+          ditto -c -k --keepParent target/release/fino "$notarization_archive"
+          xcrun notarytool submit "$notarization_archive" \
+            --apple-id "$APPLE_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" \
+            --wait
+
+      - name: Package release archive
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          archive="fino-v${FINO_VERSION}-${TARGET}"
+          mkdir -p "dist/$archive"
+          cp target/release/fino README.md LICENSE "dist/$archive/"
+          tar -C dist -czf "dist/$archive.tar.gz" "$archive"
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download release archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          cd dist
+          sha256sum ./*.tar.gz > SHA256SUMS
+          tag="v$VERSION"
+          gh release create "$tag" ./*.tar.gz SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Fino $tag" \
+            --generate-notes \
+            --draft
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false

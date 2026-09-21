@@ -11,6 +11,10 @@ use oxc_span::SourceType;
 use oxc_transformer::{JsxOptions, TransformOptions, Transformer, TypeScriptOptions};
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=FINO_VERSION");
+    let version = env::var("FINO_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").into());
+    println!("cargo:rustc-env=FINO_VERSION={version}");
+
     println!("cargo:rerun-if-changed=js/");
     println!("cargo:rerun-if-changed=src/profiler/binding.cc");
     println!("cargo:rerun-if-changed=src/v8_isolate_group/binding.cc");

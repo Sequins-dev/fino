@@ -87,7 +87,7 @@ fn eval_steps<'a>(
     let exec_val = v8::String::new(scope, &process_env.exec_path.clone())?;
     set_export(scope, module, "execPath", exec_val.into())?;
 
-    let version = v8::String::new(scope, env!("CARGO_PKG_VERSION"))?;
+    let version = v8::String::new(scope, env!("FINO_VERSION"))?;
     set_export(scope, module, "version", version.into())?;
 
     let finalize = v8::Function::new(scope, finalize_sandbox_exec)?;

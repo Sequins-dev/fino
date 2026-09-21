@@ -13,11 +13,24 @@ type WorkflowStep = {
 };
 type WorkflowJob = {
   needs?: string | string[];
+  permissions?: Record<string, string>;
+  'runs-on'?: string;
+  strategy?: {
+    matrix?: {
+      include?: Array<Record<string, string>>;
+    };
+  };
   'timeout-minutes'?: number;
   env?: WorkflowEnvironment;
   steps?: WorkflowStep[];
 };
 type Workflow = {
+  on?: {
+    workflow_dispatch?: {
+      inputs?: Record<string, Record<string, unknown>>;
+    };
+  };
+  permissions?: Record<string, string>;
   env?: WorkflowEnvironment;
   jobs?: Record<string, WorkflowJob>;
 };
@@ -25,8 +38,8 @@ type Workflow = {
 const fs = new DiskFileSystem();
 const decoder = new TextDecoder();
 
-async function readWorkflow(): Promise<Workflow> {
-  const source = decoder.decode(await fs.readFile('.github/workflows/ci.yml'));
+async function readWorkflow(path = '.github/workflows/ci.yml'): Promise<Workflow> {
+  const source = decoder.decode(await fs.readFile(path));
   return parseYaml(source) as Workflow;
 }
 
@@ -126,5 +139,58 @@ describe('CI workflow', () => {
       'each pull request uses a stable preview domain',
     );
     t.equal(preview?.env?.SURGE_TOKEN, '${{ secrets.SURGE_TOKEN }}');
+  });
+
+  it('publishes three native archives from an explicit version', async (t) => {
+    const workflow = await readWorkflow('.github/workflows/release.yml');
+    const version = workflow.on?.workflow_dispatch?.inputs?.version;
+    const build = jobDefinition(workflow, 'build');
+    const publish = jobDefinition(workflow, 'publish');
+    const targets = build.strategy?.matrix?.include ?? [];
+
+    t.equal(version?.required, true, 'release version is required');
+    t.equal(version?.type, 'string', 'release version is entered as text');
+    t.equal(
+      JSON.stringify(targets.map((target) => target.target)),
+      JSON.stringify([
+        'x86_64-unknown-linux-gnu',
+        'aarch64-unknown-linux-gnu',
+        'aarch64-apple-darwin',
+      ]),
+      'release builds cover the supported native targets',
+    );
+    t.ok(
+      build.steps?.some((step) => step.run === 'cargo build --release --locked'),
+      'release archives use a locked optimized build',
+    );
+    t.equal(build.env?.FINO_VERSION, '${{ needs.validate.outputs.version }}');
+    t.ok(
+      build.steps?.some(
+        (step) => step.run?.includes('codesign') && step.run.includes('notarytool submit'),
+      ),
+      'the macOS release is signed and notarized before packaging',
+    );
+    t.equal(publish.needs, 'build', 'publishing waits for every matrix build');
+    t.equal(publish.permissions?.contents, 'write', 'only the publisher can create a release');
+    t.ok(
+      publish.steps?.some(
+        (step) => step.run?.includes('sha256sum') && step.run.includes('gh release create'),
+      ),
+      'publication creates checksums and the GitHub release together',
+    );
+  });
+
+  it('directs README users to GitHub release downloads', async (t) => {
+    const readme = decoder.decode(await fs.readFile('README.md'));
+    t.ok(
+      readme.includes('https://github.com/Sequins-dev/fino/releases/latest'),
+      'README links the latest release page rendered by the docs site',
+    );
+  });
+
+  it('ships an explicit MIT license with public releases', async (t) => {
+    const license = decoder.decode(await fs.readFile('LICENSE'));
+    t.ok(license.includes('MIT License'));
+    t.ok(license.includes('Fino contributors'));
   });
 });

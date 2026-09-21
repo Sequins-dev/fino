@@ -14,6 +14,19 @@ import {
 } from './cli-test-helpers.ts';
 
 describe('CLI commands: run', () => {
+  it('prints the embedded runtime version', async (t) => {
+    const { stdout, stderr, result } = await runCli(['--version']);
+    const cargoToml = new TextDecoder().decode(await new DiskFileSystem().readFile('Cargo.toml'));
+    const packageVersion = cargoToml.match(/^version = "([^"]+)"$/m)?.[1];
+
+    t.equal(result.code, 0, 'version exits successfully');
+    t.equal(stderr, '', 'version does not write stderr');
+    t.equal(
+      stdout,
+      `fino ${packageVersion}\n`,
+      'version matches the default Cargo package version',
+    );
+  });
   it('prints root help with command list', async (t) => {
     const stdout = await parseRoot(['--help']);
     t.ok(stdout.includes('Usage: fino'), 'usage mentions fino root command');
