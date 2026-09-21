@@ -240,6 +240,70 @@ jobs:
       - name: Verify public builtin benchmark inventory
         run: ./target/debug/fino test tests/internal/benchmark-coverage.test.ts
 
+  docs:
+    name: Documentation
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    needs: linux-build
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install SQLite
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libsqlite3-0
+
+      - name: Restore Linux build
+        uses: actions/cache/restore@v4
+        with:
+          path: target/debug/fino
+          key: fino-linux-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          # A re-run of only the failed jobs bumps the attempt without
+          # re-running the build, so fall back to any attempt in this run.
+          restore-keys: fino-linux-debug-${{ github.run_id }}-
+          fail-on-cache-miss: true
+
+      - name: Prepare binary
+        run: chmod +x target/debug/fino
+
+      - name: Build HTML documentation
+        run: ./target/debug/fino doc build --format html --title "Fino Runtime" --types runtime-builtins.d.ts js
+
+      - name: Configure static deployment
+        run: |
+          rm docs/docs.db
+          printf '%s\n' docs.db > docs/.surgeignore
+
+      - name: Upload documentation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fino-docs
+          path: docs/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Deploy production docs
+        if: github.event_name == 'push'
+        env:
+          SURGE_DOMAIN: ${{ vars.SURGE_DOMAIN }}
+          SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
+          SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+        run: |
+          npx --yes surge@0.44.3 --project docs --domain "$SURGE_DOMAIN"
+          printf '### Documentation deployment\n\n[%s](https://%s)\n' \
+            "$SURGE_DOMAIN" "$SURGE_DOMAIN" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Deploy PR preview
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        env:
+          SURGE_LOGIN: ${{ secrets.SURGE_LOGIN }}
+          SURGE_TOKEN: ${{ secrets.SURGE_TOKEN }}
+        run: |
+          preview_domain="pr-${{ github.event.pull_request.number }}.fino.fast"
+          npx --yes surge@0.44.3 --project docs --domain "$preview_domain"
+          printf '### Documentation preview\n\n[%s](https://%s)\n' \
+            "$preview_domain" "$preview_domain" >> "$GITHUB_STEP_SUMMARY"
+
   macos-tests:
     name: macOS Tests
     runs-on: blacksmith-6vcpu-macos-15

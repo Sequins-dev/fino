@@ -159,6 +159,7 @@ fn finalize_sandbox_exec<'a>(
     };
     let memory_bytes = args.get(5).integer_value(scope).unwrap_or(0) as libc::rlim_t;
     let pids = args.get(6).integer_value(scope).unwrap_or(0) as libc::rlim_t;
+    #[cfg(target_os = "linux")]
     let seccomp = if args.get(7).is_null_or_undefined() {
         None
     } else {
@@ -167,6 +168,7 @@ fn finalize_sandbox_exec<'a>(
         };
         Some(parts)
     };
+    #[cfg(target_os = "linux")]
     let seccomp_filters = if args.get(8).is_null_or_undefined() {
         None
     } else {
