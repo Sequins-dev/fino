@@ -38,8 +38,9 @@ fi
 
 # Keep rusty_v8's entire C ABI except its isolate-allocation entry point. Fino's
 # C++ shim supplies that symbol and delegates all post-allocation ownership to
-# the unchanged Rust Isolate::new path.
-binding_source="${CARGO_MANIFEST_DIR:-}/src/binding.cc"
+# the unchanged Rust Isolate::new path. Cargo leaves CARGO_MANIFEST_DIR set to
+# Fino while this wrapper compiles dependency sources, so identify rusty_v8's
+# root binding by its unambiguous source suffix instead.
 compiled_source=""
 output_file=""
 previous=""
@@ -48,13 +49,8 @@ for argument in "$@"; do
     output_file="$argument"
   fi
   case "$argument" in
-    */src/binding.cc | src/binding.cc )
-      resolved_source="$(python3 -c \
-        'import os, sys; print(os.path.realpath(sys.argv[1]))' \
-        "$argument")"
-      if [ "$resolved_source" = "$binding_source" ]; then
-        compiled_source="$argument"
-      fi
+    */src/binding.cc )
+      compiled_source="$argument"
       ;;
   esac
   previous="$argument"
@@ -66,8 +62,12 @@ if [ -n "$compiled_source" ] && [ -n "$output_file" ]; then
   if [ ! -x "$objcopy" ]; then
     objcopy="$(command -v llvm-objcopy)"
   fi
+  symbol_prefix=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    symbol_prefix="_"
+  fi
   "$objcopy" \
     --redefine-sym \
-    v8__Isolate__New=fino__rusty_v8__Isolate__New \
+    "${symbol_prefix}v8__Isolate__New=${symbol_prefix}fino__rusty_v8__Isolate__New" \
     "$output_file"
 fi

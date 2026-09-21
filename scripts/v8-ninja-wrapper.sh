@@ -42,4 +42,27 @@ if [ ! -x "$real_ninja" ]; then
   echo "could not locate rusty_v8's Ninja binary at $real_ninja" >&2
   exit 1
 fi
+
+# Chromium's bundled ld64.lld cannot link against the Xcode 27 SDK's system
+# libraries. Chromium supports Apple's linker for native Apple Silicon builds,
+# so select it after rusty_v8 generates args.gn and before Ninja regenerates
+# the build graph. Keep other hosts on Chromium's default linker.
+if [ "$(uname -s)" = "Darwin" ]; then
+  build_dir=""
+  previous=""
+  for argument in "$@"; do
+    if [ "$previous" = "-C" ]; then
+      build_dir="$argument"
+      break
+    fi
+    previous="$argument"
+  done
+
+  args_file="$build_dir/args.gn"
+  if [ -n "$build_dir" ] && [ -f "$args_file" ] && \
+      ! grep -q '^use_lld = false$' "$args_file"; then
+    printf '\nuse_lld = false\n' >> "$args_file"
+  fi
+fi
+
 exec "$real_ninja" "$@"
