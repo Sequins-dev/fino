@@ -10,6 +10,10 @@ strong execution boundaries — a permissioned module system, isolated realms,
 sandbox-aware processes, and built-in AI and observability subsystems — in one
 runtime.
 
+[Download the latest Fino release](https://github.com/Sequins-dev/fino/releases/latest)
+for Linux (x64 or arm64) or macOS (Apple silicon), or
+[browse the source on GitHub](https://github.com/Sequins-dev/fino).
+
 ## A Streaming Support Agent
 
 An agent with a validated tool, streaming its answers over server-sent events

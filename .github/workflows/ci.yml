@@ -14,7 +14,7 @@ concurrency:
 jobs:
   fmt:
     name: Rust Format Check
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -29,7 +29,7 @@ jobs:
 
   lint:
     name: Lint Checks
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: linux-build
     steps:
       - name: Check out repository
@@ -53,7 +53,7 @@ jobs:
 
   linux-build:
     name: Linux Build
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -134,7 +134,7 @@ jobs:
 
   macos-build:
     name: macOS Build
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -183,7 +183,7 @@ jobs:
 
   linux-tests:
     name: Linux Tests
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     needs: linux-build
     env:
@@ -218,7 +218,7 @@ jobs:
 
   release-readiness:
     name: Release Readiness
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: linux-build
     steps:
       - name: Check out repository
@@ -242,7 +242,7 @@ jobs:
 
   docs:
     name: Documentation
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     needs: linux-build
     steps:
       - name: Check out repository
@@ -306,7 +306,7 @@ jobs:
 
   macos-tests:
     name: macOS Tests
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     timeout-minutes: 15
     needs: macos-build
     steps:

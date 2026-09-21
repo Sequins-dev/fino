@@ -3,8 +3,8 @@
  *
  * Composes the top-level `fino` command from the built-in subcommand tasks —
  * `run`, `test`, `coverage`, `bench`, `load`, `install`, `init`, `doc`, `fmt`,
- * `lint`, `preview`, `task`, and `repl` — and layers the shorthand behavior on
- * top: `fino <script>`
+ * `lint`, `preview`, `task`, and `repl` — and layers root behavior on top:
+ * `fino --version` prints the embedded runtime version, while `fino <script>`
  * executes the script directly (delegating to `fino:commands/run`), and bare
  * `fino` with no arguments starts the interactive REPL.
  *
@@ -40,11 +40,12 @@ import replCommand from './repl.ts';
 import previewCommand from './preview.ts';
 import runCommand from './run.ts';
 import taskCommand from './task.ts';
+import { version } from 'internal:process';
 /**
  * The root `fino` CLI command.
  *
  * A `Task` named `fino` whose children are the built-in subcommands. The root
- * itself declares three options that apply to direct script execution:
+ * itself declares `--version` plus three options for direct script execution:
  * `--watch` re-runs the script whenever any imported file changes, and
  * `--otlp-endpoint` enables OpenTelemetry export to the given OTLP/HTTP
  * collector endpoint. `--profile` writes one process-wide Realm CPU profile to
@@ -71,6 +72,11 @@ const command = new Task({
   cli: {
     stopOptionsAfterPositionals: true,
     options: [
+      {
+        flags: '--version',
+        type: 'boolean',
+        description: 'Print the Fino version',
+      },
       {
         flags: '--otlp-endpoint',
         type: 'string',
@@ -102,6 +108,13 @@ const command = new Task({
     ],
   },
   run: async function runRootCommand(input, ctx) {
+    const versionRequested = (
+      input as {
+        version?: unknown;
+      }
+    ).version;
+    if (versionRequested === true) return `fino ${version}`;
+
     const script = (
       input as {
         script?: unknown;
