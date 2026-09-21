@@ -141,6 +141,18 @@ describe('CI workflow', () => {
     t.equal(preview?.env?.SURGE_TOKEN, '${{ secrets.SURGE_TOKEN }}');
   });
 
+  it('uses GitHub-hosted runners for every workflow', async (t) => {
+    for (const path of [
+      '.github/workflows/ci.yml',
+      '.github/workflows/benchmarks.yml',
+      '.github/workflows/dnssec-release.yml',
+      '.github/workflows/release.yml',
+    ]) {
+      const source = decoder.decode(await fs.readFile(path));
+      t.notOk(source.includes('blacksmith-'), `${path} has no Blacksmith runner labels`);
+    }
+  });
+
   it('publishes three native archives from an explicit version', async (t) => {
     const workflow = await readWorkflow('.github/workflows/release.yml');
     const version = workflow.on?.workflow_dispatch?.inputs?.version;
