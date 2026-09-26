@@ -171,17 +171,29 @@ describe('CI workflow', () => {
       ]),
       'release builds cover the supported native targets',
     );
+    const releaseBuild = build.steps?.find((step) => step.name === 'Build release binary');
     t.ok(
-      build.steps?.some((step) => step.run === 'cargo build --release --locked'),
+      releaseBuild?.run?.includes('cargo build --release --locked'),
       'release archives use a locked optimized build',
     );
     t.ok(
-      build.steps?.some(
-        (step) =>
-          step.name === 'Install native LLVM on Linux' && step.run?.includes('libclang-rt-23-dev'),
-      ),
+      releaseBuild?.run?.includes('for attempt in 1 2 3'),
+      'release builds retry transient toolchain and sysroot download failures',
+    );
+    const llvm = build.steps?.find((step) => step.name === 'Install native LLVM on Linux');
+    t.ok(
+      llvm?.run?.includes('libclang-rt-23-dev'),
       'Linux release builds install the compiler-rt builtins required by V8',
     );
+    for (const [archive, target] of [
+      ['libclang_rt.builtins-x86_64.a', 'x86_64-unknown-linux-gnu'],
+      ['libclang_rt.builtins-aarch64.a', 'aarch64-unknown-linux-gnu'],
+    ]) {
+      t.ok(
+        llvm?.run?.includes(archive) && llvm.run.includes(target),
+        `Linux release builds expose ${archive} under V8's ${target} resource path`,
+      );
+    }
     t.equal(build.env?.FINO_VERSION, '${{ needs.validate.outputs.version }}');
     t.ok(
       build.steps?.some(
