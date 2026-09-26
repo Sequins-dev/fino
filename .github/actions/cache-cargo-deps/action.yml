@@ -33,17 +33,47 @@ runs:
       uses: actions/cache/restore@v4
       with:
         path: |
+          target/debug/gn_out/obj/librusty_v8.a
+          target/debug/gn_out/src_binding.rs
+          target/release/gn_out/obj/librusty_v8.a
+          target/release/gn_out/src_binding.rs
+        key: rusty-v8-artifact-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
+
+    # Cache versions include the path list, so v1 must be restored separately
+    # with its original profile-specific paths before it can be promoted to v2.
+    - name: Restore legacy V8 build artifact cache
+      id: v8-cache-v1
+      if: ${{ steps.v8-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/restore@v4
+      with:
+        path: |
           target/${{ inputs.profile }}/gn_out/obj/librusty_v8.a
           target/${{ inputs.profile }}/gn_out/src_binding.rs
         key: rusty-v8-artifact-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
 
     - name: Use restored V8 build artifact
-      if: ${{ steps.v8-cache.outputs.cache-hit == 'true' }}
       shell: bash
       run: |
         v8_dir="$GITHUB_WORKSPACE/target/${{ inputs.profile }}/gn_out"
-        test -s "$v8_dir/obj/librusty_v8.a"
-        test -s "$v8_dir/src_binding.rs"
+        cached_v8_dir=''
+        for candidate in \
+          "$v8_dir" \
+          "$GITHUB_WORKSPACE/target/debug/gn_out" \
+          "$GITHUB_WORKSPACE/target/release/gn_out"; do
+          if [[ -s "$candidate/obj/librusty_v8.a" \
+            && -s "$candidate/src_binding.rs" ]]; then
+            cached_v8_dir="$candidate"
+            break
+          fi
+        done
+        if [[ -z "$cached_v8_dir" ]]; then
+          exit 0
+        fi
+        if [[ "$cached_v8_dir" != "$v8_dir" ]]; then
+          mkdir -p "$v8_dir/obj"
+          cp -p "$cached_v8_dir/obj/librusty_v8.a" "$v8_dir/obj/librusty_v8.a"
+          cp -p "$cached_v8_dir/src_binding.rs" "$v8_dir/src_binding.rs"
+        fi
         {
           echo 'V8_FROM_SOURCE=0'
           echo 'RUSTY_V8_SKIP_DOWNLOAD=1'

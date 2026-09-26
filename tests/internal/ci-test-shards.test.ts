@@ -153,6 +153,36 @@ describe('CI workflow', () => {
     }
   });
 
+  it('shares the customized V8 artifact across Cargo profiles', async (t) => {
+    const source = decoder.decode(await fs.readFile('.github/actions/cache-cargo-deps/action.yml'));
+    const cargoConfig = decoder.decode(await fs.readFile('.cargo/config.toml'));
+    const primaryKey = source.match(/key: (rusty-v8-artifact-v2-[^\n]+)/)?.[1];
+
+    t.match(
+      cargoConfig,
+      /^GN_ARGS = .*\bis_debug=false\b.*\bforce = true/m,
+      'debug and release Cargo profiles both force the same V8 build mode',
+    );
+    t.ok(primaryKey, 'the V8 cache uses the profile-independent v2 key');
+    t.notOk(
+      primaryKey?.includes('inputs.profile'),
+      'the V8 cache key does not rebuild the same artifact for debug and release',
+    );
+    t.ok(
+      source.includes('target/debug/gn_out/obj/librusty_v8.a') &&
+        source.includes('target/release/gn_out/obj/librusty_v8.a'),
+      'either profile can restore the shared V8 archive',
+    );
+    t.ok(
+      source.includes('id: v8-cache-v1') &&
+        source.includes('target/${{ inputs.profile }}/gn_out/obj/librusty_v8.a') &&
+        source.includes(
+          'rusty-v8-artifact-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-',
+        ),
+      'migration restores v1 with its original profile-specific cache path',
+    );
+  });
+
   it('publishes three native archives from an explicit version', async (t) => {
     const workflow = await readWorkflow('.github/workflows/release.yml');
     const version = workflow.on?.workflow_dispatch?.inputs?.version;
