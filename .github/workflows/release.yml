@@ -112,6 +112,29 @@ jobs:
             clang-23 \
             libclang-23-dev \
             libclang-rt-23-dev
+
+          case "$(dpkg --print-architecture)" in
+            amd64)
+              clang_rt_archive=libclang_rt.builtins-x86_64.a
+              clang_rt_target=x86_64-unknown-linux-gnu
+              ;;
+            arm64)
+              clang_rt_archive=libclang_rt.builtins-aarch64.a
+              clang_rt_target=aarch64-unknown-linux-gnu
+              ;;
+            *)
+              echo "Unsupported Linux architecture: $(dpkg --print-architecture)" >&2
+              exit 1
+              ;;
+          esac
+          clang_rt_root=/usr/lib/llvm-23/lib/clang/23/lib
+          clang_rt_expected="$clang_rt_root/$clang_rt_target/libclang_rt.builtins.a"
+          if [[ ! -e "$clang_rt_expected" ]]; then
+            sudo mkdir -p "$(dirname "$clang_rt_expected")"
+            sudo ln -s "../linux/$clang_rt_archive" "$clang_rt_expected"
+          fi
+          test -e "$clang_rt_expected"
+
           {
             echo 'CLANG_BASE_PATH=/usr/lib/llvm-23'
             echo 'LIBCLANG_PATH=/usr/lib/llvm-23/lib'
@@ -130,7 +153,16 @@ jobs:
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: |
+          for attempt in 1 2 3; do
+            if cargo build --release --locked; then
+              break
+            fi
+            if [[ "$attempt" == 3 ]]; then
+              exit 1
+            fi
+            sleep "$((attempt * 10))"
+          done
 
       - name: Check V8 artifact cache readiness
         id: v8-cache-ready
