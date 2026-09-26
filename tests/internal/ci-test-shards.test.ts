@@ -175,6 +175,13 @@ describe('CI workflow', () => {
       build.steps?.some((step) => step.run === 'cargo build --release --locked'),
       'release archives use a locked optimized build',
     );
+    t.ok(
+      build.steps?.some(
+        (step) =>
+          step.name === 'Install native LLVM on Linux' && step.run?.includes('libclang-rt-23-dev'),
+      ),
+      'Linux release builds install the compiler-rt builtins required by V8',
+    );
     t.equal(build.env?.FINO_VERSION, '${{ needs.validate.outputs.version }}');
     t.ok(
       build.steps?.some(

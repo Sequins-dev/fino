@@ -108,7 +108,10 @@ jobs:
           echo 'deb https://apt.llvm.org/noble/ llvm-toolchain-noble-23 main' \
             | sudo tee /etc/apt/sources.list.d/apt.llvm.org.list >/dev/null
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang-23 libclang-23-dev
+          sudo apt-get install -y --no-install-recommends \
+            clang-23 \
+            libclang-23-dev \
+            libclang-rt-23-dev
           {
             echo 'CLANG_BASE_PATH=/usr/lib/llvm-23'
             echo 'LIBCLANG_PATH=/usr/lib/llvm-23/lib'
