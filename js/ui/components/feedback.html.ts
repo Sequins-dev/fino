@@ -4,6 +4,7 @@ import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { componentStyleAttrs, nativeAction } from 'internal:ui/components/html-runtime';
 import {
   Badge,
+  Callout,
   KeyHint,
   ProgressBar,
   Spinner,
@@ -22,6 +23,15 @@ mapComponentLowering(Badge, 'html', (props) =>
     'span',
     componentStyleAttrs(props as Props, `ui-badge ${toneClass(props.variant)}`),
     props.label,
+  ),
+);
+
+mapComponentLowering(Callout, 'html', (props, children) =>
+  h(
+    'aside',
+    componentStyleAttrs(props as Props, `ui-callout ${toneClass(props.variant)}`),
+    props.title === undefined ? null : h('strong', { className: 'ui-callout-title' }, props.title),
+    ...children,
   ),
 );
 
@@ -86,6 +96,15 @@ registerHtmlCss(`
 .ui-badge.is-danger, .ui-tag.is-danger { color: var(--tui-red); }
 .ui-badge.is-success, .ui-tag.is-success { color: var(--tui-green); }
 .ui-badge.is-warning, .ui-tag.is-warning { color: var(--tui-yellow); }
+.ui-callout {
+  display: flex; flex-direction: column; gap: 0.35rem; padding: 0.6rem 0.9rem;
+  border-left: 3px solid var(--ui-accent); background: color-mix(in srgb, currentColor 5%, transparent);
+}
+.ui-callout-title { font-size: 0.9em; }
+.ui-callout.is-muted { border-color: var(--tui-bright-black); }
+.ui-callout.is-danger { border-color: var(--tui-red); }
+.ui-callout.is-success { border-color: var(--tui-green); }
+.ui-callout.is-warning { border-color: var(--tui-yellow); }
 .ui-spinner {
   display: inline-block; width: 1em; height: 1em; border: 2px solid var(--ui-border);
   border-top-color: var(--tui-cyan); border-radius: 50%; animation: ui-spin 800ms linear infinite;

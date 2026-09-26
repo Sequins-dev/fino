@@ -1,12 +1,18 @@
-import { Callout } from './mdx-components.tsx'
+import { Badge, Callout } from './mdx-components.tsx'
 
 export const meta = { title: 'A small deck' }
+export const components = { strong: Badge }
+export const styles = '.fixture-deck { color: papayawhip; }'
 
 # Hello, {props.name}
 
 Markdown can be **strong** and [linked](https://example.com).
 
 <Callout tone="warm">Custom component</Callout>
+
+<Callout tone="cool" />
+
+Inline <Badge>component</Badge> stays in prose.
 
 ---
 
@@ -22,3 +28,7 @@ Markdown can be **strong** and [linked](https://example.com).
 - [x] compiled
 
 <Notes>Only the presenter sees this.</Notes>
+
+```ts
+const ready = true
+```

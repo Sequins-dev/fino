@@ -4,6 +4,20 @@
 import { describe, it } from 'fino:test/test';
 import { renderToHtml } from 'fino:ui/html';
 describe('fino:format/mdx', () => {
+  it('keeps standalone JSX blocks out of paragraph wrappers', async (t) => {
+    const module = await import('./fixtures/slides-deck.mdx');
+    const html = renderToHtml(module.default({ name: 'Fino' }));
+    t.ok(
+      !html.includes('<p><aside data-tone="warm"'),
+      'block components do not produce invalid nested paragraphs',
+    );
+    t.ok(html.includes('<p>Markdown can be'), 'ordinary prose remains a paragraph');
+    t.ok(!html.includes('<p><aside data-tone="cool"'), 'self-closing components are blocks');
+    t.ok(
+      html.includes('<p>Inline <span data-badge>component</span> stays in prose.</p>'),
+      'inline component usage keeps its surrounding paragraph',
+    );
+  });
   it('compiles MDX into an executable Fino UI module', async (t) => {
     const module = await import('./fixtures/slides-deck.mdx');
     const html = renderToHtml(module.default({ name: 'Fino' }));

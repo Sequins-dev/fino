@@ -345,6 +345,32 @@ function inline(source: string, document: MarkdownDocument): string {
   }
   return value;
 }
+// A standalone component is an MDX flow block, even when Markdown parses it
+// as a paragraph. Inline components surrounded by prose still need that paragraph.
+function isComponentBlock(source: string): boolean {
+  const text = source.trim();
+  const opening = /^<([A-Z][\w.]*)\b/u.exec(text);
+  if (!opening) return false;
+  let depth = 0;
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === '{') {
+      index = matchingBrace(text, index);
+      if (index < 0) return false;
+    } else if (text[index] === '<') {
+      const end = jsxTagEnd(text, index);
+      if (end < index) return false;
+      const tag = text.slice(index, end + 1);
+      const name = /^<\/?([\w.]+)/u.exec(tag)?.[1];
+      if (name === opening[1]) {
+        if (tag.startsWith('</')) depth--;
+        else if (!tag.endsWith('/>')) depth++;
+        if (depth === 0) return end === text.length - 1;
+      }
+      index = end;
+    }
+  }
+  return false;
+}
 function renderListItem(
   item: MarkdownListItem,
   document: MarkdownDocument,
@@ -359,7 +385,9 @@ function renderListItem(
 function renderNode(node: MarkdownNode, document: MarkdownDocument, tight = false): string {
   if (node.kind === 'paragraph') {
     const content = inline(node.text, document);
-    return tight ? content : `<_components.p>${content}</_components.p>`;
+    return tight || isComponentBlock(node.text)
+      ? content
+      : `<_components.p>${content}</_components.p>`;
   }
   if (node.kind === 'heading')
     return `<_components.h${node.level}>${inline(node.text, document)}</_components.h${node.level}>`;

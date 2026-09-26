@@ -1,6 +1,15 @@
 /** Co-located previews for feedback components. @internal */
 import { h } from 'fino:ui';
-import { Badge, HStack, KeyHint, ProgressBar, Spinner, Tag, VStack } from 'fino:ui/components';
+import {
+  Badge,
+  Callout,
+  HStack,
+  KeyHint,
+  ProgressBar,
+  Spinner,
+  Tag,
+  VStack,
+} from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';
 
 /** Build feedback-family previews for a catalog host. */
@@ -30,6 +39,11 @@ export function feedbackPreviews(): PreviewGroup {
             h(Badge, { label: 'Ready', variant: 'success' }),
             h(Tag, { label: 'runtime', color: 'accent' }),
           ),
+      },
+      {
+        key: 'callout',
+        name: 'Callout',
+        view: () => h(Callout, { title: 'Validation', variant: 'warning' }, 'A name is required.'),
       },
       {
         key: 'keys',
