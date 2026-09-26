@@ -111,7 +111,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-23 \
             libclang-23-dev \
-            libclang-rt-23-dev
+            libclang-rt-23-dev \
+            llvm-23
 
           case "$(dpkg --print-architecture)" in
             amd64)

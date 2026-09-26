@@ -185,6 +185,10 @@ describe('CI workflow', () => {
       llvm?.run?.includes('libclang-rt-23-dev'),
       'Linux release builds install the compiler-rt builtins required by V8',
     );
+    t.ok(
+      llvm?.run?.split('\n').some((line) => line.trim().startsWith('llvm-23')),
+      'Linux release builds install the LLVM binutils required by V8',
+    );
     for (const [archive, target] of [
       ['libclang_rt.builtins-x86_64.a', 'x86_64-unknown-linux-gnu'],
       ['libclang_rt.builtins-aarch64.a', 'aarch64-unknown-linux-gnu'],
