@@ -112,6 +112,7 @@ jobs:
             clang-23 \
             libclang-23-dev \
             libclang-rt-23-dev \
+            lld-23 \
             llvm-23
 
           case "$(dpkg --print-architecture)" in
