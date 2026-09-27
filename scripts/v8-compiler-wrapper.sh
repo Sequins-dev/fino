@@ -20,12 +20,12 @@ case "$compiler" in
     fi
     resource_dir="$($bindgen_clang -print-resource-dir)"
     resource_link="${CARGO_MANIFEST_DIR}/fino-clang-resource"
-    # Ninja starts many compiler wrappers concurrently. macOS ln can report
-    # EEXIST when another wrapper creates this link between its lookup and
-    # replacement; accept that race only when the winner installed our target.
-    if ! ln -sfn "$resource_dir" "$resource_link" 2>/dev/null; then
-      [ "$(readlink "$resource_link" 2>/dev/null || true)" = \
-        "$resource_dir" ] || exit 1
+    # Ninja starts many compiler wrappers concurrently. Replace the shared
+    # link atomically so another wrapper never observes it temporarily absent.
+    if [ "$(readlink "$resource_link" 2>/dev/null || true)" != "$resource_dir" ]; then
+      temporary_link="$resource_link.$$"
+      ln -s "$resource_dir" "$temporary_link"
+      mv -f "$temporary_link" "$resource_link"
     fi
     ;;
 esac
