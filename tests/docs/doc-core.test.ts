@@ -134,70 +134,59 @@ describe('fino doc: core', () => {
       'json excludes private class method',
     );
   });
-  it('does not load stale cache json for unrelated inputs', async (t) => {
-    if (!sqliteAvailable) {
-      t.ok(true, 'skipped: sqlite unavailable');
-      return;
-    }
-    const staleDir = appDir + '/stale-cache';
-    const docsDir = staleDir + '/docs';
-    await removeTree(fs, staleDir);
-    await ensureDir(fs, docsDir);
-    await fs.writeFile(
-      staleDir + '/current.ts',
-      `/**
+  it(
+    'does not load stale cache json for unrelated inputs',
+    { skip: sqliteAvailable ? false : 'requires SQLite' },
+    async (t) => {
+      const staleDir = appDir + '/stale-cache';
+      const docsDir = staleDir + '/docs';
+      await removeTree(fs, staleDir);
+      await ensureDir(fs, docsDir);
+      await fs.writeFile(
+        staleDir + '/current.ts',
+        `/**
  * Current module.
  */
 export function current(): number {
 return 1;
 }
 `,
-    );
-    const db = await Database.open(docsDir + '/docs.db');
-    try {
-      await db.exec(
-        'CREATE TABLE IF NOT EXISTS doc_files (path TEXT NOT NULL, kind TEXT NOT NULL, include_private INTEGER NOT NULL, mtime_ms REAL NOT NULL, size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (path, kind, include_private))',
       );
-      const staleJson = JSON.stringify({
-        modules: [
-          {
-            path: 'target/stale.ts',
-            name: 'stale',
-            doc: { text: 'stale'.repeat(1024) },
-            exports: [],
-          },
-        ],
-      });
-      const stmt = db.prepare('INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)');
+      const db = await Database.open(docsDir + '/docs.db');
       try {
-        for (let index = 0; index < 128; index++) {
-          await stmt.run(`target/stale-${index}.ts`, 'source', 0, 1, staleJson.length, staleJson);
+        await db.exec(
+          'CREATE TABLE IF NOT EXISTS doc_files (path TEXT NOT NULL, kind TEXT NOT NULL, include_private INTEGER NOT NULL, mtime_ms REAL NOT NULL, size INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (path, kind, include_private))',
+        );
+        const invalidJson = '{not valid json';
+        const stmt = db.prepare('INSERT OR REPLACE INTO doc_files VALUES (?, ?, ?, ?, ?, ?)');
+        try {
+          await stmt.run('target/stale.ts', 'source', 0, 1, invalidJson.length, invalidJson);
+        } finally {
+          stmt.finalize();
         }
       } finally {
-        stmt.finalize();
+        await db.close();
       }
-    } finally {
-      await db.close();
-    }
-    const run = await runCli(['doc', 'build', './current.ts', '--format', 'markdown'], staleDir);
-    t.equal(run.result.code, 0, 'doc build exits successfully with stale cache rows');
-    t.equal(run.stderr, '', 'doc build writes no stderr');
-    const markdown = await fs.readFile(docsDir + '/current.md');
-    t.ok(markdown.includes('## current'), 'doc build writes current module output');
-    const checkDb = await Database.open(docsDir + '/docs.db');
-    try {
-      const stmt = checkDb.prepare('SELECT count(*) AS count FROM doc_files WHERE path LIKE ?');
-      let rows: Array<Record<string, unknown>> = [];
+      const run = await runCli(['doc', 'build', './current.ts', '--format', 'markdown'], staleDir);
+      t.equal(run.result.code, 0, 'doc build exits successfully with stale cache rows');
+      t.equal(run.stderr, '', 'doc build writes no stderr');
+      const markdown = await fs.readFile(docsDir + '/current.md');
+      t.ok(markdown.includes('## current'), 'doc build writes current module output');
+      const checkDb = await Database.open(docsDir + '/docs.db');
       try {
-        rows = await stmt.all('target/%');
+        const stmt = checkDb.prepare('SELECT count(*) AS count FROM doc_files WHERE path LIKE ?');
+        let rows: Array<Record<string, unknown>> = [];
+        try {
+          rows = await stmt.all('target/%');
+        } finally {
+          stmt.finalize();
+        }
+        t.equal(Number(rows[0]!.count), 0, 'doc build prunes stale target cache rows');
       } finally {
-        stmt.finalize();
+        await checkDb.close();
       }
-      t.equal(Number(rows[0]!.count), 0, 'doc build prunes stale target cache rows');
-    } finally {
-      await checkDb.close();
-    }
-  });
+    },
+  );
   it('includes private and internal members only with --include-private', async (t) => {
     const docsDir = appDir + '/docs';
     const jsonPath = docsDir + '/api.json';
