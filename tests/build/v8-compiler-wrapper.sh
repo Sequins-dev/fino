@@ -31,7 +31,11 @@ exec "$@"
 EOF
 chmod +x "$test_dir/bin/sccache"
 
+# The wrapper asks the LLVM behind LIBCLANG_PATH for its resource directory
+# whenever that variable is set, as it is in CI. Clear it so the fake clang++
+# above is the compiler being asked, rather than the runner's real one.
 TEST_RESOURCE_DIR="$test_dir/resource" \
+  LIBCLANG_PATH= \
   CARGO_MANIFEST_DIR="$test_dir/work" \
   PATH="$test_dir/bin:$PATH" \
   "$repo_root/scripts/v8-compiler-wrapper.sh" "$test_dir/bin/clang++" -c fixture.cc
