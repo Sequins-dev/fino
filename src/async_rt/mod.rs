@@ -155,7 +155,7 @@ pub struct IsolateAsyncState {
     /// JS callbacks registered by this isolate for native invocation.
     callback_table: Vec<Option<v8::Global<v8::Function>>>,
     ffi_contexts: std::collections::HashMap<usize, v8::Global<v8::Context>>,
-    native_owners: std::collections::HashMap<usize, Box<dyn FnOnce()>>,
+    native_owners: std::collections::HashMap<usize, Box<dyn FnOnce() + Send>>,
 }
 
 impl Drop for IsolateAsyncState {
@@ -234,7 +234,7 @@ pub(crate) fn with_callback_table<R>(
 
 /// Native ownership roots are released on explicit close or Realm teardown.
 /// Destructors must not access V8; callback ingress closes before teardown runs them.
-pub(crate) fn register_native_owner(key: usize, release: Box<dyn FnOnce()>) {
+pub(crate) fn register_native_owner(key: usize, release: Box<dyn FnOnce() + Send>) {
     STATE.with(|state| {
         state
             .borrow_mut()

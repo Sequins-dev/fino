@@ -1650,13 +1650,14 @@ fn run_worker(worker: usize, shared: Arc<PoolShared>, stop: Arc<AtomicBool>, wak
             ScheduledRealmResult::Error(error) => Some(error.clone()),
             _ => None,
         };
-        if let Some(scheduled) = resident.item.live_mut().scheduled.as_ref() {
-            scheduled.complete(result);
-        }
+        let scheduled = resident.item.live_mut().scheduled.clone();
         let Resident { item, active } = resident;
         let mut workload = item.into_live();
         deactivate(&mut workload, active);
         drop_workload(workload);
+        if let Some(scheduled) = scheduled {
+            scheduled.complete(result);
+        }
         shared.finish(owner);
         current_state = CurrentState::Idle;
         shared.notify(PoolEvent {

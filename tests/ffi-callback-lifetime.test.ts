@@ -1,6 +1,11 @@
 /** Explicit callback leases keep native entry points alive after revocation. */
 import { describe, it } from 'fino:test/test';
 import { FfiCallback, ffiFunction } from 'fino:ffi';
+import { os } from 'fino:process';
+
+const macOSOnly = { skip: os === 'darwin' ? false : 'requires macOS' };
+const nonMacOSOnly = { skip: os === 'darwin' ? 'requires a non-macOS platform' : false };
+
 describe('FFI callback lifetime', () => {
   it('keeps leased code callable after closing its JavaScript registration', (t) => {
     let calls = 0;
@@ -32,9 +37,7 @@ describe('FFI callback lifetime', () => {
 });
 
 describe('Objective-C callback block ownership', () => {
-  it('makes foreign block copies safe after the owner Realm shuts down', async (t) => {
-    const { os } = await import('fino:process');
-    if (os !== 'darwin') return;
+  it('makes foreign block copies safe after the owner Realm shuts down', macOSOnly, async (t) => {
     const { Realm } = await import('fino:realm');
     const { dlopen, Pointer } = await import('fino:ffi');
     const realm = Realm.fromSource(`
@@ -61,34 +64,34 @@ describe('Objective-C callback block ownership', () => {
       native.symbols._Block_release(copied);
     }
   });
-  it('keeps native state alive when a resource getter closes the callback', async (t) => {
-    const { os } = await import('fino:process');
-    if (os !== 'darwin') return;
-    const { dlopen, Pointer } = await import('fino:ffi');
-    const native = dlopen('/usr/lib/libSystem.B.dylib', {
-      free: { parameters: ['pointer'], result: 'void' },
-    });
-    using callback = new FfiCallback({ parameters: [], result: 'i32' }, () => 73);
-    using block = callback.block([
-      {
-        get pointer() {
-          callback.close();
-          return new ArrayBuffer(8);
+  it(
+    'keeps native state alive when a resource getter closes the callback',
+    macOSOnly,
+    async (t) => {
+      const { dlopen, Pointer } = await import('fino:ffi');
+      const native = dlopen('/usr/lib/libSystem.B.dylib', {
+        free: { parameters: ['pointer'], result: 'void' },
+      });
+      using callback = new FfiCallback({ parameters: [], result: 'i32' }, () => 73);
+      using block = callback.block([
+        {
+          get pointer() {
+            callback.close();
+            return new ArrayBuffer(8);
+          },
+          release: native.pointers.free,
         },
-        release: native.pointers.free,
-      },
-    ]);
-    const code = Pointer.copyFrom(block.pointer, 24).slice(16, 24).buffer;
-    const invoke = ffiFunction(code, { parameters: ['pointer'], result: 'i32', fast: false });
-    t.equal(invoke(block.pointer), 0);
+      ]);
+      const code = Pointer.copyFrom(block.pointer, 24).slice(16, 24).buffer;
+      const invoke = ffiFunction(code, { parameters: ['pointer'], result: 'i32', fast: false });
+      t.equal(invoke(block.pointer), 0);
+    },
+  );
+  it('rejects Objective-C blocks on unsupported platforms', nonMacOSOnly, (t) => {
+    using callback = new FfiCallback({ parameters: [], result: 'void' }, () => {});
+    t.throws(() => callback.block(), /macOS/);
   });
-  it('retains copied blocks and their resources until native disposal', async (t) => {
-    const { os } = await import('fino:process');
-    if (os !== 'darwin') {
-      using callback = new FfiCallback({ parameters: [], result: 'void' }, () => {});
-      t.throws(() => callback.block(), /macOS/);
-      return;
-    }
+  it('retains copied blocks and their resources until native disposal', macOSOnly, async (t) => {
     const { dlopen, Pointer } = await import('fino:ffi');
     const { bindMessage, getClass, selector, withAutoreleasePool } = await import('internal:objc');
     const foundation = dlopen('/System/Library/Frameworks/Foundation.framework/Foundation', {});

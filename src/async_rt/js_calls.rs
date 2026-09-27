@@ -295,7 +295,12 @@ fn fill_slot(
     result: Result<CallResult, String>,
 ) {
     let (lock, cvar) = slot.as_ref();
-    *lock.lock().unwrap() = Some(result);
+    let mut current = lock.lock().unwrap();
+    if current.is_some() {
+        return;
+    }
+    *current = Some(result);
+    drop(current);
     cvar.notify_one();
 }
 
@@ -678,5 +683,16 @@ mod lifetime_tests {
         );
         drop(state);
         assert_eq!(released.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn shutdown_result_cannot_be_overwritten_by_late_completion() {
+        let slot = Arc::new((Mutex::new(None), Condvar::new()));
+        fill_slot(&slot, Err("FfiCallback: Realm is closed".into()));
+        fill_slot(&slot, Ok(CallResult::I32(42)));
+        assert!(matches!(
+            slot.0.lock().unwrap().as_ref(),
+            Some(Err(message)) if message == "FfiCallback: Realm is closed"
+        ));
     }
 }

@@ -90,8 +90,10 @@ using memory = new FfiResource(libc.symbols.malloc(64), libc.pointers.free);
 Pointer.writeU8(memory.pointer, 0, 42);
 ```
 
-Its destructor runs once on explicit disposal or Realm teardown. Keep the
-library containing the destructor loaded until release. Ownership roots are
+Its destructor runs once on explicit disposal or during Realm teardown, before
+Realm completion is reported. A scheduled Realm can move between reactor
+threads, so the destructor must not call JavaScript or require thread affinity.
+Keep the library containing it loaded until release. Ownership roots are
 released explicitly or at teardown; garbage collection is not a cleanup signal.
 
 Mark long-running symbols `async: true` so they run on the native

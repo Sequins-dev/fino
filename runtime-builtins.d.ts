@@ -272,8 +272,10 @@ declare module 'fino:ffi' {
   /**
    * Own a native pointer using a C `void(void*)` destructor. Disposal is
    * idempotent and Realm teardown releases unclosed resources. The destructor
-   * must not call JavaScript, and its library must remain loaded until release.
-   * The borrowed `pointer` must not be used after close.
+   * runs before Realm completion is reported, but may run on any reactor thread
+   * that owns the Realm. It must not call JavaScript or require thread affinity,
+   * and its library must remain loaded until release. The borrowed `pointer`
+   * must not be used after close.
    *
    * ```ts no_run
    * using memory = new FfiResource(libc.symbols.malloc(64), libc.pointers.free);

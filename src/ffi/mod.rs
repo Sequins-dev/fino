@@ -529,11 +529,12 @@ fn ffi_callback_constructor(
         };
 
     let ext = pointer::into_js(scope, handle_ptr.cast());
+    let handle_address = handle_ptr as usize;
     register_owner_cell(
         scope,
         ext,
         Box::new(move || {
-            let handle = unsafe { Box::from_raw(handle_ptr) };
+            let handle = unsafe { Box::from_raw(handle_address as *mut closure::CallbackHandle) };
             if let Some(inner) = &handle.inner {
                 inner.revoke();
             }
@@ -651,12 +652,15 @@ fn ffi_callback_lease(
         return;
     };
     let lease = std::sync::Arc::into_raw(std::sync::Arc::clone(inner));
+    let lease_address = lease as usize;
     let external = pointer::into_js(scope, lease.cast_mut().cast());
     register_owner_cell(
         scope,
         external,
         Box::new(move || unsafe {
-            drop(std::sync::Arc::from_raw(lease));
+            drop(std::sync::Arc::from_raw(
+                lease_address as *const closure::FfiCallbackInner,
+            ));
         }),
     );
     let close = v8::FunctionTemplate::builder(ffi_callback_lease_close)
@@ -687,7 +691,7 @@ fn ffi_callback_lease_close(
 fn register_owner_cell(
     scope: &mut v8::PinScope,
     cell: v8::Local<v8::Value>,
-    release: Box<dyn FnOnce()>,
+    release: Box<dyn FnOnce() + Send>,
 ) {
     let cell = v8::Local::<v8::ArrayBuffer>::try_from(cell).unwrap();
     let store = cell.get_backing_store();
@@ -720,15 +724,17 @@ fn ffi_resource_constructor(
         v8util::throw_type_error(scope, "FfiResource pointer and destructor must not be null");
         return;
     }
+    let pointer_address = pointer as usize;
+    let destructor_address = destructor as usize;
     let cell = pointer::into_js(scope, pointer);
     register_owner_cell(
         scope,
         cell,
         Box::new(move || {
             let release: unsafe extern "C" fn(*mut std::ffi::c_void) =
-                unsafe { std::mem::transmute(destructor) };
+                unsafe { std::mem::transmute(destructor_address) };
             unsafe {
-                release(pointer);
+                release(pointer_address as *mut std::ffi::c_void);
             }
         }),
     );
@@ -820,12 +826,13 @@ fn ffi_callback_block(
             v8util::throw_error(scope, "could not allocate Objective-C block");
             return;
         }
+        let block_address = block as usize;
         let cell = pointer::into_js(scope, block);
         register_owner_cell(
             scope,
             cell,
             Box::new(move || unsafe {
-                closure::blocks::release(block);
+                closure::blocks::release(block_address as *mut std::ffi::c_void);
             }),
         );
         let close = v8::FunctionTemplate::builder(ffi_callback_block_close)
