@@ -92,6 +92,30 @@ fino test tests
 [Getting Started](./js/getting-started.md) walks from a first script to a
 model-calling program.
 
+## Requirements
+
+Native libraries for specific features are optional: install only those for the
+features you use. The current runtime also needs a loadable zlib (`libz`) at
+startup because its global compression and fetch modules import `fino:compress`.
+A library may already be included in a release binary or provided by the
+operating system; the table describes the required capability, not an extra
+install step in every environment.
+
+| Library | Required when using | Other modules that depend on it |
+| --- | --- | --- |
+| OpenSSL `libcrypto` | `crypto` / `crypto.subtle`, `fino:security/*` cryptographic operations, `fino:uuid` generation | Cryptographic features in `fino:storage`, `fino:email`, `fino:webhooks`, `fino:database/migrate`, PostgreSQL SCRAM authentication, HTTP/WebSocket integrity and handshakes, and QUIC randomness. These dependencies also apply when those features are reached through higher-level modules. |
+| OpenSSL `libssl` (with `libcrypto`) | `fino:net/tls`, HTTPS and secure WebSockets | TLS connections through `fetch`, `fino:net/http/client`, `fino:net/http/server`, and `fino:database/postgres`; HTTP/2 over TLS and the OpenSSL QUIC backend. Plain HTTP and cleartext database connections do not need `libssl`. |
+| `libnghttp2` | HTTP/2 through `fetch`, `fino:net/http/client`, or `fino:net/http/server` | HTTP/2 routes in `fino:net/http/app`. TLS based HTTP/2 also needs OpenSSL. |
+| `libngtcp2` plus a crypto backend (`libngtcp2_crypto_ossl` with OpenSSL, or `libngtcp2_crypto_gnutls` with GnuTLS) | `fino:net/quic` connections | HTTP/3 and WebTransport through the HTTP client/server APIs. QUIC also uses OpenSSL `libcrypto` for randomness, including with the GnuTLS backend. |
+| `libnghttp3` | HTTP/3 through `fetch` or the HTTP client/server APIs | HTTP/3 and WebTransport routes in `fino:net/http/app`; also requires the QUIC libraries above. |
+| `libsqlite3` | `fino:database/sqlite` | `sqliteStore()` in `fino:store`, SQLite datasets, SQLite-backed AI cache and memory, and the SQLite provider in `fino:database`. The optional `sqlite-vec` extension accelerates vector search; those features can fall back without it. |
+| zlib (`libz`) | Runtime startup; `fino:compress` gzip/deflate formats and compression stream globals | ZIP and tar.gz in `fino:archive`, gzip Parquet pages, HTTP content compression, and WebSocket permessage-deflate. |
+| Brotli (`libbrotlienc` and `libbrotlidec`), `libzstd`, `liblz4`, or `libsnappy` | The matching `fino:compress` format | Matching Parquet page codecs use Brotli, Zstandard, or Snappy; LZ4 Frame is available through `fino:compress`. Each format needs only its own library (Brotli needs both). |
+| llama.cpp `libllama` | Local GGUF models through `fino:ai/model/local` | `libggml` and its compute backends may be loaded alongside `libllama` when present. Remote model providers do not need llama.cpp. |
+
+Most optional bindings can be imported without their library installed; using
+the affected feature then reports that it is unavailable.
+
 ## Why Fino
 
 **AI is a runtime subsystem, not an afterthought.** `fino:ai` provides
