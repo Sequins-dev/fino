@@ -47,12 +47,33 @@ const app = renderInline(
 await wait;
 `;
 
+/**
+ * Spawn an app under a pty and wait for its first paint.
+ *
+ * A debug-build child can take well over the 5s `waitFor` default just to start
+ * on a loaded CI runner, so startup gets the same 30s budget every other pty
+ * test uses. Behaviour waits after this keep the default, because once the app
+ * is up they measure the renderer rather than process startup.
+ */
+async function spawnPainted(script: string, rows: number) {
+  const pty = await openPty(execPath, [script], { cols: 40, rows });
+  try {
+    await pty.waitFor((term) => term.text().some((line) => line.trim() !== ''), {
+      timeout: 30_000,
+    });
+  } catch (error) {
+    await pty.close();
+    throw error;
+  }
+  return pty;
+}
+
 async function growPty(name: string, rows = 8) {
   const dir = `/tmp/fino-inline-${name}`;
   await fs.mkdir(dir).catch(() => {});
   const script = `${dir}/grow.ts`;
   await fs.writeFile(script, encoder.encode(GROW_APP));
-  return openPty(execPath, [script], { cols: 40, rows });
+  return spawnPainted(script, rows);
 }
 
 async function inlinePty(name: string, rows = 10) {
@@ -60,7 +81,7 @@ async function inlinePty(name: string, rows = 10) {
   await fs.mkdir(dir).catch(() => {});
   const script = `${dir}/app.ts`;
   await fs.writeFile(script, encoder.encode(APP));
-  return openPty(execPath, [script], { cols: 40, rows });
+  return spawnPainted(script, rows);
 }
 
 function screen(pty: { term: { text(): string[] } }): string[] {
