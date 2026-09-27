@@ -1,4 +1,8 @@
-/** Terminal lowerings and the shared bounded spinner clock. @internal */
+/**
+ * Terminal lowerings and the shared bounded spinner clock.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { Box, Clickable, Text } from 'fino:ui/components';

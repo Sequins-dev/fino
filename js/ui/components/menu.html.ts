@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for menu components. @internal */
+/**
+ * HTML lowerings and styles for menu components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import {

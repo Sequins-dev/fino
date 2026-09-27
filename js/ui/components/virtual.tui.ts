@@ -1,4 +1,8 @@
-/** Terminal lowering for a bounded virtual-list viewport. @internal */
+/**
+ * Terminal lowering for a bounded virtual-list viewport.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { Clickable, Scroll, Spacer } from 'fino:ui/components';

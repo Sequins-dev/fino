@@ -1,4 +1,8 @@
-/** Co-located previews for form components. @internal */
+/**
+ * Co-located previews for form components.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import {
   Button,

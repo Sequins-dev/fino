@@ -1,4 +1,8 @@
-/** Responsive terminal lowerings for chart components. @internal */
+/**
+ * Responsive terminal lowerings for chart components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { env } from 'fino:process';

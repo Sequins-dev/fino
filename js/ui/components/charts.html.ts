@@ -1,4 +1,8 @@
-/** Native SVG lowerings and styles for chart components. @internal */
+/**
+ * Native SVG lowerings and styles for chart components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { cssColor, componentStyleAttrs, HTML_ROW_PX } from 'internal:ui/components/html-runtime';

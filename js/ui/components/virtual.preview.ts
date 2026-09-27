@@ -1,4 +1,8 @@
-/** Co-located preview for bounded virtual-list rendering. @internal */
+/**
+ * Co-located preview for bounded virtual-list rendering.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { Text, VirtualList, VirtualScroll } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

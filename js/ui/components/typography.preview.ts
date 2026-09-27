@@ -1,4 +1,8 @@
-/** Co-located previews for typography components. @internal */
+/**
+ * Co-located previews for typography components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import {
   Blockquote,

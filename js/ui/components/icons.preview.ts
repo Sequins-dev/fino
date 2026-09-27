@@ -1,4 +1,8 @@
-/** Co-located previews for icon components. @internal */
+/**
+ * Co-located previews for icon components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { HStack, Icon, IconButton, Text } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

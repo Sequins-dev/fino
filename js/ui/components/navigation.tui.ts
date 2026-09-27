@@ -1,4 +1,8 @@
-/** Terminal lowerings for navigation components. @internal */
+/**
+ * Terminal lowerings for navigation components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { Box, Clickable, Text } from 'fino:ui/components';

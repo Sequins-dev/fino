@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for disclosure components. @internal */
+/**
+ * HTML lowerings and styles for disclosure components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import {

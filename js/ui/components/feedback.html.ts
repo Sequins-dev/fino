@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for feedback components. @internal */
+/**
+ * HTML lowerings and styles for feedback components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { componentStyleAttrs, nativeAction } from 'internal:ui/components/html-runtime';

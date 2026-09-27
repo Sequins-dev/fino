@@ -1,4 +1,8 @@
-/** Co-located previews for date, time, and color pickers. @internal */
+/**
+ * Co-located previews for date, time, and color pickers.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { Calendar, ColorPicker, DigitalClock, HStack } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

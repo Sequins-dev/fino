@@ -1,4 +1,8 @@
-/** Co-located previews for feedback components. @internal */
+/**
+ * Co-located previews for feedback components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import {
   Badge,
