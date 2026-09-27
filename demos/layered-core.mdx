@@ -26,22 +26,39 @@ export { styles } from './layered-core-theme.ts'
 
 ## Getting nerd-sniped
 
-<Notes>Like many Node.js devs, I've built many of my own personal JS runtimes over the years which I used as a place to experiment with ideas. I never really intended to release anything publicly. But when someone said JS runtimes had to offload all their internal work to native code to be fast, I decided I needed to prove them wrong.<br /><br />I'm going to walk you through why a JavaScript-heavy core makes sense.</Notes>
+<Notes>Like many Node.js devs, I've built many of my own personal JS runtimes over the years which I used as a place to experiment with ideas. I never really intended to release any of them publicly, but people keep insisting JS runtimes need to offload all their internal work to native code to be fast, so I decided I needed to disprove that.<br /><br />I'm going to share the runtime I've been building, and walk you through why a JavaScript-heavy core makes sense.</Notes>
 
 ---
 
-## An experimental runtime built around:
+## <a href="https://fino.fast">fino.fast</a> is...
 
 <ul>
-  <li>Near-zero native code apart from host bindings and FFI</li>
+  <li>Near-zero native code apart from V8 bootstrap and FFI</li>
   <li>Heavy focus on layering, composition, and reusability</li>
   <li>Isolating performance optimization to shared layers</li>
   <li>Radically <i>large</i> core</li>
 </ul>
 
-<a href="https://fino.fast">fino.fast</a>
+<Notes>Fino is a runtime experiment which explores the idea of a large, heavily TypeScript core. It has near-zero native code apart from V8 setup and FFI infrastructure, and it focuses on layering, composition, and reusability. The aim is to demonstrate the compounding benefits of layered composability in complex systems, both from a design and a performance perspective.</Notes>
 
-<Notes>Fino is a runtime experiment which explores the idea of a large, heavily TypeScript core. It has near-zero native code apart from the FFI infrastructure, and focuses on layering, composition, and reusability. The aim is to demonstrate the compounding benefits of layered composability in complex systems, both from a design and a performance perspective.</Notes>
+---
+
+## What does it include?
+
+<ul>
+  <li>HTTP 1/2/3 server and client, WebSocket, WebTransport, etc.</li>
+  <li>Realms with configurable import maps</li>
+  <li>React-like server-rendered UI for web, mobile, and TUI with previews</li>
+  <li>AI framework with agents, tools, MCP, evals, and sandboxing</li>
+  <li>ML and data science tools like Arrow and Parquet</li>
+  <li>File system, key/value storage, and durable workflows</li>
+  <li>CLI, custom tasks, background jobs, and scheduling control</li>
+  <li>Database drivers for Postgres, and SQLite</li>
+  <li>Built-in frameworks for tests, benches, realm simulation</li>
+  <li>MDX-based presentation tool (powering these very slides!)</li>
+</ul>
+
+<Notes>As you can see, Fino does a lot of things. But it's not important <i>what</i> it does so much as <i>how much</i> it can do without immense complexity.</Notes>
 
 ---
 
@@ -76,7 +93,7 @@ const body = new ReadableStream({
 
 <Caption>Native code exposes the capability. TypeScript defines how that capability behaves.</Caption>
 
-<Notes>Streams are a high-level abstraction providing ordered data flow with backpressure. But they are built on top of lower-level primitives like file descriptors and syscalls. The orchestration layer is responsible for managing the flow of data, handling backpressure, and ensuring that resources are properly cleaned up when the stream is no longer needed. None of that orchestration logic actually benefits all that much from being in native code, and the typed abstraction suffers due to the added complexity of managing type representation across two different languages.</Notes>
+<Notes>ReadableStream orchestrates individual read syscalls into a type representing ordered data flow. If that type was built in native code then every interaction with it would involve a jump to native code, but more importantly a mapping or conversion step between types on each side. Importantly though, none of that orchestration logic actually has any intrinsic benefit to being in native code. Node.js keeps that type changing cost relatively low by maintaining both native and JS representations in parallel, but that means twice the allocations and still frequently needs to marshal bits of data between the two.</Notes>
 
 ---
 
@@ -97,29 +114,24 @@ async function serve(socket, handler) {
 }
 ```
 
-<Notes>Native TLS manages the encryption and reports negotiated protocol. The runtime decides which of the protocols to use, how to prioritize, what fallback is acceptable, and which implementation takes over afterward. Those are routing and compatibility policies not directly relevant to the actual native work of making the networking syscalls. Keeping that in TypeScript means adding or changing protocols is very straightforward.</Notes>
+<Notes>Native TLS manages encryption and reports negotiated protocol of an http request. The runtime decides which things like protocol implementation to use and which fallback is acceptable. Those are routing and compatibility policies not directly relevant to the actual native work of making the networking syscalls. Keeping that in TypeScript means adding or changing protocols is very straightforward.</Notes>
 
 ---
 
 ## What actually benefits from native code?
 
 <Stack gap={1}>
-<HStack gap={2}>
-<Callout grow={1} basis={0} variant="muted">SIMD parsing and data processing</Callout>
-<Callout grow={1} basis={0}>Cryptography, compression and codecs</Callout>
-<Callout grow={1} basis={0} variant="warning">Tight compute kernels proven hot by profiling</Callout>
-</HStack>
+<Callout grow={1} basis={0} variant="muted" title="SIMD">Parsing, codecs, cryptography, compression, any vectorizable compute kernels</Callout>
+<Callout grow={1} basis={0} title="FFI">syscalls, interfacing with existing C libraries, kernel or hardware interfacing</Callout>
 </Stack>
 
-<Caption>Native code supplies capabilities and kernels. TypeScript composes them.</Caption>
-
-<Notes>We of course need at least some native code to set up V8 and implement the FFI system. But some other scenarios can benefit. For example, TypeScript lacks SIMD so dense, repetitive computation scenarios like parsing, cryptography, compression, and codecs can benefit from native implementations. But the boundary can stay narrow: you can offload work which benefits from SIMD while keeping management of complex types in TypeScript. For example, the Ada URL parser in Node.js core essentially just provides a bunch of string indexes of where particular URL components are located and leaves it up to the consumer to turn that into a more useful higher-level representation. By thinking of ways we can offload expensive processing without creating correspondingly expensive data orchestration we can build faster systems.</Notes>
+<Notes>We of course need at least some native code to set up V8 and implement the FFI system. But some other scenarios can benefit. For example, TypeScript lacks SIMD so dense, repetitive computation scenarios like parsing, cryptography, compression, and codecs can benefit from native implementations. But the boundary can stay narrow: you can offload work which benefits from SIMD while keeping management of complex types in TypeScript. For example, the Ada URL parser in Node.js core essentially just provides a bunch of string indexes of where particular URL components are located and leaves it up to the consumer to turn that into a more useful higher-level representation. By thinking of ways we can offload expensive processing without creating correspondingly expensive data orchestration we can build faster systems. You might notice all these examples largely involve only two fundamental data types: buffers and pointers.</Notes>
 
 ---
 
 ## The temptation of native
 
-<Notes>Native APIs expose pointers, borrowed memory, file descriptors, and other values with explicit lifetimes. That can make native wrappers around these feel tempting, but representation and lifetime are just orchestration concepts which don't actually need to live in native code. There's not often a performance benefit to orchestration or policy code to live in the native side. Native code has a precise role. The temptation is allowing its representation and ownership concerns to pull unrelated orchestration across the boundary.</Notes>
+<Notes>Native APIs expose pointers, borrowed memory, file descriptors, and other values with explicit lifetimes. That can make native wrappers around these feel tempting, but representation and lifetime are just orchestration concepts which don't actually need to live in native code. There's not often a performance benefit to orchestration or policy code living in the native side. Native code has a precise role. The temptation is allowing its representation and ownership concerns to pull unrelated orchestration across the boundary.</Notes>
 
 ---
 
@@ -143,7 +155,7 @@ class Sha256 {
 
 <Caption>A private pointer holds native state. A TypeScript buffer carries bytes. Callers exchange strings.</Caption>
 
-<Notes>We can do wrapper types in TypeScript, using private class fields to store pointers and use them in class methods to transform low-level native interfaces into ergonomic TypeScript types.</Notes>
+<Notes>We can do wrapper types in TypeScript, using private class fields to store pointers and use them in class methods to transform low-level native interfaces into ergonomic TypeScript types. If we want TS to manage the lifetime of the allocation, we can simply use a buffer allocated from TS to hold the data filled by the native side.</Notes>
 
 ---
 
@@ -166,7 +178,7 @@ using file = new File(fd);
 await file.read(buffer);
 ```
 
-<Notes>Descriptors which must be closed when done with them can also cleanly be wrapped in TS with resource management syntax. Native wrapping offers no inherent ownership advantage.</Notes>
+<Notes>Descriptors which must be closed when done with them can also cleanly be wrapped in TS with resource management syntax. Native wrapping offers no inherent ownership advantage. We can use similar patterns to manage native-allocated memory which must be freed too, it's not really any easier to do manual memory management from native code than it is from TypeScript. You lose some things like destructors and smart pointers, but those ultimately all depend on V8 GC tracking, which can equally be done from within TypeScript.</Notes>
 
 ---
 
@@ -188,7 +200,7 @@ const size = Number(StatData.get(data, 'size'));
 
 <Caption>Native fills bytes. TypeScript reads only the value it needs.</Caption>
 
-<Notes>It's a common misconception that crossing the native boundary is inherently expensive. But the real cost comes from translating rich types and ownership models between native and JavaScript representations. If you keep to primitive values and expose structs as byte buffers which can lazily be read from TypeScript, you can avoid most of the unnecessary marshalling work involved in shared operation on the same data. When the boundary carries simple values and buffers, composition and abstraction can be layered over it.</Notes>
+<Notes>It's a common misconception that crossing the native boundary is inherently expensive. The real cost comes from translating rich types and ownership models between native and JavaScript representations. If you keep to primitive values and expose structs as byte buffers which can lazily be read from TypeScript, you can avoid most of the unnecessary marshalling work involved in shared operation on the same data. When the boundary carries simple values and buffers, composition and abstraction can be layered over it.</Notes>
 
 ---
 
@@ -199,9 +211,10 @@ const size = Number(StatData.get(data, 'size'));
 <div className="reuse-loop-frame">
   <Timeline
     entries={[
-      { key: 'shared', title: 'Shared primitives can replace many more specialized ones' },
-      { key: 'general', title: 'More generalization broadly makes for greater composability' },
-      { key: 'reuse', title: 'More reusability enables more capability with less code' },
+      { key: 'shared', title: 'Shared primitives condense more specialized ones' },
+      { key: 'general', title: 'Generalization increases composability' },
+      { key: 'reuse', title: 'Composability enables more capability with less code' },
+      { key: 'emergent', title: 'More capability reveals more emergent patterns to generalize' },
     ]}
   />
   <span className="reuse-loop-return" aria-hidden="true">
@@ -228,7 +241,7 @@ const input = validator.parse(value);
 
 <Caption>It can validate HTTP requests, MCP/tool inputs, JSON-RPC method parameters, workflow definition, and config loading.</Caption>
 
-<Notes>An example of a highly generalized component is the JSONSchema-based validation module. It can be used for HTTP requests, CLI commands, LLM and MCP tool call inputs, JSON-RPC method parameters, workflow inputs, and configuration loading from files, environment or CLI inputs. As the runtime accumulates more systems, more similar needs emerge between them, opening up further opportunities to generalize behaviours.</Notes>
+<Notes>An example of a highly generalized component is the JSONSchema-based validation module. It can be used for HTTP requests, CLI commands, AI tool call and MCP inputs, JSON-RPC method parameters, workflow inputs, and configuration loading from files, environment or CLI inputs. As the runtime accumulates more systems, more similar needs emerge between them, opening up further opportunities to generalize behaviours.</Notes>
 
 ---
 
@@ -257,12 +270,12 @@ const getPost = task({
   run: input => posts.get(input),
 });
 
-getPost.parse(["post-slug"]);
+getPost.parse(argv.slice(2));
 ```
 
 <Caption>Task owns invocation. The shared validator owns input checking.</Caption>
 
-<Notes>A common pattern I saw in building this runtime was the need for named tasks in many cases such as CLI commands, LLM and MCP tool calls, background jobs, and runnable scripts. All benefitted from similar input validation, a name or identifier, and a behaviour to run. If you watch for emergent patterns in complex systems you'll often find many such generalizable behaviours.</Notes>
+<Notes>A common pattern I saw in building this runtime was the need for named tasks in many cases such as CLI commands, LLM and MCP tool calls, background jobs, and runnable scripts. All benefitted from similar input validation, an identifying name, and some behaviour to run. If you watch for emergent patterns in complex systems you'll often find many such generalizable behaviours.</Notes>
 
 ---
 
@@ -277,7 +290,13 @@ const postsAgent = agent({
 
 <Caption>The model can see the tool input schema, and its inputs will be validated on call.</Caption>
 
-<Notes>Shared infrastructure ensures consistent behaviour across different scenarios. It also provides a shared execution flow path, which makes performance optimizations to those shared systems more broadly applicable. The more you can route behaviour through shared systems the more improvement of those shared systems can have broader impact.</Notes>
+<Notes>Shared infrastructure ensures consistent behaviour across different scenarios. It also provides a shared execution flow path, which makes performance optimizations to those shared systems more broadly applicable. The more you can route behaviour through shared systems the more improvement of those shared systems can have broad impact.</Notes>
+
+---
+
+## What if the runtime itself was composable?
+
+<Notes>Composing code with other code is powerful, but what if you want to compose entire execution environments? There's a thing for that.</Notes>
 
 ---
 
@@ -294,7 +313,7 @@ const result = await realm.call(input);
 
 <Caption>Owns its own globals, module graph, and event loop, and can communicate with its parent realm.</Caption>
 
-<Notes>A Realm is a portable execution unit in Fino. It has its own JavaScript environment, globals, module graph, event-loop state and lifecycle. The parent selects an entry module, provides initial input, controls what can be imported and communicates through an explicit boundary.<br /><br />Two Realms can therefore execute the same application code with different capabilities or implementations.</Notes>
+<Notes>In Fino, a Realm is a portable execution unit. It has its own JavaScript environment, globals, module graph, event-loop state and lifecycle. The parent selects an entry module, provides initial input, controls what can be imported from where and communicates through an explicit boundary.<br /><br />Two Realms can therefore execute the same application code with different capabilities or module implementations.</Notes>
 
 ---
 
@@ -316,7 +335,7 @@ const importMap = new ImportMap([
 
 <Caption>Remove capabilities or replace implementations without changing their consumers.</Caption>
 
-<Notes>An import map turns module resolution into execution policy. Blocking fino:process means code in this Realm cannot import process capabilities. Remapping lets the application continue importing storage while this Realm supplies a memory-backed implementation. The application needs no conditional imports or dependency-injection plumbing.<br /><br />A different Realm could select a production backend, a test double, a compatibility shim, an instrumented implementation, or an experimental version. Children can further restrict what they inherit, but cannot restore a capability denied by their parent.</Notes>
+<Notes>Import maps manage module resolution policy. Blocking fino:process means code in this Realm cannot import the process module. Remapping makes the realm import the memory-backed storage implementation instead. The application needs no conditional imports or dependency-injection plumbing. Children can further restrict what they inherit, but cannot restore a capability denied by their parent. Fino also provides realm simulation capabilities, swapping out all I/O-producing modules in an import map with simulated ones, which is incredibly powerful for testing edge case scenarios.</Notes>
 
 ---
 
@@ -336,36 +355,56 @@ import { get } from 'app:secrets';
 const token = await get('service-token');
 ```
 
-<Caption>The child sees a module. The parent retains the capability.</Caption>
+<Caption>The child sees a module. The parent provides the capability.</Caption>
 
-<Notes>A Facade goes further than remapping to another local module. It presents a normal module interface inside the child while the implementation and its resources remain owned by the parent. Calls cross the Realm boundary without application code knowing about messages or RPC.<br /><br />The parent can authorize, validate, limit, observe or record every operation. The same mechanism can expose secrets, files, network access, stores, jobs or configuration, and the implementation can remain in another isolate, process or remote worker. Simulation uses this pattern to replace fino:file with a parent-owned memory filesystem while guest code continues using the normal filesystem API.</Notes>
+<Notes>A Facade goes further than remapping to another existing module. It presents a normal module interface inside the child while the implementation is directly owned by the parent. Calls cross the Realm boundary without application code knowing about messages or RPC.<br /><br />Simulation uses this pattern to replace fino:file with a parent-owned memory filesystem.</Notes>
+
+---
+
+## Learnings from building fino...
+
+<Notes>There's a lot to learn from in building a runtime...</Notes>
 
 ---
 
 ## Approach performance holistically
 
 <HStack gap={2}>
-<Callout grow={1} basis={0}>Measure and profile complete use cases</Callout>
-<Callout grow={1} basis={0} variant="muted">Keep logical kernels narrow and focused</Callout>
+<Callout grow={1} basis={0} variant="muted">Measure and profile complete use cases</Callout>
+<Callout grow={1} basis={0}>Keep logical kernels narrow and focused</Callout>
 <Callout grow={1} basis={0} variant="success">Apply improvements broadly for maximal benefit</Callout>
 </HStack>
 
 <Caption>A fast primitive does not guarantee a fast system, efficient pipelines do.</Caption>
 
-<Notes>Microbenchmarks are the bane of real-world performance. It's far too common for public interfaces to be designed around making the surface of that system fast in isolation, but may lack consideration for how actually the system will be used in real-world applications. A good example of this is async_hooks which on its own was able to be fast due to doing so little, but then required so much layered on top of it to actually achieve the context management use case applications actually needed. AsyncLocalStorage manages to be so much faster simply by optimizing for how it actually gets used.</Notes>
+<Notes>Microbenchmarks are the bane of real-world performance. It's far too common for public interfaces to be designed around making the surface of that system fast in isolation, but may lack consideration for how the system will actually be used in real-world applications. A good example of this is async_hooks which on its own was able to be fast due to doing so little, but required so much layered on top of it to actually achieve the context management use case the majority of applications actually needed. AsyncLocalStorage manages to be much faster simply by optimizing for how it actually gets used.</Notes>
 
 ---
 
 ## As the core grows, subsystems shrink
 
-<Lead>A broad core can reduce the amount of machinery any one subsystem must own.</Lead>
-
-<Stack gap={1}>
+<HStack gap={1}>
 <Callout variant="muted">Keep native integration narrow</Callout>
 <Callout>Generalize common/repetitive orchestration and policy</Callout>
 <Callout variant="success">Build new capabilities by composition</Callout>
-</Stack>
+</HStack>
 
 <Caption>Each new capability reveals reusable structure. Each reusable layer makes the next capability smaller.</Caption>
 
 <Notes>Keep native integration narrow. Put orchestration and policy where they compose. The more you can route behaviour through shared systems the more improvement of those shared systems can have broader impact. The more you can generalize and reuse, the less code you need to write and maintain. A large core enables smaller individual subsystems.</Notes>
+
+---
+
+## Keep native boundaries narrow
+
+<HStack gap={1}>
+<Callout variant="muted">Stick to simple primitives like pointers and buffers</Callout>
+<Callout>Only translate what you need when you need it</Callout>
+<Callout variant="success">Build your pointer wrapper types in TypeScript</Callout>
+</HStack>
+
+<Notes>Native code doesn't need to be more than just basic FFI in almost all cases.</Notes>
+
+---
+
+## That's all, thanks!
