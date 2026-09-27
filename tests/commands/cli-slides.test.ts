@@ -56,7 +56,7 @@ async function withSlidesServer(
   }
 }
 
-describe('CLI slides command', () => {
+describe('CLI slides command', { exclusive: true }, () => {
   it('appears in root help and documents host and port options', async (t) => {
     const root = await parseRoot(['--help']);
     const help = await parseRoot(['slides', '--help']);
