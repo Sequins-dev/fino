@@ -5,6 +5,10 @@ inputs:
   prefix:
     description: Installation prefix for the cached native libraries
     required: true
+  variant:
+    description: Native ABI or toolchain variant for compiled cache artifacts
+    required: false
+    default: native
 
 runs:
   using: composite
@@ -13,7 +17,7 @@ runs:
       uses: actions/cache@v4
       with:
         path: ${{ inputs.prefix }}
-        key: fino-protocol-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/install-linux-protocol-deps.sh') }}
+        key: fino-protocol-deps-${{ runner.os }}-${{ runner.arch }}-${{ inputs.variant }}-${{ hashFiles('scripts/install-linux-protocol-deps.sh') }}
 
     - name: Build native protocol libraries
       shell: bash

@@ -169,6 +169,10 @@ describe('CI workflow', () => {
       'the V8 cache key does not rebuild the same artifact for debug and release',
     );
     t.ok(
+      primaryKey?.includes('inputs.variant'),
+      'the shared V8 cache remains isolated by native ABI and toolchain variant',
+    );
+    t.ok(
       source.includes('target/debug/gn_out/obj/librusty_v8.a') &&
         source.includes('target/release/gn_out/obj/librusty_v8.a'),
       'either profile can restore the shared V8 archive',
@@ -200,6 +204,56 @@ describe('CI workflow', () => {
         'aarch64-apple-darwin',
       ]),
       'release builds cover the supported native targets',
+    );
+    t.equal(
+      build.container,
+      '${{ matrix.container || null }}',
+      'release matrix jobs opt into an ABI baseline container per target',
+    );
+    t.equal(build.defaults?.run?.shell, 'bash', 'container release steps retain Bash semantics');
+    for (const target of targets.filter((target) => target.os === 'linux')) {
+      t.equal(target.container, 'ubuntu:22.04', `${target.target} builds on glibc 2.35`);
+      t.equal(target.cacheVariant, 'glibc-2.35', `${target.target} isolates native caches by ABI`);
+    }
+    t.notOk(
+      targets.find((target) => target.os === 'macos')?.container,
+      'macOS release builds run directly on the hosted runner',
+    );
+    const cargoCache = build.steps?.find((step) => step.name === 'Cache Cargo and V8 build');
+    t.equal(
+      cargoCache?.with?.variant,
+      '${{ matrix.cacheVariant }}',
+      'V8 caches are isolated by the target ABI baseline',
+    );
+    const protocolCache = build.steps?.find(
+      (step) => step.name === 'Install current Linux protocol dependencies',
+    );
+    t.equal(
+      protocolCache?.with?.variant,
+      '${{ matrix.cacheVariant }}',
+      'Linux protocol caches are isolated by the target ABI baseline',
+    );
+    const cargoCacheSource = decoder.decode(
+      await fs.readFile('.github/actions/cache-cargo-deps/action.yml'),
+    );
+    const protocolCacheSource = decoder.decode(
+      await fs.readFile('.github/actions/install-linux-protocol-deps/action.yml'),
+    );
+    const primaryV8CacheKey = cargoCacheSource.match(/key: (rusty-v8-artifact-v2-[^\n]+)/)?.[1];
+    t.ok(
+      primaryV8CacheKey?.includes('inputs.variant'),
+      'the V8 cache key incorporates its ABI variant',
+    );
+    t.ok(
+      protocolCacheSource.includes('inputs.variant'),
+      'the protocol cache key incorporates its ABI variant',
+    );
+    const linuxDependencies = build.steps?.find(
+      (step) => step.name === 'Install Linux native dependencies',
+    );
+    t.notOk(
+      linuxDependencies?.run?.includes('sudo'),
+      'Linux setup runs as root inside the release container',
     );
     const releaseBuild = build.steps?.find((step) => step.name === 'Build release binary');
     t.ok(
@@ -238,6 +292,23 @@ describe('CI workflow', () => {
         (step) => step.run?.includes('codesign') && step.run.includes('notarytool submit'),
       ),
       'the macOS release is signed and notarized before packaging',
+    );
+    const signing = build.steps?.find((step) => step.name === 'Sign and notarize macOS binary');
+    t.ok(
+      signing?.run?.includes('--entitlements .github/entitlements/fino.plist'),
+      'the hardened macOS binary is signed with the Fino runtime entitlements',
+    );
+    t.ok(
+      signing?.run?.includes('./target/release/fino --version'),
+      'the macOS binary is executed after signing',
+    );
+    const entitlements = decoder.decode(
+      await fs.readFile('.github/entitlements/fino.plist').catch(() => new Uint8Array()),
+    );
+    t.ok(
+      entitlements.includes('<key>com.apple.security.cs.allow-jit</key>') &&
+        entitlements.includes('<true/>'),
+      'the macOS runtime permits V8 JIT memory',
     );
     t.equal(publish.needs, 'build', 'publishing waits for every matrix build');
     t.equal(publish.permissions?.contents, 'write', 'only the publisher can create a release');

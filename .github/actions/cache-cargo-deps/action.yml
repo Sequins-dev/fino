@@ -6,6 +6,10 @@ inputs:
     description: Cargo target profile directory whose V8 outputs should be cached
     required: false
     default: debug
+  variant:
+    description: Native ABI or toolchain variant for compiled cache artifacts
+    required: false
+    default: native
 
 outputs:
   v8-cache-hit:
@@ -37,13 +41,13 @@ runs:
           target/debug/gn_out/src_binding.rs
           target/release/gn_out/obj/librusty_v8.a
           target/release/gn_out/src_binding.rs
-        key: rusty-v8-artifact-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
+        key: rusty-v8-artifact-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.variant }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', '.cargo/config.toml', 'scripts/v8-compiler-wrapper.sh', 'scripts/v8-ninja-wrapper.sh') }}
 
     # Cache versions include the path list, so v1 must be restored separately
     # with its original profile-specific paths before it can be promoted to v2.
     - name: Restore legacy V8 build artifact cache
       id: v8-cache-v1
-      if: ${{ steps.v8-cache.outputs.cache-hit != 'true' }}
+      if: ${{ steps.v8-cache.outputs.cache-hit != 'true' && inputs.variant == 'native' }}
       uses: actions/cache/restore@v4
       with:
         path: |
