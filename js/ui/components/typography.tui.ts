@@ -12,10 +12,12 @@ import { mapComponentLowering } from 'internal:ui/components/target';
 import {
   Blockquote,
   Bold,
+  Caption,
   Code,
   Heading,
   InlineCode,
   Italic,
+  Lead,
   Link,
   List,
   headingLevel,
@@ -38,6 +40,24 @@ mapComponentLowering(Heading, 'tui', (props, children) => {
   const text = h(Text, { ...rest, style: [...supplied, ...semantic] } as Props, ...children);
   if (normalized !== 1) return text;
   return h(Box, { direction: 'column' }, text, h(Rule, { style: [styles.dim] }));
+});
+
+mapComponentLowering(Lead, 'tui', (props, children) => {
+  const style = Array.isArray(props.style)
+    ? props.style
+    : props.style === undefined
+      ? []
+      : [props.style];
+  return h(Text, { ...props, wrap: true, style: [...style, styles.bold] } as Props, ...children);
+});
+
+mapComponentLowering(Caption, 'tui', (props, children) => {
+  const style = Array.isArray(props.style)
+    ? props.style
+    : props.style === undefined
+      ? []
+      : [props.style];
+  return h(Text, { ...props, wrap: true, style: [...style, styles.dim] } as Props, ...children);
 });
 
 mapComponentLowering(Bold, 'tui', (props, children) =>

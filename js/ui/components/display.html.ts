@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for display components. @internal */
+/**
+ * HTML lowerings and styles for display components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { componentStyleAttrs, safeHref } from 'internal:ui/components/html-runtime';

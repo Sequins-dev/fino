@@ -1,4 +1,8 @@
-/** HTML lowering and scroll-action bridge markup for virtual lists. @internal */
+/**
+ * HTML lowering and scroll-action bridge markup for virtual lists.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import {

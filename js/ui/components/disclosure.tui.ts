@@ -1,4 +1,8 @@
-/** Terminal lowerings for disclosure components. @internal */
+/**
+ * Terminal lowerings for disclosure components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { Box, Clickable, Icon, Text } from 'fino:ui/components';

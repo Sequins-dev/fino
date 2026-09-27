@@ -1,4 +1,8 @@
-/** Terminal lowerings for menu components. @internal */
+/**
+ * Terminal lowerings for menu components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, UiKeyEvent } from 'fino:ui';
 import { Box, Clickable, Input, Rule, Text } from 'fino:ui/components';

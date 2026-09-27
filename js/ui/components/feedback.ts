@@ -37,6 +37,21 @@ export function Badge(props: BadgeProps): VNode {
   return h('ui:badge', props);
 }
 
+/** Props accepted by {@link Callout}. */
+export interface CalloutProps extends StyleProps, FlexChildProps, Props {
+  /** Optional short heading for the callout. */
+  title?: string;
+  /** Semantic tone. Defaults to `accent`. */
+  variant?: ToneVariant;
+  /** Explanatory content. */
+  children?: Child;
+}
+
+/** Explanatory aside with a semantic tone and optional title. */
+export function Callout(props: CalloutProps): VNode {
+  return h('ui:callout', props);
+}
+
 /** Default terminal animation frames used by {@link Spinner}. */
 export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 

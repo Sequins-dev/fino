@@ -1,12 +1,18 @@
-/** Co-located previews for typography components. @internal */
+/**
+ * Co-located previews for typography components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import {
   Blockquote,
   Bold,
+  Caption,
   Code,
   Heading,
   InlineCode,
   Italic,
+  Lead,
   List,
   Text,
   VStack,
@@ -36,6 +42,17 @@ export function typographyPreviews(): PreviewGroup {
             h(Text, null, 'Plain ', h(Bold, null, 'bold'), ' and ', h(Italic, null, 'italic')),
             h(Blockquote, null, h(Text, null, 'Measure twice, cut once.')),
             h(List, { items: ['Clone', 'Build', h(InlineCode, null, 'fino test')] }),
+          ),
+      },
+      {
+        key: 'prose-roles',
+        name: 'Lead and caption',
+        view: () =>
+          h(
+            VStack,
+            { gap: 1 },
+            h(Lead, null, 'The main idea appears here.'),
+            h(Caption, null, 'Supplemental context stays secondary.'),
           ),
       },
       {

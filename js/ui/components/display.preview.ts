@@ -1,4 +1,8 @@
-/** Co-located previews for display components. @internal */
+/**
+ * Co-located previews for display components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { Card, EmptyState, HStack, Stat, StatusDot, Text } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

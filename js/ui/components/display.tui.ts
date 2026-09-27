@@ -1,4 +1,8 @@
-/** Terminal lowerings for display components. @internal */
+/**
+ * Terminal lowerings for display components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { Box, Text } from 'fino:ui/components';

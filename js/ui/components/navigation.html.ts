@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for navigation components. @internal */
+/**
+ * HTML lowerings and styles for navigation components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { componentStyleAttrs, controlledNativeValue } from 'internal:ui/components/html-runtime';

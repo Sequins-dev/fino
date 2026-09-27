@@ -1,4 +1,8 @@
-/** Native HTML lowerings and calendar styles for picker components. @internal */
+/**
+ * Native HTML lowerings and calendar styles for picker components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props } from 'fino:ui';
 import { componentStyleAttrs, controlledNativeValue } from 'internal:ui/components/html-runtime';

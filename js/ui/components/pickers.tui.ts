@@ -1,4 +1,8 @@
-/** Terminal lowerings for date, time, and color pickers. @internal */
+/**
+ * Terminal lowerings for date, time, and color pickers.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { env } from 'fino:process';

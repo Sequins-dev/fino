@@ -1,4 +1,8 @@
-/** Co-located previews for layout components. @internal */
+/**
+ * Co-located previews for layout components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { HStack, Panel, Rule, Spacer, Text, VStack, styles } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';
