@@ -25,6 +25,8 @@ in another CLI, MCP server, agent tool set, or test harness.
 - [`fino lint`](./cli/lint.md) reports lint diagnostics and safe fixes.
 - [`fino preview`](./ui/preview.md) browses the component catalog in a terminal
   or live browser app.
+- [`fino slides`](./cli/slides.md) serves an MDX deck with audience and presenter
+  views.
 
 ## Reuse Command Tasks
 

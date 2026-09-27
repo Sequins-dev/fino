@@ -57,7 +57,14 @@ try {
             },
           },
         }
-      : {},
+      : {
+          writer: {
+            mode: 'text',
+            writeText(chunk) {
+              console.log(chunk.endsWith('\n') ? chunk.slice(0, -1) : chunk);
+            },
+          },
+        },
   );
   if (typeof result === 'string' && result.length > 0) console.log(result);
 } catch (error) {

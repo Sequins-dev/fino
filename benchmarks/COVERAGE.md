@@ -11,6 +11,7 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:ffi` | `benchmarks/ffi.bench.ts` |
 | `fino:commands/root` | not yet benchmarked |
 | `fino:commands/preview` | not yet benchmarked |
+| `fino:commands/slides` | not yet benchmarked |
 | `fino:commands/run` | not yet benchmarked |
 | `fino:commands/repl` | not yet benchmarked |
 | `fino:commands/test` | not yet benchmarked |

@@ -358,6 +358,10 @@ export class Presentation {
     this.#updates = topic<Broadcast>(`fino:ui/slides:${id}`);
     this.#ready = this.#load();
   }
+  /** Resolves after the initial deck loads, or rejects with its compile or file error. */
+  get ready(): Promise<void> {
+    return this.#ready;
+  }
   /** Current navigation snapshot. A fresh object is returned on every read. */
   get state(): PresentationState {
     return { ...this.#state };

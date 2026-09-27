@@ -30,6 +30,7 @@ import 'fino:commands/lint';
 import 'fino:commands/task';
 import 'fino:commands/repl';
 import 'fino:commands/preview';
+import 'fino:commands/slides';
 import 'fino:load';
 import 'fino:tty';
 import 'fino:tty/prompt';
