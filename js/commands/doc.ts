@@ -247,6 +247,7 @@ export interface HtmlGuide {
   hasPageIndex: boolean;
 }
 interface DocsDatabase {
+  transaction<T>(fn: () => Promise<T>): Promise<T>;
   exec(sql: string): Promise<void>;
   prepare(sql: string): {
     run(...params: unknown[]): Promise<unknown>;
@@ -3748,9 +3749,13 @@ async function writeSqliteIndex(api: ApiDoc, dbPath: string): Promise<string> {
   await ensureDir(dirname(dbPath));
   const db = (await sqlite.Database.open(dbPath)) as DocsDatabase;
   try {
-    await ensureDocsCacheSchema(db);
-    await resetDocsIndex(db);
-    await populateDocsIndex(db, api);
+    // Replacing the index is one durable commit. Per-row commits multiply
+    // fsync latency and expose a partially rebuilt index if insertion fails.
+    await db.transaction(async () => {
+      await ensureDocsCacheSchema(db);
+      await resetDocsIndex(db);
+      await populateDocsIndex(db, api);
+    });
     return `Wrote ${dbPath}`;
   } finally {
     await db.close();
