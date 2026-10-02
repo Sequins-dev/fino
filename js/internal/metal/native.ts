@@ -18,6 +18,7 @@ import {
   release,
   withAutoreleasePool,
 } from 'internal:objc';
+import { createCompiler } from './compiler.ts';
 import type { MetalMemoryApi } from './memory.ts';
 
 function load() {
@@ -40,7 +41,9 @@ function load() {
     allocate: selector('newBufferWithLength:options:'),
     contents: selector('contents'),
   };
+  let compiler: ReturnType<typeof createCompiler> | undefined;
   const api: MetalMemoryApi = {
+    compile: (device, source, entry) => (compiler ??= createCompiler())(device, source, entry),
     createDevice: () => withAutoreleasePool(() => metal.symbols.MTLCreateSystemDefaultDevice()),
     info: (device) =>
       withAutoreleasePool(() => {
