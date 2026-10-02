@@ -227,6 +227,108 @@ export function enableAutoWrap(): string {
   return '\x1B[?7h';
 }
 /**
+ * Return the sequence that moves the cursor to a one-based screen cell.
+ *
+ * Inline rendering repaints a footer pinned to the bottom of the primary
+ * screen, so it addresses rows absolutely rather than relying on where the
+ * previous write left the cursor.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { cursorTo } from 'internal:tty/bindings';
+ *
+ * await writeStdout(cursorTo(1, 1));
+ * ```
+ */
+export function cursorTo(row: number, column: number): string {
+  return `\x1B[${Math.max(1, Math.trunc(row))};${Math.max(1, Math.trunc(column))}H`;
+}
+/**
+ * Return the sequence that erases from the cursor to the end of its row.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseToLineEnd } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseToLineEnd());
+ * ```
+ */
+export function eraseToLineEnd(): string {
+  return '\x1B[K';
+}
+/**
+ * Return the sequence that erases the cursor's entire row.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseLine } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseLine());
+ * ```
+ */
+export function eraseLine(): string {
+  return '\x1B[2K';
+}
+/**
+ * Return the sequence that erases from the cursor to the end of the screen.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseBelow } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseBelow());
+ * ```
+ */
+export function eraseBelow(): string {
+  return '\x1B[J';
+}
+/**
+ * Return the sequence that discards the terminal's saved scrollback.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { eraseScrollback } from 'internal:tty/bindings';
+ *
+ * await writeStdout(eraseScrollback());
+ * ```
+ */
+export function eraseScrollback(): string {
+  return '\x1B[3J';
+}
+/**
+ * Return the sequence that confines scrolling to the one-based row range
+ * `top..bottom` (DECSTBM).
+ *
+ * Inline rendering sets a region above its footer so that pushing a line only
+ * scrolls the transcript — rows evicted off the top of the region enter the
+ * terminal's real scrollback, and the footer stays where it is. The region is
+ * always reset within the same composed write, so an interrupted process never
+ * leaves the terminal with a stale margin.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { resetScrollRegion, setScrollRegion } from 'internal:tty/bindings';
+ *
+ * await writeStdout(setScrollRegion(1, 10) + '\r\n' + resetScrollRegion());
+ * ```
+ */
+export function setScrollRegion(top: number, bottom: number): string {
+  return `\x1B[${Math.max(1, Math.trunc(top))};${Math.max(1, Math.trunc(bottom))}r`;
+}
+/**
+ * Return the sequence that restores scrolling to the full screen.
+ *
+ * ```ts no_run
+ * import { writeStdout } from 'fino:tty';
+ * import { resetScrollRegion } from 'internal:tty/bindings';
+ *
+ * await writeStdout(resetScrollRegion());
+ * ```
+ */
+export function resetScrollRegion(): string {
+  return '\x1B[r';
+}
+/**
  * Return the ANSI sequences that enable SGR mouse reporting.
  *
  * Enables three private modes at once: `1000` (button press/release events),
