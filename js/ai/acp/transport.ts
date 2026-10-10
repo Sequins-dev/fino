@@ -6,19 +6,8 @@
  */
 import { stdin, stdout } from 'fino:process';
 import type { Transport } from 'fino:jsonrpc';
+import { readLines } from 'internal:stream/text';
 
-async function* splitLines(source: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
-  const decoder = new TextDecoder('utf-8', { fatal: true });
-  let buffered = '';
-  for await (const chunk of source) {
-    buffered += decoder.decode(chunk, { stream: true });
-    const lines = buffered.split('\n');
-    buffered = lines.pop()!;
-    for (const line of lines) yield line.endsWith('\r') ? line.slice(0, -1) : line;
-  }
-  buffered += decoder.decode();
-  if (buffered.length > 0) yield buffered;
-}
 /**
  * Create ACP newline-delimited JSON over process stdio.
  *
@@ -37,7 +26,7 @@ export function acpStdioTransport(): Transport {
       });
       return writes;
     },
-    receive: () => splitLines(input),
+    receive: () => readLines(input, { fatal: true }),
     close: () => input.close(),
   };
 }
