@@ -17,6 +17,9 @@ function fakeApi() {
   };
   return {
     objects,
+    compile: async () => {
+      throw new Error('not used by memory tests');
+    },
     get device() {
       return device;
     },
