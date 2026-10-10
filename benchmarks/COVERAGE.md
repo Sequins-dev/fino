@@ -36,7 +36,6 @@ this public-builtin table and are exercised by their owning command workflows.
 | `fino:database/postgres` | not yet benchmarked |
 | `fino:database/sqlite` | `benchmarks/database/sqlite.bench.ts` |
 | `fino:stream` | `benchmarks/stream.bench.ts` |
-| `fino:sync` | not yet benchmarked |
 | `fino:process` | `benchmarks/process.bench.ts` |
 | `fino:context` | `benchmarks/context/index.bench.ts` |
 | `fino:ui` | `benchmarks/ui.bench.ts` |

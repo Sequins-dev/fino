@@ -55,7 +55,7 @@
  *   await db.close();
  * ```
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import { Pointer } from 'fino:ffi';
 import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';

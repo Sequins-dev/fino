@@ -35,7 +35,7 @@
  * // `/talk` follows the presenter; `/talk?follow=false` navigates independently.
  * ```
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import { topic, type Topic } from 'fino:context/topic';
 import { Router } from 'fino:net/http/app';
 import { Watcher } from 'fino:file/watch';

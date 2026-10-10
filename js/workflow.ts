@@ -39,7 +39,7 @@
  * await routeTicket.signal({ store, runId: run.runId, name: 'approval', payload: true });
  * ```
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import type { Store } from 'fino:store';
 import { compile } from 'fino:validate';
 import { topic } from 'fino:context/topic';

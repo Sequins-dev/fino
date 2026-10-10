@@ -26,7 +26,7 @@
  * ui.get('/').handle(page(() => h('main', null, 'Hello')));
  * ```
  */
-import { KeyedSerialExecutor } from 'fino:sync';
+import { KeyedSerialExecutor } from 'internal:serial-executor';
 import { EventSourceWriter } from 'fino:net/http/eventstream';
 import { topic } from 'fino:context/topic';
 import { CLIENT_HASH, CLIENT_SOURCE } from 'internal:ui/web/client';

@@ -30,7 +30,7 @@
  * PostgreSQL Frontend/Backend Protocol:
  * https://www.postgresql.org/docs/current/protocol.html
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import type { Address } from 'fino:net/socket';

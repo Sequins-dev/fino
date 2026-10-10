@@ -1,5 +1,5 @@
 /**
- * fino:sync — Realm-local FIFO execution gates.
+ * internal:serial-executor — Realm-local FIFO execution gates.
  *
  * Serialize operations that share mutable state without tying ordering to a
  * workflow, database, or transport. Failures belong to each returned promise
@@ -11,11 +11,13 @@
  * slot until it settles. No external work is interrupted automatically.
  *
  * ```ts no_run
- * import { SerialExecutor } from 'fino:sync';
+ * import { SerialExecutor } from 'internal:serial-executor';
  * const writes = new SerialExecutor({ maxPending: 64 });
  * await writes.run(() => saveChanges());
  * await writes.close();
  * ```
+ *
+ * @internal
  */
 
 /** Admission policy for a serial executor. */

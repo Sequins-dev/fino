@@ -1,5 +1,5 @@
 import { describe, it } from 'fino:test/test';
-import * as sync from 'fino:sync';
+import * as sync from 'internal:serial-executor';
 
 function gate() {
   let resolve!: () => void;

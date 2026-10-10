@@ -103,7 +103,7 @@
  * - WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
  * - WebSocket Compression Extensions: https://www.rfc-editor.org/rfc/rfc7692
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import { DOMException, btoa } from '../../globals/encoding.ts';
 import { encodeUtf8 } from 'internal:encoding';
 import { digest } from '../../internal/openssl.ts';

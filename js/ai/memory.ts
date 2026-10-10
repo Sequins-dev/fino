@@ -31,7 +31,7 @@
  * await memory.complete(selection.selectionId, { score: .9 });
  * ```
  */
-import { SerialExecutor } from 'fino:sync';
+import { SerialExecutor } from 'internal:serial-executor';
 import { Database, vec, vecDecode } from 'fino:database/sqlite';
 import { Tool } from 'fino:ai/tool';
 
