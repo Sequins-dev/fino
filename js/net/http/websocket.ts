@@ -103,6 +103,7 @@
  * - WebSocket Protocol: https://www.rfc-editor.org/rfc/rfc6455
  * - WebSocket Compression Extensions: https://www.rfc-editor.org/rfc/rfc7692
  */
+import { SerialExecutor } from 'fino:sync';
 import { DOMException, btoa } from '../../globals/encoding.ts';
 import { encodeUtf8 } from 'internal:encoding';
 import { digest } from '../../internal/openssl.ts';
@@ -1071,7 +1072,7 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    *
    * @internal
    */
-  #writeQueue: Promise<void> = Promise.resolve();
+  #writeQueue = new SerialExecutor();
   // Bytes currently buffered in the write queue (best-effort bufferedAmount).
   /**
    * Private property `#bufferedBytes` used by `WebSocketConnection`.
@@ -2083,16 +2084,13 @@ export class WebSocketConnection extends EventTarget implements ConnectionTakeov
    */
   #enqueue(fn: () => Promise<void>, bytes: number = 0): Promise<void> {
     this.#bufferedBytes += bytes;
-    const next = this.#writeQueue.then(fn);
-    this.#writeQueue = next.then(
-      () => {
+    return this.#writeQueue.run(async () => {
+      try {
+        await fn();
+      } finally {
         this.#bufferedBytes -= bytes;
-      },
-      () => {
-        this.#bufferedBytes -= bytes;
-      },
-    );
-    return next;
+      }
+    });
   }
   /**
    * Write a single WebSocket frame to the underlying writer.

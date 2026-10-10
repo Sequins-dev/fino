@@ -30,6 +30,7 @@
  * PostgreSQL Frontend/Backend Protocol:
  * https://www.postgresql.org/docs/current/protocol.html
  */
+import { SerialExecutor } from 'fino:sync';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
 import type { Address } from 'fino:net/socket';
@@ -390,7 +391,7 @@ export class PostgresDatabase {
   #socket!: Socket | TlsSocket;
   #target!: ConnectionTarget;
   #closed = false;
-  #queue: Promise<unknown> = Promise.resolve();
+  #queue = new SerialExecutor();
   #backendProcessId = 0;
   #secretKey = new Uint8Array();
   #notifications = createSignal<PostgresNotification | null>(null);
@@ -537,12 +538,7 @@ export class PostgresDatabase {
    * application code needs to call.
    */
   _serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.#queue.then(fn, fn);
-    this.#queue = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
+    return this.#queue.run(fn);
   }
   /**
    * Creates a prepared statement for later execution.

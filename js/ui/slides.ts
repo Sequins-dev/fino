@@ -35,6 +35,7 @@
  * // `/talk` follows the presenter; `/talk?follow=false` navigates independently.
  * ```
  */
+import { SerialExecutor } from 'fino:sync';
 import { topic, type Topic } from 'fino:context/topic';
 import { Router } from 'fino:net/http/app';
 import { Watcher } from 'fino:file/watch';
@@ -123,7 +124,7 @@ interface ViewerSession {
   id: string;
   nonce: string;
   state: PresentationState;
-  queue: Promise<void>;
+  queue: SerialExecutor;
   updates: Topic<ViewerBroadcast>;
   current: ViewerBroadcast;
 }
@@ -341,7 +342,7 @@ export class Presentation {
     step: 0,
     revision: 0,
   };
-  #queue: Promise<void> = Promise.resolve();
+  #queue = new SerialExecutor();
   #updates: Topic<Broadcast>;
   #current!: Broadcast;
   #viewerSessions = new Map<string, ViewerSession>();
@@ -572,7 +573,7 @@ export class Presentation {
       id,
       nonce: crypto.randomUUID(),
       state,
-      queue: Promise.resolve(),
+      queue: new SerialExecutor(),
       updates: topic<ViewerBroadcast>(`fino:ui/slides:viewer:${id}`),
       current: this.#renderViewerBroadcast(state),
     };
@@ -589,8 +590,7 @@ export class Presentation {
       session.current = this.#renderViewerBroadcast(session.state);
       session.updates.publish(session.current);
     };
-    session.queue = session.queue.then(run, run);
-    return session.queue;
+    return session.queue.run(run);
   }
   async #transition(change: () => void): Promise<void> {
     const run = async () => {
@@ -601,8 +601,7 @@ export class Presentation {
       this.#current = this.#renderBroadcast();
       this.#updates.publish(this.#current);
     };
-    this.#queue = this.#queue.then(run, run);
-    return this.#queue;
+    return this.#queue.run(run);
   }
   /** Reveal the next step, or advance one slide when all steps are visible. */
   next(): Promise<void> {

@@ -32,6 +32,7 @@
       "fino:context/topic": ["./js/context/topic.ts"],
       "fino:ui": ["./js/ui.ts"],
       "fino:ui/*": ["./js/ui/*.ts"],
+      "fino:sync": ["./js/sync.ts"],
       "fino:semver": ["./js/semver.ts"],
       "fino:uuid": ["./js/uuid.ts"],
       "fino:format/*": ["./js/format/*.ts"],

@@ -55,6 +55,7 @@
  *   await db.close();
  * ```
  */
+import { SerialExecutor } from 'fino:sync';
 import { Pointer } from 'fino:ffi';
 import { DiskFileSystem } from 'fino:file';
 import type { FileSystem } from 'internal:file/provider';
@@ -777,7 +778,7 @@ export class Database {
    *
    * @internal
    */
-  #opQueue: Promise<unknown> = Promise.resolve();
+  #opQueue = new SerialExecutor();
   /** Removes this connection's fallback close operation from Realm shutdown. @internal */
   #shutdownRegistration: { dispose(): void } | null;
   /**
@@ -931,12 +932,7 @@ export class Database {
    * @internal
    */
   _serialize<T>(fn: () => Promise<T>): Promise<T> {
-    const next = this.#opQueue.then(fn, fn);
-    this.#opQueue = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
+    return this.#opQueue.run(fn);
   }
   /**
    * Stop tracking a statement that has been explicitly finalized.

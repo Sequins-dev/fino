@@ -39,6 +39,7 @@
  * await routeTicket.signal({ store, runId: run.runId, name: 'approval', payload: true });
  * ```
  */
+import { SerialExecutor } from 'fino:sync';
 import type { Store } from 'fino:store';
 import { compile } from 'fino:validate';
 import { topic } from 'fino:context/topic';
@@ -911,7 +912,7 @@ class WorkflowRuntime<In, Out> {
   #state: WorkflowState;
   #signal?: AbortSignal;
   #checkpoint: (state: WorkflowState) => Promise<void>;
-  #completionQueue: Promise<void> = Promise.resolve();
+  #completionQueue = new SerialExecutor();
   constructor(
     workflow: Workflow<In, Out>,
     store: Store,
@@ -1059,8 +1060,7 @@ class WorkflowRuntime<In, Out> {
     throw new WaitSignal();
   }
   async #complete(index: number, id: string, result: unknown): Promise<void> {
-    const previous = this.#completionQueue.catch(() => {});
-    this.#completionQueue = previous.then(async () => {
+    await this.#completionQueue.run(async () => {
       const latest = await readWorkflowState(this.#store, this.#state.runId);
       const base = latest && latest.workflowId === this.#workflow.id ? latest : this.#state;
       const steps = base.steps.slice();
@@ -1082,7 +1082,6 @@ class WorkflowRuntime<In, Out> {
       this.#state = next;
       await this.#checkpoint(this.#state);
     });
-    await this.#completionQueue;
   }
 }
 async function runWithRetry<T>(

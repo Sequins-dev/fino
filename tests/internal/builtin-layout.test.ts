@@ -12,6 +12,7 @@ import 'fino:database/sql';
 import 'fino:database/migrate';
 import 'fino:database/sqlite';
 import 'fino:store';
+import 'fino:sync';
 import 'fino:cache';
 import 'fino:context';
 import 'fino:context/topic';

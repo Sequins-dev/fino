@@ -31,6 +31,7 @@
  * await memory.complete(selection.selectionId, { score: .9 });
  * ```
  */
+import { SerialExecutor } from 'fino:sync';
 import { Database, vec, vecDecode } from 'fino:database/sqlite';
 import { Tool } from 'fino:ai/tool';
 
@@ -380,7 +381,7 @@ export class SqliteMemory implements MemoryStore {
   #embedder: Embedder;
   #vectorSearch: boolean;
   #closed = false;
-  #writes: Promise<unknown> = Promise.resolve();
+  #writes = new SerialExecutor();
 
   private constructor(db: Database, embedder: Embedder, vectorSearch: boolean) {
     this.#db = db;
@@ -500,12 +501,7 @@ export class SqliteMemory implements MemoryStore {
   }
 
   #write<T>(operation: () => Promise<T>): Promise<T> {
-    const next = this.#writes.then(operation, operation);
-    this.#writes = next.then(
-      () => undefined,
-      () => undefined,
-    );
-    return next;
+    return this.#writes.run(operation);
   }
 
   #validateEmbedding(embedding: Float32Array): void {
@@ -815,7 +811,7 @@ export class SqliteMemory implements MemoryStore {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    await this.#writes;
+    await this.#writes.close();
     await this.#db.close();
   }
 
