@@ -24,6 +24,7 @@
  *
  * @internal
  */
+import { collectBytes } from 'internal:bytes';
 import {
   lib,
   isDarwin,
@@ -318,21 +319,7 @@ export class File {
    */
   async bytes(): Promise<Uint8Array> {
     if (this.#closed) throw new Error('File is closed');
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for await (const chunk of this.reader()) {
-      chunks.push(chunk);
-      total += chunk.byteLength;
-    }
-    if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return new Uint8Array(chunks[0]!);
-    const out = new Uint8Array(total);
-    let pos = 0;
-    for (const c of chunks) {
-      out.set(c, pos);
-      pos += c.byteLength;
-    }
-    return out;
+    return collectBytes(this.reader());
   }
   /**
    * Read the file from the current offset to EOF and decode it as UTF-8 text.

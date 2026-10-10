@@ -37,6 +37,32 @@ function firstCompressedBufferPrefix(bytes: Uint8Array): number {
   throw new Error('fixture did not contain a compressed body buffer');
 }
 describe('arrow IPC round-trips by type', () => {
+  it('snapshots reused chunks from iterable and read-method sources', async (t) => {
+    const batch = arrow.RecordBatch.from({ id: [1, 2] });
+    const encoded = arrow.tableToIPC(batch);
+    async function* chunks() {
+      const slab = new Uint8Array(3);
+      const chunk = slab.subarray(1, 2);
+      for (const byte of encoded) {
+        chunk[0] = byte;
+        yield chunk;
+      }
+      chunk[0] = 0;
+    }
+    const iterator = chunks();
+    for (const source of [
+      chunks(),
+      {
+        read: async () => {
+          const next = await iterator.next();
+          return next.done ? null : next.value;
+        },
+      },
+    ]) {
+      const reader = await arrow.RecordBatchReader.fromAsync(source);
+      t.deepEqual(reader.toTable().toArray(), batch.toArray());
+    }
+  });
   const cases: Array<[string, arrow.DataType, unknown[]]> = [
     ['int8', arrow.int8(), [1, -2, 3, null]],
     ['uint8', arrow.uint8(), [1, 2, 255]],
