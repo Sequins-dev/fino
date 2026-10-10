@@ -55,6 +55,7 @@
  *
  * @internal
  */
+import { withAbort } from 'internal:abort';
 import { DEFAULT_MAX_FIELD_SECTION_SIZE, Nghttp3Session, h3FieldSize } from './session.ts';
 import type { H3BodySource, H3SessionCallbacks, H3SessionOptions } from './session.ts';
 import { H3BodyQueue } from './body-queue.ts';
@@ -78,22 +79,10 @@ const EARLY_DATA_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS', 'TRACE']);
 
 async function waitForHandshake(conn: QuicConnection, signal?: AbortSignal | null): Promise<void> {
   if (conn.handshakeComplete) return;
-  if (signal?.aborted) throw abortError(signal.reason);
-  if (signal === undefined || signal === null) {
-    await conn[quicConnectionInternals.waitHandshake]();
-    return;
-  }
-  let onAbort!: () => void;
   try {
-    await Promise.race([
-      conn[quicConnectionInternals.waitHandshake](),
-      new Promise<never>((_, reject) => {
-        onAbort = () => reject(abortError(signal.reason));
-        signal.addEventListener('abort', onAbort, { once: true });
-      }),
-    ]);
-  } finally {
-    signal.removeEventListener('abort', onAbort);
+    await withAbort(() => conn[quicConnectionInternals.waitHandshake](), signal);
+  } catch (error) {
+    throw signal?.aborted ? abortError(signal.reason) : error;
   }
 }
 /**

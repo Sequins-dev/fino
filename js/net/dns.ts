@@ -154,6 +154,7 @@
  * const addresses = await resolver.resolve('example.com', 'A');
  * ```
  */
+import { onAbort } from 'internal:abort';
 import * as sock from './socket.ts';
 import * as loop from '../internal/runtime/loop.ts';
 import { DiskFileSystem } from '../file/fs.ts';
@@ -2340,16 +2341,11 @@ function _abortPromise(signal: AbortSignal): {
   promise: Promise<symbol>;
   dispose(): void;
 } {
-  let onAbort!: () => void;
+  let dispose = () => {};
   const promise = new Promise<symbol>((resolve) => {
-    onAbort = () => resolve(ABORTED);
-    if (signal.aborted) onAbort();
-    else signal.addEventListener('abort', onAbort, { once: true });
+    dispose = onAbort(signal, () => resolve(ABORTED));
   });
-  return {
-    promise,
-    dispose: () => signal.removeEventListener('abort', onAbort),
-  };
+  return { promise, dispose };
 }
 
 let _defaultResolver: Resolver | null = null;

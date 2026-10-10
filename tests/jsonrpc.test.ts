@@ -522,6 +522,24 @@ describe('fino:jsonrpc — JsonRpcPeer', () => {
     await peer.close();
     t.equal(transportClosed, true);
   });
+  it('cleans up a cancelled-call subscription when transport send throws synchronously', async (t) => {
+    const [transport, remote] = loopbackPair();
+    let sends = 0;
+    const peer = new JsonRpcPeer({
+      receive: () => transport.receive(),
+      close: () => transport.close(),
+      send() {
+        sends++;
+        throw new Error('send failed');
+      },
+    });
+    const controller = new AbortController();
+    await t.rejects(() => peer.call('fail', {}, { signal: controller.signal }), /send failed/);
+    controller.abort();
+    t.equal(sends, 1, 'a failed send must not leave a pending call to cancel');
+    await peer.close();
+    await remote.close();
+  });
   it('call cancellation notifies and aborts the remote request context', async (t) => {
     const [ta, tb] = loopbackPair();
     const client = new JsonRpcPeer(ta);
