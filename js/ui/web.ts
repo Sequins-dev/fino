@@ -26,6 +26,7 @@
  * ui.get('/').handle(page(() => h('main', null, 'Hello')));
  * ```
  */
+import { KeyedSerialExecutor } from 'internal:serial-executor';
 import { EventSourceWriter } from 'fino:net/http/eventstream';
 import { topic } from 'fino:context/topic';
 import { CLIENT_HASH, CLIENT_SOURCE } from 'internal:ui/web/client';
@@ -307,7 +308,7 @@ interface RenderEnv {
   pending: Promise<unknown>[];
 }
 let currentRender: RenderEnv | null = null;
-const locks = new Map<string, Promise<void>>();
+const locks = new KeyedSerialExecutor<string>();
 function randomId(prefix: string): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16));
   let hex = '';
@@ -402,22 +403,7 @@ function verifyRequestOrigin(ctx: HttpContext): boolean {
   }
 }
 async function withViewLock<T>(viewId: string, fn: () => Promise<T>): Promise<T> {
-  const previous = locks.get(viewId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  locks.set(
-    viewId,
-    previous.then(() => current),
-  );
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-    if (locks.get(viewId) === current) locks.delete(viewId);
-  }
+  return locks.run(viewId, fn);
 }
 function formEntries(form: FormData): Record<string, unknown> {
   const out: Record<string, unknown> = {};
