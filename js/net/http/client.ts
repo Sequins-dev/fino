@@ -40,6 +40,7 @@
  * - Server-Sent Events: https://html.spec.whatwg.org/multipage/server-sent-events.html
  * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
  */
+import { onAbort, abortScope } from 'internal:abort';
 import { collectBytes } from 'internal:bytes';
 import { Headers, Request, Response, buildWireResponse } from './index.ts';
 import {
@@ -1440,30 +1441,39 @@ export class HttpSession {
     const retry = { ...this.#client.retry, ...init.retry };
     const attempts = positiveInteger(retry.attempts ?? 1, 'retry.attempts');
     const replayable = isReplayable(init.body);
-    const controller = new AbortController();
     const userSignal = init.signal ?? null;
     if (userSignal?.aborted) throw userSignal.reason;
-    const onUserAbort = () => controller.abort(userSignal!.reason);
-    userSignal?.addEventListener('abort', onUserAbort, { once: true });
-    let headersTimer: ReturnType<typeof setTimeout> | null = null;
-    let totalTimer: ReturnType<typeof setTimeout> | null = null;
-    if (timeouts.headers !== undefined) {
-      headersTimer = setTimeout(
-        () =>
-          controller.abort(new Error(`HTTP response headers timeout after ${timeouts.headers}ms`)),
-        timeouts.headers,
+    const controller = abortScope({
+      signal: userSignal,
+      ...(timeouts.total === undefined
+        ? {}
+        : {
+            timeoutMs: timeouts.total,
+            timeoutReason: new Error(`HTTP request total timeout after ${timeouts.total}ms`),
+          }),
+    });
+    let headersDeadline: ReturnType<typeof abortScope>;
+    try {
+      headersDeadline = abortScope(
+        timeouts.headers === undefined
+          ? {}
+          : {
+              timeoutMs: timeouts.headers,
+              timeoutReason: new Error(`HTTP response headers timeout after ${timeouts.headers}ms`),
+            },
       );
+    } catch (error) {
+      controller.dispose();
+      throw error;
     }
-    if (timeouts.total !== undefined) {
-      totalTimer = setTimeout(
-        () => controller.abort(new Error(`HTTP request total timeout after ${timeouts.total}ms`)),
-        timeouts.total,
-      );
-    }
+    const stopHeaders = onAbort(headersDeadline.signal, controller.abort);
+    const cleanupHeaders = () => {
+      stopHeaders();
+      headersDeadline.dispose();
+    };
     const cleanupDeadline = () => {
-      if (headersTimer !== null) clearTimeout(headersTimer);
-      if (totalTimer !== null) clearTimeout(totalTimer);
-      userSignal?.removeEventListener('abort', onUserAbort);
+      cleanupHeaders();
+      controller.dispose();
     };
     const timing: {
       scheduledTime: number;
@@ -1579,10 +1589,7 @@ export class HttpSession {
         }
       }
     }
-    if (headersTimer !== null) {
-      clearTimeout(headersTimer);
-      headersTimer = null;
-    }
+    cleanupHeaders();
     timing.responseHeadersEnd = performance.now();
     const protocol = protocolFromResponse(response, this.protocol);
     this.#currentConnection = connection;
