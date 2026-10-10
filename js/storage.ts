@@ -10,6 +10,7 @@
  * SQLite VFS compatibility because that path currently requires synchronous
  * provider methods.
  */
+import { concatBytes, copyBytes } from 'internal:bytes';
 import { hmac, digest } from './internal/openssl.ts';
 import { base64urlEncode, toBytes } from './internal/security/encoding.ts';
 import { FileSystem, type ByteWriter, type FileHandle } from 'internal:file/provider';
@@ -476,18 +477,12 @@ class S3File implements FileHandle {
     const chunks: Uint8Array[] = [];
     return {
       write(data) {
-        chunks.push(typeof data === 'string' ? new TextEncoder().encode(data) : data);
+        chunks.push(typeof data === 'string' ? new TextEncoder().encode(data) : copyBytes(data));
       },
       flush: async () => {
-        const total = chunks.reduce((n, c) => n + c.byteLength, 0);
-        const out = new Uint8Array(total);
-        let offset = 0;
-        for (const chunk of chunks) {
-          out.set(chunk, offset);
-          offset += chunk.byteLength;
-        }
+        const out = concatBytes(chunks);
         this.#buffer = out;
-        await this.#client.putObject(this.#key, out);
+        await this.#client.putObject(this.#key, out.buffer as ArrayBuffer);
       },
       close: async () => {},
     };
@@ -523,6 +518,8 @@ class S3File implements FileHandle {
  * The adapter maps paths to object keys and supports object-shaped operations
  * such as open, read, write, stat, and unlink. Directory handles, symlinks,
  * rename, truncate, and positional writes are intentionally unsupported.
+ * Writers snapshot accepted bytes, so callers can reuse their buffers before
+ * `flush()` uploads the accumulated object.
  */
 export class S3FileSystem extends FileSystem {
   /** Create an async filesystem view over an S3 key prefix. */

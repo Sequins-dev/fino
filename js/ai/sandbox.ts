@@ -33,6 +33,7 @@
  * console.log(await sandbox.call('/srv/input/prompt.txt'));
  * ```
  */
+import { collectBytes } from 'internal:bytes';
 import { topic } from 'fino:context/topic';
 import { DiskFileSystem } from 'fino:file';
 import { basename, dirname, isAbsolute, join, normalize } from 'fino:file/path';
@@ -203,50 +204,36 @@ async function canonicalWritePath(path: string, roots: string[]): Promise<string
   return null;
 }
 async function collect(source: AsyncIterable<Uint8Array>, limit: number): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for await (const chunk of source) {
-    length += chunk.byteLength;
-    if (length > limit)
-      throw new SandboxDeniedError('resource.bytes', `Sandbox byte limit exceeded (${limit})`);
-    chunks.push(chunk);
+  async function* checkedChunks() {
+    let length = 0;
+    for await (const chunk of source) {
+      length += chunk.byteLength;
+      if (length > limit)
+        throw new SandboxDeniedError('resource.bytes', `Sandbox byte limit exceeded (${limit})`);
+      yield chunk;
+    }
   }
-  const output = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
+  return collectBytes(checkedChunks());
 }
 async function collectShared(
   source: AsyncIterable<Uint8Array>,
   limit: number,
-  total: {
-    length: number;
-  },
+  total: { length: number },
 ): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for await (const chunk of source) {
-    length += chunk.byteLength;
-    total.length += chunk.byteLength;
-    if (total.length > limit) {
-      throw new SandboxDeniedError(
-        'resource.bytes',
-        `Sandbox process output exceeds ${limit} bytes`,
-      );
+  async function* checkedChunks() {
+    for await (const chunk of source) {
+      total.length += chunk.byteLength;
+      if (total.length > limit)
+        throw new SandboxDeniedError(
+          'resource.bytes',
+          `Sandbox process output exceeds ${limit} bytes`,
+        );
+      yield chunk;
     }
-    chunks.push(chunk);
   }
-  const output = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
+  return collectBytes(checkedChunks());
 }
+
 function hardenedSource(source: string): string {
   return `
 for (const name of [

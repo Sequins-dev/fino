@@ -40,6 +40,7 @@
  * - Server-Sent Events: https://html.spec.whatwg.org/multipage/server-sent-events.html
  * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
  */
+import { collectBytes } from 'internal:bytes';
 import { Headers, Request, Response, buildWireResponse } from './index.ts';
 import {
   fetch as runtimeFetch,
@@ -1028,21 +1029,7 @@ export class HttpResponse {
     this.#assertUnused();
     this.#consumed = true;
     if (this.body === null) return new Uint8Array(0);
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for await (const chunk of this.body) {
-      chunks.push(chunk);
-      total += chunk.byteLength;
-    }
-    if (chunks.length === 0) return new Uint8Array(0);
-    if (chunks.length === 1) return chunks[0]!;
-    const bytes = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return bytes;
+    return collectBytes(this.body);
   }
   /**
    * Consume the body and return an `ArrayBuffer`.

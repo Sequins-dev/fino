@@ -11,6 +11,23 @@ import {
 } from 'fino:net/http';
 const encodeUtf8 = (s: string) => new TextEncoder().encode(s);
 const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView) => new TextDecoder().decode(b);
+describe('body byte ownership', () => {
+  it('snapshots reused response and request body chunks', async (t) => {
+    async function* chunks() {
+      const slab = new Uint8Array(3);
+      const chunk = slab.subarray(1, 2);
+      chunk[0] = 1;
+      yield chunk;
+      chunk[0] = 2;
+      yield chunk;
+      chunk[0] = 3;
+    }
+    const response = new Response(chunks() as any);
+    const request = new Request('http://example.test', { method: 'POST', body: chunks() as any });
+    t.deepEqual(await response.bytes(), new Uint8Array([1, 2]));
+    t.deepEqual(await request.bytes(), new Uint8Array([1, 2]));
+  });
+});
 async function* source(str: string): AsyncIterable<Uint8Array> {
   yield encodeUtf8(str);
 }
