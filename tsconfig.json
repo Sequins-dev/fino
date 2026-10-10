@@ -11,6 +11,7 @@
     "baseUrl": ".",
     "paths": {
       "fino:archive": ["./js/archive.ts"],
+      "fino:stream": ["./js/stream.ts"],
       "fino:file": ["./js/file/fs.ts"],
       "fino:file/*": ["./js/file/*.ts"],
       "fino:net/http": ["./js/net/http/index.ts"],
@@ -55,6 +56,7 @@
       "internal:sim/*": ["./js/internal/sim/*.ts"],
       "internal:shutdown": ["./js/internal/shutdown.ts"],
       "internal:stream": ["./js/internal/stream.ts"],
+      "internal:stream/text": ["./js/internal/stream/text.ts"],
       "internal:opentelemetry/bootstrap": ["./js/internal/opentelemetry/bootstrap.ts"],
       "internal:opentelemetry/common": ["./js/internal/opentelemetry/common.ts"],
       "internal:opentelemetry/exporters": ["./js/internal/opentelemetry/exporters.ts"],

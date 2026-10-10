@@ -6,6 +6,9 @@
  * client on top; AI model providers use `parseEventStream` directly for
  * POST-body SSE streams.
  *
+ * Wire rules: https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream
+ * Incomplete events are discarded at EOF; dispatch requires a blank line.
+ *
  * ```ts no_run
  * import { parseEventStream } from 'fino:net/http/eventstream';
  * import { HttpClient } from 'fino:net/http/client';
@@ -23,7 +26,8 @@
  */
 import { Reader, type ReadResult, Writer } from '../../internal/stream.ts';
 import type { BytesWriter } from '../../internal/stream.ts';
-import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
+import { encodeUtf8 } from 'internal:encoding';
+import { readLines } from 'internal:stream/text';
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -65,41 +69,6 @@ export interface SseEventOptions {
   id?: string;
   /** Reconnection interval in milliseconds, floored to an integer and written as a `retry:` field. */
   retry?: number;
-}
-// ---------------------------------------------------------------------------
-// Internal: line splitter
-// ---------------------------------------------------------------------------
-/**
- * Split an async byte stream into text lines.
- *
- * Recognizes LF, CRLF, and bare CR as terminators per the W3C SSE spec.
- * Terminators are stripped; handles terminators split across chunk boundaries.
- */
-async function* _lines(source: AsyncIterable<Uint8Array | ArrayBuffer>): AsyncGenerator<string> {
-  let buf = '';
-  for await (const chunk of source) {
-    const bytes = chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk);
-    buf += decodeUtf8(bytes);
-    let start = 0;
-    let i = 0;
-    while (i < buf.length) {
-      const ch = buf.charCodeAt(i);
-      if (ch === 10) {
-        yield buf.substring(start, i);
-        i++;
-        start = i;
-      } else if (ch === 13) {
-        yield buf.substring(start, i);
-        i++;
-        if (i < buf.length && buf.charCodeAt(i) === 10) i++;
-        start = i;
-      } else {
-        i++;
-      }
-    }
-    buf = start < buf.length ? buf.substring(start) : '';
-  }
-  if (buf.length > 0) yield buf;
 }
 // ---------------------------------------------------------------------------
 // EventSourceReader — SSE parser
@@ -176,7 +145,10 @@ export class EventSourceReader extends Reader<SseEvent> {
     let eventId: string | null = null;
     let hasData = false;
     let retry: number | null = null;
-    for await (const line of _lines(this.#source)) {
+    for await (const line of readLines(this.#source, {
+      terminators: 'universal',
+      finalLine: 'discard',
+    })) {
       if (line === '') {
         if (hasData) {
           if (eventId !== null) this.#lastEventId = eventId;
@@ -219,15 +191,6 @@ export class EventSourceReader extends Reader<SseEvent> {
       } else if (field === 'retry') {
         if (/^\d+$/.test(value)) retry = parseInt(value, 10);
       }
-    }
-    if (hasData) {
-      if (eventId !== null) this.#lastEventId = eventId;
-      yield {
-        type: eventType || 'message',
-        data: data.join('\n'),
-        id: eventId,
-        retry,
-      };
     }
   }
 }

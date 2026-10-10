@@ -241,6 +241,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:compress/snappy", "internal/compress/snappy"),
     // internal: stream and openssl
     source_builtin!("internal:stream", "internal/stream"),
+    source_builtin!("internal:stream/text", "internal/stream/text"),
     source_builtin!("fino:stream", "stream"),
     source_builtin!("internal:openssl", "internal/openssl"),
     // sqlite
