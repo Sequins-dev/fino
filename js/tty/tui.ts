@@ -211,13 +211,28 @@ function emptyFrame(constraints: Required<Constraints>): Frame {
   };
 }
 
-interface RetainedTerminal {
+/** @internal */
+export interface RetainedTerminal {
   readonly sink: Sink<Frame>;
   readonly dispatcher: TuiDispatcher;
   resize(options: RenderFrameOptions): void;
 }
 
-function retainedTerminal(options: RenderFrameOptions): RetainedTerminal {
+/**
+ * Build the retained terminal pipeline: lower, reconcile, dispatch, lay out.
+ *
+ * Shared by `render()` and `fino:tty/inline` so the two renderers differ only
+ * in which part of the screen they own, never in how a tree becomes a frame.
+ *
+ * ```ts no_run
+ * import { retainedTerminal } from 'fino:tty/tui';
+ *
+ * const retained = retainedTerminal({ width: 80, height: 24 });
+ * ```
+ *
+ * @internal
+ */
+export function retainedTerminal(options: RenderFrameOptions): RetainedTerminal {
   let constraints = frameConstraints(options);
   const root = createTerminalRoot();
   const renderer = createRenderer(terminalHost());
@@ -394,6 +409,18 @@ export class TuiInput {
       this.#resolveClosed = resolve;
     });
     if (this.#mouse) void writeStdout(enterMouseMode());
+  }
+  /**
+   * Turn mouse reporting on or off, returning the resulting state.
+   *
+   * Inline apps start without capture so the terminal keeps selection, and
+   * enable it only while a pointer-driven view is on screen.
+   */
+  setMouse(enabled: boolean): boolean {
+    if (this.#closed || enabled === this.#mouse) return this.#mouse;
+    this.#mouse = enabled;
+    void writeStdout(enabled ? enterMouseMode() : exitMouseMode());
+    return this.#mouse;
   }
   #flushPartial(): void {
     if (this.#partial.length === 0) return;
