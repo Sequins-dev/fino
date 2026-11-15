@@ -102,6 +102,57 @@ fn child_covers(child_pattern: &crate::state::ImportPattern, spec: &str) -> bool
     }
 }
 
+/// Intersection of the import map's exact, prefix and catch-all patterns.
+fn intersect_pattern(
+    a: &crate::state::ImportPattern,
+    b: &crate::state::ImportPattern,
+) -> Option<crate::state::ImportPattern> {
+    use crate::state::ImportPattern::*;
+    match (a, b) {
+        (CatchAll, _) => Some(b.clone()),
+        (_, CatchAll) => Some(a.clone()),
+        (Exact(value), _) if b.matches(value) => Some(a.clone()),
+        (_, Exact(value)) if a.matches(value) => Some(b.clone()),
+        (Prefix(a), Prefix(b)) if a.starts_with(b) => Some(Prefix(a.clone())),
+        (Prefix(a), Prefix(b)) if b.starts_with(a) => Some(Prefix(b.clone())),
+        _ => None,
+    }
+}
+
+/// Inherit selects the parent's effective policy, not the host's native module.
+/// Clip the parent rule list to this child rule's scope, preserving ordering and
+/// referrer restrictions. This also prevents inherit-all from erasing providers.
+fn append_inherited(merged: &mut Vec<ImportRule>, parent: &[ImportRule], child: &ImportRule) {
+    use crate::state::ImportPattern;
+    if child.from.is_none() && matches!(child.pattern, ImportPattern::CatchAll) {
+        // This rule supersedes every preceding child rule. Do not duplicate the
+        // full parent map at each generation of an ordinary Realm tree.
+        *merged = parent.to_vec();
+        return;
+    }
+    merged.push(child.clone());
+    for rule in parent {
+        let Some(pattern) = intersect_pattern(&child.pattern, &rule.pattern) else {
+            continue;
+        };
+        let Some(from) = intersect_pattern(
+            child.from.as_ref().unwrap_or(&ImportPattern::CatchAll),
+            rule.from.as_ref().unwrap_or(&ImportPattern::CatchAll),
+        ) else {
+            continue;
+        };
+        merged.push(ImportRule {
+            pattern,
+            from: if matches!(from, ImportPattern::CatchAll) {
+                None
+            } else {
+                Some(from)
+            },
+            directive: rule.directive.clone(),
+        });
+    }
+}
+
 /// Capability-narrowing check for a single child rule.
 ///
 /// For every parent `Block` rule, derive a representative specifier and test
@@ -177,8 +228,7 @@ pub(crate) fn resolve_child_package_map(
 /// The child's rules are appended after the parent's so that last-match-wins
 /// semantics mean the child overrides the parent for any pattern it specifies.
 ///
-/// `Inherit` directives from the child-specific rules are dropped — the parent's
-/// rule already covers those specifiers via the merged list.
+/// `Inherit` selects the parent's effective policy within the child rule's scope.
 ///
 /// At merge time, child rules are validated for capability narrowing: a child
 /// rule that would grant access to a specifier the parent has blocked is rejected.
@@ -214,6 +264,10 @@ pub(crate) fn parse_and_merge_rules(
 
     let mut merged = parent_rules.clone();
     for rule in child_specific {
+        if matches!(rule.directive, ImportDirective::Inherit) {
+            append_inherited(&mut merged, &parent_rules, &rule);
+            continue;
+        }
         // Capability narrowing: reject non-Block, non-Inherit rules that would
         // grant access to a specifier the parent has blocked.
         // Inherit is exempted: it defers to the parent's rule and cannot escalate.
@@ -223,9 +277,6 @@ pub(crate) fn parse_and_merge_rules(
         ) {
             narrowing_check(&parent_rules, &rule)?;
         }
-        // Include ALL child rules — even Inherit ones. An explicit Inherit
-        // rule from the child is an intentional "re-allow" that must override
-        // any preceding Block rule (last-match-wins semantics).
         merged.push(rule);
     }
 
@@ -759,6 +810,42 @@ mod tests {
 
     fn block_rule(pattern: &str) -> ImportRule {
         rule(pattern, ImportDirective::Block)
+    }
+
+    #[test]
+    fn scoped_inherit_keeps_parent_blocks_and_referrer_policy() {
+        let mut allowed = rule("service:safe", ImportDirective::Inherit);
+        allowed.from = Some(ImportPattern::parse("app:trusted*"));
+        let parent = vec![block_rule("service:*"), allowed];
+        let mut merged = parent.clone();
+        merged.push(block_rule("*"));
+        append_inherited(
+            &mut merged,
+            &parent,
+            &rule("service:*", ImportDirective::Inherit),
+        );
+        assert!(matches!(
+            resolve_directive(&merged, Some("app:trusted/worker"), "service:safe"),
+            Some(ImportDirective::Inherit)
+        ));
+        assert!(matches!(
+            resolve_directive(&merged, Some("app:other"), "service:safe"),
+            Some(ImportDirective::Block)
+        ));
+        assert!(matches!(
+            resolve_directive(&merged, Some("app:trusted/worker"), "service:unsafe"),
+            Some(ImportDirective::Block)
+        ));
+        assert!(matches!(
+            resolve_directive(&merged, None, "outside:scope"),
+            Some(ImportDirective::Block)
+        ));
+        append_inherited(&mut merged, &parent, &rule("*", ImportDirective::Inherit));
+        assert_eq!(
+            merged.len(),
+            parent.len(),
+            "inherit-all does not grow maps across generations"
+        );
     }
 
     #[test]
