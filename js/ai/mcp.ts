@@ -80,6 +80,7 @@ import { parseEventStream } from 'fino:net/http/eventstream';
 import { serveHttp } from 'fino:net/http/server';
 import type { ServeServer } from 'fino:net/http/server';
 import { Channel } from 'internal:stream';
+import { readLines } from 'internal:stream/text';
 import { lazy } from 'fino:signals';
 import type { ReadonlySignal } from 'fino:signals';
 const MCP_PROTOCOL_VERSION = '2025-06-18';
@@ -136,18 +137,10 @@ export interface StdioTransportOptions {
   cwd?: string;
 }
 async function* splitLines(source: AsyncIterable<Uint8Array>): AsyncIterable<string> {
-  const dec = new TextDecoder();
-  let buf = '';
-  for await (const chunk of source) {
-    buf += dec.decode(chunk, { stream: true });
-    const parts = buf.split('\n');
-    buf = parts.pop()!;
-    for (const line of parts) {
-      const t = line.trim();
-      if (t) yield t;
-    }
+  for await (const line of readLines(source)) {
+    const trimmed = line.trim();
+    if (trimmed) yield trimmed;
   }
-  if (buf.trim()) yield buf.trim();
 }
 /**
  * Create a stdio transport for an MCP server process.

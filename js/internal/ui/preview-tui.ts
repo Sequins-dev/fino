@@ -1,4 +1,8 @@
-/** Live terminal runner for target-neutral preview catalogs. @internal */
+/**
+ * Live terminal runner for target-neutral preview catalogs.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import type { VNode } from 'fino:ui';
 import {

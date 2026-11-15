@@ -103,6 +103,7 @@
  *
  * WHATWG Fetch Standard: https://fetch.spec.whatwg.org/
  */
+import { collectBytes } from 'internal:bytes';
 import { lookup } from 'fino:net/dns';
 import { Socket } from 'fino:net/socket';
 import { TlsSocket } from 'fino:net/tls';
@@ -1533,21 +1534,7 @@ function _buildFinalResponse(
  * Collect all chunks of an async iterable body into a single Uint8Array.
  */
 async function _collectBody(body: AsyncIterable<Uint8Array>): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let totalLen = 0;
-  for await (const chunk of body) {
-    chunks.push(chunk);
-    totalLen += chunk.byteLength;
-  }
-  if (chunks.length === 0) return new Uint8Array(0);
-  if (chunks.length === 1) return chunks[0]!;
-  const out = new Uint8Array(totalLen);
-  let offset = 0;
-  for (const chunk of chunks) {
-    out.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return out;
+  return collectBytes(body);
 }
 /**
  * Wrap a Uint8Array as a single-chunk async iterable (for buildWireResponse).

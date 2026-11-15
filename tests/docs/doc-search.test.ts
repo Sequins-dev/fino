@@ -1,6 +1,7 @@
 /** Documentation search integration tests. */
 import { after, before, describe, it } from 'fino:test/test';
 import { sqliteAvailable } from 'fino:database/sqlite';
+import { DiskFileSystem } from 'fino:file';
 import {
   createDocTestFixture,
   type DocTestFixture,
@@ -134,6 +135,38 @@ export const concurrentValue = 1;
     t.equal(b.stderr, '', 'second search writes no stderr');
     t.ok(a.stdout.includes('api.concurrentValue'), 'first search finds symbol');
     t.ok(b.stdout.includes('api.concurrentValue'), 'second search finds symbol');
+  });
+  it('retries an index lock released after mkdir reports EEXIST', async (t) => {
+    const project = TEST_DIR + '/released-lock-' + Math.floor(Math.random() * 1e6);
+    await ensureDir(fs, project);
+    await fs.writeFile(
+      project + '/api.ts',
+      '/** Searchable value. */\nexport const searchable = 1;\n',
+    );
+    const build = await runCli(['doc', 'build', 'api.ts', '--format', 'markdown'], project);
+    t.equal(build.result.code, 0, 'initial build exits successfully');
+    await fs.unlink(project + '/docs/docs.db');
+
+    const mkdir = DiskFileSystem.prototype.mkdir;
+    let intercepted = false;
+    DiskFileSystem.prototype.mkdir = async function (path, mode) {
+      if (!intercepted && String(path).endsWith('/.docs.lock')) {
+        intercepted = true;
+        const error = new Error('lock holder released it') as Error & { code: string };
+        error.code = 'EEXIST';
+        throw error;
+      }
+      return mkdir.call(this, path, mode);
+    };
+    let search;
+    try {
+      search = await runCli(['doc', 'search', 'searchable'], project);
+    } finally {
+      DiskFileSystem.prototype.mkdir = mkdir;
+    }
+    t.equal(intercepted, true, 'search encountered the released lock');
+    t.equal(search.result.code, 0, 'search retries after the released lock');
+    t.ok(search.stdout.includes('api.searchable'), 'search finds the indexed value');
   });
   it('uses initial build inputs when regenerating a missing search db', async (t) => {
     const project = TEST_DIR + '/input-metadata-' + Math.floor(Math.random() * 1e6);

@@ -165,6 +165,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("fino:commands/task", "commands/task"),
     source_builtin!("fino:commands/repl", "commands/repl"),
     source_builtin!("fino:commands/preview", "commands/preview"),
+    source_builtin!("fino:commands/slides", "commands/slides"),
     source_builtin!("internal:commands/root", "commands/root"),
     source_builtin!("internal:commands/test", "commands/test"),
     source_builtin!("internal:commands/coverage", "commands/coverage"),
@@ -191,6 +192,7 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:tooling/lint", "internal/tooling/lint"),
     source_builtin!("internal:tooling/report", "internal/tooling/report"),
     source_builtin!("internal:bytes", "internal/bytes"),
+    source_builtin!("internal:abort", "internal/abort"),
     source_builtin!("internal:duration", "internal/duration"),
     source_builtin!("internal:process/cwd", "internal/process/cwd"),
     source_builtin!("internal:process/exit", "internal/process/exit"),
@@ -240,7 +242,9 @@ static BUILTINS: &[BuiltinEntry] = &[
     source_builtin!("internal:compress/snappy", "internal/compress/snappy"),
     // internal: stream and openssl
     source_builtin!("internal:stream", "internal/stream"),
+    source_builtin!("internal:stream/text", "internal/stream/text"),
     source_builtin!("fino:stream", "stream"),
+    source_builtin!("internal:serial-executor", "internal/serial-executor"),
     source_builtin!("internal:openssl", "internal/openssl"),
     // sqlite
     source_builtin!(

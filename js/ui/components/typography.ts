@@ -32,6 +32,28 @@ export function Heading(props: HeadingProps): VNode {
   return h('ui:heading', props);
 }
 
+/** Props accepted by {@link Lead}. */
+export interface LeadProps extends StyleProps, FlexChildProps, Props {
+  /** Introductory copy that establishes the main idea of a region. */
+  children?: Child;
+}
+
+/** Prominent introductory prose below a title or section heading. */
+export function Lead(props: LeadProps): VNode {
+  return h('ui:lead', props);
+}
+
+/** Props accepted by {@link Caption}. */
+export interface CaptionProps extends StyleProps, FlexChildProps, Props {
+  /** Supplemental explanation for the preceding content. */
+  children?: Child;
+}
+
+/** Muted supplemental copy associated with nearby content. */
+export function Caption(props: CaptionProps): VNode {
+  return h('ui:caption', props);
+}
+
 /** Props accepted by {@link Bold}. */
 export interface BoldProps extends StyleProps, FlexChildProps, Props {
   /** Emphasized content. */

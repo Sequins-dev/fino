@@ -686,7 +686,7 @@ describe('BufferedBytesReader', () => {
     const line = await reader.readUntil(new Uint8Array([10]));
     t.equal(new TextDecoder().decode(line!), 'hello\n', 'readUntil includes the delimiter');
     t.equal(
-      new TextDecoder().decode(await reader.readExactly(5)!),
+      new TextDecoder().decode((await reader.readExactly(5))!),
       'world',
       'tail bytes remain readable',
     );

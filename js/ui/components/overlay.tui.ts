@@ -1,4 +1,8 @@
-/** Terminal lowerings for overlay components. @internal */
+/**
+ * Terminal lowerings for overlay components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { NormalizedChild, Props, VNode } from 'fino:ui';
 import { Box, Clickable, Layer, Text } from 'fino:ui/components';

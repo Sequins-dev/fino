@@ -1,11 +1,11 @@
 {
   "name": "fino",
-  "version": "1.0.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "Lightweight JavaScript runtime built directly on FFI",
   "license": "MIT",
   "author": "",
-  "repository": "",
+  "repository": "https://github.com/Sequins-dev/fino.git",
   "scripts": {
     "lint": "tsc --noEmit",
     "test": "fino test tests/**/*.test.ts"

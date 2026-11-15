@@ -1,4 +1,8 @@
-/** HTML lowerings and styles for overlay components. @internal */
+/**
+ * HTML lowerings and styles for overlay components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { componentStyleAttrs, nativeAction } from 'internal:ui/components/html-runtime';

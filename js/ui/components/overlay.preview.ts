@@ -1,4 +1,8 @@
-/** Co-located previews for overlay components. @internal */
+/**
+ * Co-located previews for overlay components.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import { Button, Modal, Popover, ToastStack, VStack } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

@@ -20,7 +20,7 @@ concurrency:
 jobs:
   live-dnssec:
     name: Live DNSSEC
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -74,6 +74,8 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: |
+            target/debug/gn_out/obj/librusty_v8.a
+            target/debug/gn_out/src_binding.rs
             target/release/gn_out/obj/librusty_v8.a
             target/release/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}

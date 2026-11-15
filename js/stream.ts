@@ -6,8 +6,8 @@
  * class identities. Reader and Writer are stable endpoint facades; their
  * shared state owns delivery order, back-pressure, closure, and failure.
  * Channel is a zero-capacity rendezvous, while UnboundedChannel is the
- * explicit producer-ahead specialization. Transform values with async
- * iterables and wrap the result with Reader.from().
+ * explicit producer-ahead specialization. Decode bytes with `decodeText`, frame text with `splitLines`, or compose
+ * both with `readLines`. Transform values with async iterables and wrap the result with Reader.from().
  *
  * `FdReader` and `FdWriter` borrow nonblocking POSIX descriptors. They retry
  * short reads/writes and wait through `EAGAIN` with the runtime platform loop
@@ -49,3 +49,6 @@ export type {
   ReadResult,
   WriterCloseCallback,
 } from 'internal:stream';
+
+export { decodeText, splitLines, readLines } from 'internal:stream/text';
+export type { TextDecodeOptions, SplitLinesOptions, ReadLinesOptions } from 'internal:stream/text';

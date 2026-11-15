@@ -7,6 +7,34 @@ const credentials = {
 };
 
 describe('fino:storage', () => {
+  it('snapshots accepted writes before the object upload is flushed', async (t) => {
+    let uploaded: Uint8Array = new Uint8Array();
+    const fs = new S3FileSystem(
+      new S3Client({
+        endpoint: 'https://s3.example.test',
+        region: 'test',
+        credentials,
+        fetch: async (request: Request) => {
+          uploaded = await request.bytes();
+          return new Response('');
+        },
+      }),
+    );
+    const file = await fs.open('/data', 'w');
+    try {
+      const writer = file.writer();
+      const slab = new Uint8Array([0, 1, 0]);
+      const chunk = slab.subarray(1, 2);
+      await writer.write(chunk);
+      chunk[0] = 2;
+      await writer.write(chunk);
+      chunk[0] = 3;
+      await writer.flush();
+      t.deepEqual(uploaded, new Uint8Array([1, 2]));
+    } finally {
+      await file.close();
+    }
+  });
   it('signs S3 requests and presigned URLs with SigV4', async (t) => {
     const signed = await signS3Request(
       new Request('https://examplebucket.s3.amazonaws.com/test.txt'),

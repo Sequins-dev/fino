@@ -1,4 +1,8 @@
-/** Terminal lowerings for form components. @internal */
+/**
+ * Terminal lowerings for form components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { Box, Clickable, Input, Text } from 'fino:ui/components';

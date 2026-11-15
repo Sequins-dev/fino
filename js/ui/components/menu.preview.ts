@@ -1,4 +1,8 @@
-/** Co-located previews for menu components. @internal */
+/**
+ * Co-located previews for menu components.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import { ComboBox, MenuList, Select, VStack } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

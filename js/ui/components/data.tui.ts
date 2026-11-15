@@ -1,4 +1,8 @@
-/** Terminal lowerings for data components. @internal */
+/**
+ * Terminal lowerings for data components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { Box, Clickable, Rule, Text } from 'fino:ui/components';

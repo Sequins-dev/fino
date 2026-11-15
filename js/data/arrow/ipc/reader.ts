@@ -32,6 +32,7 @@
  *
  * @internal
  */
+import { collectBytes } from 'internal:bytes';
 import { decompress as decompressBytes } from 'fino:compress';
 import { ArrowError, ArrowParseError, parseError } from '../errors.ts';
 import { Field, Schema } from '../schema.ts';
@@ -296,39 +297,16 @@ function parseAll(bytes: Uint8Array): {
     batches,
   };
 }
-async function collectBytes(
-  source:
-    | AsyncIterable<Uint8Array>
-    | {
-        read(): Promise<Uint8Array | null>;
-      },
-): Promise<Uint8Array> {
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  if (Symbol.asyncIterator in source) {
-    for await (const chunk of source as AsyncIterable<Uint8Array>) {
-      parts.push(chunk);
-      total += chunk.byteLength;
-    }
-  } else {
-    const reader = source as {
-      read(): Promise<Uint8Array | null>;
-    };
-    for (;;) {
-      const chunk = await reader.read();
-      if (chunk === null) break;
-      parts.push(chunk);
-      total += chunk.byteLength;
-    }
+async function* readerChunks(source: {
+  read(): Promise<Uint8Array | null>;
+}): AsyncIterable<Uint8Array> {
+  for (;;) {
+    const chunk = await source.read();
+    if (chunk === null) return;
+    yield chunk;
   }
-  const out = new Uint8Array(total);
-  let pos = 0;
-  for (const part of parts) {
-    out.set(part, pos);
-    pos += part.byteLength;
-  }
-  return out;
 }
+
 /**
  * Reads record batches from an Arrow IPC stream or file.
  *
@@ -382,7 +360,7 @@ export class RecordBatchReader {
    *
    * Accepts anything async-iterable over `Uint8Array` chunks, or an object
    * with a `read()` method that resolves chunks until `null`. The entire
-   * source is buffered into memory first, then parsed exactly like `from` —
+   * source is snapshotted into owned memory first, then parsed exactly like `from` —
    * this is a convenience for sockets and file readers, not a bounded-memory
    * streaming decoder.
    *
@@ -403,7 +381,9 @@ export class RecordBatchReader {
           read(): Promise<Uint8Array | null>;
         },
   ): Promise<RecordBatchReader> {
-    return RecordBatchReader.from(await collectBytes(source));
+    return RecordBatchReader.from(
+      await collectBytes(Symbol.asyncIterator in source ? source : readerChunks(source)),
+    );
   }
   /** Iterate the decoded batches in stream order. */
   *[Symbol.iterator](): Iterator<RecordBatch> {

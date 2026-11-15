@@ -2,8 +2,9 @@
  * fino:ui/components/html — HTML target for the host-neutral component catalog.
  *
  * `toHtml()` resolves components and primitives into ordinary HTML VNodes.
- * `htmlPage()` wraps serialized markup in a document shell and combines the
- * base palette with CSS fragments registered beside component families.
+ * `componentCss()` returns only the styles registered beside component
+ * families for hosts that already own a page shell. `htmlPage()` combines
+ * those styles with the catalog's base palette and document shell.
  *
  * ```ts no_run
  * import { Box, Text } from 'fino:ui/components';
@@ -317,9 +318,14 @@ button { border: none; background: none; padding: 0; color: inherit; font: inher
 input { font: inherit; }
 `;
 
-/** Aggregate base CSS with fragments registered by loaded component families. */
+/** Return registered component-family styles without application page-shell CSS. */
+export function componentCss(): string {
+  return registeredHtmlCss();
+}
+
+/** Aggregate the application page CSS and registered component-family styles. */
 export function pageCss(): string {
-  const families = registeredHtmlCss();
+  const families = componentCss();
   return families.length === 0 ? PAGE_CSS : `${PAGE_CSS}\n${families}\n`;
 }
 

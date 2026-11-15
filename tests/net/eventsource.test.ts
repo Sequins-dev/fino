@@ -202,10 +202,23 @@ describe('EventSourceReader', () => {
     const events = await collect(new EventSourceReader(source(str)));
     t.equal(events[0]!.data, 'line1\nline2\nline3');
   });
-  it('stream ends without trailing blank line still dispatches', async (t) => {
-    const events = await collect(new EventSourceReader(source('data: no-trailing-newline')));
-    t.equal(events.length, 1);
-    t.equal(events[0]!.data, 'no-trailing-newline');
+  it('discards an incomplete event at EOF', async (t) => {
+    // HTML 9.2.5: EOF does not dispatch an unfinished event.
+    for (const value of ['data: unfinished', 'data: unfinished\n']) {
+      t.deepEqual(await collect(new EventSourceReader(source(value))), []);
+    }
+  });
+  it('preserves Unicode and multiline data across every byte split', async (t) => {
+    const bytes = new TextEncoder().encode('data: €😀\r\ndata: second\r\n\r\n');
+    for (let split = 0; split <= bytes.length; split++) {
+      async function* chunks() {
+        yield bytes.subarray(0, split);
+        yield bytes.subarray(split);
+      }
+      const events = await collect(new EventSourceReader(chunks()));
+      t.equal(events.length, 1);
+      t.equal(events[0]!.data, '€😀\nsecond');
+    }
   });
   it('leading space stripped from field value', async (t) => {
     const events = await collect(new EventSourceReader(source('data: hello\n\n')));

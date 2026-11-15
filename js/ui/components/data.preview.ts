@@ -1,4 +1,8 @@
-/** Co-located previews for data components. @internal */
+/**
+ * Co-located previews for data components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { FileTree, Table, Timeline } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

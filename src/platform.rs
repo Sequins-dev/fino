@@ -87,7 +87,7 @@ fn eval_steps<'a>(
     let exec_val = v8::String::new(scope, &process_env.exec_path.clone())?;
     set_export(scope, module, "execPath", exec_val.into())?;
 
-    let version = v8::String::new(scope, env!("CARGO_PKG_VERSION"))?;
+    let version = v8::String::new(scope, env!("FINO_VERSION"))?;
     set_export(scope, module, "version", version.into())?;
 
     let finalize = v8::Function::new(scope, finalize_sandbox_exec)?;
@@ -159,6 +159,7 @@ fn finalize_sandbox_exec<'a>(
     };
     let memory_bytes = args.get(5).integer_value(scope).unwrap_or(0) as libc::rlim_t;
     let pids = args.get(6).integer_value(scope).unwrap_or(0) as libc::rlim_t;
+    #[cfg(target_os = "linux")]
     let seccomp = if args.get(7).is_null_or_undefined() {
         None
     } else {
@@ -167,6 +168,7 @@ fn finalize_sandbox_exec<'a>(
         };
         Some(parts)
     };
+    #[cfg(target_os = "linux")]
     let seccomp_filters = if args.get(8).is_null_or_undefined() {
         None
     } else {

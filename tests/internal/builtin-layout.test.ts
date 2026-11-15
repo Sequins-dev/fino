@@ -30,6 +30,7 @@ import 'fino:commands/lint';
 import 'fino:commands/task';
 import 'fino:commands/repl';
 import 'fino:commands/preview';
+import 'fino:commands/slides';
 import 'fino:load';
 import 'fino:tty';
 import 'fino:tty/prompt';
@@ -60,6 +61,13 @@ const decodeUtf8 = (value: Uint8Array) => new TextDecoder().decode(value);
 describe('builtin module layout', () => {
   it('exposes the pre-release public module grouping', async (t) => {
     t.ok(true, 'new public builtin grouping resolves');
+  });
+  it('keeps serial execution out of the public builtin API', async (t) => {
+    const specifier = 'fino:sync';
+    await t.rejects(
+      () => import(specifier),
+      /dynamic import failed|Cannot find module|not found|unknown/i,
+    );
   });
   it('exposes sessions only through the HTTP app surface', async (t) => {
     await t.rejects(

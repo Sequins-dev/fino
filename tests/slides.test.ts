@@ -109,14 +109,67 @@ function viewerCommand(
   });
 }
 describe('fino:ui/slides', () => {
+  it('renders MDX components before transferring a file-backed deck', async (t) => {
+    const presentation = new Presentation('./tests/fixtures/slides-deck.mdx');
+    const app = new App();
+    app.route('/talk').mount(presentation.viewer());
+    app.route('/control').mount(presentation.presenter());
+    try {
+      const first = (await app.handle(new Request('http://local/talk'))) as Response;
+      const html = await first.text();
+      t.ok(
+        html.includes('<aside data-tone="warm">Custom component</aside>'),
+        'imported components execute in the deck Realm',
+      );
+      t.ok(
+        html.includes('<span data-badge>strong</span>'),
+        'file-backed decks apply their exported Markdown component overrides',
+      );
+      await presentation.goTo(1);
+      const audience = (await app.handle(new Request('http://local/talk'))) as Response;
+      const presenter = (await app.handle(new Request('http://local/control'))) as Response;
+      const audienceHtml = await audience.text();
+      t.ok(
+        audienceHtml.includes('<span class="tok-keyword">const</span>'),
+        'Markdown code fences use the shared syntax highlighter',
+      );
+      t.ok(
+        audienceHtml.includes('.ui-code-content'),
+        'presentation pages include shared component styles',
+      );
+      t.ok(
+        audienceHtml.includes('.fixture-deck { color: papayawhip; }'),
+        'file-backed decks include their exported stylesheet at the page level',
+      );
+      t.ok(
+        !audienceHtml.includes('Only the presenter sees this.'),
+        'speaker notes are absent from the audience',
+      );
+      t.ok(
+        (await presenter.text()).includes('Only the presenter sees this.'),
+        'speaker notes survive in the presenter view',
+      );
+    } finally {
+      await presentation.close();
+    }
+  });
+
   it('mounts viewer and presenter routers wherever the app chooses', async (t) => {
-    const presentation = new Presentation(deckModule());
+    const presentation = new Presentation({
+      ...deckModule(),
+      styles: '.module-deck { color: peachpuff; }',
+    });
     const app = new App();
     app.route('/talk').mount(presentation.viewer());
     app.route('/private/control').mount(presentation.presenter());
     const viewer = (await app.handle(new Request('http://local/talk'))) as Response;
     const presenter = (await app.handle(new Request('http://local/private/control'))) as Response;
-    t.ok((await viewer.text()).includes('First slide'), 'viewer renders at its mount point');
+    const viewerHtml = await viewer.text();
+    t.ok(viewerHtml.includes('First slide'), 'viewer renders at its mount point');
+    t.ok(
+      viewerHtml.includes('.module-deck { color: peachpuff; }'),
+      'module CSS reaches the viewer',
+    );
     const presenterHtml = await presenter.text();
     t.ok(presenterHtml.includes('Presenter'), 'presenter renders at its independent mount point');
     t.ok(presenterHtml.includes('First slide'), 'presenter previews the shared current slide');

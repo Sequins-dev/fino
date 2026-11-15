@@ -11,6 +11,8 @@
  * - [POSIX `posix_spawn`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/posix_spawn.html)
  * - [POSIX `waitpid`](https://pubs.opengroup.org/onlinepubs/9799919799/functions/wait.html)
  * - [Linux `pidfd_open(2)`](https://man7.org/linux/man-pages/man2/pidfd_open.2.html)
+ *
+ * @internal
  */
 import { dlopen, Pointer } from 'fino:ffi';
 import { os } from 'internal:process';

@@ -50,6 +50,7 @@
  * }
  * ```
  */
+import { collectBytes } from 'internal:bytes';
 import type {
   ContentPart,
   GenerateRequest,
@@ -1100,19 +1101,7 @@ async function resolveModelPath(opts: LocalModelOptions): Promise<string> {
 }
 async function responseBytes(res: ResponseLike): Promise<Uint8Array> {
   if (res.body) {
-    const chunks: Uint8Array[] = [];
-    let total = 0;
-    for await (const chunk of res.body) {
-      chunks.push(chunk);
-      total += chunk.byteLength;
-    }
-    const out = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-      out.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return out;
+    return collectBytes(res.body);
   }
   return encodeUtf8(await res.text());
 }

@@ -1,4 +1,8 @@
-/** Static and server-driven HTML runners for preview catalogs. @internal */
+/**
+ * Static and server-driven HTML runners for preview catalogs.
+ *
+ * @internal
+ */
 import { Signal, h } from 'fino:ui';
 import type { Props, VNode } from 'fino:ui';
 import { htmlPage, pageCss, toHtml } from 'fino:ui/components/html';

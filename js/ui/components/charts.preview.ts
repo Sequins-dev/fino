@@ -1,4 +1,8 @@
-/** Deterministic co-located previews for chart components. @internal */
+/**
+ * Deterministic co-located previews for chart components.
+ *
+ * @internal
+ */
 import { h } from 'fino:ui';
 import { BarChart, LineChart } from 'fino:ui/components';
 import type { Series } from 'fino:ui/components';

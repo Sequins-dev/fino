@@ -398,6 +398,22 @@ describe('DataLoader', () => {
 });
 
 describe('dataset sources', () => {
+  it('snapshots reused byte chunks before decoding Parquet', async (t) => {
+    const batch = RecordBatch.from({ id: [1, 2], name: ['a', 'b'] });
+    const encoded = writeParquet(batch);
+    async function* chunks() {
+      const slab = new Uint8Array(3);
+      const chunk = slab.subarray(1, 2);
+      for (const byte of encoded) {
+        chunk[0] = byte;
+        yield chunk;
+      }
+      chunk[0] = 0;
+    }
+    const batches = await collect<any>(parquetDataset(chunks()));
+    t.deepEqual(batches[0]!.toArray(), batch.toArray());
+  });
+
   it('streams CSV and JSONL records', async (t) => {
     const csv = csvDataset('name,age\nAda,36\nGrace,85\n', {
       header: true,

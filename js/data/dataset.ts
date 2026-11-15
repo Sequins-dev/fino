@@ -39,6 +39,7 @@
  * }
  * ```
  */
+import { collectBytes } from 'internal:bytes';
 import { parseStream, type CsvParseOptions } from 'fino:format/csv';
 import { RecordBatch, RecordBatchReader, Table } from 'fino:data/arrow';
 import { readParquet } from 'fino:data/parquet';
@@ -1157,25 +1158,6 @@ async function* bytes(
   for await (const chunk of chunks) yield chunk;
 }
 
-async function collectBytes(
-  source: ByteSource,
-  context?: DatasetIterationContext,
-): Promise<Uint8Array> {
-  const chunks: Uint8Array[] = [];
-  let length = 0;
-  for await (const chunk of bytes(source, context)) {
-    chunks.push(chunk);
-    length += chunk.byteLength;
-  }
-  const output = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    output.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return output;
-}
-
 /**
  * Stream CSV content as positional arrays or header-keyed records.
  *
@@ -1304,7 +1286,7 @@ export function arrowDataset(source: ArrowDatasetSource): IterableDataset<Record
  */
 export function parquetDataset(source: ByteSource): IterableDataset<RecordBatch> {
   return new IterableDataset<RecordBatch>(async function* (context) {
-    const table = readParquet(await collectBytes(source, context));
+    const table = readParquet(await collectBytes(bytes(source, context)));
     yield* table.batches;
   });
 }

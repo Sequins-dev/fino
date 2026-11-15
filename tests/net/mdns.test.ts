@@ -433,9 +433,18 @@ describe('Mdns query-only discovery', () => {
     }
   });
   it('query retransmits before timeout when no answer arrives', async (t) => {
+    // Stop the query as soon as a second copy arrives rather than letting it
+    // run out a short deadline. A 70ms budget with a 10ms retry is enough on
+    // an idle machine, but a runner that does not schedule the process for
+    // longer than that sees the deadline pass before the first retry is due,
+    // and the query correctly sends nothing more. The generous deadline is the
+    // failure bound: it only elapses if no retransmit is ever sent. Timing out
+    // with no answer is covered by the source-validation test above.
     let queries = 0;
+    const retransmitted = new AbortController();
     const fixture = startSilentFixture(() => {
       queries++;
+      if (queries === 2) retransmitted.abort(new Error('retransmit observed'));
     });
     try {
       const mdns = new Mdns();
@@ -444,14 +453,15 @@ describe('Mdns query-only discovery', () => {
           () =>
             mdns.query('missing.local', 'A', {
               server: fixture.address,
-              timeoutMs: 70,
+              timeoutMs: 5_000,
               retryMinMs: 10,
               retryMaxMs: 10,
+              signal: retransmitted.signal,
             }),
-          /timed out/,
-          'missing answer still times out',
+          /retransmit observed/,
+          'a second query arrives before the deadline',
         );
-        t.ok(queries > 1, `query retransmits before timeout (got ${queries})`);
+        t.ok(queries >= 2, `query retransmits before timeout (got ${queries})`);
       } finally {
         await mdns.close();
       }

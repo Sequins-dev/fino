@@ -5,6 +5,8 @@
  * `fino:net/dns` and `fino:net/mdns`; these helpers expose raw packet
  * encoding, decoding, and parser behavior for runtime modules and focused
  * protocol tests.
+ *
+ * @internal
  */
 import * as sock from '../../net/socket.ts';
 import { Scanner } from '../../parsing/scanner.ts';

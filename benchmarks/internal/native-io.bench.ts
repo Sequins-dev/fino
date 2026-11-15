@@ -34,12 +34,14 @@ bench('reactor-local transfer', (b) => {
         }
         await written;
       },
-      teardown({ listener, sockets }) {
-        void sockets.then(({ client, peer }) => {
+      async teardown({ listener, sockets }) {
+        try {
+          const { client, peer } = await sockets;
           client.close();
           peer.close();
-        });
-        listener.close();
+        } finally {
+          listener.close();
+        }
       },
     });
   }

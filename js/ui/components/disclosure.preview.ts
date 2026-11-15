@@ -1,4 +1,8 @@
-/** Co-located previews for disclosure components. @internal */
+/**
+ * Co-located previews for disclosure components.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import { Accordion, Details, Tabs, Text, createAccordion } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

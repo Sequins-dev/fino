@@ -1,4 +1,8 @@
-/** Co-located previews for navigation components. @internal */
+/**
+ * Co-located previews for navigation components.
+ *
+ * @internal
+ */
 import { createSignal, h } from 'fino:ui';
 import { Breadcrumbs, Pagination, Steps, VStack } from 'fino:ui/components';
 import type { PreviewGroup } from 'internal:ui/preview';

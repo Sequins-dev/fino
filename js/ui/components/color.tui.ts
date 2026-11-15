@@ -1,4 +1,8 @@
-/** Shared terminal color adaptation for component lowerings. @internal */
+/**
+ * Shared terminal color adaptation for component lowerings.
+ *
+ * @internal
+ */
 import { nearestAnsi256 } from 'fino:tty/style';
 import type { Color } from 'fino:tty/style';
 

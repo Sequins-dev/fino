@@ -16,10 +16,12 @@ import { mapComponentLowering, registerHtmlCss } from 'internal:ui/components/ta
 import {
   Blockquote,
   Bold,
+  Caption,
   Code,
   Heading,
   InlineCode,
   Italic,
+  Lead,
   Link,
   List,
   headingLevel,
@@ -42,6 +44,14 @@ mapComponentLowering(Heading, 'html', (props, children) => {
     ...children,
   );
 });
+
+mapComponentLowering(Lead, 'html', (props, children) =>
+  h('p', componentStyleAttrs(props as Props, 'ui-lead'), ...children),
+);
+
+mapComponentLowering(Caption, 'html', (props, children) =>
+  h('small', componentStyleAttrs(props as Props, 'ui-caption'), ...children),
+);
 
 mapComponentLowering(Bold, 'html', (props, children) =>
   h('strong', componentStyleAttrs(props as Props), ...children),
@@ -147,6 +157,8 @@ registerHtmlCss(`
 .ui-heading-3 { font-size: 1.15rem; }
 .ui-heading-4 { font-size: 1rem; }
 .ui-heading-5, .ui-heading-6 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+.ui-lead { margin: 0.5rem 0; font-size: 1.35em; line-height: 1.3; }
+.ui-caption { display: block; color: var(--tui-bright-black); font-size: 0.85em; line-height: 1.4; }
 .ui-link { color: var(--ui-accent); cursor: pointer; }
 .ui-link:hover { text-decoration: underline; }
 button.ui-link { background: none; border: none; padding: 0; font: inherit; }

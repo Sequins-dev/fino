@@ -126,6 +126,7 @@
  *
  * @internal
  */
+import { collectBytes } from 'internal:bytes';
 import { TextDecoder } from '../../globals/encoding.ts';
 import { decodeUtf8, encodeUtf8 } from 'internal:encoding';
 import { AbortController, AbortSignal } from '../../globals/abort.ts';
@@ -2580,14 +2581,7 @@ export class Request {
     if (this.#rawBody === null) return new Uint8Array(0);
     this.#bodyUsed = true;
     const source: AsyncIterable<Uint8Array> = this.#bodyStream ?? this.#rawBody;
-    const parts = [];
-    let total = 0;
-    for await (const chunk of source) {
-      parts.push(chunk);
-      total += chunk.byteLength;
-    }
-    if (parts.length === 0) return _nonThenableBytes(new Uint8Array(0));
-    return _nonThenableBytes(_concat(parts, total));
+    return _nonThenableBytes(await collectBytes(source));
   }
   /** Consume body and return as a UTF-8 string.
    *
@@ -3364,16 +3358,14 @@ export class Response {
     // Fast path: avoid ReadableStream wrapping when body is already bytes.
     if (this.#rawBody instanceof Uint8Array) return _nonThenableBytes(this.#rawBody);
     const source: AsyncIterable<Uint8Array> = this.#bodyStream ?? this.#rawBody;
-    const parts = [];
-    let total = 0;
-    for await (const chunk of source) {
-      if (!(chunk instanceof Uint8Array))
-        throw new TypeError('Response body stream chunks must be Uint8Array');
-      parts.push(chunk);
-      total += chunk.byteLength;
+    async function* checkedChunks() {
+      for await (const chunk of source) {
+        if (!(chunk instanceof Uint8Array))
+          throw new TypeError('Response body stream chunks must be Uint8Array');
+        yield chunk;
+      }
     }
-    if (parts.length === 0) return _nonThenableBytes(new Uint8Array(0));
-    return _nonThenableBytes(_concat(parts, total));
+    return _nonThenableBytes(await collectBytes(checkedChunks()));
   }
   /** Consume body and return as a UTF-8 string.
    *
