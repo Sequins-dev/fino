@@ -110,7 +110,11 @@ import { TlsSocket } from 'fino:net/tls';
 import { QuicEndpoint } from 'fino:net/quic';
 import { Request, Response, Headers, buildWireResponse } from 'internal:net/http/wire';
 import { H1ClientDriver } from 'internal:net/http/h1';
-import { H2ConnectionPool, createPoolEntry } from '../internal/net/http/pool.ts';
+import {
+  H2ConnectionPool,
+  createPoolEntry,
+  connectionSecurityKey,
+} from '../internal/net/http/pool.ts';
 import { h2Available } from '../internal/net/http/h2/bindings.ts';
 import type { Address } from 'fino:net/socket';
 import type { QuicAddress, QuicConnection } from 'fino:net/quic';
@@ -277,8 +281,9 @@ export interface FetchInit {
   /**
    * TLS client and trust options for HTTPS connections. `ca`, `cert`, and
    * `key` are paths to PEM files; `rejectUnauthorized` defaults to `true`.
-   * Requests carrying a client certificate are pooled separately from
-   * anonymous connections to the same origin.
+   * Connections are reused only with the same verification mode, CA path,
+   * and client certificate/key paths. Changing file contents at a configured
+   * path requires closing the owning client or clearing the pool.
    */
   tls?: {
     ca?: string;
@@ -603,7 +608,7 @@ class H3PoolEntry {
             ? { connection: { handshakeTimeoutMs: this.#handshakeTimeoutMs } }
             : {}),
           ...(this.#tls?.ca !== undefined ? { ca: _quicCaFromTls(this.#tls.ca) } : {}),
-          ...(this.#tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
+          verifyPeer: this.#tls?.rejectUnauthorized !== false,
           ...(this.#tls?.cert !== undefined ? { certificateFile: this.#tls.cert } : {}),
           ...(this.#tls?.key !== undefined ? { privateKeyFile: this.#tls.key } : {}),
         });
@@ -691,10 +696,11 @@ function _originKey(parsed: URL): string {
   return `${parsed.protocol}//${parsed.hostname}:${port}`;
 }
 function _tlsPoolKey(origin: string, tls: FetchInit['tls'] | undefined): string {
-  if (tls?.cert === undefined && tls?.key === undefined) return origin;
-  return `${origin}#tls:${JSON.stringify({
-    cert: tls.cert ?? null,
-    key: tls.key ?? null,
+  return `${origin}#tls:${connectionSecurityKey({
+    verifyPeer: tls?.rejectUnauthorized !== false,
+    ca: tls?.ca,
+    certificateFile: tls?.cert,
+    privateKeyFile: tls?.key,
   })}`;
 }
 function _quicCaFromTls(ca: string | undefined): { file: string } | undefined {
@@ -804,10 +810,11 @@ function _getAltSvc(origin: string): AltSvcEntry | null {
   }
   return entry;
 }
-function _evictH3(origin: string): void {
-  const entry = _h3Pool.get(origin);
-  if (entry !== undefined) {
-    _h3Pool.delete(origin);
+function _evictH3(origin: string, poolKey?: string): void {
+  for (const [key, entry] of _h3Pool) {
+    if (poolKey !== undefined ? key !== poolKey : key !== origin && !key.startsWith(`${origin}#`))
+      continue;
+    _h3Pool.delete(key);
     void entry.close();
   }
 }
@@ -854,7 +861,7 @@ async function _singleFetchH3(
   } catch (error) {
     const closeInfo = entry.closeInfo();
     const stage = entry.stage();
-    _evictH3(origin);
+    _evictH3(origin, poolKey);
     if (
       closeInfo !== null &&
       error instanceof Error &&
@@ -1052,7 +1059,7 @@ async function _singleFetch(
   const isDefaultPort = (isHttps && port === 443) || (!isHttps && port === 80);
   const origin = _originKey(parsed);
   const poolKey = _tlsPoolKey(origin, tls);
-  const effectivePoolKey = poolSlot === undefined ? poolKey : `${poolKey}#${poolSlot}`;
+  const effectivePoolKey = poolSlot === undefined ? poolKey : `${origin}#${poolSlot}#${poolKey}`;
   if (protocol === 'h3') {
     if (!isHttps) throw new TypeError('fetch: protocol h3 requires an HTTPS URL');
     if (!h3Available) throw new Error('fetch: protocol h3 requires libnghttp3');
@@ -1080,7 +1087,7 @@ async function _singleFetch(
         };
       } catch (_) {
         _altSvcCache.delete(origin);
-        _evictH3(origin);
+        _evictH3(origin, _tlsPoolKey(origin, tls));
       }
     }
   }
@@ -2094,20 +2101,15 @@ export function _resetFetchH2Pool(): Promise<void> {
   return _h2Pool.closeAll();
 }
 /** Close one HttpClient-owned H1/H2 transport slot. @internal */
-export async function _closeFetchPoolSlot(
-  origin: string,
-  slot: string,
-  tls?: FetchInit['tls'],
-): Promise<void> {
-  const base = _tlsPoolKey(_originKey(new URL(origin)), tls);
-  const key = `${base}#${slot}`;
-  const h1 = _h1Pool.get(key);
-  if (h1 !== undefined) {
+export async function _closeFetchPoolSlot(origin: string, slot: string): Promise<void> {
+  const prefix = `${_originKey(new URL(origin))}#${slot}#`;
+  for (const [key, h1] of _h1Pool) {
+    if (!key.startsWith(prefix)) continue;
     _h1Pool.delete(key);
     if (h1.idleTimer !== null) clearTimeout(h1.idleTimer);
     _closeSocket(h1.sock);
   }
-  await _h2Pool.evict(key);
+  await _h2Pool.evictPrefix(prefix);
 }
 /** Inspect an HttpClient-owned H1 slot for focused pool tests. @internal */
 export function _fetchH1PoolState(): Array<{ key: string; busy: boolean; closed: boolean }> {
@@ -2132,7 +2134,7 @@ export function _fetchH1PoolState(): Array<{ key: string; busy: boolean; closed:
  * @internal
  */
 export function _fetchH3PoolHas(origin: string): boolean {
-  return _h3Pool.has(origin);
+  return [..._h3Pool.keys()].some((key) => key === origin || key.startsWith(`${origin}#`));
 }
 /**
  * Close and clear all internal global fetch HTTP/3 pool entries.
