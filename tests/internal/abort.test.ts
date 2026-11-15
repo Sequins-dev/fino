@@ -29,6 +29,47 @@ function trackedSignal() {
 }
 
 describe('internal cancellation helpers', () => {
+  it('releases a live deadline when its parent or owner aborts', (t) => {
+    for (const fromParent of [true, false]) {
+      const tracked = trackedSignal();
+      let cancelled = 0;
+      const scope = helpers.abortScope({
+        signal: tracked.signal,
+        timeoutMs: 10,
+        schedule: () => () => cancelled++,
+      });
+      const reason = { fromParent };
+      if (fromParent) tracked.controller.abort(reason);
+      else scope.abort(reason);
+      t.equal(scope.signal.reason, reason);
+      t.equal(tracked.listeners(), 0);
+      t.equal(cancelled, 1);
+      scope.abort('later');
+      scope.dispose();
+      t.equal(scope.signal.reason, reason, 'first reason wins');
+      t.equal(cancelled, 1, 'timer cancellation is owned exactly once');
+    }
+  });
+
+  it('removes the parent subscription when deadline scheduling throws', (t) => {
+    const tracked = trackedSignal();
+    const reason = new Error('scheduler failed');
+    let caught: unknown;
+    try {
+      helpers.abortScope({
+        signal: tracked.signal,
+        timeoutMs: 10,
+        schedule: () => {
+          throw reason;
+        },
+      });
+    } catch (error) {
+      caught = error;
+    }
+    t.equal(caught, reason);
+    t.equal(tracked.listeners(), 0);
+  });
+
   it('owns an abort subscription until disposal or first abort', (t) => {
     const tracked = trackedSignal();
     const reasons: unknown[] = [];
