@@ -134,7 +134,10 @@ impl Ring {
                 let entry = opcode::PollAdd::new(types::Fd(poll.fd.as_raw_fd()), poll.mask).build();
                 self.insert(request.token, entry, poll);
             } else if !request.cancelled && result != -libc::ECANCELED {
-                return Err(io::Error::from_raw_os_error(-result));
+                // The host must reconcile queued cancellations before deciding
+                // whether this watch's error is still relevant. Keep draining
+                // the batch so every terminal CQE retires its owned resources.
+                events.push((request.token, result));
             }
         }
         Ok(events)
@@ -162,6 +165,35 @@ mod tests {
     use std::io::Write;
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn poll_errors_are_routed_and_the_whole_completion_batch_is_retired() {
+        let mut ring = Ring::new().unwrap();
+        let (reader, _writer) = UnixStream::pair().unwrap();
+        let poll = || Poll {
+            fd: reader.try_clone().unwrap().into(),
+            mask: libc::POLLIN as u32,
+        };
+        // No fixed-file table exists: this poll deterministically reports EBADF.
+        ring.insert(
+            1,
+            opcode::PollAdd::new(types::Fixed(0), libc::POLLIN as u32).build(),
+            poll(),
+        );
+        ring.insert(2, opcode::Nop::new().build(), poll());
+        ring.requests.get_mut(&2).unwrap().cancelled = true;
+        ring.flush();
+        ring.ring.submit_and_wait(2).unwrap();
+        let result = ring.wait(0);
+        let retained = ring.requests.len();
+        // On the old failure path the second CQE was consumed but unaccounted
+        // for, so dropping the ring would wait forever for its completion.
+        if retained != 0 {
+            std::mem::forget(ring);
+        }
+        assert_eq!(retained, 0, "all terminal CQEs must release their request");
+        assert_eq!(result.unwrap(), vec![(1, -libc::EBADF)]);
+    }
 
     #[test]
     fn queues_past_ring_capacity_and_drains_cancelled_watches() {

@@ -220,7 +220,7 @@ impl Driver {
             if event.token <= 2 {
                 continue;
             }
-            if let Some(registration) = self.registrations.get(&event.token) {
+            if let Some(registration) = registration_for_event(&self.registrations, &event)? {
                 deliver(registration, event.data, event.flags, false);
                 if !registration.change.scheduler_wake
                     && !matches!(registration.change.filter, -4 | -6)
@@ -243,6 +243,26 @@ impl Driver {
         }
         Ok(())
     }
+}
+
+// Called only after queued cancellations have been applied. A retired
+// registration cannot turn a stale kernel error into a process failure.
+fn registration_for_event<'a>(
+    registrations: &'a HashMap<u64, Registration>,
+    event: &super::kernel::Event,
+) -> Result<Option<&'a Registration>, String> {
+    let Some(registration) = registrations.get(&event.token) else {
+        return Ok(None);
+    };
+    if let Some(error) = event.error {
+        return Err(format!(
+            "native readiness {} on {}: {}",
+            registration.change.filter,
+            registration.change.ident,
+            std::io::Error::from_raw_os_error(error)
+        ));
+    }
+    Ok(Some(registration))
 }
 
 fn deliver(registration: &Registration, data: i64, flags: u32, installed: bool) {
@@ -454,7 +474,45 @@ fn reactor_count(processors: usize, configured: Option<&str>) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::reactor_count;
+    use super::*;
+
+    #[test]
+    fn retired_watch_errors_are_ignored_but_active_errors_are_reported() {
+        let event = super::super::kernel::Event {
+            token: 77,
+            data: 0,
+            flags: 0,
+            error: Some(libc::EINVAL),
+        };
+        let mut registrations = HashMap::new();
+        assert!(
+            registration_for_event(&registrations, &event)
+                .unwrap()
+                .is_none()
+        );
+        let mut change = ReadinessChange::control(0.0, 0.0);
+        change.ident = 10.0;
+        change.filter = -1;
+        registrations.insert(
+            77,
+            Registration {
+                change,
+                deadline: None,
+            },
+        );
+        let error = registration_for_event(&registrations, &event)
+            .err()
+            .unwrap();
+        assert!(error.contains("native readiness -1 on 10"));
+        assert!(error.contains(&format!("os error {}", libc::EINVAL)));
+        registrations.remove(&77);
+        assert!(
+            registration_for_event(&registrations, &event)
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn sizing_reserves_a_processor_and_honors_overrides() {
         for (processors, expected) in [(0, 1), (1, 1), (2, 2), (3, 2), (8, 7)] {

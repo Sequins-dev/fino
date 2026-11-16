@@ -8,6 +8,7 @@ pub(crate) struct Event {
     pub token: u64,
     pub data: i64,
     pub flags: u32,
+    pub error: Option<i32>,
 }
 
 pub(crate) struct Kernel {
@@ -225,6 +226,7 @@ impl Kernel {
                             token: *token,
                             data: event.data as i64,
                             flags: event.fflags,
+                            error: None,
                         })
                 })
                 .collect())
@@ -233,9 +235,14 @@ impl Kernel {
         {
             let completions = self.ring.wait(timeout_ms)?;
             let mut events = Vec::new();
-            for (token, _result) in completions {
+            for (token, result) in completions {
+                let error = (result < 0).then_some(-result);
                 if let Some(&(ident, filter)) = self.watches.get(&token) {
-                    if let Some(fd) = self.signals.get(&ident).filter(|_| filter == -6) {
+                    if let Some(fd) = self
+                        .signals
+                        .get(&ident)
+                        .filter(|_| filter == -6 && error.is_none())
+                    {
                         let mut info: libc::signalfd_siginfo = unsafe { std::mem::zeroed() };
                         while unsafe {
                             libc::read(
@@ -251,6 +258,7 @@ impl Kernel {
                             token: *token,
                             data: 0,
                             flags: 0,
+                            error,
                         });
                     }
                 }
