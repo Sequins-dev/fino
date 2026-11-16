@@ -35,6 +35,7 @@
  * @internal
  */
 
+import { withAbort } from 'internal:abort';
 import { AbortSignal } from '../globals/abort.ts';
 
 type ByteSource = ArrayBuffer | ArrayBufferView;
@@ -169,42 +170,7 @@ function pullWithSignal(
   iterator: Iterator<Uint8Array> | AsyncIterator<Uint8Array>,
   signal: AbortSignal | undefined,
 ): Promise<IteratorResult<Uint8Array>> {
-  if (signal === undefined) return Promise.resolve(iterator.next());
-  throwIfAborted(signal);
-
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const beginSettle = (): boolean => {
-      if (settled) return false;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      return true;
-    };
-    const onAbort = (): void => {
-      if (beginSettle()) reject(signal.reason);
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-
-    let next: IteratorResult<Uint8Array> | PromiseLike<IteratorResult<Uint8Array>>;
-    try {
-      next = iterator.next();
-    } catch (error) {
-      if (beginSettle()) reject(error);
-      return;
-    }
-    Promise.resolve(next).then(
-      (result) => {
-        if (beginSettle()) resolve(result);
-      },
-      (error) => {
-        if (beginSettle()) reject(error);
-      },
-    );
-  });
+  return withAbort(() => iterator.next(), signal);
 }
 
 /**

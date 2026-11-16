@@ -13,6 +13,7 @@
  *
  * @internal
  */
+import { abortScope, onAbort } from 'internal:abort';
 import { HttpClient } from '../net/http/client.ts';
 import type { HttpResponse } from '../net/http/client.ts';
 import { Headers } from '../net/http/index.ts';
@@ -488,28 +489,20 @@ class LoadRecorder {
 }
 
 function phaseSignal(parent: AbortSignal | null, durationMs: number | null): PhaseSignal {
-  const controller = new AbortController();
-  const abortFromParent = () => controller.abort(parent?.reason);
-  if (parent?.aborted) abortFromParent();
-  else parent?.addEventListener('abort', abortFromParent, { once: true });
-  const deadline = durationMs === null ? null : performance.now() + durationMs;
-  const timer =
-    durationMs === null
-      ? null
-      : setTimeout(
-          () => controller.abort(new Error('fino load: measured phase ended')),
-          Math.max(0, durationMs),
-        );
+  const scope = abortScope({
+    signal: parent,
+    ...(durationMs === null
+      ? {}
+      : {
+          timeoutMs: Math.max(0, durationMs),
+          timeoutReason: new Error('fino load: measured phase ended'),
+        }),
+  });
   return {
-    signal: controller.signal,
-    deadline,
-    abort(reason?: unknown) {
-      controller.abort(reason);
-    },
-    close() {
-      if (timer !== null) clearTimeout(timer);
-      parent?.removeEventListener('abort', abortFromParent);
-    },
+    signal: scope.signal,
+    deadline: durationMs === null ? null : performance.now() + durationMs,
+    abort: scope.abort,
+    close: scope.dispose,
   };
 }
 
@@ -854,8 +847,7 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
   });
   const runController = new AbortController();
   const abortFromParent = () => runController.abort(options.signal?.reason);
-  if (options.signal?.aborted) abortFromParent();
-  else options.signal?.addEventListener('abort', abortFromParent, { once: true });
+  const stopParent = onAbort(options.signal, abortFromParent);
   let reconnectGate = Promise.resolve();
   const maybeReconnect = async (sequence: number): Promise<void> => {
     if (
@@ -965,7 +957,7 @@ export async function runLoadEngine(rawOptions: LoadOptions): Promise<LoadResult
       bailout: recorder.bailoutReason,
     };
   } finally {
-    options.signal?.removeEventListener('abort', abortFromParent);
+    stopParent();
     await reconnectGate;
     await client.close();
   }

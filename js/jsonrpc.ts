@@ -49,6 +49,7 @@
  * await server.ready;
  * ```
  */
+import { onAbort, withAbort } from 'internal:abort';
 import { serveHttp } from 'fino:net/http/server';
 import type { ServeServer } from 'fino:net/http/server';
 import { compile } from 'fino:validate';
@@ -679,19 +680,19 @@ export class JsonRpcPeer {
     };
     if (params !== undefined) body.params = params;
     return new Promise((resolve, reject) => {
-      const onAbort = () => {
+      const cancel = (reason: unknown) => {
         if (!this.#pending.delete(id)) return;
         void this.notify('$/cancel_request', { requestId: id }).catch(() => {});
-        reject(opts.signal!.reason);
+        reject(reason);
       };
-      const cleanup = () => opts.signal?.removeEventListener('abort', onAbort);
-      opts.signal?.addEventListener('abort', onAbort, { once: true });
-      this.#pending.set(id, {
-        resolve,
-        reject,
-        cleanup,
-      });
-      Promise.resolve(this.#transport.send(JSON.stringify(body))).catch((error) => {
+      const pending = { resolve, reject, cleanup: () => {} };
+      this.#pending.set(id, pending);
+      pending.cleanup = onAbort(opts.signal, cancel);
+      if (!this.#pending.has(id)) {
+        pending.cleanup();
+        return;
+      }
+      withAbort(() => this.#transport.send(JSON.stringify(body))).catch((error) => {
         const pending = this.#pending.get(id);
         if (!pending) return;
         this.#pending.delete(id);
