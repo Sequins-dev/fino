@@ -97,7 +97,7 @@ jobs:
           prefix: ${{ runner.temp }}/fino-protocol-deps
 
       - name: Test V8 build layout
-        run: python3 tests/build/v8-layout.py
+        run: sh tests/build/v8-layout.sh
 
       - name: Test V8 compiler wrapper
         run: sh tests/build/v8-compiler-wrapper.sh
@@ -166,7 +166,7 @@ jobs:
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
       - name: Test V8 build layout
-        run: python3 tests/build/v8-layout.py
+        run: sh tests/build/v8-layout.sh
 
       - name: Test V8 compiler wrapper
         run: sh tests/build/v8-compiler-wrapper.sh

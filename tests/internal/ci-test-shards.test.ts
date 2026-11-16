@@ -155,6 +155,14 @@ describe('CI workflow', () => {
 
   it('shares the customized V8 artifact across Cargo profiles', async (t) => {
     const source = decoder.decode(await fs.readFile('.github/actions/cache-cargo-deps/action.yml'));
+    const workflow = await readWorkflow();
+    for (const name of ['linux-build', 'macos-build']) {
+      const build = jobDefinition(workflow, name);
+      t.ok(
+        build.steps?.some((step) => step.run === 'sh tests/build/v8-layout.sh'),
+        `${name} runs the shell V8 layout regressions`,
+      );
+    }
     const cargoConfig = decoder.decode(await fs.readFile('.cargo/config.toml'));
     const primaryKey = source.match(/key: (rusty-v8-artifact-v3-[^\n]+)/)?.[1];
 
