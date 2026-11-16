@@ -73,6 +73,7 @@ jobs:
             cmake \
             curl \
             g++ \
+            gdb \
             git \
             libsqlite3-dev \
             make \
@@ -135,7 +136,33 @@ jobs:
         run: cargo clippy
 
       - name: Run Rust tests
-        run: cargo test --quiet
+        run: |
+          # Keep the test executable path independent of Cargo's output layout.
+          cargo test --no-run --message-format=json > target/rust-test-artifacts.jsonl
+          test_binary=$(python3 -c '
+          import json, sys
+          artifacts = [json.loads(line) for line in open(sys.argv[1])]
+          tests = [a["executable"] for a in artifacts
+                   if a.get("reason") == "compiler-artifact"
+                   and a.get("profile", {}).get("test")
+                   and a.get("target", {}).get("name") == "fino"
+                   and a.get("executable")]
+          assert len(tests) == 1, tests
+          print(tests[0])
+          ' target/rust-test-artifacts.jsonl)
+          ulimit -c unlimited
+          sudo sysctl -w "kernel.core_pattern=$PWD/target/rust-test-core.%p" || \
+            echo "::warning::Unable to configure native test core dumps"
+          status=0
+          cargo test -- --nocapture || status=$?
+          if [[ "$status" != 0 ]]; then
+            for core in target/rust-test-core.*; do
+              [[ -f "$core" ]] || continue
+              gdb --batch "$test_binary" "$core" \
+                -ex 'thread apply all bt' || true
+            done
+          fi
+          exit "$status"
 
       # Handed to the jobs below through the cache rather than an artifact.
       # Nothing outside this run consumes it, and artifact storage is an
