@@ -184,7 +184,9 @@ jobs:
         if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
         run: |
           if [[ -s target/release/gn_out/obj/librusty_v8.a \
-            && -s target/release/gn_out/src_binding.rs ]]; then
+            && -s target/release/gn_out/src_binding.rs ]] || \
+            [[ -s target/release/build/gn_out/obj/librusty_v8.a \
+            && -s target/release/build/gn_out/src_binding.rs ]]; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           fi
 
@@ -197,6 +199,10 @@ jobs:
             target/debug/gn_out/src_binding.rs
             target/release/gn_out/obj/librusty_v8.a
             target/release/gn_out/src_binding.rs
+            target/debug/build/gn_out/obj/librusty_v8.a
+            target/debug/build/gn_out/src_binding.rs
+            target/release/build/gn_out/obj/librusty_v8.a
+            target/release/build/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Run Rust tests

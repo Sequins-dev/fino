@@ -96,6 +96,9 @@ jobs:
         with:
           prefix: ${{ runner.temp }}/fino-protocol-deps
 
+      - name: Test V8 build layout
+        run: python3 tests/build/v8-layout.py
+
       - name: Test V8 compiler wrapper
         run: sh tests/build/v8-compiler-wrapper.sh
 
@@ -107,7 +110,9 @@ jobs:
         if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
         run: |
           if [[ -s target/debug/gn_out/obj/librusty_v8.a \
-            && -s target/debug/gn_out/src_binding.rs ]]; then
+            && -s target/debug/gn_out/src_binding.rs ]] || \
+            [[ -s target/debug/build/gn_out/obj/librusty_v8.a \
+            && -s target/debug/build/gn_out/src_binding.rs ]]; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           fi
 
@@ -120,6 +125,10 @@ jobs:
             target/debug/gn_out/src_binding.rs
             target/release/gn_out/obj/librusty_v8.a
             target/release/gn_out/src_binding.rs
+            target/debug/build/gn_out/obj/librusty_v8.a
+            target/debug/build/gn_out/src_binding.rs
+            target/release/build/gn_out/obj/librusty_v8.a
+            target/release/build/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Run Rust lint
@@ -156,6 +165,9 @@ jobs:
           brew install gnutls libnghttp2 libnghttp3 libngtcp2 llvm openssl@3 sqlite
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
 
+      - name: Test V8 build layout
+        run: python3 tests/build/v8-layout.py
+
       - name: Test V8 compiler wrapper
         run: sh tests/build/v8-compiler-wrapper.sh
 
@@ -167,7 +179,9 @@ jobs:
         if: ${{ !cancelled() && steps.build-cache.outputs.v8-cache-hit != 'true' }}
         run: |
           if [[ -s target/debug/gn_out/obj/librusty_v8.a \
-            && -s target/debug/gn_out/src_binding.rs ]]; then
+            && -s target/debug/gn_out/src_binding.rs ]] || \
+            [[ -s target/debug/build/gn_out/obj/librusty_v8.a \
+            && -s target/debug/build/gn_out/src_binding.rs ]]; then
             echo 'ready=true' >> "$GITHUB_OUTPUT"
           fi
 
@@ -180,6 +194,10 @@ jobs:
             target/debug/gn_out/src_binding.rs
             target/release/gn_out/obj/librusty_v8.a
             target/release/gn_out/src_binding.rs
+            target/debug/build/gn_out/obj/librusty_v8.a
+            target/debug/build/gn_out/src_binding.rs
+            target/release/build/gn_out/obj/librusty_v8.a
+            target/release/build/gn_out/src_binding.rs
           key: ${{ steps.build-cache.outputs.v8-cache-key }}
 
       - name: Run Rust tests
