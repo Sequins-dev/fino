@@ -59,17 +59,17 @@ function screen(pty: PtyHandle): string {
 }
 
 describe('fino:tty/tui terminal input reassembly', () => {
-  it('reassembles escape sequences split across live reads', async (t) => {
-    const session = await echoPty('escape');
+  it('reassembles escape sequences split into separate read results', async (t) => {
+    const source = new TextDecoder().decode(
+      await fs.readFile(new URL('../fixtures/tty-input-split.ts', import.meta.url).pathname),
+    );
+    const session = await echoPty('escape', source);
     try {
-      await session.pty.send('\x1B');
-      await session.pty.send('[');
-      await session.pty.send('A');
+      await session.pty.send('\x1B[A');
       await session.pty.waitFor((term) => term.text().join('').includes('<up>'));
       t.ok(!screen(session.pty).includes('<escape>'), 'the held prefix emits no stray Escape');
 
-      await session.pty.send('\x1B[');
-      await session.pty.send('C');
+      await session.pty.send('\x1B[C');
       await session.pty.waitFor((term) => term.text().join('').includes('<right>'));
       t.ok(true, 'a split before the final byte also decodes');
     } finally {

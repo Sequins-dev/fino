@@ -4,6 +4,8 @@ import { parse as parseYaml } from 'fino:format/yaml';
 
 type WorkflowEnvironment = Record<string, string>;
 type WorkflowStep = {
+  id?: string;
+  'timeout-minutes'?: number;
   name?: string;
   run?: string;
   uses?: string;
@@ -54,9 +56,10 @@ describe('CI workflow', () => {
     const workflow = await readWorkflow();
     const jobs = Object.values(workflow.jobs ?? {});
     const steps = jobs.flatMap((job) => job.steps ?? []);
-    const fullRuns = steps.filter(
-      (step) => step.run === 'FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests',
-    );
+    const fullRuns = steps
+      .flatMap((step) => step.run?.split('\n') ?? [])
+      .map((line) => line.trim().replace(/ \|\| status=\$\?$/, ''))
+      .filter((line) => line === 'FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests');
     t.equal(fullRuns.length, 2, 'Linux and macOS each run the complete parallel suite');
 
     const environments = [
@@ -68,6 +71,30 @@ describe('CI workflow', () => {
       false,
       'CI retains the reactor-scaled default concurrency',
     );
+  });
+
+  it('requires the installed protocol backends on both test platforms', async (t) => {
+    const workflow = await readWorkflow();
+    for (const name of ['linux-tests', 'macos-tests']) {
+      const env = jobDefinition(workflow, name).env;
+      for (const key of ['FINO_REQUIRE_H2', 'FINO_REQUIRE_H3', 'FINO_REQUIRE_TLS']) {
+        t.equal(env?.[key], '1', `${name} requires ${key}`);
+      }
+    }
+  });
+
+  it('reproduces native macOS crashes under a bounded failure-only debugger step', async (t) => {
+    const steps = jobDefinition(await readWorkflow(), 'macos-tests').steps ?? [];
+    const run = steps.find((step) => step.name === 'Run full test suite');
+    const debug = steps.find((step) => step.name === 'Capture macOS crash under LLDB');
+    t.equal(run?.id, 'runtime_tests');
+    t.ok(run?.run?.includes('if [[ "$status" == 139 ]]'));
+    t.ok(run?.run?.includes('echo "native-crash=true" >> "$GITHUB_OUTPUT"'));
+    t.ok(run?.run?.trim().endsWith('exit "$status"'), 'validation preserves the test status');
+    t.equal(debug?.if, "failure() && steps.runtime_tests.outputs.native-crash == 'true'");
+    t.equal(debug?.['timeout-minutes'], 3);
+    t.ok(debug?.run?.includes("-k 'thread backtrace all'"));
+    t.ok(debug?.run?.includes("-k 'process kill'"), 'the debugger retires a stopped inferior');
   });
 
   it('caps every full-suite test job at 15 minutes', async (t) => {

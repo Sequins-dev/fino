@@ -25,6 +25,9 @@ async-executor = "1"
 futures-channel = "0.3"
 blocking = "1"
 
+[target.'cfg(target_os = "linux")'.dependencies]
+io-uring = "0.7"
+
 [build-dependencies]
 cc = "1"
 oxc_allocator = { git = "https://github.com/oxc-project/oxc.git", rev = "990763453c9bddc9f0337ec7ec15a63cc8b0a3d9" }

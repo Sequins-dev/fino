@@ -6,67 +6,7 @@ import * as loop from 'internal:runtime/loop';
 import rootCommand from 'internal:commands/root';
 export const decodeUtf8 = (b: ArrayBuffer | ArrayBufferView): string => new TextDecoder().decode(b);
 
-interface ProtobufField {
-  number: number;
-  value: number | Uint8Array;
-}
-
-function readVarint(bytes: Uint8Array, offset: { value: number }): number {
-  let value = 0;
-  let shift = 0;
-  while (offset.value < bytes.byteLength) {
-    const byte = bytes[offset.value++];
-    value += (byte & 0x7f) * 2 ** shift;
-    if ((byte & 0x80) === 0) return value;
-    shift += 7;
-  }
-  throw new Error('truncated protobuf varint');
-}
-
-function protobufFields(bytes: Uint8Array): ProtobufField[] {
-  const fields: ProtobufField[] = [];
-  const offset = { value: 0 };
-  while (offset.value < bytes.byteLength) {
-    const tag = readVarint(bytes, offset);
-    const number = Math.floor(tag / 8);
-    const wireType = tag & 7;
-    if (wireType === 0) {
-      fields.push({ number, value: readVarint(bytes, offset) });
-      continue;
-    }
-    if (wireType === 2) {
-      const length = readVarint(bytes, offset);
-      const end = offset.value + length;
-      if (end > bytes.byteLength) throw new Error('truncated protobuf field');
-      fields.push({ number, value: bytes.slice(offset.value, end) });
-      offset.value = end;
-      continue;
-    }
-    throw new Error(`unsupported protobuf wire type ${wireType}`);
-  }
-  return fields;
-}
-
-export function pprofThreadLabels(bytes: Uint8Array): string[] {
-  const fields = protobufFields(bytes);
-  const strings = fields
-    .filter((field) => field.number === 6)
-    .map((field) => decodeUtf8(field.value as Uint8Array));
-  const labels: string[] = [];
-  for (const sample of fields.filter((field) => field.number === 2)) {
-    for (const label of protobufFields(sample.value as Uint8Array).filter(
-      (field) => field.number === 3,
-    )) {
-      const labelFields = protobufFields(label.value as Uint8Array);
-      const key = labelFields.find((field) => field.number === 1)?.value;
-      const value = labelFields.find((field) => field.number === 2)?.value;
-      if (typeof key === 'number' && strings[key] === 'thread' && typeof value === 'number') {
-        labels.push(strings[value]);
-      }
-    }
-  }
-  return labels;
-}
+export { pprofThreadLabels } from '../fixtures/pprof.ts';
 async function readAll(reader: AsyncIterable<Uint8Array>): Promise<string> {
   const chunks: Uint8Array[] = [];
   for await (const chunk of reader) chunks.push(chunk);

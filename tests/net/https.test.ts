@@ -8,7 +8,8 @@
  *   openssl req -x509 -newkey rsa:2048 \
  *     -keyout tests/net/fixtures/test.key \
  *     -out tests/net/fixtures/test.crt \
- *     -days 3650 -nodes -subj "/CN=localhost" 2>/dev/null
+ *     -days 3650 -nodes -subj "/CN=localhost" \
+ *     -addext "subjectAltName=DNS:localhost" 2>/dev/null
  */
 import { describe, it } from 'fino:test/test';
 import { serveHttp } from 'fino:net/http/server';

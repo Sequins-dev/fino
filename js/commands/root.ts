@@ -12,7 +12,7 @@
  * script path (`fino app.ts --port 8080`) are forwarded to the script as its
  * own arguments instead of being consumed by the CLI.
  *
- * The runtime entry module (`internal:main`) drives the whole CLI by parsing
+ * The runtime entry module (`internal:scheduler/bootstrap`) drives the whole CLI by parsing
  * `argv` through this task; embedders and tests can invoke the same surface
  * programmatically with `parse()` or `run()`.
  *

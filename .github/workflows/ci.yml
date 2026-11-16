@@ -73,6 +73,7 @@ jobs:
             cmake \
             curl \
             g++ \
+            gdb \
             git \
             libsqlite3-dev \
             make \
@@ -135,7 +136,41 @@ jobs:
         run: cargo clippy
 
       - name: Run Rust tests
-        run: cargo test --quiet
+        run: |
+          # Keep the test executable path independent of Cargo's output layout.
+          cargo test --no-run --message-format=json > target/rust-test-artifacts.jsonl
+          test_binary=$(python3 -c '
+          import json, sys
+          artifacts = [json.loads(line) for line in open(sys.argv[1])]
+          tests = [a["executable"] for a in artifacts
+                   if a.get("reason") == "compiler-artifact"
+                   and a.get("profile", {}).get("test")
+                   and a.get("target", {}).get("name") == "fino"
+                   and a.get("executable")]
+          assert len(tests) == 1, tests
+          print(tests[0])
+          ' target/rust-test-artifacts.jsonl)
+          ulimit -c unlimited
+          sudo sysctl -w "kernel.core_pattern=$PWD/target/rust-test-core.%p" || \
+            echo "::warning::Unable to configure native test core dumps"
+          status=0
+          cargo test -- --nocapture || status=$?
+          if [[ "$status" != 0 ]]; then
+            for core in target/rust-test-core.*; do
+              [[ -f "$core" ]] || continue
+              gdb --batch "$test_binary" "$core" \
+                -ex 'set pagination off' \
+                -ex 'p $_siginfo' \
+                -ex 'info registers' \
+                -ex 'p/x $pkru' \
+                -ex "p/x (void*) 'v8::internal::g_current_isolate_'" \
+                -ex "p/x (unsigned long) 'v8::internal::MainCage::base_'" \
+                -ex 'x/16i $pc' \
+                -ex 'info proc mappings' \
+                -ex 'thread apply all bt full' || true
+            done
+          fi
+          exit "$status"
 
       # Handed to the jobs below through the cache rather than an artifact.
       # Nothing outside this run consumes it, and artifact storage is an
@@ -337,6 +372,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     needs: macos-build
+    env:
+      FINO_REQUIRE_H2: "1"
+      FINO_REQUIRE_H3: "1"
+      FINO_REQUIRE_TLS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -356,5 +395,43 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
+        id: runtime_tests
         timeout-minutes: 10
-        run: FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests
+        run: |
+          # Bound native core output while retaining the original test status.
+          ulimit -c 4194304 || echo "::warning::Unable to enable bounded native cores"
+          sudo sysctl -w kern.coredump=1 "kern.corefile=$PWD/target/macos-test-core.%P" || \
+            echo "::warning::Unable to configure native test core dumps"
+          status=0
+          FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests || status=$?
+          if [[ "$status" == 139 ]]; then
+            echo "native-crash=true" >> "$GITHUB_OUTPUT" || true
+          fi
+          if [[ "$status" != 0 ]]; then
+            for core in target/macos-test-core.*; do
+              [[ -f "$core" ]] || continue
+              lldb --batch --core "$core" ./target/debug/fino \
+                -o 'thread backtrace all' -o 'register read' \
+                -o 'disassemble --pc --count 16' || true
+            done
+            # CrashReporter may provide evidence even when no core was written.
+            for directory in "$HOME/Library/Logs/DiagnosticReports" /Library/Logs/DiagnosticReports; do
+              [[ -d "$directory" ]] || continue
+              find "$directory" -type f \( -name 'fino*.ips' -o -name 'fino*.crash' \) \
+                -mmin -15 -exec cat {} + || true
+            done
+          fi
+          exit "$status"
+
+      - name: Capture macOS crash under LLDB
+        if: failure() && steps.runtime_tests.outputs.native-crash == 'true'
+        timeout-minutes: 3
+        run: |
+          # A live debugger can capture faults when the runner writes no core.
+          # The original validation step remains failed even if this probe passes.
+          FINO_REQUIRE_SQLITE=1 lldb --batch --no-lldbinit \
+            -o 'settings set target.disable-aslr false' \
+            -o 'process handle SIGPROF -p true -s false -n false' -o run \
+            -k 'thread backtrace all' -k 'register read' \
+            -k 'disassemble --pc --count 16' -k 'process kill' \
+            -- ./target/debug/fino test --parallel tests || true

@@ -17,7 +17,7 @@
  * and writes back one `report` frame listing every mechanism it installed, then
  * `execve`s the target. On any failure it writes an `error` frame instead and
  * exits non-zero, so the parent always learns why a launch never reached the
- * target. This module is dispatched from `internal:main` and is not meant to be
+ * target. This module is dispatched from `internal:scheduler/bootstrap` and is not meant to be
  * imported by application code.
  *
  * ```ts no_run
@@ -132,7 +132,7 @@ function seccompInstalledRecords(sandbox: SandboxPolicy): InstalledMechanism[] {
  * ```ts no_run
  * import { runLauncher } from 'internal:security/sandbox/launcher';
  *
- * // Dispatched by internal:main when started as `fino --sandbox-launcher <fd>`.
+ * // Dispatched by internal:scheduler/bootstrap when started as `fino --sandbox-launcher <fd>`.
  * // The parent has already written the LaunchRequest frame to this descriptor.
  * if (argv[1] === '--sandbox-launcher') {
  *   runLauncher(Number(argv[2]));

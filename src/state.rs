@@ -315,6 +315,7 @@ pub struct FinoState {
     pub scheduler_workload_owner: u32,
     /// Whether readiness registrations are routed through the process loop.
     pub uses_process_readiness: bool,
+    pub is_process_entry: bool,
     /// Reports whether a quiescent scheduled workload still needs polling.
     pub scheduler_polling_fn: Option<v8::Global<v8::Function>>,
 
@@ -350,6 +351,7 @@ pub struct FinoState {
     /// Raw pointer to the V8 CpuProfiler, created lazily on first startProfiling
     /// call. Disposed before isolate teardown.
     pub cpu_profiler: Option<*mut std::ffi::c_void>,
+    pub public_profiles: Vec<crate::profiler::PublicProfile>,
     /// Automatic process-profile registration for this Realm. This owns a
     /// separate V8 profiler so the public `fino:profiler` recordings retain
     /// their existing named-profile semantics.
@@ -452,63 +454,8 @@ pub struct FinoState {
 }
 
 impl FinoState {
-    /// Create the root-Realm state (no entry_path, no channels, default import rules).
-    pub fn new_root(
-        process_env: ProcessEnv,
-        package_map_json: Option<String>,
-        root_queue: v8::MicrotaskQueueHandle,
-        import_rules: Vec<ImportRule>,
-    ) -> Self {
-        Self {
-            process_env,
-            package_map_json,
-            root_queue,
-            import_rules,
-            builtin_cache: HashMap::new(),
-            fs_cache: HashMap::new(),
-            builtin_specifiers: HashMap::new(),
-            module_paths: HashMap::new(),
-            source_maps: HashMap::new(),
-            resolve_fn: None,
-            init_meta_fn: None,
-            transpile_fn: None,
-            loop_step_fn: None,
-            on_done_fn: None,
-            scheduler_workload_owner: 0,
-            uses_process_readiness: false,
-            scheduler_polling_fn: None,
-            sync_call_fn: None,
-            sync_call_resolver: None,
-            pending_resolutions: Rc::new(RefCell::new(Vec::new())),
-            tla_resolvers: Vec::new(),
-            cpu_profiler: None,
-            process_profile: None,
-            entry_path: None,
-            terminated: false,
-            reload_requested: false,
-            watch_mode: false,
-            repl_mode: false,
-            realm_data: None,
-            realm_bootstrap_data: None,
-            sandboxed_thread: false,
-            sandbox_cgroup_path: None,
-            reload_requested_signal: None,
-            entry_error: None,
-            port: None,
-            inspector_state: None,
-            channel_rx: None,
-            channel_tx: None,
-            wake_read_fd: None,
-            wake_write_fd: None,
-            process_contexts: Vec::new(),
-            sandbox_contexts: Vec::new(),
-        }
-    }
-
-    /// Create a child-Realm state (embedded, reactor-pooled, or process).
-    ///
-    /// Fields that differ from `new_root` are taken as parameters; all
-    /// module-cache and callback fields start empty/None.
+    /// Create Realm state for reactor and sandbox execution.
+    /// Module caches and callbacks start empty; host inputs are explicit.
     pub fn new_child(
         process_env: ProcessEnv,
         package_map_json: Option<String>,
@@ -543,12 +490,14 @@ impl FinoState {
             on_done_fn: None,
             scheduler_workload_owner: 0,
             uses_process_readiness: false,
+            is_process_entry: false,
             scheduler_polling_fn: None,
             sync_call_fn: None,
             sync_call_resolver: None,
             pending_resolutions: Rc::new(RefCell::new(Vec::new())),
             tla_resolvers: Vec::new(),
             cpu_profiler: None,
+            public_profiles: Vec::new(),
             process_profile: None,
             entry_path,
             terminated: false,

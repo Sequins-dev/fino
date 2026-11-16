@@ -94,6 +94,11 @@ model-calling program.
 
 ## Requirements
 
+On Linux, the runtime requires io_uring for its native readiness host. The
+kernel and deployment policy must permit `io_uring_setup`; containers that deny
+it through seccomp or other restrictions cannot start Fino. There is no poll
+fallback in this execution model.
+
 Native libraries for specific features are optional: install only those for the
 features you use. The current runtime also needs a loadable zlib (`libz`) at
 startup because its global compression and fetch modules import `fino:compress`.

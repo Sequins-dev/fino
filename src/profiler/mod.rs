@@ -26,27 +26,17 @@ unsafe extern "C" {
     fn v8__CpuProfiler__New(isolate: v8::UnsafeRawIsolatePtr) -> *mut c_void;
     fn v8__CpuProfiler__Dispose(profiler: *mut c_void);
     fn v8__CpuProfiler__SetSamplingInterval(profiler: *mut c_void, us: c_int);
-    fn v8__CpuProfiler__StartProfiling(
-        profiler: *mut c_void,
-        title: *const v8::String,
-        record_samples: bool,
-    ) -> c_int;
     fn v8__CpuProfiler__StartWithId(
         profiler: *mut c_void,
         title: *const v8::String,
         record_samples: bool,
     ) -> u32;
-    fn v8__CpuProfiler__StopProfiling(
-        profiler: *mut c_void,
-        title: *const v8::String,
-    ) -> *const c_void;
     fn v8__CpuProfiler__StopById(profiler: *mut c_void, id: u32) -> *const c_void;
 
     fn v8__CpuProfile__Delete(profile: *const c_void);
     fn v8__CpuProfile__GetSamplesCount(profile: *const c_void) -> c_int;
     fn v8__CpuProfile__GetSample(profile: *const c_void, index: c_int) -> *const c_void;
     fn v8__CpuProfile__GetSampleTimestamp(profile: *const c_void, index: c_int) -> i64;
-    fn v8__CpuProfile__GetStartTime(profile: *const c_void) -> i64;
     fn v8__CpuProfile__GetEndTime(profile: *const c_void) -> i64;
 
     fn v8__CpuProfileNode__GetFunctionNameStr(node: *const c_void) -> *const c_char;
@@ -121,7 +111,6 @@ impl ProcessProfileSession {
         if let Some(accumulator) = inner.accumulator.as_mut() {
             accumulator.merge_profile(profile, Some(thread));
         }
-        inner.active_realms = inner.active_realms.saturating_sub(1);
     }
 
     fn abandon(&self) {
@@ -152,8 +141,8 @@ impl ProcessProfileSession {
 
 /// Per-Realm registration for an automatic process profile.
 ///
-/// The V8 profiler remains isolate-owned. Only its final snapshot is traversed
-/// into the shared Rust accumulator, on the Realm's owning isolate thread.
+/// The V8 profiler remains isolate-owned. Each active slice is traversed into
+/// the shared accumulator before migration can change its sampling thread.
 pub(crate) struct RealmProfileRegistration {
     session: Arc<ProcessProfileSession>,
     profiler: *mut c_void,
@@ -175,26 +164,102 @@ impl Drop for RealmProfileRegistration {
 /// This must run while the Realm isolate is entered. It is intentionally
 /// separate from `cpu_profiler`, which backs the public TypeScript API.
 pub(crate) fn finish_realm_profile(state: &mut crate::state::FinoState) {
+    pause_process_profile(state);
     let Some(mut registration) = state.process_profile.take() else {
         return;
     };
+    registration.session.abandon();
+    registration.completed = true;
+}
+
+fn pause_process_profile(state: &mut crate::state::FinoState) {
+    let Some(registration) = state.process_profile.as_mut() else {
+        return;
+    };
+    if registration.profiler.is_null() {
+        return;
+    }
     let profile =
         unsafe { v8__CpuProfiler__StopById(registration.profiler, registration.profiler_id) };
-    if profile.is_null() {
-        registration.session.abandon();
-    } else {
+    if !profile.is_null() {
         registration.session.merge(profile, &registration.thread);
-        unsafe { v8__CpuProfile__Delete(profile) };
+        unsafe {
+            v8__CpuProfile__Delete(profile);
+        }
     }
-    registration.completed = true;
-    unsafe { v8__CpuProfiler__Dispose(registration.profiler) };
+    unsafe {
+        v8__CpuProfiler__Dispose(registration.profiler);
+    }
+    registration.profiler = std::ptr::null_mut();
+}
+
+/// A logical public recording survives native sampler replacement at a yield.
+pub(crate) struct PublicProfile {
+    title: String,
+    id: u32,
+    started_at: i64,
+    started: Instant,
+    accumulator: ProfileAccumulator,
+}
+
+pub(crate) fn pause_profiles(state: &mut crate::state::FinoState) {
+    pause_process_profile(state);
+    if let Some(profiler) = state.cpu_profiler.take() {
+        for recording in &mut state.public_profiles {
+            let profile = unsafe { v8__CpuProfiler__StopById(profiler, recording.id) };
+            if !profile.is_null() {
+                recording.accumulator.merge_profile(profile, None);
+                unsafe {
+                    v8__CpuProfile__Delete(profile);
+                }
+            }
+        }
+        unsafe {
+            v8__CpuProfiler__Dispose(profiler);
+        }
+    }
+}
+
+pub(crate) fn resume_profiles(scope: &mut v8::PinScope, state: &mut crate::state::FinoState) {
+    if !state.public_profiles.is_empty() && state.cpu_profiler.is_none() {
+        let profiler = unsafe { v8__CpuProfiler__New(scope.as_raw_isolate_ptr()) };
+        assert!(!profiler.is_null(), "failed to resume public profiler");
+        unsafe {
+            v8__CpuProfiler__SetSamplingInterval(profiler, 1000);
+        }
+        for recording in &mut state.public_profiles {
+            let title = v8::String::new(scope, &recording.title).unwrap();
+            recording.id = unsafe { v8__CpuProfiler__StartWithId(profiler, &*title, true) };
+            assert_ne!(recording.id, 0, "failed to resume recording");
+        }
+        state.cpu_profiler = Some(profiler);
+    }
+    if let Some(registration) = state.process_profile.as_mut() {
+        if registration.profiler.is_null() {
+            registration.profiler = unsafe { v8__CpuProfiler__New(scope.as_raw_isolate_ptr()) };
+            assert!(
+                !registration.profiler.is_null(),
+                "failed to resume process profiler"
+            );
+            unsafe {
+                v8__CpuProfiler__SetSamplingInterval(registration.profiler, 1000);
+            }
+            let title = v8::String::new(scope, &registration.thread).unwrap();
+            registration.profiler_id =
+                unsafe { v8__CpuProfiler__StartWithId(registration.profiler, &*title, true) };
+            assert_ne!(
+                registration.profiler_id, 0,
+                "failed to resume process recording"
+            );
+        }
+    }
 }
 
 fn realm_profile_name(state: &crate::state::FinoState) -> String {
     state
         .entry_path
         .as_deref()
-        .filter(|entry| !entry.is_empty())
+        .filter(|entry| !entry.is_empty() && *entry != "internal:scheduler/bootstrap")
         .unwrap_or("main")
         .to_string()
 }
@@ -205,6 +270,7 @@ fn start_realm_profile(scope: &mut v8::PinScope) -> Result<(), String> {
         return Ok(());
     };
     let state_rc = get_state(scope);
+
     if state_rc.borrow().process_profile.is_some() {
         return Ok(());
     }
@@ -240,6 +306,21 @@ fn start_realm_profile(scope: &mut v8::PinScope) -> Result<(), String> {
         completed: false,
     });
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn begin_migration_test_profile() {
+    let mut slot = process_profile_slot().lock().unwrap();
+    assert!(slot.is_none());
+    *slot = Some(Arc::new(ProcessProfileSession::new()));
+}
+
+#[cfg(test)]
+pub(crate) fn finish_migration_test_profile(scope: &mut v8::PinScope) -> Vec<u8> {
+    finish_realm_profile(&mut get_state(scope).borrow_mut());
+    let session = process_profile_slot().lock().unwrap().take().unwrap();
+    session.close();
+    session.encode().unwrap()
 }
 
 // ---------------------------------------------------------------------------
@@ -394,6 +475,15 @@ fn start_profiling(
     let state_rc = get_state(scope);
 
     // Lazily create the CpuProfiler.
+    let title_string = title_local.to_rust_string_lossy(scope);
+    if state_rc
+        .borrow()
+        .public_profiles
+        .iter()
+        .any(|p| p.title == title_string)
+    {
+        return;
+    }
     {
         let mut st = state_rc.borrow_mut();
         if st.cpu_profiler.is_none() {
@@ -414,7 +504,16 @@ fn start_profiling(
 
     let profiler = state_rc.borrow().cpu_profiler.unwrap();
     let title_ptr: *const v8::String = &*title_local;
-    unsafe { v8__CpuProfiler__StartProfiling(profiler, title_ptr, true) };
+    let id = unsafe { v8__CpuProfiler__StartWithId(profiler, title_ptr, true) };
+    if id != 0 {
+        state_rc.borrow_mut().public_profiles.push(PublicProfile {
+            title: title_string,
+            id,
+            started_at: unix_time_nanos(),
+            started: Instant::now(),
+            accumulator: ProfileAccumulator::new(),
+        });
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,8 +542,18 @@ fn stop_profiling(
         }
     };
 
-    let title_ptr: *const v8::String = &*title_local;
-    let profile = unsafe { v8__CpuProfiler__StopProfiling(profiler, title_ptr) };
+    let title = title_local.to_rust_string_lossy(scope);
+    let index = state_rc
+        .borrow()
+        .public_profiles
+        .iter()
+        .rposition(|p| title.is_empty() || p.title == title);
+    let Some(index) = index else {
+        v8util::throw_error(scope, "stopProfiling: no matching profile found");
+        return;
+    };
+    let mut recording = state_rc.borrow_mut().public_profiles.remove(index);
+    let profile = unsafe { v8__CpuProfiler__StopById(profiler, recording.id) };
     if profile.is_null() {
         let msg = v8::String::new(scope, "stopProfiling: no matching profile found").unwrap();
         let exc = v8::Exception::error(scope, msg);
@@ -452,7 +561,11 @@ fn stop_profiling(
         return;
     }
 
-    let bytes = convert_to_pprof(profile);
+    recording.accumulator.merge_profile(profile, None);
+    let bytes = recording.accumulator.encode(
+        recording.started_at,
+        recording.started.elapsed().as_nanos().min(i64::MAX as u128) as i64,
+    );
     unsafe { v8__CpuProfile__Delete(profile) };
 
     // Create an ArrayBuffer backed by the encoded bytes and wrap in Uint8Array.
@@ -466,21 +579,6 @@ fn stop_profiling(
 // ---------------------------------------------------------------------------
 // V8 CpuProfile → pprof conversion
 // ---------------------------------------------------------------------------
-
-fn convert_to_pprof(profile: *const c_void) -> Vec<u8> {
-    let start_time = unsafe { v8__CpuProfile__GetStartTime(profile) };
-    let end_time = unsafe { v8__CpuProfile__GetEndTime(profile) };
-    let duration_nanos = (end_time - start_time).max(0).saturating_mul(1000);
-
-    // V8 timestamps are monotonic µs (not unix epoch). Anchor to wall clock:
-    // time_nanos = now_ns - duration_ns gives the approximate profile start time.
-    let mut accumulator = ProfileAccumulator::new();
-    accumulator.merge_profile(profile, None);
-    accumulator.encode(
-        unix_time_nanos().saturating_sub(duration_nanos),
-        duration_nanos,
-    )
-}
 
 /// Shared semantic profile representation. V8 snapshots are traversed into
 /// this structure without producing intermediate protobuf shards.

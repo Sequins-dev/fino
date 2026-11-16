@@ -1,30 +1,12 @@
 /** Regular file EOF must remain observable when another writer truncates it. */
 import { describe, it } from 'fino:test/test';
 import { DiskFileSystem } from 'fino:file';
-import { Realm } from 'fino:realm';
-import { usesProcessReadiness } from 'internal:scheduler-native';
 import { timeout } from 'internal:runtime/loop';
 
 describe('File reads during truncation', () => {
-  if (usesProcessReadiness()) {
-    it('preserves EOF and error behavior in an independently pumped process Realm', async () => {
-      using realm = Realm.fromSource(
-        `
-        const { usesProcessReadiness } = await import('internal:scheduler-native');
-        if (usesProcessReadiness()) throw new Error('expected an independent loop');
-        const { _prepareRun, _runPreparedEntry } = await import('fino:test/test');
-        await import(${JSON.stringify(import.meta.url)});
-        const prepared = _prepareRun();
-        for (let i = 0; i < prepared.count; i++) {
-          const result = await _runPreparedEntry(prepared, i);
-          if (result.failed) throw new Error(JSON.stringify(result.diagnostics));
-        }
-      `,
-        { process: true },
-      );
-      await realm.run();
-    });
-  }
+  // Process entrypoints now use the same reactor driver; there is no separate
+  // process-main JavaScript event loop to exercise here.
+
   for (const afterChunk of [false, true]) {
     it(`observes EOF after truncation ${afterChunk ? 'between chunks' : 'before the first chunk'}`, async (t) => {
       const fs = new DiskFileSystem();
