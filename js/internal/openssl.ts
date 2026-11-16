@@ -96,9 +96,12 @@ const isDarwin = os === 'darwin';
 // On macOS 26+ loading the bare unversioned 'libcrypto.dylib' / 'libssl.dylib'
 // resolves to the system library that no longer has a stable ABI — dyld now
 // aborts instead of warning. Use explicit versioned paths (Homebrew OpenSSL 3
-// or legacy 1.1) and never fall back to the bare name on macOS.
+// or legacy 1.1) and never fall back to the bare name on macOS. Homebrew
+// keeps OpenSSL keg-only, so search its stable opt paths before global links.
 const _cryptoPaths: (string | null)[] = isDarwin
   ? [
+      '/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib',
+      '/usr/local/opt/openssl@3/lib/libcrypto.3.dylib',
       '/opt/homebrew/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.1.1.dylib',
@@ -106,6 +109,8 @@ const _cryptoPaths: (string | null)[] = isDarwin
   : [null, 'libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
 const _sslPaths: (string | null)[] = isDarwin
   ? [
+      '/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib',
+      '/usr/local/opt/openssl@3/lib/libssl.3.dylib',
       '/opt/homebrew/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.1.1.dylib',
