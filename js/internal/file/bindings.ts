@@ -410,7 +410,7 @@ export function readCStr(ptr: object, offset: number): string {
  * Coerce a `Path` or string to an absolute filesystem path for FFI and
  * diagnostics.
  *
- * Non-Path values are converted with `String`. Relative paths resolve from the
+ * Inputs must be strings or `Path` instances. Relative paths resolve from the
  * calling Realm's working directory rather than the host process cwd.
  *
  * ```typescript no_run
@@ -433,7 +433,11 @@ export function _toStr(p: Path | string): string {
  * @internal
  */
 export function _toRawStr(p: Path | string): string {
-  return p instanceof Path ? p.toString() : String(p);
+  if (p instanceof Path) return p.toString();
+  if (typeof p !== 'string') {
+    throw new TypeError(`path must be a string or Path, got ${p === null ? 'null' : typeof p}`);
+  }
+  return p;
 }
 /**
  * Coerce a `Path` or string to an absolute `Path` instance.
