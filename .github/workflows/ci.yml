@@ -159,7 +159,15 @@ jobs:
             for core in target/rust-test-core.*; do
               [[ -f "$core" ]] || continue
               gdb --batch "$test_binary" "$core" \
-                -ex 'thread apply all bt' || true
+                -ex 'set pagination off' \
+                -ex 'p $_siginfo' \
+                -ex 'info registers' \
+                -ex 'p/x $pkru' \
+                -ex "p/x (void*) 'v8::internal::g_current_isolate_'" \
+                -ex "p/x (unsigned long) 'v8::internal::MainCage::base_'" \
+                -ex 'x/16i $pc' \
+                -ex 'info proc mappings' \
+                -ex 'thread apply all bt full' || true
             done
           fi
           exit "$status"
