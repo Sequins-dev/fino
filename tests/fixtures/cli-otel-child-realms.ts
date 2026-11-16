@@ -7,7 +7,7 @@ globalThis.fetch = async function childRealmParentFetch(url) {
 
 const entry = new URL('./cli-otel-realm-child.ts', import.meta.url).pathname;
 
-async function runChild(realm: Realm): Promise<void> {
+async function runChild(realm: Realm, label: string): Promise<void> {
   console.log('child:start');
   const done = new Promise<void>((resolve) => {
     realm.port.onmessage = (ev) => {
@@ -16,6 +16,7 @@ async function runChild(realm: Realm): Promise<void> {
     realm.port.start();
   });
   const running = realm.run();
+  realm.port.postMessage({ type: 'label', label });
   await Promise.race([
     done,
     running.then(() => {
@@ -29,15 +30,15 @@ async function runChild(realm: Realm): Promise<void> {
   await running;
 }
 
-await runChild(new Realm({ entry, data: { label: 'inherited' } }));
+await runChild(new Realm({ entry }), 'inherited');
 console.log('child:inherited:done');
 
 await runChild(
   new Realm({
     entry,
     otlpEndpoint: 'http://override-collector.example:4318/override',
-    data: { label: 'override' },
   }),
+  'override',
 );
 console.log('child:override:done');
 
@@ -45,7 +46,7 @@ await runChild(
   new Realm({
     entry,
     otlpEndpoint: false,
-    data: { label: 'disabled' },
   }),
+  'disabled',
 );
 console.log('child:disabled:done');

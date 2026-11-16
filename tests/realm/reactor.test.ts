@@ -77,9 +77,10 @@ describe('Reactor scheduler native surface', () => {
 
 describe('Reactor-pooled Realm basics', () => {
   it('delivers native completions without a main-controller wake watch', async (t) => {
+    // The existing test bootstrap authorizes this fixture's private host probes.
     const child = new Process(
       execPath,
-      ['run', new URL('./fixtures/native-wake-direct.ts', import.meta.url).pathname],
+      ['test', new URL('./fixtures/native-wake-direct.ts', import.meta.url).pathname],
       {
         env: { ...childEnv(2), FINO_TRACE_READINESS: '1' },
       },
@@ -173,8 +174,9 @@ describe('Reactor-pooled Realm basics', () => {
     );
   });
   it('retires owners that fail before initialization finishes', async (t) => {
+    // Keep the private scheduler probes behind the existing test bootstrap.
     const fixture = new URL('./fixtures/initialization-retirement.ts', import.meta.url).pathname;
-    const child = new Process(execPath, ['run', fixture], { env: childEnv(1) });
+    const child = new Process(execPath, ['test', fixture], { env: childEnv(1) });
     child.stdin.close();
     const [stdout, stderr, result] = await Promise.all([
       readAll(child.stdout),

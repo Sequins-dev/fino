@@ -194,13 +194,19 @@ describe('CLI commands: run', () => {
     );
   });
   it('reports shutdown hook failure when the script succeeds', async (t) => {
-    const { stdout, stderr, result } = await runCli(['./tests/fixtures/shutdown-hook-fails.ts']);
+    // Hook injection is private; use the test bootstrap while retaining the
+    // real CLI shutdown path and its exit/error precedence assertions.
+    const { stdout, stderr, result } = await runCli([
+      'test',
+      './tests/fixtures/shutdown-hook-fails.ts',
+    ]);
     t.equal(result.code, 1, 'shutdown-only failure exits nonzero');
     t.ok(stdout.includes('script completed'), 'script completed before shutdown failed');
     t.ok(stderr.includes('shutdown hook failed'), 'stderr reports hook failure');
   });
   it('keeps the script failure primary when shutdown also fails', async (t) => {
     const { stdout, stderr, result } = await runCli([
+      'test',
       './tests/fixtures/script-and-shutdown-fail.ts',
     ]);
     t.equal(result.code, 1, 'script failure exits nonzero');
