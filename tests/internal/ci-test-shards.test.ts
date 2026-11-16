@@ -4,6 +4,8 @@ import { parse as parseYaml } from 'fino:format/yaml';
 
 type WorkflowEnvironment = Record<string, string>;
 type WorkflowStep = {
+  id?: string;
+  'timeout-minutes'?: number;
   name?: string;
   run?: string;
   uses?: string;
@@ -69,6 +71,20 @@ describe('CI workflow', () => {
       false,
       'CI retains the reactor-scaled default concurrency',
     );
+  });
+
+  it('reproduces native macOS crashes under a bounded failure-only debugger step', async (t) => {
+    const steps = jobDefinition(await readWorkflow(), 'macos-tests').steps ?? [];
+    const run = steps.find((step) => step.name === 'Run full test suite');
+    const debug = steps.find((step) => step.name === 'Capture macOS crash under LLDB');
+    t.equal(run?.id, 'runtime_tests');
+    t.ok(run?.run?.includes('if [[ "$status" == 139 ]]'));
+    t.ok(run?.run?.includes('echo "native-crash=true" >> "$GITHUB_OUTPUT"'));
+    t.ok(run?.run?.trim().endsWith('exit "$status"'), 'validation preserves the test status');
+    t.equal(debug?.if, "failure() && steps.runtime_tests.outputs.native-crash == 'true'");
+    t.equal(debug?.['timeout-minutes'], 3);
+    t.ok(debug?.run?.includes("-k 'thread backtrace all'"));
+    t.ok(debug?.run?.includes("-k 'process kill'"), 'the debugger retires a stopped inferior');
   });
 
   it('caps every full-suite test job at 15 minutes', async (t) => {

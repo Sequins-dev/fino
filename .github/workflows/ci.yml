@@ -391,6 +391,7 @@ jobs:
         run: chmod +x target/debug/fino
 
       - name: Run full test suite
+        id: runtime_tests
         timeout-minutes: 10
         run: |
           # Bound native core output while retaining the original test status.
@@ -399,6 +400,9 @@ jobs:
             echo "::warning::Unable to configure native test core dumps"
           status=0
           FINO_REQUIRE_SQLITE=1 ./target/debug/fino test --parallel tests || status=$?
+          if [[ "$status" == 139 ]]; then
+            echo "native-crash=true" >> "$GITHUB_OUTPUT" || true
+          fi
           if [[ "$status" != 0 ]]; then
             for core in target/macos-test-core.*; do
               [[ -f "$core" ]] || continue
@@ -414,3 +418,16 @@ jobs:
             done
           fi
           exit "$status"
+
+      - name: Capture macOS crash under LLDB
+        if: failure() && steps.runtime_tests.outputs.native-crash == 'true'
+        timeout-minutes: 3
+        run: |
+          # A live debugger can capture faults when the runner writes no core.
+          # The original validation step remains failed even if this probe passes.
+          FINO_REQUIRE_SQLITE=1 lldb --batch --no-lldbinit \
+            -o 'settings set target.disable-aslr false' \
+            -o 'process handle SIGPROF -p true -s false -n false' -o run \
+            -k 'thread backtrace all' -k 'register read' \
+            -k 'disassemble --pc --count 16' -k 'process kill' \
+            -- ./target/debug/fino test --parallel tests || true
