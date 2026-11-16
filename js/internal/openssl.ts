@@ -3,8 +3,9 @@
  *
  * Tries to dlopen OpenSSL at module load time. Linux first resolves the
  * statically linked copy from the Fino executable, while other candidates use
- * platform library paths. Sets `cryptoAvailable` and `tlsAvailable` flags on
- * success/failure. Callers (fino:crypto, fino:tls) check these flags and throw
+ * platform library paths. TLS and crypto symbols resolve through one libssl
+ * dependency graph; optional QUIC symbols must use that same instance. Sets
+ * `cryptoAvailable` and `tlsAvailable` flags on success/failure. Callers (fino:crypto, fino:tls) check these flags and throw
  * descriptive errors if unavailable.
  *
  * This is an internal module — only fino:* built-ins may import it.
@@ -95,27 +96,35 @@ const isDarwin = os === 'darwin';
 // ---------------------------------------------------------------------------
 // On macOS 26+ loading the bare unversioned 'libcrypto.dylib' / 'libssl.dylib'
 // resolves to the system library that no longer has a stable ABI — dyld now
-// aborts instead of warning. Use explicit versioned paths (Homebrew OpenSSL 3
-// or legacy 1.1) and never fall back to the bare name on macOS. Homebrew
+// aborts instead of warning. Use explicit versioned paths (Homebrew OpenSSL 4,
+// 3, or legacy 1.1) and never fall back to the bare name on macOS. Homebrew
 // keeps OpenSSL keg-only, so search its stable opt paths before global links.
 const _cryptoPaths: (string | null)[] = isDarwin
   ? [
+      '/opt/homebrew/opt/openssl@4/lib/libcrypto.4.dylib',
+      '/usr/local/opt/openssl@4/lib/libcrypto.4.dylib',
+      '/opt/homebrew/lib/libcrypto.4.dylib',
+      '/usr/local/lib/libcrypto.4.dylib',
       '/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib',
       '/usr/local/opt/openssl@3/lib/libcrypto.3.dylib',
       '/opt/homebrew/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.3.dylib',
       '/usr/local/lib/libcrypto.1.1.dylib',
     ]
-  : [null, 'libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
+  : [null, 'libcrypto.so.4', 'libcrypto.so.3', 'libcrypto.so.1.1', 'libcrypto.so'];
 const _sslPaths: (string | null)[] = isDarwin
   ? [
+      '/opt/homebrew/opt/openssl@4/lib/libssl.4.dylib',
+      '/usr/local/opt/openssl@4/lib/libssl.4.dylib',
+      '/opt/homebrew/lib/libssl.4.dylib',
+      '/usr/local/lib/libssl.4.dylib',
       '/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib',
       '/usr/local/opt/openssl@3/lib/libssl.3.dylib',
       '/opt/homebrew/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.3.dylib',
       '/usr/local/lib/libssl.1.1.dylib',
     ]
-  : [null, 'libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
+  : [null, 'libssl.so.4', 'libssl.so.3', 'libssl.so.1.1', 'libssl.so'];
 // ---------------------------------------------------------------------------
 // FFI symbol tables
 // ---------------------------------------------------------------------------
@@ -889,9 +898,65 @@ function _tryOpen<TSymbols extends NativeSymbolMap>(
   }
   return null;
 }
-const _libcrypto = _tryOpen(_cryptoPaths, _cryptoSymbols);
-const _libssl = _tryOpen(_sslPaths, _sslSymbols);
-const _libsslQuic = _tryOpen(_sslPaths, _sslQuicSymbols);
+function _samePointer(left: ArrayBuffer, right: ArrayBuffer): boolean {
+  return new DataView(left).getBigUint64(0, true) === new DataView(right).getBigUint64(0, true);
+}
+function _loadLibraries(): {
+  crypto: CryptoLibrary | null;
+  ssl: SslLibrary | null;
+  quic: SslQuicLibrary | null;
+} {
+  for (const path of _sslPaths) {
+    try {
+      // Resolve crypto through libssl's dependency graph, keeping opaque keys,
+      // certificates, contexts, and sessions in the same OpenSSL instance.
+      const library = dlopen(path, { ..._cryptoSymbols, ..._sslSymbols });
+      const quic = _tryOpen([path], _sslQuicSymbols);
+      return {
+        crypto: library,
+        ssl: library,
+        quic:
+          quic !== null && _samePointer(quic.pointers.SSL_CTX_new, library.pointers.SSL_CTX_new)
+            ? quic
+            : null,
+      };
+    } catch {}
+  }
+  return { crypto: _tryOpen(_cryptoPaths, _cryptoSymbols), ssl: null, quic: null };
+}
+const { crypto: _libcrypto, ssl: _libssl, quic: _libsslQuic } = _loadLibraries();
+
+/**
+ * Check whether a native extension uses this Realm's OpenSSL instance.
+ *
+ * Compare resolved SSL allocator and crypto release function addresses before
+ * sharing opaque OpenSSL objects. Matching version strings alone do not prove
+ * that two loaded libraries share an instance. `pointers` supplies the resolved
+ * `SSL_new` and `EVP_PKEY_free` addresses as native pointer buffers in this
+ * process. Keep the extension library alive while sharing its native objects.
+ * Missing TLS or crypto support returns `false`; this function never calls the
+ * supplied native addresses.
+ *
+ * ```ts no_run
+ * import { isOpenSslLibraryCompatible } from 'internal:openssl';
+ * if (!isOpenSslLibraryCompatible(extension.pointers)) {
+ *   throw new Error('extension uses a different OpenSSL instance');
+ * }
+ * ```
+ *
+ * @internal
+ */
+export function isOpenSslLibraryCompatible(pointers: {
+  SSL_new: ArrayBuffer;
+  EVP_PKEY_free: ArrayBuffer;
+}): boolean {
+  return (
+    _libssl !== null &&
+    _libcrypto !== null &&
+    _samePointer(pointers.SSL_new, _libssl.pointers.SSL_new) &&
+    _samePointer(pointers.EVP_PKEY_free, _libcrypto.pointers.EVP_PKEY_free)
+  );
+}
 /**
  * Whether libcrypto was loaded successfully.
  *

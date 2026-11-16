@@ -372,6 +372,10 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 15
     needs: macos-build
+    env:
+      FINO_REQUIRE_H2: "1"
+      FINO_REQUIRE_H3: "1"
+      FINO_REQUIRE_TLS: "1"
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

@@ -73,6 +73,16 @@ describe('CI workflow', () => {
     );
   });
 
+  it('requires the installed protocol backends on both test platforms', async (t) => {
+    const workflow = await readWorkflow();
+    for (const name of ['linux-tests', 'macos-tests']) {
+      const env = jobDefinition(workflow, name).env;
+      for (const key of ['FINO_REQUIRE_H2', 'FINO_REQUIRE_H3', 'FINO_REQUIRE_TLS']) {
+        t.equal(env?.[key], '1', `${name} requires ${key}`);
+      }
+    }
+  });
+
   it('reproduces native macOS crashes under a bounded failure-only debugger step', async (t) => {
     const steps = jobDefinition(await readWorkflow(), 'macos-tests').steps ?? [];
     const run = steps.find((step) => step.name === 'Run full test suite');

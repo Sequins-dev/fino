@@ -3,8 +3,8 @@
  *
  * This module `dlopen`s `libngtcp2_crypto_ossl` and binds the crypto callbacks,
  * session configuration entry points, and token helpers ngtcp2 needs to drive a
- * QUIC handshake through OpenSSL's native QUIC TLS API (OpenSSL 3.5+). It is the
- * preferred crypto backend for QUIC; `crypto-gnutls.ts` is the fallback used
+ * QUIC handshake through OpenSSL's native QUIC TLS API (OpenSSL 3.5+ or 4.x).
+ * It is the preferred crypto backend for QUIC; `crypto-gnutls.ts` is the fallback used
  * where a suitable OpenSSL is unavailable. Both sit behind the generic
  * `crypto.ts` adapter so that public QUIC APIs never expose OpenSSL- or
  * GnuTLS-specific types.
@@ -12,8 +12,9 @@
  * Loading is best effort. At import time the module walks a list of
  * platform-specific candidates. Linux first resolves the statically linked copy
  * from the Fino executable, while macOS tries Homebrew and MacPorts; both retain
- * system-library fallbacks. If none is found the module still imports cleanly,
- * but every accessor reports the backend as unavailable and
+ * system-library fallbacks. Function identities must match the runtime
+ * OpenSSL binding before any opaque handle is shared. If none is compatible,
+ * the module still imports cleanly, but accessors report it as unavailable and
  * `requireCryptoOssl()` throws with install guidance. Callers should branch on
  * `cryptoOsslAvailable` (or the unified `cryptoAvailable` in `crypto.ts`) before
  * touching `sym`, `ptr`, or `newCryptoOsslContext()`.
@@ -41,8 +42,9 @@
  *
  * @internal
  */
-import { dlopen, Pointer } from 'fino:ffi';
+import { dlopen, Pointer, type DynamicLibrary, type NativeSymbolMap } from 'fino:ffi';
 import { os } from 'internal:process';
+import { isOpenSslLibraryCompatible } from '../../../openssl.ts';
 /**
  * Re-export of the `fino:ffi` `Pointer` helper.
  *
@@ -69,6 +71,9 @@ const _CANDIDATES = _IS_DARWIN
       '/usr/local/lib/libngtcp2_crypto_ossl.so',
     ];
 const _SYMBOLS = {
+  SSL_new: { parameters: ['pointer'], result: 'pointer' },
+  EVP_PKEY_free: { parameters: ['pointer'], result: 'void' },
+  SSL_set_quic_tls_cbs: { parameters: ['pointer', 'pointer', 'pointer'], result: 'i32' },
   ngtcp2_crypto_ossl_init: {
     parameters: [],
     result: 'i32',
@@ -189,16 +194,22 @@ const _SYMBOLS = {
     parameters: ['buffer', 'usize', 'u32', 'pointer', 'pointer', 'pointer', 'buffer', 'usize'],
     result: 'isize',
   },
-};
-let _lib: ReturnType<typeof dlopen> | null = null;
+} satisfies NativeSymbolMap;
+let _lib: DynamicLibrary<typeof _SYMBOLS> | null = null;
+let _incompatibleOpenSsl = false;
 for (const path of _CANDIDATES) {
   try {
-    _lib = dlopen(path, _SYMBOLS);
+    const library = dlopen(path, _SYMBOLS);
+    if (!isOpenSslLibraryCompatible(library.pointers)) {
+      _incompatibleOpenSsl = true;
+      continue;
+    }
+    _lib = library;
     break;
   } catch {}
 }
 /**
- * Whether `libngtcp2_crypto_ossl` was found and opened at import time.
+ * Whether a compatible `libngtcp2_crypto_ossl` was opened at import time.
  *
  * When `false`, `sym`, `ptr`, and `cryptoBackend` are all `null`, and any
  * call into the backend must be avoided. `crypto.ts` folds this into the
@@ -258,11 +269,17 @@ export const ptr = _lib?.pointers ?? null;
  * lib.symbols.ngtcp2_crypto_ossl_init();
  * ```
  */
-export function requireCryptoOssl(): ReturnType<typeof dlopen> {
+export function requireCryptoOssl(): DynamicLibrary<typeof _SYMBOLS> {
   if (_lib === null) {
+    if (_incompatibleOpenSsl) {
+      throw new Error(
+        'libngtcp2_crypto_ossl uses incompatible OpenSSL libraries; ' +
+          'the adapter must use the same libssl and libcrypto instances as the runtime',
+      );
+    }
     throw new Error(
       'libngtcp2_crypto_ossl not found. Install via:\n' +
-        '  macOS:  brew install libngtcp2 openssl@3\n' +
+        '  macOS:  brew install libngtcp2\n' +
         '  Ubuntu: apt install libngtcp2-crypto-ossl0',
     );
   }

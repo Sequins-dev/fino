@@ -46,6 +46,7 @@
       "internal:serial-executor": ["./js/internal/serial-executor.ts"],
       "internal:load": ["./js/internal/load.ts"],
       "internal:statistics": ["./js/internal/statistics.ts"],
+      "internal:net/quic/ngtcp2/*": ["./js/internal/net/quic/ngtcp2/*.ts"],
       "internal:net/http/h3": ["./js/net/http/h3.ts"],
       "internal:tty/*": ["./js/internal/tty/*.ts"],
       "internal:file/*": ["./js/file/*.ts"],

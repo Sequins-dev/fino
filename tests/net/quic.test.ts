@@ -84,8 +84,8 @@ import {
   TP_STATELESS_RESET_TOKEN_PRESENT,
   Pointer,
   sym as ngtcp2Sym,
-} from '../../js/internal/net/quic/ngtcp2/bindings.ts';
-import { sym as cryptoSym } from '../../js/internal/net/quic/ngtcp2/crypto.ts';
+} from 'internal:net/quic/ngtcp2/bindings';
+import { sym as cryptoSym } from 'internal:net/quic/ngtcp2/crypto';
 import { publishNetworkTopic } from 'internal:net/quic/core';
 import {
   quicConnectionInternals,
