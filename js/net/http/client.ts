@@ -15,6 +15,10 @@
  * while establishing the public client/session surface. Sessions own bounded
  * physical transport slots: HTTP/1.1 leases one request at a time and reuses a
  * slot after response EOF, while HTTP/2 and HTTP/3 multiplex bounded streams.
+ * Connections are isolated by effective trust, verification, client identity,
+ * and QUIC options. Request-specific policies remain owned by the session and
+ * are all released on reconnect or close. File options identify paths; rotate
+ * their contents only after closing the owning client.
  * HTTP/2 and HTTP/3 WebSocket attempts reject with a clear Extended CONNECT
  * error until those transports support it.
  *
@@ -41,6 +45,8 @@
  * - WebSocket: https://www.rfc-editor.org/rfc/rfc6455
  */
 import { onAbort, abortScope } from 'internal:abort';
+import { resolveQuicOptions } from '../../internal/net/quic/core.ts';
+import { connectionSecurityKey } from '../../internal/net/http/pool.ts';
 import { collectBytes } from 'internal:bytes';
 import { Headers, Request, Response, buildWireResponse } from './index.ts';
 import {
@@ -1177,7 +1183,7 @@ export class HttpSession {
   #state: 'connecting' | 'ready' | 'draining' | 'closed' = 'ready';
   #currentConnection: HttpConnectionInfo | null = null;
   #events: HttpSessionEvent[] = [];
-  #h3Transports = new Map<number, H3Transport>();
+  #h3Transports = new Map<string, H3Transport>();
   #activeBySlot: number[];
   #slotEstablished: boolean[];
   #capacityWaiters: CapacityWaiter[] = [];
@@ -1323,23 +1329,36 @@ export class HttpSession {
       }),
     );
   }
+  #h3Options(url: URL, init: Pick<HttpRequestInit, 'tls' | 'quic'> = {}) {
+    const tls = init.tls ?? this.#client.tls;
+    const quic = init.quic ?? {
+      ca: tls?.ca === undefined ? undefined : _quicCaFromTls(tls.ca),
+      verifyPeer: tls?.rejectUnauthorized !== false,
+      certificateFile: tls?.cert,
+      privateKeyFile: tls?.key,
+    };
+    return {
+      ...quic,
+      verifyPeer: quic.verifyPeer ?? false,
+      serverName: quic.serverName ?? url.hostname.replace(/^\[|\]$/g, ''),
+    };
+  }
+  #h3PolicyKey(url: URL, init: Pick<HttpRequestInit, 'tls' | 'quic'> = {}): string {
+    const quic = this.#h3Options(url, init);
+    return connectionSecurityKey({ ...quic, ...resolveQuicOptions(quic) });
+  }
   async #ensureH3Transport(
     url: URL,
     slot: number,
     init: Pick<HttpRequestInit, 'tls' | 'quic'> = {},
     connectTimeout?: number,
   ): Promise<H3Transport> {
-    let transport = this.#h3Transports.get(slot);
+    const quic = this.#h3Options(url, init);
+    const key = `${slot}:${this.#h3PolicyKey(url, init)}`;
+    const transport = this.#h3Transports.get(key);
     if (transport !== undefined) return transport;
     const target = await resolveH3ConnectAddress(url);
     const endpoint = new QuicEndpoint({ alpnProtocols: ['h3'] });
-    const tls = init.tls ?? this.#client.tls;
-    const quic = init.quic ?? {
-      ...(tls?.ca !== undefined ? { ca: _quicCaFromTls(tls.ca) } : {}),
-      ...(tls?.rejectUnauthorized === false ? { verifyPeer: false } : {}),
-      ...(tls?.cert !== undefined ? { certificateFile: tls.cert } : {}),
-      ...(tls?.key !== undefined ? { privateKeyFile: tls.key } : {}),
-    };
     try {
       const conn = await withDeadline(
         endpoint.connect({
@@ -1351,7 +1370,7 @@ export class HttpSession {
         connectTimeout,
         'HTTP/3 connection timeout',
       );
-      return await this.#attachH3Connection(conn, endpoint, slot, url.origin);
+      return await this.#attachH3Connection(conn, endpoint, key, url.origin);
     } catch (error) {
       await endpoint.close();
       throw error;
@@ -1360,7 +1379,7 @@ export class HttpSession {
   async #attachH3Connection(
     conn: QuicConnection,
     endpoint: QuicEndpoint,
-    slot: number,
+    slot: string,
     origin?: string,
   ): Promise<H3Transport> {
     const h3 = await H3ClientSession.create(conn, { origin });
@@ -1393,7 +1412,7 @@ export class HttpSession {
   async _attachH3TransportForTest(conn: QuicConnection): Promise<void> {
     await this.#closeH3Transports();
     const endpoint = { close: async () => {} } as QuicEndpoint;
-    await this.#attachH3Connection(conn, endpoint, 0);
+    await this.#attachH3Connection(conn, endpoint, `0:${this.#h3PolicyKey(new URL(this.origin))}`);
   }
   async #h3Request(
     url: URL,
@@ -1568,9 +1587,10 @@ export class HttpSession {
           /connection|session closed|GOAWAY|going away|transport/i.test(message) &&
           !/body idle|response headers|total timeout/i.test(message);
         if (this.protocol === 'h3' && slot !== -1 && connectionFailed) {
-          const transport = this.#h3Transports.get(slot);
+          const key = `${slot}:${this.#h3PolicyKey(url, init)}`;
+          const transport = this.#h3Transports.get(key);
           if (transport !== undefined) {
-            this.#h3Transports.delete(slot);
+            this.#h3Transports.delete(key);
             transport.session.close();
             await transport.endpoint.close().catch(() => {});
           }
@@ -1714,9 +1734,7 @@ export class HttpSession {
     });
     await this.#closeH3Transports();
     await Promise.all(
-      this.#activeBySlot.map((_, slot) =>
-        _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`, this.#client.tls),
-      ),
+      this.#activeBySlot.map((_, slot) => _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`)),
     );
     this.#currentConnection = null;
   }
@@ -1737,9 +1755,7 @@ export class HttpSession {
     }
     await this.#closeH3Transports();
     await Promise.all(
-      this.#activeBySlot.map((_, slot) =>
-        _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`, this.#client.tls),
-      ),
+      this.#activeBySlot.map((_, slot) => _closeFetchPoolSlot(this.origin, `${this.id}:${slot}`)),
     );
     this.#events.push({
       type: 'closed',
