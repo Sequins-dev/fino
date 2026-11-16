@@ -1,4 +1,3 @@
-import { getRealmData } from 'internal:realm-bridge';
 import { getLoggerProvider, getMeterProvider, getTracerProvider } from 'fino:opentelemetry';
 import { port } from 'fino:realm/self';
 
@@ -16,7 +15,12 @@ if (activePort === undefined) {
 
 // Child logs may arrive after a parent lifecycle marker. Attribute exports by
 // Realm identity rather than their position in the combined stdout stream.
-const { label } = JSON.parse(getRealmData()!);
+const label = await new Promise<string>((resolve) => {
+  activePort.onmessage = (event) => {
+    if (event.data?.type === 'label') resolve(event.data.label);
+  };
+  activePort.start();
+});
 if (!['inherited', 'override', 'disabled'].includes(label))
   throw new Error('missing OTEL fixture label');
 

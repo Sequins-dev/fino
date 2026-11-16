@@ -10,7 +10,14 @@ import { MessageEvent } from 'fino:net/http/websocket';
 import { h2Available } from '../../js/net/http/h2.ts';
 import { h3Available, serve as h3Serve } from 'internal:net/http/h3';
 import { quicAvailable } from 'fino:net/quic';
-import { _fetchH2PoolHas, _resetFetchH2Pool } from 'internal:globals/fetch';
+import {
+  fetch as pooledFetch,
+  _resetFetchH3Pool,
+  _fetchH2PoolHas,
+  _fetchH3PoolHas,
+  _fetchH1PoolState,
+  _resetFetchH2Pool,
+} from 'internal:globals/fetch';
 import type { Event, EventTarget } from 'internal:globals/eventtarget';
 import * as loop from 'internal:runtime/loop';
 import { VirtualTimerQueue } from 'internal:runtime/virtual-timers';
@@ -726,4 +733,168 @@ describe('HttpClient realtime helpers', () => {
       await client.close();
     }
   });
+});
+
+describe('connection security policy isolation', { exclusive: true }, () => {
+  for (const protocol of ['h2', 'h3'] as const) {
+    it(
+      `global fetch ${protocol} verifies after an insecure request`,
+      { skip: protocol === 'h3' ? skipH3 : skipH2 },
+      async (t) => {
+        const server =
+          protocol === 'h3'
+            ? await h3Serve(
+                {
+                  hostname: '127.0.0.1',
+                  port: 0,
+                  certificateFile: CERT_PATH,
+                  privateKeyFile: KEY_PATH,
+                },
+                () => new Response('ok'),
+              )
+            : serveHttp(
+                {
+                  port: 0,
+                  idleTimeoutMs: 100,
+                  headersTimeoutMs: 100,
+                  tls: { cert: CERT_PATH, key: KEY_PATH },
+                },
+                () => new Response('ok'),
+              );
+        try {
+          const url = `https://127.0.0.1:${server.port}/`;
+          const insecure = await pooledFetch(url, { protocol, tls: { rejectUnauthorized: false } });
+          t.equal(await insecure.text(), 'ok');
+          await t.rejects(async () => {
+            const strict = await pooledFetch(url, { protocol });
+            await strict.text();
+          }, /certificate|verify|TLS|handshake|QUIC|ERR_CRYPTO/i);
+          if (protocol === 'h3')
+            t.ok(
+              _fetchH3PoolHas(`https://127.0.0.1:${server.port}`),
+              'failed strict policy does not evict the insecure policy',
+            );
+        } finally {
+          await _resetFetchH2Pool();
+          await _resetFetchH3Pool();
+          await server.close();
+        }
+      },
+    );
+  }
+  for (const protocol of ['http/1.1', 'h2', 'h3'] as const) {
+    it(
+      `${protocol} cannot reuse an insecure connection for a strict request`,
+      {
+        skip:
+          protocol === 'h3'
+            ? skipH3
+            : protocol === 'h2'
+              ? skipH2
+              : !tlsAvailable && 'requires OpenSSL',
+      },
+      async (t) => {
+        const server =
+          protocol === 'h3'
+            ? await h3Serve(
+                {
+                  hostname: '127.0.0.1',
+                  port: 0,
+                  certificateFile: CERT_PATH,
+                  privateKeyFile: KEY_PATH,
+                },
+                () => new Response('ok'),
+              )
+            : serveHttp(
+                {
+                  port: 0,
+                  idleTimeoutMs: 100,
+                  headersTimeoutMs: 100,
+                  tls: { cert: CERT_PATH, key: KEY_PATH },
+                },
+                () => new Response('ok'),
+              );
+        const client = new HttpClient();
+        try {
+          const session = await client.session(`https://127.0.0.1:${server.port}`, { protocol });
+          const first = await session.request({ path: '/', tls: { rejectUnauthorized: false } });
+          await first.text();
+          const second = await session.request({ path: '/', tls: { rejectUnauthorized: false } });
+          await second.text();
+          t.equal(second.connection?.id, first.connection?.id, 'same policy reuses connection');
+          await t.rejects(async () => {
+            const strict = await session.request({ path: '/', tls: { rejectUnauthorized: true } });
+            await strict.text();
+          }, /certificate|verify|TLS|handshake|QUIC|ERR_CRYPTO/i);
+          const withCa = await session.request({
+            path: '/',
+            tls: { rejectUnauthorized: false, ca: CERT_PATH },
+          });
+          await withCa.text();
+          t.notEqual(withCa.connection?.id, second.connection?.id, 'CA policy is isolated');
+          const withIdentity = await session.request({
+            path: '/',
+            tls: { rejectUnauthorized: false, cert: CERT_PATH, key: KEY_PATH },
+          });
+          await withIdentity.text();
+          t.notEqual(
+            withIdentity.connection?.id,
+            second.connection?.id,
+            'client identity is isolated',
+          );
+          if (protocol === 'h3') {
+            const named = await session.request({
+              path: '/',
+              quic: { verifyPeer: false, serverName: 'localhost' },
+            });
+            await named.text();
+            const renamed = await session.request({
+              path: '/',
+              quic: { serverName: 'other.test', verifyPeer: false },
+            });
+            await renamed.text();
+            t.notEqual(
+              renamed.connection?.id,
+              named.connection?.id,
+              'QUIC server name is isolated',
+            );
+            const again = await session.request({
+              path: '/',
+              quic: { verifyPeer: false, serverName: 'localhost' },
+            });
+            await again.text();
+            t.equal(
+              again.connection?.id,
+              named.connection?.id,
+              'equivalent QUIC options reuse connection',
+            );
+          }
+          await session.reconnect();
+          const reconnected = await session.request({
+            path: '/',
+            tls: { rejectUnauthorized: false },
+          });
+          await reconnected.text();
+          t.notEqual(
+            reconnected.connection?.id,
+            first.connection?.id,
+            'reconnect releases old policy entries',
+          );
+          await client.close();
+          t.ok(
+            !_fetchH1PoolState().some((entry) => entry.key.includes(session.id)),
+            'close releases every H1 policy',
+          );
+          t.ok(
+            !_fetchH2PoolHas(`https://127.0.0.1:${server.port}`),
+            'close releases every H2 policy',
+          );
+        } finally {
+          await client.close();
+          await _resetFetchH2Pool();
+          await server.close();
+        }
+      },
+    );
+  }
 });

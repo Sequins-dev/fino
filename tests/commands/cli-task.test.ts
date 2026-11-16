@@ -1,5 +1,6 @@
 /** CLI task integration tests. */
 import { describe, it } from 'fino:test/test';
+import { DiskFileSystem } from 'fino:file';
 import { runCli, withTempProject } from './cli-test-helpers.ts';
 
 describe('CLI commands: task', () => {
@@ -29,14 +30,27 @@ describe('CLI commands: task', () => {
     );
   });
   it('runs every CLI command inside a process-reactor workload', async (t) => {
+    // Inject only the two observations this assertion needs into the trusted
+    // command builtin. The project task receives no private import permission.
+    const commandSource = new TextDecoder().decode(
+      await new DiskFileSystem().readFile('js/commands/task.ts'),
+    );
     await withTempProject(
       {
+        'builtins/commands/task.mts': [
+          "import { currentWorkloadOwner, usesProcessReadiness } from 'internal:scheduler-native';",
+          "globalThis[Symbol.for('fino.test.schedulerState')] = { currentWorkloadOwner, usesProcessReadiness };",
+          commandSource,
+        ].join('\n'),
         'tasks/location.ts': [
           "import { task } from 'fino:task';",
-          "import { currentWorkloadOwner, usesProcessReadiness } from 'internal:scheduler-native';",
+          "const { currentWorkloadOwner, usesProcessReadiness } = globalThis[Symbol.for('fino.test.schedulerState')];",
           'export default task({',
           "  name: 'location',",
           '  run: async (_input, ctx) => {',
+          '    let privateImportBlocked = false;',
+          "    try { await import('internal:scheduler-native'); } catch (error) { privateImportBlocked = String(error).includes('blocked'); }",
+          "    if (!privateImportBlocked) throw new Error('fixture granted private imports');",
           "    const leaked = Object.getOwnPropertyNames(globalThis).filter((name) => name.startsWith('__fino'));",
           '    await ctx.writer.writeText(',
           '      `reactor:${usesProcessReadiness()}:${currentWorkloadOwner() > 0}:${leaked.length}\\n`,',
@@ -47,7 +61,13 @@ describe('CLI commands: task', () => {
         ].join('\n'),
       },
       async (dir) => {
-        const { stdout, stderr, result } = await runCli(['task', 'location'], { cwd: dir });
+        const { stdout, stderr, result } = await runCli(['task', 'location'], {
+          cwd: dir,
+          env: {
+            FINO_BUILTIN_SOURCE_ROOT: dir + '/builtins',
+            FINO_BUILTIN_SOURCE_FILTER: 'fino:commands/task',
+          },
+        });
         t.equal(result.code, 0, 'project task exits successfully');
         t.equal(stderr, '', 'project task does not write stderr');
         t.ok(

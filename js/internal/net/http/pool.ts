@@ -1086,3 +1086,50 @@ export function createPoolEntry(
   entry = new H2PoolEntry(session, reader, writer, options);
   return entry;
 }
+
+const policyObjects = new WeakMap<object, number>();
+let policyObjectSeq = 0;
+function policyObjectId(value: object): number {
+  let id = policyObjects.get(value);
+  if (id === undefined) {
+    id = ++policyObjectSeq;
+    policyObjects.set(value, id);
+  }
+  return id;
+}
+function policyValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (typeof value === 'bigint') return ['bigint', value.toString()];
+  if (typeof value === 'function') return ['identity', policyObjectId(value)];
+  if (value instanceof Uint8Array) return ['bytes', Array.from(value)];
+  if (Array.isArray(value)) return value.map(policyValue);
+  if (value !== null && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => [key, policyValue(value[key])]);
+  }
+  return value;
+}
+/**
+ * Canonical per-Realm connection policy identity for HTTP pools.
+ *
+ * Pass effective connection options, with verification and server-name defaults
+ * applied by the transport adapter. Records ignore insertion order and omitted
+ * undefined fields; byte trust material is compared by content. Session stores
+ * are stateful capabilities and are compared by identity, never by their data.
+ * This key describes configured paths, not subsequent changes to file contents.
+ *
+ * @internal
+ */
+export function connectionSecurityKey(options: Record<string, unknown>): string {
+  const { sessionStore, ...values } = options;
+  return JSON.stringify(
+    policyValue({
+      ...values,
+      ...(sessionStore === undefined
+        ? {}
+        : { sessionStore: policyObjectId(sessionStore as object) }),
+    }),
+  );
+}

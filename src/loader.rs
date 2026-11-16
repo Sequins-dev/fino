@@ -1395,7 +1395,8 @@ pub fn resolve_module_callback<'s>(
         let d = crate::state::resolve_directive(&st.import_rules, from_spec.as_deref(), &spec);
         matches!(
             d,
-            Some(ImportDirective::Remap { .. })
+            Some(ImportDirective::Block)
+                | Some(ImportDirective::Remap { .. })
                 | Some(ImportDirective::Source { .. })
                 | Some(ImportDirective::Facade(..))
                 | Some(ImportDirective::Installed { .. })
@@ -1409,7 +1410,7 @@ pub fn resolve_module_callback<'s>(
         .script_id()
         .and_then(|id| state_rc.borrow().module_paths.get(&id).cloned())
         .and_then(|p| p.parent().map(|p| p.to_path_buf()));
-    let path = resolve_fs_specifier(scope, &spec, referrer_dir.as_deref())?;
+    let path = resolve_fs_specifier(scope, &spec, referrer_dir.as_deref(), from_spec.as_deref())?;
     get_or_load_fs_module(scope, &path)
 }
 
@@ -1600,6 +1601,11 @@ pub fn dynamic_import_callback<'s>(
     let promise = resolver.get_promise(scope);
     let raw_spec = specifier.to_rust_string_lossy(scope);
     let referrer_url = referrer_from_hdo(scope, host_defined_options, resource_name);
+    // Source entrypoints may carry an absolute path rather than a file URL.
+    // Use the same importer identity as static module resolution.
+    let referrer_url = source_specifier_path(&referrer_url)
+        .map(|path| file_url_from_path(&path))
+        .unwrap_or(referrer_url);
     let referrer_is_user_code = referrer_url.starts_with("file://");
 
     // Resolve builtin-relative specifiers (e.g. './loop.ts' from a builtin).
@@ -1683,7 +1689,8 @@ pub fn dynamic_import_callback<'s>(
             let d = crate::state::resolve_directive(&st.import_rules, Some(&referrer_url), &spec);
             matches!(
                 d,
-                Some(ImportDirective::Remap { .. })
+                Some(ImportDirective::Block)
+                    | Some(ImportDirective::Remap { .. })
                     | Some(ImportDirective::Source { .. })
                     | Some(ImportDirective::Facade(..))
                     | Some(ImportDirective::Installed { .. })
@@ -1692,7 +1699,7 @@ pub fn dynamic_import_callback<'s>(
         if has_directive {
             get_or_load_builtin(tc, &spec, Some(&referrer_url))
         } else {
-            resolve_fs_specifier(tc, &spec, referrer_dir.as_deref())
+            resolve_fs_specifier(tc, &spec, referrer_dir.as_deref(), Some(&referrer_url))
                 .and_then(|p| get_or_load_fs_module(tc, &p))
         }
     };
@@ -1783,6 +1790,15 @@ fn referrer_from_hdo(
     }
 }
 
+// Realm construction authorizes the entrypoint separately from its imports.
+// Only runtime bootstrap code can exercise this exception.
+fn is_realm_entry_import(scope: &mut v8::PinScope, from: Option<&str>, spec: &str) -> bool {
+    if !matches!(from, Some("internal/bootstrap.mjs" | "internal:bootstrap")) {
+        return false;
+    }
+    get_state(scope).borrow().entry_path.as_deref() == Some(spec)
+}
+
 /// Resolve a filesystem specifier to an absolute `PathBuf`.
 ///
 /// Delegates to the JS `resolve_fn` callback if one has been registered by
@@ -1791,6 +1807,7 @@ fn resolve_fs_specifier(
     scope: &mut v8::PinScope,
     spec: &str,
     referrer_dir: Option<&Path>,
+    from: Option<&str>,
 ) -> Option<PathBuf> {
     let state_rc = get_state(scope);
     let (resolve_fn, root) = {
@@ -1800,7 +1817,7 @@ fn resolve_fs_specifier(
         (resolve_fn, root)
     };
 
-    if let Some(func) = resolve_fn {
+    let path = if let Some(func) = resolve_fn {
         let root_str = v8::String::new(scope, &root.to_string_lossy())?;
         let spec_val: v8::Local<v8::Value> = v8::String::new(scope, spec)?.into();
         let this = v8::undefined(scope).into();
@@ -1822,7 +1839,38 @@ fn resolve_fs_specifier(
                 None
             }
         }
+    }?;
+    if is_realm_entry_import(scope, from, spec) {
+        return Some(path);
     }
+    // A canonical path and its file URL name the same target. Evaluate them
+    // together so an explicit path allow survives a deny-all baseline, while
+    // later target denies still cover relative, package and symlink aliases.
+    let url = file_url_from_path(&path);
+    let path_string = path.to_string_lossy();
+    let blocked = {
+        let st = state_rc.borrow();
+        st.import_rules
+            .iter()
+            .rev()
+            .find(|rule| {
+                rule.from
+                    .as_ref()
+                    .is_none_or(|pattern| pattern.matches(from.unwrap_or("")))
+                    && (rule.pattern.matches(&path_string) || rule.pattern.matches(&url))
+            })
+            .is_some_and(|rule| matches!(rule.directive, ImportDirective::Block))
+    };
+    if blocked {
+        let msg = v8::String::new(
+            scope,
+            &format!("Import of '{url}' is blocked in this Realm"),
+        )?;
+        let exc = v8::Exception::error(scope, msg);
+        scope.throw_exception(exc);
+        return None;
+    }
+    Some(path)
 }
 
 /// Instantiate, evaluate, and settle a dynamic-import promise resolver.
@@ -1903,22 +1951,14 @@ fn get_or_load_builtin_inner<'s>(
 
     let state_rc = get_state(scope);
 
-    // 1. Check cache.
-    let cached = {
-        let st = state_rc.borrow();
-        st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
-    };
-    if let Some(m) = cached {
-        return Some(m);
-    }
-
-    // 2. Evaluate the import rule list (last-match-wins).
+    // Evaluate the import rule list (last-match-wins).
     //    The default rules in the root realm block `internal:*` from all
     //    importers except those whose specifier starts with `fino:` or
     //    `internal:`. Child realms inherit those rules automatically.
     //    Bypass Block rules when the referrer is a builtin (internal:* / fino:*)
     //    because builtins must always be able to import other builtins regardless
     //    of user-specified realm restrictions.
+    let entry_import = is_realm_entry_import(scope, from, spec);
     let directive = {
         let st = state_rc.borrow();
         let d = resolve_directive(&st.import_rules, from, spec).cloned();
@@ -1928,11 +1968,29 @@ fn get_or_load_builtin_inner<'s>(
                     || f.starts_with("internal:")
                     || st.builtin_specifiers.values().any(|v| v == f)
             });
-            if is_builtin_from { None } else { d }
+            if is_builtin_from || entry_import {
+                None
+            } else {
+                d
+            }
         } else {
             d
         }
     };
+
+    // Cached modules retain identity, never the previous importer's authority.
+    if !matches!(
+        directive,
+        Some(ImportDirective::Block | ImportDirective::Remap { .. })
+    ) {
+        let cached = {
+            let st = state_rc.borrow();
+            st.builtin_cache.get(spec).map(|m| v8::Local::new(scope, m))
+        };
+        if let Some(m) = cached {
+            return Some(m);
+        }
+    }
 
     match directive {
         Some(ImportDirective::Block) => {
@@ -2067,6 +2125,14 @@ fn get_or_load_builtin_inner<'s>(
         Some(ImportDirective::Inherit) | None => {
             // Fall through to BUILTINS below.
         }
+    }
+
+    if !spec.starts_with("fino:") && !spec.starts_with("internal:") {
+        let directory = from
+            .and_then(source_specifier_path)
+            .and_then(|path| path.parent().map(Path::to_path_buf));
+        let path = resolve_fs_specifier(scope, spec, directory.as_deref(), from)?;
+        return get_or_load_fs_module(scope, &path);
     }
 
     // 3. Fall back to the static BUILTINS registry.

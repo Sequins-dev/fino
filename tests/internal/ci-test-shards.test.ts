@@ -155,15 +155,23 @@ describe('CI workflow', () => {
 
   it('shares the customized V8 artifact across Cargo profiles', async (t) => {
     const source = decoder.decode(await fs.readFile('.github/actions/cache-cargo-deps/action.yml'));
+    const workflow = await readWorkflow();
+    for (const name of ['linux-build', 'macos-build']) {
+      const build = jobDefinition(workflow, name);
+      t.ok(
+        build.steps?.some((step) => step.run === 'sh tests/build/v8-layout.sh'),
+        `${name} runs the shell V8 layout regressions`,
+      );
+    }
     const cargoConfig = decoder.decode(await fs.readFile('.cargo/config.toml'));
-    const primaryKey = source.match(/key: (rusty-v8-artifact-v2-[^\n]+)/)?.[1];
+    const primaryKey = source.match(/key: (rusty-v8-artifact-v3-[^\n]+)/)?.[1];
 
     t.match(
       cargoConfig,
       /^GN_ARGS = .*\bis_debug=false\b.*\bforce = true/m,
       'debug and release Cargo profiles both force the same V8 build mode',
     );
-    t.ok(primaryKey, 'the V8 cache uses the profile-independent v2 key');
+    t.ok(primaryKey, 'the V8 cache uses the profile-independent v3 key');
     t.notOk(
       primaryKey?.includes('inputs.profile'),
       'the V8 cache key does not rebuild the same artifact for debug and release',
@@ -178,12 +186,18 @@ describe('CI workflow', () => {
       'either profile can restore the shared V8 archive',
     );
     t.ok(
-      source.includes('id: v8-cache-v1') &&
-        source.includes('target/${{ inputs.profile }}/gn_out/obj/librusty_v8.a') &&
-        source.includes(
-          'rusty-v8-artifact-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.profile }}-',
-        ),
-      'migration restores v1 with its original profile-specific cache path',
+      source.includes('target/debug/build/gn_out/obj/librusty_v8.a') &&
+        source.includes('target/release/build/gn_out/obj/librusty_v8.a'),
+      'both profiles support the deeper Cargo build layout',
+    );
+    t.ok(
+      source.includes('RUSTY_V8_ARCHIVE=$cached_v8_dir/obj/librusty_v8.a') &&
+        source.includes('RUSTY_V8_SRC_BINDING_PATH=$cached_v8_dir/src_binding.rs'),
+      'rusty_v8 receives the exact customized archive and paired binding',
+    );
+    t.notOk(
+      source.includes('RUSTY_V8_SKIP_DOWNLOAD=1'),
+      'cache restoration allows rusty_v8 to populate its own static library directory',
     );
   });
 
@@ -239,7 +253,7 @@ describe('CI workflow', () => {
     const protocolCacheSource = decoder.decode(
       await fs.readFile('.github/actions/install-linux-protocol-deps/action.yml'),
     );
-    const primaryV8CacheKey = cargoCacheSource.match(/key: (rusty-v8-artifact-v2-[^\n]+)/)?.[1];
+    const primaryV8CacheKey = cargoCacheSource.match(/key: (rusty-v8-artifact-v3-[^\n]+)/)?.[1];
     t.ok(
       primaryV8CacheKey?.includes('inputs.variant'),
       'the V8 cache key incorporates its ABI variant',
