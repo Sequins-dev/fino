@@ -2493,6 +2493,35 @@ mod tests {
 
     #[test]
     fn profiling_follows_an_isolate_to_a_different_thread() {
+        const CHILD: &str = "FINO_TEST_PROFILER_MIGRATION_CHILD";
+        if std::env::var(CHILD).as_deref() != Ok("1") {
+            // libtest creates its workers before V8 initializes. Another V8
+            // test may own that initialization, so calling init_v8 here alone
+            // cannot give this thread its protection-key permissions. A fresh
+            // process lets the worker-creating thread initialize V8, matching
+            // production startup without weakening V8's memory protections.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "scheduler_native::tests::profiling_follows_an_isolate_to_a_different_thread",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("1 passed;"),
+                "migration subprocess {}\n{stdout}\n{}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        // Protection-key access is inherited at thread creation. Initialize
+        // V8 on the common parent before either migration worker is spawned.
+        crate::runtime::init_v8();
         crate::profiler::begin_migration_test_profile();
         let (send, receive) = mpsc::sync_channel(1);
         let (release, released) = mpsc::sync_channel(1);
