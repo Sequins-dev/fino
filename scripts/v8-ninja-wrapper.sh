@@ -36,7 +36,9 @@ os.replace(temporary, path)
 PY
 fi
 
-profile_dir="${OUT_DIR%%/build/*}"
+# Match rusty_v8 build.rs::build_dir instead of assuming Cargo's OUT_DIR
+# depth relative to the profile directory (which differs across Cargo versions).
+profile_dir="$(dirname "$(dirname "$(dirname "$OUT_DIR")")")"
 real_ninja="$profile_dir/ninja_gn_binaries/ninja/ninja"
 if [ ! -x "$real_ninja" ]; then
   echo "could not locate rusty_v8's Ninja binary at $real_ninja" >&2
