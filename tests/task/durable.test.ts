@@ -209,3 +209,14 @@ describe('DurableTask', () => {
     );
   });
 });
+
+describe('DurableTask signal deadlines', () => {
+  it('run surfaces an expired relative signal deadline instead of parking again', async (t) => {
+    const task = durableTask({
+      name: 'signal-deadline',
+      store: memoryStore(),
+      run: async (_input: undefined, ctx) => ctx.waitForSignal('missing', { timeout: 50 }),
+    });
+    await t.rejects(() => task.run(undefined), /timed out/);
+  });
+});

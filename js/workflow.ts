@@ -14,6 +14,26 @@
  * TypeScript control flow (`if`, loops, `Promise.all`) remains the workflow
  * structure.
  *
+ * State-bag writes and clears are saved with the next checkpoint, wait, or
+ * final completion. Relative signal timeouts become absolute deadlines at the
+ * first park and survive resumes. A queued matching signal is consumed before
+ * checking the deadline, including when the driver resumes after that deadline.
+ * Replay validates call position, id, and operation kind; legacy checkpoints
+ * without a kind can validate only their id.
+ *
+ * Use one active driver per run. Stores exposing `atomic` protect checkpoint,
+ * signal, and cancellation updates against concurrent handles; other stores
+ * require external serialization of all run operations. This is not a lease or
+ * fencing protocol for concurrent drivers.
+ *
+ * The first persisted terminal state wins over late work. Explicit resume may
+ * retry an error; done and cancelled runs cannot be revived by a drive. Cancel
+ * aborts the active context on that handle. Other handles observe cancellation
+ * at persistence boundaries, without interrupting an active effect. Cancellation
+ * is cooperative: it cannot undo effects or force user promises to settle.
+ * A crash after an effect but before its checkpoint can repeat the effect;
+ * use downstream idempotency keys or transactions when repetition matters.
+ *
  * ```ts no_run
  * import { sqliteStore } from 'fino:store';
  * import { activity, workflow } from 'fino:workflow';
@@ -39,6 +59,7 @@
  * await routeTicket.signal({ store, runId: run.runId, name: 'approval', payload: true });
  * ```
  */
+import { abortScope, type AbortScope } from 'internal:abort';
 import { SerialExecutor } from 'internal:serial-executor';
 import type { Store } from 'fino:store';
 import { compile } from 'fino:validate';
@@ -140,6 +161,8 @@ export interface WorkflowStepState {
    * Step completion marker. Only completed steps are persisted.
    */
   readonly status: 'done';
+  /** Operation identity; legacy checkpoints without this field validate only the id. */
+  readonly kind?: 'step' | 'sleep' | 'signal';
   /**
    * Store-compatible structured-cloneable result reused when workflow code replays.
    */
@@ -265,6 +288,30 @@ function workflowStateStore(store: Store): Store {
 async function persistWorkflowState(store: Store, state: WorkflowState): Promise<void> {
   await store.set(state.runId, structuredClone(state));
   workflowRunTopic(state.runId).publish({ runId: state.runId, version: state.updatedAt });
+}
+// Re-evaluate transformations after conflicts so signals and cancellation survive.
+async function updateWorkflowState(
+  store: Store,
+  runId: string,
+  update: (latest: WorkflowState | null) => WorkflowState,
+): Promise<WorkflowState> {
+  for (;;) {
+    const entry = store.atomic ? await store.atomic.getEntry<WorkflowState>(runId) : null;
+    const latest = store.atomic ? (entry?.value ?? null) : await readWorkflowState(store, runId);
+    const next = update(latest ? structuredClone(latest) : null);
+    if (store.atomic) {
+      const committed = await store.atomic.commit({
+        checks: [{ key: runId, ifVersion: entry?.version ?? null }],
+        writes: [{ key: runId, value: structuredClone(next) }],
+      });
+      if (!committed) continue;
+      workflowRunTopic(runId).publish({ runId, version: next.updatedAt });
+    } else await persistWorkflowState(store, next);
+    return next;
+  }
+}
+function terminal(state: WorkflowState): boolean {
+  return state.status === 'cancelled' || state.status === 'done' || state.status === 'error';
 }
 async function readWorkflowState(store: Store, runId: string): Promise<WorkflowState | null> {
   const state = await store.get<WorkflowState>(runId);
@@ -711,28 +758,31 @@ export class Workflow<In = unknown, Out = unknown> {
    */
   async signal(opts: WorkflowSignalOptions): Promise<void> {
     const store = workflowStateStore(opts.store);
-    const state = await readWorkflowState(store, opts.runId);
-    if (!state) throw new Error(`Workflow run ${opts.runId} not found`);
-    if (state.status !== 'waiting' || state.waitingOn?.type !== 'signal') {
-      throw new Error(`Workflow run ${opts.runId} is not waiting for a signal`);
-    }
-    if (state.waitingOn.name !== opts.name) {
-      throw new Error(`Workflow run ${opts.runId} is waiting for signal "${state.waitingOn.name}"`);
-    }
-    const next: WorkflowState = {
-      ...state,
-      status: 'running',
-      signals: [
-        ...state.signals,
-        {
-          name: opts.name,
-          ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
-          receivedAt: Date.now(),
-        },
-      ],
-    };
-    delete next.waitingOn;
-    await persistWorkflowState(store, next);
+    await updateWorkflowState(store, opts.runId, (state) => {
+      if (!state) throw new Error(`Workflow run ${opts.runId} not found`);
+      if (state.status !== 'waiting' || state.waitingOn?.type !== 'signal') {
+        throw new Error(`Workflow run ${opts.runId} is not waiting for a signal`);
+      }
+      if (state.waitingOn.name !== opts.name) {
+        throw new Error(
+          `Workflow run ${opts.runId} is waiting for signal "${state.waitingOn.name}"`,
+        );
+      }
+      const next: WorkflowState = {
+        ...state,
+        status: 'running',
+        signals: [
+          ...state.signals,
+          {
+            name: opts.name,
+            ...(opts.payload !== undefined ? { payload: opts.payload } : {}),
+            receivedAt: Date.now(),
+          },
+        ],
+      };
+      delete next.waitingOn;
+      return next;
+    });
   }
   /**
    * Drive the user-supplied workflow body.
@@ -760,6 +810,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
   #runId?: string;
   #key?: string;
   #signal?: AbortSignal;
+  #scope: AbortScope | undefined;
   #onCheckpoint?: (state: WorkflowState) => void;
   #state?: WorkflowState;
   /**
@@ -814,49 +865,58 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       this.#state = loaded;
       return toResult<Out>(loaded);
     }
-    this.#state = {
-      ...loaded,
-      status: 'running',
-    };
+    this.#state = await updateWorkflowState(this.#store, loaded.runId, (latest) => {
+      const current = latest ?? loaded;
+      if (current.status === 'cancelled' || current.status === 'done') return current;
+      return { ...current, status: 'running' };
+    });
     return this.#drive(this.#state);
   }
   /**
-   * Mark this run as cancelled and clear any pending wait.
+   * Mark an active run as cancelled and clear its pending wait.
+   * Already terminal runs retain their status. The active context owned by this
+   * handle is aborted cooperatively; effects must honor its signal themselves.
    */
   async cancel(): Promise<void> {
-    const state =
-      this.#state ?? (this.#runId ? await readWorkflowState(this.#store, this.#runId) : null);
-    if (!state) return;
-    const next = {
-      ...state,
-      status: 'cancelled' as const,
-    };
-    delete next.waitingOn;
-    this.#state = next;
-    await this.#save(next);
+    const runId = this.#state?.runId ?? this.#runId;
+    if (!runId) return;
+    const loaded = await readWorkflowState(this.#store, runId);
+    if (!loaded) return;
+    this.#state = await updateWorkflowState(this.#store, runId, (latest) => {
+      const state = latest ?? loaded;
+      if (terminal(state)) return state;
+      const next = { ...state, status: 'cancelled' as const };
+      delete next.waitingOn;
+      return next;
+    });
+    if (this.#state.status === 'cancelled') this.#scope?.abort();
   }
+
   async #drive(initial: WorkflowState): Promise<WorkflowResult<Out>> {
     let state = initial;
     if (state.workflowId !== this.#workflow.id) {
       throw new Error(`Workflow run ${state.runId} belongs to workflow "${state.workflowId}"`);
     }
+    const scope = abortScope(this.#signal ? { signal: this.#signal } : {});
+    this.#scope = scope;
     const runtime = new WorkflowRuntime(
       this.#workflow,
       this.#store,
       state,
-      this.#signal,
-      async (next) => {
+      scope.signal,
+      async (next, consumed) => {
         state = next;
         this.#state = next;
-        await this.#save(next);
-        this.#onCheckpoint?.(next);
+        await this.#save(next, consumed);
+        this.#onCheckpoint?.(this.#state!);
+        return this.#state!;
       },
     );
     try {
       const output = await this.#workflow._execute(runtime.context, state.input as In);
       validateValue(this.#workflow.outputSchema, output, 'Workflow output validation failed');
       state = {
-        ...state,
+        ...runtime.state,
         status: 'done',
         result: output,
       };
@@ -864,7 +924,7 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       delete state.error;
       this.#state = state;
       await this.#save(state);
-      return toResult<Out>(state);
+      return toResult<Out>(this.#state!);
     } catch (err) {
       const e = err as Error;
       if (e.name === 'WaitSignal') {
@@ -895,12 +955,32 @@ export class WorkflowRun<In = unknown, Out = unknown> {
       this.#state = state;
       await this.#save(state);
       throw err;
+    } finally {
+      scope.dispose();
+      this.#scope = undefined;
     }
   }
-  async #save(state: WorkflowState): Promise<void> {
-    await persistWorkflowState(this.#store, {
-      ...state,
-      updatedAt: Date.now(),
+  async #save(state: WorkflowState, consumed: WorkflowSignal[] = []): Promise<void> {
+    this.#state = await updateWorkflowState(this.#store, state.runId, (latest) => {
+      if (latest && terminal(latest)) return latest;
+      const steps = latest?.steps.slice() ?? [];
+      state.steps.forEach((step, index) => {
+        if (step) steps[index] = step;
+      });
+      let cursor = 0;
+      while (steps[cursor]?.status === 'done') cursor++;
+      return {
+        ...state,
+        steps,
+        cursor,
+        signals: (latest?.signals ?? state.signals).filter(
+          (signal) =>
+            !consumed.some(
+              (item) => item.name === signal.name && item.receivedAt === signal.receivedAt,
+            ),
+        ),
+        updatedAt: Date.now(),
+      };
     });
   }
 }
@@ -909,20 +989,23 @@ class WorkflowRuntime<In, Out> {
   #workflow: Workflow<In, Out>;
   #store: Store;
   #callIndex = 0;
+  #bag: Record<string, unknown>;
   #state: WorkflowState;
   #signal?: AbortSignal;
-  #checkpoint: (state: WorkflowState) => Promise<void>;
+  #checkpoint: (state: WorkflowState, consumed?: WorkflowSignal[]) => Promise<WorkflowState>;
+  #consumedSignals: WorkflowSignal[] = [];
   #completionQueue = new SerialExecutor();
   constructor(
     workflow: Workflow<In, Out>,
     store: Store,
     state: WorkflowState,
     signal: AbortSignal | undefined,
-    checkpoint: (state: WorkflowState) => Promise<void>,
+    checkpoint: (state: WorkflowState, consumed?: WorkflowSignal[]) => Promise<WorkflowState>,
   ) {
     this.#workflow = workflow;
     this.#store = store;
     this.#state = state;
+    this.#bag = { ...state.state };
     this.#signal = signal;
     this.#checkpoint = checkpoint;
     this.context = {
@@ -937,40 +1020,45 @@ class WorkflowRuntime<In, Out> {
     };
   }
   get state(): WorkflowState {
-    return this.#state;
+    return { ...this.#state, state: { ...this.#bag } };
   }
   #stateBag(): WorkflowStateBag {
     return {
-      get: (key) => this.#state.state[key] as never,
+      get: (key) => this.#bag[key] as never,
       set: (key, value) => {
-        this.#state = {
-          ...this.#state,
-          state: {
-            ...this.#state.state,
-            [key]: value,
-          },
-        };
+        this.#bag[key] = value;
       },
       clear: (key) => {
-        const next = { ...this.#state.state };
-        delete next[key];
-        this.#state = {
-          ...this.#state,
-          state: next,
-        };
+        delete this.#bag[key];
       },
-      entries: () => ({ ...this.#state.state }),
+      entries: () => ({ ...this.#bag }),
     };
+  }
+  #replay(
+    index: number,
+    id: string,
+    kind: 'step' | 'sleep' | 'signal',
+  ): WorkflowStepState | undefined {
+    const completed = this.#state.steps[index];
+    const wait = this.#state.waitingOn;
+    if (
+      completed &&
+      (completed.id !== id || (completed.kind !== undefined && completed.kind !== kind))
+    )
+      throw new Error(`Workflow step mismatch at index ${index}`);
+    if (
+      !completed &&
+      wait?.stepIndex === index &&
+      (wait.id !== id || (wait.type === 'timer' ? 'sleep' : 'signal') !== kind)
+    )
+      throw new Error(`Workflow wait mismatch at index ${index}`);
+    return completed;
   }
   async #step<T>(id: string, fn: () => Promise<T> | T, retry?: WorkflowRetryOptions): Promise<T> {
     const index = this.#callIndex++;
-    const completed = this.#state.steps[index];
-    if (index < this.#state.cursor && completed?.id === id) return completed.result as T;
-    if (index < this.#state.cursor && completed?.id !== id) {
-      throw new Error(
-        `Workflow step mismatch at index ${index}: expected "${completed?.id}", got "${id}"`,
-      );
-    }
+    const completed = this.#replay(index, id, 'step');
+    if (completed) return completed.result as T;
+    this.#signal?.throwIfAborted();
     const result = await runWithRetry(fn, retry);
     await this.#complete(index, id, result);
     return result;
@@ -997,8 +1085,7 @@ class WorkflowRuntime<In, Out> {
   }
   async #sleep(id: string, duration: number | string | Date): Promise<void> {
     const index = this.#callIndex++;
-    const completed = this.#state.steps[index];
-    if (index < this.#state.cursor && completed?.id === id) return;
+    if (this.#replay(index, id, 'sleep')) return;
     const existing = this.#state.waitingOn;
     const dueAt =
       existing?.type === 'timer' && existing.stepIndex === index
@@ -1015,10 +1102,10 @@ class WorkflowRuntime<In, Out> {
           stepIndex: index,
         },
       };
-      await persistWorkflowState(this.#store, this.#state);
+      this.#state = await this.#checkpoint(this.state, this.#consumedSignals);
       throw new WaitSignal();
     }
-    await this.#complete(index, id, undefined);
+    await this.#complete(index, id, undefined, 'sleep');
   }
   async #waitForSignal<T>(
     name: string,
@@ -1027,21 +1114,28 @@ class WorkflowRuntime<In, Out> {
     },
   ): Promise<T> {
     const index = this.#callIndex++;
-    const completed = this.#state.steps[index];
-    if (index < this.#state.cursor && completed?.id === name) return completed.result as T;
+    const completed = this.#replay(index, name, 'signal');
+    if (completed) return completed.result as T;
     const signalIndex = this.#state.signals.findIndex((signal) => signal.name === name);
     if (signalIndex >= 0) {
       const signal = this.#state.signals[signalIndex]!;
+      this.#consumedSignals.push(signal);
       const signals = this.#state.signals.slice();
       signals.splice(signalIndex, 1);
       this.#state = {
         ...this.#state,
         signals,
       };
-      await this.#complete(index, name, signal.payload);
+      await this.#complete(index, name, signal.payload, 'signal');
       return signal.payload as T;
     }
-    const timeoutAt = opts?.timeout !== undefined ? toDueAt(opts.timeout) : undefined;
+    const existing = this.#state.waitingOn;
+    const timeoutAt =
+      existing?.type === 'signal' && existing.stepIndex === index
+        ? existing.timeoutAt
+        : opts?.timeout !== undefined
+          ? toDueAt(opts.timeout)
+          : undefined;
     if (timeoutAt !== undefined && Date.now() >= timeoutAt) {
       throw new Error(`Workflow signal "${name}" timed out`);
     }
@@ -1056,16 +1150,24 @@ class WorkflowRuntime<In, Out> {
         ...(timeoutAt !== undefined ? { timeoutAt } : {}),
       },
     };
-    await persistWorkflowState(this.#store, this.#state);
+    this.#state = await this.#checkpoint(this.state, this.#consumedSignals);
     throw new WaitSignal();
   }
-  async #complete(index: number, id: string, result: unknown): Promise<void> {
+  async #complete(
+    index: number,
+    id: string,
+    result: unknown,
+    kind: 'step' | 'sleep' | 'signal' = 'step',
+  ): Promise<void> {
     await this.#completionQueue.run(async () => {
       const latest = await readWorkflowState(this.#store, this.#state.runId);
       const base = latest && latest.workflowId === this.#workflow.id ? latest : this.#state;
+      if (terminal(base)) throw new DOMException('Workflow run is no longer active', 'AbortError');
+      this.#signal?.throwIfAborted();
       const steps = base.steps.slice();
       steps[index] = {
         id,
+        kind,
         status: 'done',
         ...(result !== undefined ? { result } : {}),
       };
@@ -1074,13 +1176,16 @@ class WorkflowRuntime<In, Out> {
       const next: WorkflowState = {
         ...base,
         status: 'running',
+        state: { ...this.#bag },
         cursor,
         steps,
         updatedAt: Date.now(),
       };
-      delete next.waitingOn;
+      if (next.waitingOn?.stepIndex === index) delete next.waitingOn;
+      if (next.waitingOn) next.status = 'waiting';
       this.#state = next;
-      await this.#checkpoint(this.#state);
+      this.#state = await this.#checkpoint(this.state, this.#consumedSignals);
+      this.#consumedSignals = [];
     });
   }
 }
