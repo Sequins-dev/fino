@@ -15,11 +15,14 @@
  * results without re-running — so all side effects (including writer output
  * that must not repeat) belong inside `ctx.step()`. Changing the sequence of
  * step ids between runs of the same `runId` is a determinism error and the
- * workflow runtime rejects it. `ctx.env`, `ctx.cwd`, `ctx.prompt`, and
+ * workflow runtime rejects it. New checkpoints also record operation kind;
+ * legacy checkpoints validate only ids. `ctx.env`, `ctx.cwd`, `ctx.prompt`, and
  * `ctx.writer` are per-drive values, not durable state.
  *
  * `run()` drives a run to completion, waiting out timer parks in-process and
- * honoring `signalRun()` deliveries. The `start()` / `resume()` / `signalRun()`
+ * honoring `signalRun()` deliveries. Signal deadlines retain their original
+ * deadline across resumes. Cancellation is cooperative and cannot undo an
+ * external effect; use idempotency for effects that might repeat after a crash. The `start()` / `resume()` / `signalRun()`
  * surface performs exactly one drive per call and reports the parked state —
  * schedulers (e.g. `fino:jobs`) own the timers in that mode.
  *
